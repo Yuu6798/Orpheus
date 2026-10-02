@@ -1,0 +1,77 @@
+{
+  "schema_version": "0.1",
+  "analysis_id": "analysis-demo-001",
+  "audio": {
+    "path": "work/audio/clip.wav",
+    "sha256": "44ea0eb01d25367157e56d51aba89295fc3883a806a052daf3c3cec53b1413d4",
+    "source_sha256": "14a0d682183f8bf05007ee66f0a229a7d78739f52fbb0c8b89a7f4747c70211e",
+    "sample_rate": 48000,
+    "sample_count": 480000,
+    "duration_s": 10.0,
+    "source_start_s": 60.0
+  },
+  "bpm": 120.0,
+  "beats_s": [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    3.5,
+    4.0,
+    4.5,
+    5.0,
+    5.5,
+    6.0,
+    6.5,
+    7.0,
+    7.5,
+    8.0,
+    8.5,
+    9.0,
+    9.5
+  ],
+  "sections": [
+    {
+      "id": "section-001",
+      "start_s": 0.0,
+      "end_s": 10.0,
+      "label": "chorus",
+      "source": "manual",
+      "review_status": "confirmed"
+    }
+  ],
+  "lyrics": [
+    {
+      "id": "lyric-001",
+      "text": "窓の向こうへ",
+      "alignment_text": "まどのむこうへ",
+      "start_s": 1.0,
+      "end_s": 4.0,
+      "timing_source": "manual",
+      "review_status": "confirmed",
+      "confidence": null
+    },
+    {
+      "id": "lyric-002",
+      "text": "声をつないで",
+      "alignment_text": "こえをつないで",
+      "start_s": 5.0,
+      "end_s": 8.5,
+      "timing_source": "manual",
+      "review_status": "confirmed",
+      "confidence": null
+    }
+  ],
+  "provenance": [
+    {
+      "stage": "fixture",
+      "tool": "synthetic-example",
+      "version": "0.1",
+      "model": null
+    }
+  ],
+  "issues": []
+}

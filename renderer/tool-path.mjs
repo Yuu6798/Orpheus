@@ -1,0 +1,10 @@
+import {createRequire} from 'node:module';
+import path from 'node:path';
+const localRequire = createRequire(import.meta.url);
+const require = createRequire(localRequire.resolve('@remotion/renderer'));
+let platform = `${process.platform}-${process.arch}`;
+if (process.platform === 'win32') platform += '-msvc';
+if (process.platform === 'linux') platform += process.report.getReport().header.glibcVersionRuntime ? '-gnu' : '-musl';
+const {dir} = require(`@remotion/compositor-${platform}`);
+if (!['ffmpeg', 'ffprobe'].includes(process.argv[2])) throw new Error('Unknown executable');
+console.log(path.join(dir, process.argv[2] + (process.platform === 'win32' ? '.exe' : '')));

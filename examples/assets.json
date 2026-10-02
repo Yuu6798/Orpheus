@@ -1,0 +1,45 @@
+{
+  "schema_version": "0.1",
+  "assets": [
+    {
+      "asset_id": "reference-001",
+      "path": "images/reference-001.png",
+      "sha256": "fde8a1f7d05e234c07296b8674d3151338090b0671cef7ebea585466e1798ae3",
+      "width": 1920,
+      "height": 1080,
+      "source": "imported",
+      "prompt": null,
+      "reference_asset_ids": [],
+      "generator": null,
+      "generation_params": {}
+    },
+    {
+      "asset_id": "image-001",
+      "path": "images/image-001.png",
+      "sha256": "3e8e2fc87ed87fb75f5fe7edcc9973a6105a81f488bc063208948b9124b64abe",
+      "width": 1920,
+      "height": 1080,
+      "source": "imported",
+      "prompt": null,
+      "reference_asset_ids": [
+        "reference-001"
+      ],
+      "generator": null,
+      "generation_params": {}
+    },
+    {
+      "asset_id": "image-002",
+      "path": "images/image-002.png",
+      "sha256": "6737ec93333cc6f464cbbfe0a759ad96d2684271ad42cdd4832841d55735e8b2",
+      "width": 1920,
+      "height": 1080,
+      "source": "imported",
+      "prompt": null,
+      "reference_asset_ids": [
+        "reference-001"
+      ],
+      "generator": null,
+      "generation_params": {}
+    }
+  ]
+}

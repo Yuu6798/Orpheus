@@ -1,0 +1,28 @@
+{
+  "name": "orpheus-mv-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "render": "node renderer/render.mjs",
+    "studio": "remotion studio renderer/src/index.tsx",
+    "test": "node --experimental-strip-types --test renderer/tests/*.test.ts"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.532",
+    "@remotion/captions": "4.0.532",
+    "@remotion/cli": "4.0.532",
+    "@remotion/renderer": "4.0.532",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.532"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}

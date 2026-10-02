@@ -1,0 +1,52 @@
+{
+  "schema_version": "0.1",
+  "storyboard_id": "storyboard-demo-001",
+  "analysis_id": "analysis-demo-001",
+  "analysis_sha256": "6c5092ef5b37d7f4ed202f31a7d0560a86e3a72c14b8d4fd6def0218d8383aac",
+  "audio_sha256": "44ea0eb01d25367157e56d51aba89295fc3883a806a052daf3c3cec53b1413d4",
+  "render": {
+    "fps": 30,
+    "width": 1920,
+    "height": 1080,
+    "duration_frames": 300,
+    "show_lyrics": true
+  },
+  "world": {
+    "description": "架空の例：夜明けの街。青から金へ光が変化する。",
+    "reference_asset_id": "reference-001"
+  },
+  "scenes": [
+    {
+      "id": "scene-001",
+      "start_frame": 0,
+      "end_frame": 150,
+      "lyric_ids": [
+        "lyric-001"
+      ],
+      "asset_id": "image-001",
+      "prompt": "夜明け前の窓辺。基準画像の人物と衣装を維持。",
+      "motion": "slow_push",
+      "transition_in": {
+        "type": "cut",
+        "duration_frames": 0
+      },
+      "intent": "視線の先に朝を予感させる。"
+    },
+    {
+      "id": "scene-002",
+      "start_frame": 150,
+      "end_frame": 300,
+      "lyric_ids": [
+        "lyric-002"
+      ],
+      "asset_id": "image-002",
+      "prompt": "同じ人物が金色の空を見上げる。基準画像の画風を維持。",
+      "motion": "pan_right",
+      "transition_in": {
+        "type": "crossfade",
+        "duration_frames": 12
+      },
+      "intent": "歌詞のつながりを視線と光で引き継ぐ。"
+    }
+  ]
+}
