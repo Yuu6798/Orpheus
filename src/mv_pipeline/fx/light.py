@@ -59,10 +59,21 @@ class Light:
     host: str | None = None               # emitter が載る層。plane の id、None = 背景
 
 
+def _span(center, half, limit):
+    """[center-half, center+half] を覆う整数の半開区間 (lo, hi) を [0, limit] に収めて返す。
+
+    両端を clamp するので、範囲が完全に画像の外（cover で切られた外側へ出た光）なら lo == hi の空になる
+    （片側だけ clamp すると hi が負・lo が limit 超になり、スライスが別の範囲を選んで形が食い違う）。
+    """
+    lo = min(limit, max(0, int(math.floor(center - half))))
+    hi = min(limit, max(0, int(math.ceil(center + half)) + 1))
+    return lo, max(lo, hi)
+
+
 def _roi(cx, cy, half_x, half_y, size):
+    """(y0, y1, x0, x1)。常に 0 ≤ lo ≤ hi ≤ 画像サイズで、完全に画面の外なら空（lo == hi）。"""
     width, height = size
-    return (max(0, int(math.floor(cy - half_y))), min(height, int(math.ceil(cy + half_y)) + 1),
-            max(0, int(math.floor(cx - half_x))), min(width, int(math.ceil(cx + half_x)) + 1))
+    return _span(cy, half_y, height) + _span(cx, half_x, width)
 
 
 def _coords(roi):

@@ -310,3 +310,57 @@ def test_flat_depth_is_not_used_so_the_warning_matches_what_is_drawn(tmp_path):
     nodepth = render.prepare(fxspec.parse_spec(data, tmp_path))
     for variant in ("base", "light", "both"):
         assert np.array_equal(render.frame(ctx, T, variant), render.frame(nodepth, T, variant))
+
+
+# ---- 画面の外に出た光（cover で切られた外側）--------------------------------------------------
+
+def offscreen(tmp_path, source, output, **light_over):
+    """source=(幅, 高さ) の素材を output=(幅, 高さ) へ cover で切って prepare した ctx。camera は FULL のまま。"""
+    raw = json.loads(make_project(tmp_path, *source, lights=one_light(**light_over)).read_text(encoding="utf-8"))
+    raw["output"].update(width=output[0], height=output[1])
+    return render.prepare(fxspec.parse_spec(raw, tmp_path))
+
+
+# 光の位置は元画像の正規化座標。切り出しの外へ半径・光点の影響範囲ごと出す（画面の左・上・右・下の外）
+OFFSCREEN_CASES = {
+    "left": ((320, 180), (144, 256), [0.10, 0.5]),
+    "right": ((320, 180), (144, 256), [0.90, 0.5]),
+    "top": ((180, 320), (256, 144), [0.5, 0.10]),
+    "bottom": ((180, 320), (256, 144), [0.5, 0.90]),
+}
+
+
+@pytest.mark.parametrize("side", OFFSCREEN_CASES)
+def test_a_light_fully_outside_the_cropped_frame_changes_nothing_and_does_not_crash(tmp_path, side):
+    source, output, position = OFFSCREEN_CASES[side]
+    ctx = offscreen(tmp_path, source, output, position=position, radius=0.05)       # prepare が落ちない
+    hosted = offscreen(tmp_path, source, output, position=position, radius=0.05,    # 光点を人物の層に載せても同じ
+                       emitter={"size": 0.03, "glow": 0.6, "attach": "subject"})
+    assert hosted.lights[0].host == "subject"
+    width, height = ctx.size
+    (lt,) = ctx.lights
+    for roi in (lt.roi_main, lt.roi_spec, lt.roi_glow):                              # 完全に外の ROI は常に空（lo == hi）
+        y0, y1, x0, x1 = roi
+        assert 0 <= y0 <= y1 <= height and 0 <= x0 <= x1 <= width
+        assert y0 == y1 or x0 == x1, (side, roi)
+    for target in (ctx, hosted):
+        for variant, reference in (("light", "base"), ("both", "layers")):
+            for t in (0.0, T, 1.7):
+                assert np.array_equal(render.frame(target, t, variant), render.frame(target, t, reference)), \
+                    (side, target.lights[0].host, variant, t)
+    inside = offscreen(tmp_path, source, output, position=[0.5, 0.5], radius=0.05)  # 対照: 同じ光が画面の内なら何かを変える
+    assert changed(render.frame(inside, T, "light"), render.frame(inside, T, "base")).any()
+
+
+@pytest.mark.parametrize("center,half,size", [
+    (-110.0, 55.0, 144), (-110.0, 110.0, 144), (-1.0, 0.0, 144), (-0.5, 0.0, 144), (300.0, 55.0, 144), (144.0, 0.0, 144),
+    (143.5, 0.0, 144),
+    (72.0, 5.0, 144), (3.0, 30.0, 144), (140.0, 30.0, 144), (72.0, 1000.0, 144),
+])
+def test_roi_is_clamped_to_the_image_and_empty_when_the_light_is_outside(center, half, size):
+    y0, y1, x0, x1 = fxlight._roi(center, center, half, half, (size, size))
+    assert 0 <= y0 <= y1 <= size and 0 <= x0 <= x1 <= size
+    outside = center + half <= -1 or center - half >= size                  # ROI は整数へ外側に丸め +1 の余白を持つ
+    assert ((x0 == x1) and (y0 == y1)) == outside
+    if not outside:
+        assert x0 < x1 and x0 <= max(0, np.floor(center - half)) and x1 >= min(size, np.ceil(center + half))
