@@ -49,8 +49,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       # --locked: uv.lock が pyproject.toml と食い違えば更新せず失敗する。dev group (pytest) は既定で入る。
+      # fx extra (opencv-python-headless) は fx のテストを skip させないために入れる。
+      # 既存コマンドが cv2 なしで動くことは、fx 側が cv2 を遅延 import する構造とテストの importorskip で守る。
       - name: Install (locked)
-        run: uv sync --locked
+        run: uv sync --locked --extra fx
 
       # lint は ruff 設定の導入 (別 PR) 後に追加する。
       - name: Test

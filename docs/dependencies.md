@@ -15,6 +15,7 @@
 | numba / llvmlite | 0.63.1 / 0.46.0（Windows実行確認済みの組合せ） |
 | imageio-ffmpeg | 0.6.0 |
 | Pillow | 13.0.0 |
+| opencv-python-headless（fx extra） | 4.14.0.94（Apache-2.0。実験的な演出エンジン fx だけが使う。公開 2026-07-28、NumPy 2.3.5・Python 3.11〜3.13 で pytest 通過） |
 | pytest（dev） | 9.0.3 |
 | pip-audit（audit group） | 2.10.1 |
 | JSON Schema | Draft 2020-12 / jsonschema 4.26.0 |
