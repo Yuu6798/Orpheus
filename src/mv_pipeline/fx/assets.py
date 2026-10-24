@@ -7,7 +7,8 @@
 - マスク: 輝度（RGBA で alpha が一定でなければ alpha）を 0..1 にし、feather_px でぼかす
   （σ = feather_px/2、出力幅 1920 換算）。基準画像と同じ縦横比（誤差 1% 以内）であること。
 - 深度: 8/16bit/float/RGB を 2〜98 パーセンタイルで 0..1 に正規化（外れ値で潰れない）。
-  結果は 1 = 手前、0 = 奥（near: white|black で向きを揃える）。
+  結果は 1 = 手前、0 = 奥（near: white|black で向きを揃える）。ほぼ一定の深度は情報が無いので
+  使わない（Assets.depth = None。深度視差も light の depth ゲートも無効になり、警告を残す）。
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,7 +156,8 @@ def load_assets(spec, size):
         values = _crop_resize(_raw_values(image), box, size)
         depth, informative = normalize_depth(values, data["assets"]["depth"]["near"])
         if not informative:
-            warnings.append("深度画像がほぼ一定のため、深度は使いません（0.5 一定）")
+            depth = None  # 警告と描画を一致させる: 深度視差も light の depth ゲートも無効にする
+            warnings.append("深度画像がほぼ一定のため、深度は使いません（深度視差と light の depth 指定も無効）")
     return Assets(size=size, plate_u8=plate_u8, plate=to_linear(plate_u8), masks=masks, depth=depth, warnings=warnings,
                   box=box)
 

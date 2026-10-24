@@ -6,7 +6,9 @@
 所要時間の記録、出力の構造検査（technical_pass）だけで、絵の良し悪しは判定しない。
 
 - 検査: フレーム数は round(D×fps) から最大 2 少ないまで許容（実務の `-shortest`）、多いのは不合格。
-  寸法・fps は指定したときだけ照合する（fps を指定しなければ、出力の fps から期待枚数を数える）。全復号でエラーが無いこと。
+  寸法・fps は指定したときだけ照合する（fps を指定しなければ、出力の fps から期待枚数を数える。
+  出力の fps も読めず期待枚数が決まらないときは、黙って合格にせず technical_pass=false にして理由を checks に残す）。
+  全復号でエラーが無いこと。
 - ログ: 子プロセスの標準出力・標準エラーを描画中に逐次 legacy.log へ書く（子の Python は PYTHONUNBUFFERED=1）。
 - timeout: 既定 max(600, 120×duration) 秒。超えたら子プロセスごと止めて failed にする。
 - キャッシュしない: 設定が参照する素材などレンダラの隠れた入力を fx は知らないため、毎回実行する。
@@ -102,8 +104,12 @@ def run_legacy(renderer, config, start, duration, python=None, width=None, heigh
             if not partial.is_file():
                 raise PipelineError(f"レンダラは成功しましたが、出力 (argv の最後の引数) が作られていません。ログ: {run.log_path}")
             observed = probe.inspect(partial)["video"]
-            checks = probe.check_video(partial, width=width, height=height, fps=fps,
-                                       frames=_expected_frames(duration, fps, observed["fps"]))
+            expected = _expected_frames(duration, fps, observed["fps"])
+            checks = probe.check_video(partial, width=width, height=height, fps=fps, frames=expected)
+            if expected is None:  # フレーム数を照合できていない。偽の合格にしない
+                checks["failures"].append("fps が分からないため期待フレーム数を決められません（出力から fps を読めず --fps も未指定）。"
+                                          "--fps を指定して再実行してください")
+                checks["pass"] = False
             run.manifest["interval"]["frames"] = checks["frames"]
             if checks["pass"]:
                 os.replace(partial, final)

@@ -289,3 +289,24 @@ def test_original_coordinates_reduce_to_the_screen_when_the_aspect_matches(tmp_p
     assert to_screen(ctx.assets.box, 0.3, 0.7) == (0.3, 0.7) and width_scale(ctx.assets.box) == 1.0
     tall = contexts(tmp_path, lights=None)["tall"].assets.box
     assert to_screen(tall, 0.5, 0.5) == pytest.approx((0.5, 0.5)) and width_scale(tall) == pytest.approx(1 / (tall[2] - tall[0]))
+
+
+def test_flat_depth_is_not_used_so_the_warning_matches_what_is_drawn(tmp_path):
+    from PIL import Image
+
+    gated = one_light(receivers=[{"mask": "subject", "gain": 1.0}], drop=("emitter",), depth=0.9, depth_falloff=0.05)
+    camera = {"keys": FULL["camera"]["keys"], "parallax_px": 6, "parallax_dir": [1, 0]}
+    path = make_project(tmp_path, 320, 180, camera=camera, lights=gated)
+    Image.fromarray(np.full((180, 320), 30000, dtype=np.uint16)).save(tmp_path / "depth.png")   # 情報の無い一定の深度
+    ctx = render.prepare(fxspec.load_spec(path))
+    assert ctx.assets.depth is None
+    assert any("深度" in w and "使いません" in w for w in ctx.warnings)
+    assert "depth_parallax" not in ctx.variant_notes()["base"]["features"]
+    subject = ctx.assets.masks["subject"] > 0.99
+    lit, base = render.frame(ctx, T, "light"), render.frame(ctx, T, "base")
+    assert (lum(lit)[subject] > lum(base)[subject]).mean() > 0.8             # depth ゲートが効いていれば（0.5 一定 vs 0.9）光は消える
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["assets"]["depth"]                                              # 深度なしの spec と、描画は同じ
+    nodepth = render.prepare(fxspec.parse_spec(data, tmp_path))
+    for variant in ("base", "light", "both"):
+        assert np.array_equal(render.frame(ctx, T, variant), render.frame(nodepth, T, variant))

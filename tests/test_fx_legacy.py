@@ -139,6 +139,28 @@ def test_expected_frames_follow_the_observed_fps_when_fps_is_not_given(work):
     assert code == 0 and result["frames"] == 25
 
 
+def test_unreadable_fps_without_the_fps_option_is_a_failure_not_a_silent_pass(work, monkeypatch):
+    studio, config = work
+    config(fps=12, extra=-1)                                                                 # 枚数は不足しているが、期待枚数が決まらなければ検査できない
+    real = probe.inspect
+
+    def blind(path):                                                                         # 出力から fps を読めなかった場合
+        info = real(path)
+        info["video"]["fps"] = None
+        return info
+
+    monkeypatch.setattr(probe, "inspect", blind)
+    code, _, err = legacy_cli(studio)
+    assert code == 1 and "fps が分からない" in err and "--fps" in err
+    (run_dir,) = [d for d in (studio / "runs").iterdir() if d.is_dir()]
+    manifest = read_json(run_dir / "manifest.json")
+    item = manifest["variants"]["legacy"]
+    assert manifest["status"] == "failed" and manifest["technical_pass"] is False and item["technical_pass"] is False
+    assert any("fps が分からない" in f for f in item["checks"]["failures"]) and "fps が分からない" in manifest["error"]
+    assert not (run_dir / "legacy.mp4").exists()                                             # 合格していないので最終名を作らない
+    assert legacy._expected_frames(1.0, None, None) is None and legacy._expected_frames(1.0, 12.0, None) == (10, 12)
+
+
 def test_nonzero_exit_fails_without_touching_earlier_runs(work):
     studio, config = work
     config(fps=12)

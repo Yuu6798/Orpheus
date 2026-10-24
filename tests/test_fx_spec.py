@@ -48,6 +48,23 @@ def test_scalar_intensity_and_int_float_forms_normalize_identically(tmp_path):
     assert parse(tmp_path, a).data["lights"][0]["intensity"] == [{"t": 0.0, "v": 1.0, "ease": "linear"}]
 
 
+def test_integer_fields_accept_whole_floats_and_become_ints(tmp_path):
+    whole = spec_dict()
+    whole["output"].update(width=160.0, height=90.0, crf=23.0)
+    whole["seed"] = 7.0
+    whole["layers"]["effects"][1]["count"] = 40.0
+    spec = parse(tmp_path, whole)
+    assert [type(v) for v in (spec.data["output"]["width"], spec.data["output"]["height"], spec.data["output"]["crf"],
+                              spec.data["seed"], spec.data["layers"]["effects"][1]["count"])] == [int] * 5
+    assert fxspec.canonical_json(spec.data) == fxspec.canonical_json(parse(tmp_path, spec_dict()).data)   # 120 と 120.0 は同じ key
+    for mutate in (lambda d: d["layers"]["effects"][1].__setitem__("count", 40.5),                      # 小数部があれば拒否
+                   lambda d: d.__setitem__("seed", 7.5), lambda d: d["output"].__setitem__("crf", 18.2)):
+        data = spec_dict()
+        mutate(data)
+        with pytest.raises(PipelineError, match="invalid"):
+            parse(tmp_path, data)
+
+
 def test_canonical_json_ignores_key_order():
     assert fxspec.canonical_json({"b": 1, "a": [2, {"d": 1, "c": 2}]}) == fxspec.canonical_json(
         {"a": [2, {"c": 2, "d": 1}], "b": 1})

@@ -117,6 +117,12 @@ def _f(value):
     return float(value)
 
 
+def _i(value):
+    """整数項目。JSON Schema の integer は 120.0 のような小数部 0 の数も通すので、ここで int にそろえる
+    （そのまま使うと rng.random(120.0) などで落ちる。120 と 120.0 は同じ正規形・同じキャッシュ key になる）。"""
+    return int(value)
+
+
 def _vec(value):
     return [float(v) for v in value]
 
@@ -148,10 +154,10 @@ def _normalize(raw):
     layers = raw.get("layers")
     data = {
         "schema_version": SCHEMA_VERSION,
-        "output": {"width": out["width"], "height": out["height"], "fps": _f(out.get("fps", 24)),
-                   "crf": out.get("crf", 18), **_ext(out)},
+        "output": {"width": _i(out["width"]), "height": _i(out["height"]), "fps": _f(out.get("fps", 24)),
+                   "crf": _i(out.get("crf", 18)), **_ext(out)},
         "duration_s": _f(raw["duration_s"]),
-        "seed": raw.get("seed", 0),
+        "seed": _i(raw.get("seed", 0)),
         "audio": None if audio is None else {"path": audio["path"], "offset_s": _f(audio.get("offset_s", 0)), **_ext(audio)},
         "assets": {
             "base": assets["base"],
@@ -184,7 +190,7 @@ def _normalize_layers(layers):
                             "scale": _f(e.get("scale", 0.25)), "drift": _vec(e.get("drift", [0.01, 0])),
                             "parallax": _f(e.get("parallax", 0.6)), **_ext(e)})
         else:
-            effects.append({"id": e["id"], "type": "particles", "z": _f(e.get("z", 0)), "count": e.get("count", 100),
+            effects.append({"id": e["id"], "type": "particles", "z": _f(e.get("z", 0)), "count": _i(e.get("count", 100)),
                             "color": _vec(e.get("color", [255, 255, 255])), "size_px": _vec(e.get("size_px", [1.5, 4.0])),
                             "velocity": _vec(e.get("velocity", [0, -0.05])), "flicker": _f(e.get("flicker", 0)),
                             "parallax": _f(e.get("parallax", 1.0)), **_ext(e)})

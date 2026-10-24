@@ -78,7 +78,8 @@ manifest に `"empty": true` と理由が記録され、グリッドのラベル
   （z が同じなら宣言の後ろ）、なければ背景。載った層と同じカメラ変換で動き、その層の画素の上に描かれる（自分の層には隠れず、その層より後ろの霧や火の粉にも覆われない。
   手前の plane や z が前の effects には覆われる）。plane に載った光点も `light` 版と同じソフトニーを通すので、`light` 版と `both` 版で芯の見え方がそろう。`"background"` は予約語で plane の id に使えない。
 - 時間は秒で、**ショット時刻**（spec の時間軸）。`--start` で区間を切って描いても、同じ時刻は同じ絵になる。色は sRGB 0〜255。`ease` は `linear | in | out | in_out`。
-- マスクとデプスは基準画像と同じ縦横比（誤差 1%）。RGBA のマスクは alpha が一定でなければ alpha、一定なら輝度を使う（切り抜き PNG をそのまま使える）。深度は 2〜98 パーセンタイルで正規化（外れ値で潰れない）。`near` は白が手前か黒が手前か。
+- マスクとデプスは基準画像と同じ縦横比（誤差 1%）。RGBA のマスクは alpha が一定でなければ alpha、一定なら輝度を使う（切り抜き PNG をそのまま使える）。深度は 2〜98 パーセンタイルで正規化（外れ値で潰れない）。`near` は白が手前か黒が手前か。**ほぼ一定の深度画像は情報が無いので使わない**（warnings に記録し、深度視差も `light` の `depth` ゲートも無効になる。警告と描画が一致する）。
+- 整数の項目（`output.width/height/crf`・`seed`・particles の `count`）は `120.0` のように小数部が 0 の数も受け付けて整数にそろえる（`120` と同じ正規形・同じキャッシュ key）。小数部があれば拒否。
 - 参照切れ・id 重複・キーの `t` が昇順でない・奇数の出力寸法は拒否。`depth` を指定したのに `assets.depth` が無い等は無視して warnings に記録する。
 
 ## 描画モデル
@@ -87,7 +88,7 @@ manifest に `"empty": true` と理由が記録され、グリッドのラベル
 
 **カメラ** — keys を補間して zoom・center（元画像の座標）を得る（区間の曲線は到達側キーの `ease`）。plane ごとに視差 p を取り、
 `zoom_p = z0 + (zoom(t) − z0)·p`、`center_p = c0 + (center(t) − c0)·p`（z0・c0 は最初のキー）、さらに `drift_px × t`。最初のキーの状態では全 plane が重なる。
-深度視差（`parallax_px > 0` かつ深度あり）は `parallax_px × (W/1920) × s(t) × (D − 0.5) × parallax_dir` の変位で、s(t) は −0.5→+0.5 を in_out で。
+深度視差（`parallax_px > 0` かつ深度あり）は `parallax_px × (W/1920) × s(t) × (D − 0.5) × parallax_dir` の変位で、s(t) は **0→1 を in_out で**（t=0 で恒等。ショット全体の振れ幅は `parallax_px × (D − 0.5)`）。このため t=0 では、`parallax_px > 0` でも base 版は元画像どおりで、layers 版（光なし）とほぼ一致する（人物の背後の穴埋めの帯を除く）。
 
 **レイヤー** — background は全 plane マスクの和集合（`inpaint_px` で膨張）を cv2.inpaint（TELEA）で埋めた板。plane は基準画像 × マスク。
 z の小さい順に背面から合成し、effects も z で挟む（霧 z=1 は人物 z=2 の後ろ、火の粉 z=3 は前）。
@@ -196,7 +197,7 @@ argv は `[python, renderer, config, "seg", start, end, out]`（`end = start + d
 - 記録: renderer と config の sha256、argv、終了コード、所要時間、作業ディレクトリ（既定はレンダラのあるディレクトリ。`--cwd` で変更）。
 - ログ: 子の標準出力・標準エラーを描画中に逐次 `legacy.log` へ書く（子の Python は `PYTHONUNBUFFERED=1`）。
 - 検査: フレーム数は `round(D×fps)` から**最大 2 少ないまで**許容（実務の `-shortest`）、多いのは不合格。寸法・fps は `--width/--height/--fps` を指定したときだけ照合
-  （`--fps` 未指定なら出力の fps から期待枚数を数える）。全復号でエラーが無いこと。音声は検査しない。
+  （`--fps` 未指定なら出力の fps から期待枚数を数える。**出力の fps も読めず期待枚数が決まらないときは `technical_pass=false`**（理由を `checks.failures` と manifest の `error` に記録。黙って合格にしない。`--fps` を指定して再実行）。全復号でエラーが無いこと。音声は検査しない。
 - `--timeout` 既定は `max(600, 120×duration)` 秒。超えたら子プロセスごと止めて `failed`。
 - **キャッシュしない**: 設定が参照する素材などレンダラの隠れた入力を fx は知らないため、毎回実行する（`index.json` に入らない）。
 - 失敗しても `legacy.mp4` は作らず、過去の run は変えない。run の版名は `legacy`（`fx accept --variant legacy` で判定できる）。

@@ -89,6 +89,32 @@ def test_background_under_the_subject_is_a_fill_not_the_subject(tmp_path):
     assert np.array_equal(background[ctx.hole == 0], plate[ctx.hole == 0])       # 穴の外は元画像のまま
 
 
+DEPTH_CAMERA = {"keys": FULL["camera"]["keys"], "parallax_px": 6, "parallax_dir": [1, 0]}
+
+
+def test_layers_equals_base_at_t0_even_with_depth_parallax(tmp_path):
+    ctx = build(tmp_path, 320, 180, camera=DEPTH_CAMERA, lights=None, layers=layer_spec())
+    assert ctx.assets.depth is not None and ctx.path.parallax_px > 0
+    assert ctx.path.depth_amplitude(0.0) == 0.0
+    base, layered = render.frame(ctx, 0.0, "base"), render.frame(ctx, 0.0, "layers")
+    diff = changed(base, layered)
+    assert not diff[(ctx.hole == 0) | (ctx.planes[0].alpha >= 1.0)].any()   # 穴の外と人物の芯は base と同じ（深度視差を含めて恒等）
+    flat = build(tmp_path, 320, 180, camera={"keys": FULL["camera"]["keys"]}, lights=None, layers=layer_spec())
+    assert np.array_equal(base, render.frame(flat, 0.0, "base"))             # 深度視差を切った base と同じ = 元画像どおり
+
+
+def test_depth_parallax_grows_from_zero_to_the_full_swing(tmp_path):
+    ctx = build(tmp_path, 320, 180, camera=DEPTH_CAMERA, lights=None, layers=layer_spec())
+    path = ctx.path
+    amplitudes = [path.depth_amplitude(t) for t in np.linspace(0.0, 2.0, 9)]
+    assert amplitudes[0] == 0.0 and amplitudes == sorted(amplitudes)
+    assert amplitudes[-1] == pytest.approx(6 * 320 / 1920)                  # 全体の振れ幅は parallax_px（W/1920 換算）のまま
+    still = {"keys": [{"t": 0.0}], "parallax_px": 6, "parallax_dir": [1, 0]}
+    moving = build(tmp_path, 320, 180, camera=still, lights=None, layers=None)
+    a, b = render.frame(moving, 0.0, "base"), render.frame(moving, 2.0, "base")
+    assert changed(a, b).any()                                              # 最後は近い面が動いている（視差は働いている）
+
+
 def test_planes_share_the_first_key_and_split_after_it(tmp_path):
     ctx = build(tmp_path, camera={"keys": FULL["camera"]["keys"]}, lights=None, layers=layer_spec())
     path = ctx.path
@@ -162,6 +188,12 @@ def test_fog_and_particles_follow_the_seed(tmp_path):
     particles_a = [i for i in a.stack if isinstance(i, fxlayers.Particles)][0]
     particles_o = [i for i in other.stack if isinstance(i, fxlayers.Particles)][0]
     assert not np.array_equal(particles_a.x0, particles_o.x0)
+
+
+def test_whole_float_integers_render_like_ints(tmp_path):
+    ints = build(tmp_path, lights=None, layers=layer_spec(effects=[{**EMBERS, "count": 60}]))
+    floats = build(tmp_path, lights=None, layers=layer_spec(effects=[{**EMBERS, "count": 60.0}]))   # 検証は通り、描画も落ちない
+    assert np.array_equal(render.frame(ints, T, "both"), render.frame(floats, T, "both"))
 
 
 def test_fog_texture_is_normalized_and_periodic(tmp_path):

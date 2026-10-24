@@ -61,11 +61,14 @@ class CameraPath:
         return affine(z, cx, cy, dx, dy, self.size)
 
     def depth_amplitude(self, t):
-        """深度視差の振幅（出力画素）= parallax_px × (W/1920) × s(t)。s は −0.5→+0.5 を in_out で。"""
+        """深度視差の振幅（出力画素）= parallax_px × (W/1920) × s(t)。s は 0→1 を in_out で（t=0 で恒等）。
+
+        画素の移動量は amplitude × (D − 0.5) なので、近い面ほど大きく動く。ショット全体の振れ幅は
+        parallax_px × (D − 0.5)。t=0 で 0 にしてあるので、最初のフレームでは base 版も layers 版も元画像どおり。
+        """
         if self.parallax_px <= 0 or self.duration <= 0:
             return 0.0
-        s = -0.5 + float(timeline.ease("in_out", t / self.duration))
-        return self.parallax_px * self.kpx * s
+        return self.parallax_px * self.kpx * float(timeline.ease("in_out", t / self.duration))
 
     def out_of_bounds(self, samples=41):
         """カメラの視野が画像の外へ出る時刻があれば、その説明文を返す（なければ None）。"""
