@@ -6,9 +6,15 @@
 x_out = (u − cx)·zoom·W + W/2 + drift の関係で写る（画素中心規約。cv2.warpAffine の 2×3 行列で表す）。
 
 plane の視差（parallax = p）: キー 0 番の状態 (z0, c0) を基準に
-    zoom_p = z0 + (zoom(t) − z0)·p,   center_p = c0 + (center(t) − c0)·p,   さらに drift_px × t
-とする。p=1 は camera そのもの、p=0 は動かない。**どの plane も最初のキーの状態では同じ位置に重なる**
-（最初のキーが zoom 1・center (0.5, 0.5) なら元画像どおり。設計メモの式 1 + (zoom−1)·p はこの特別な場合）。
+    zoom_p = z0·(zoom(t)/z0)^p,   center_p = c0 + (center(t) − c0)·p,   さらに drift_px × t
+とする。p=1 は camera そのもの、p=0 は z0 のまま。**どの plane も最初のキーの状態では同じ位置に重なる**
+（最初のキーが zoom 1・center (0.5, 0.5) なら元画像どおり）。
+
+zoom は対数空間で p 倍する。zoom は倍率なので「z0 から見た何倍か」を p 乗するのが自然で、zoom(t) と z0 が
+正なら zoom_p は p によらず常に正になる。線形の z0 + (zoom − z0)·p は、ズームアウト（zoom が下がる）で
+p > 1 の plane のスケールが 0 や負になり、plane が潰れて反転し、背景の深度視差（スケールで割る）も壊れる。
+ズームイン（zoom が上がる）の通常の範囲では線形との差は小さい（デモの 1.0→1.08 で p=0.4〜1.3 の最大差は 1920 幅で約 1.2px）。
+center は画面上の位置（符号つきの移動）なので線形のままでよい。
 """
 import functools
 
@@ -42,7 +48,7 @@ class CameraPath:
     def plane_view(self, t, parallax, drift_px=(0.0, 0.0)):
         """parallax p の層の (zoom_p, cx_p, cy_p, drift_x, drift_y)。drift は出力画素。"""
         zoom, cx, cy = self.at(t)
-        z = self.z0 + (zoom - self.z0) * parallax
+        z = self.z0 * (zoom / self.z0) ** parallax     # 対数空間: z0·(zoom/z0)^p（常に正。p=1 でカメラ、p=0 で z0）
         x = self.c0[0] + (cx - self.c0[0]) * parallax
         y = self.c0[1] + (cy - self.c0[1]) * parallax
         return z, x, y, drift_px[0] * t * self.kpx, drift_px[1] * t * self.kpx
