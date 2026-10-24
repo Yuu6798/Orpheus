@@ -6,6 +6,7 @@ Pythonが入力検証と工程管理を行い、Remotionが静止画のパン・
 ## 動かす
 
 Python 3.11〜3.13、Node.js 22以上、uv、pnpmが必要です。リポジトリのルートで実行してください。
+uvは0.13.5以上が必要です（古い場合は `uv self update` か `pip install -U "uv>=0.13.5"`）。
 
 ```sh
 uv sync --locked --extra analysis

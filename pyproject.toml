@@ -7,13 +7,14 @@ name = "orpheus-mv-pipeline"
 version = "0.1.0"
 description = "Reproducible local music video pipeline"
 requires-python = ">=3.11,<3.14"
-dependencies = ["jsonschema==4.26.0", "Pillow==12.1.1", "numpy==2.3.5", "imageio-ffmpeg==0.6.0"]
+dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio-ffmpeg==0.6.0"]
 
 [project.optional-dependencies]
 analysis = ["librosa==0.11.0", "numba==0.63.1", "llvmlite==0.46.0"]
 
 [dependency-groups]
-dev = ["pytest==9.0.2"]
+dev = ["pytest==9.0.3"]
+audit = ["pip-audit==2.10.1"]
 
 [project.scripts]
 mv = "mv_pipeline.cli:main"
@@ -23,3 +24,8 @@ packages = ["src/mv_pipeline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# uv < 0.13.4 は emSign ECC Root CA - G3 を含む CA bundle を同梱する (GHSA-hq85-5cpj-mr62)。
+# 古い uv で lock や sync を回さないよう、ローカル実行でも強制する。
+required-version = ">=0.13.5"
