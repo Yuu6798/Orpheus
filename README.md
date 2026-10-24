@@ -6,6 +6,7 @@ Pythonが入力検証と工程管理を行い、Remotionが静止画のパン・
 ## 動かす
 
 Python 3.11〜3.13、Node.js 22以上、uv、pnpmが必要です。リポジトリのルートで実行してください。
+uvは0.13.5以上が必要です（古い場合は `uv self update` か `pip install -U "uv>=0.13.5"`）。
 
 ```sh
 uv sync --locked --extra analysis
@@ -31,6 +32,12 @@ uv run mv verify projects/demo
 - プロジェクトロック、工程状態、ハッシュキャッシュ、描画からの再開、実行ごとの入力保存
 - MP4全復号、解像度・fps・フレーム数・音声・元音源との比較
 
+## 演出エンジン fx（実験的）
+
+1 枚絵 + 深度 + マスクから、カメラ・空間レイヤー・局所光で動画を作り、「現行版 / レイヤー / 局所光 / 両方」を同じ区間で比べます（決定論・API 不要）。
+`uv sync --locked --extra analysis --extra fx` の後、`uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json` で合成素材の4版と2×2グリッドを出します。
+設定は `contracts/` の外にあり、採点も自動合否も行いません。詳細と限界は [docs/fx.md](docs/fx.md)。
+
 ## 現在の範囲
 
 実曲のMV制作には、音源・正しい歌詞・対象区間・画像が必要です。合成素材の描画確認は実曲の同期精度を保証しません。
@@ -44,6 +51,8 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 - [採用ツールと利用条件](docs/dependencies.md)
 - [元の設計](docs/design.md)（設計時の仮名 `ugh-mv-pipeline` は本リポジトリでは `Orpheus`）
 - [同期アダプター](docs/adapters.md)
+- [演出エンジン fx（実験的）](docs/fx.md)
+- [ロードマップ](docs/roadmap.md)（実装前の計画を含む。実装済みの機能とは区別）
 
 `contracts/` が唯一のJSON契約です。`examples/` は元の架空データであり、対応する音源・画像は付属しません。
 `projects/` の音源、画像、動画、ログや鍵はGitへ追加しません。
@@ -51,6 +60,7 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 ## 開発検証
 
 ```sh
+uv sync --locked --extra analysis --extra fx   # fx のテストは --extra fx が前提（無いと黙って skip される）
 uv run pytest
 pnpm typecheck
 pnpm test

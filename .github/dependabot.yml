@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # uv.lock を更新する。公開から 7 日未満の版は提案しない。
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  # Remotion は保守凍結。version update は止め (open-pull-requests-limit: 0)、security update のみ受ける。
+  # Remotion 系は package.json で全て同一の exact 版に揃えているため、security update でも 1 PR にまとめる。
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    groups:
+      remotion:
+        applies-to: security-updates
+        patterns:
+          - "remotion"
+          - "@remotion/*"
+
+  # action は commit SHA 固定。SHA とバージョンコメントを更新する。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
