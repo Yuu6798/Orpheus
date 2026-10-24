@@ -8,11 +8,11 @@ Claude Code 固有の運用だけをここに置く（詳細は docs/ へ）。
 ## Commands（リポジトリルートで実行。uv は 0.13.5 以上）
 
 ```sh
-uv sync --locked --extra analysis && pnpm install --frozen-lockfile
-uv run pytest                  # 約 45 秒（fx の E2E を含む。Chrome/librosa 不要）
+uv sync --locked --extra analysis --extra fx && pnpm install --frozen-lockfile   # fx の E2E は --extra fx 必須
+uv run pytest                  # 約 50 秒。fx のテストは --extra fx で同期した環境でだけ走る（無いと cv2 を使うテストは黙って skip される）
 pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv verify projects/demo
-uv sync --locked --extra analysis --extra fx && uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md）
+uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md。--extra fx が前提）
 ```
 
 ## Git

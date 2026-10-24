@@ -15,6 +15,9 @@ uv sync --locked --extra fx        # opencv-python-headless を追加（fx 系�
 uv sync --locked --extra analysis --extra fx    # analysis も使うなら両方（uv sync は指定外の extra を外す）
 ```
 
+**開発者へ**: fx のテスト（render / light / layers / runs / compare / demo ほか）は opencv が前提で、`--extra fx` で同期していない環境では
+`pytest.importorskip("cv2")` で**黙って skip され、緑のまま終わる**。fx に触れたら必ず `uv sync --locked --extra analysis --extra fx` の環境で `uv run pytest` を回す（CI は `--extra fx`）。
+
 fx が要るもの: opencv（上記 extra）、ffmpeg（PATH のもの、無ければ imageio-ffmpeg 同梱版。**ffprobe は不要**）。
 extra が無いと fx 系コマンドは「`uv sync --locked --extra fx` を実行してください」で止まる（`fx accept` と `fx legacy` は opencv 不要）。
 
@@ -143,7 +146,7 @@ fx はセグメンテーションモデルを持たない。マスクは次の�
 ```sh
 uv run mv fx stills  /path/to/shot/spec.json --times 0 5 9.5          # まず静止画で当たりを確認
 uv run mv fx render  /path/to/shot/spec.json --start 0 --duration 10  # 4 版 + グリッド
-uv run mv fx legacy  --renderer /path/to/render_v2.py --config /path/to/config.json --start 0 --duration 10   # 現行版
+uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.json --start 0 --duration 10   # 現行版
 ```
 
 出力先は既定で spec のあるディレクトリの `fx_runs/`。`fx legacy` も同じ `--out` を指定すると、現行版と fx の run が同じ場所に並ぶ。
@@ -192,7 +195,7 @@ stdout は短い JSON、進捗は stderr に 1 版 1 行、詳細は run の `re
 
 ## legacy 接続
 
-実制作レンダラ（例: 手元の `render_v2.py CONFIG seg START END out.mp4`）を**リポジトリに入れずに**呼ぶ。
+実制作レンダラ（例: 手元の `renderer.py CONFIG seg START END out.mp4` の形のスクリプト）を**リポジトリに入れずに**呼ぶ。
 argv は `[python, renderer, config, "seg", start, end, out]`（`end = start + duration`、`out` は run 内の一時名）。
 
 - 記録: renderer と config の sha256、argv、終了コード、所要時間、作業ディレクトリ（既定はレンダラのあるディレクトリ。`--cwd` で変更）。

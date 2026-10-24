@@ -52,6 +52,7 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 - [元の設計](docs/design.md)（設計時の仮名 `ugh-mv-pipeline` は本リポジトリでは `Orpheus`）
 - [同期アダプター](docs/adapters.md)
 - [演出エンジン fx（実験的）](docs/fx.md)
+- [ロードマップ](docs/roadmap.md)（実装前の計画を含む。実装済みの機能とは区別）
 
 `contracts/` が唯一のJSON契約です。`examples/` は元の架空データであり、対応する音源・画像は付属しません。
 `projects/` の音源、画像、動画、ログや鍵はGitへ追加しません。
@@ -59,6 +60,7 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 ## 開発検証
 
 ```sh
+uv sync --locked --extra analysis --extra fx   # fx のテストは --extra fx が前提（無いと黙って skip される）
 uv run pytest
 pnpm typecheck
 pnpm test
