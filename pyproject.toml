@@ -11,7 +11,7 @@ dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio
 
 [project.optional-dependencies]
 analysis = ["librosa==0.11.0", "numba==0.63.1", "llvmlite==0.46.0"]
-fx = ["opencv-python-headless==4.14.0.94"]
+fx = ["opencv-python-headless==5.0.0.93"]
 
 [dependency-groups]
 dev = ["pytest==9.0.3"]
