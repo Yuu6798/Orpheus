@@ -1,0 +1,183 @@
+# 方針: 最小権限・action は commit SHA 固定（版コメント付き）・--locked / --frozen-lockfile・
+# concurrency・timeout。成果物（MP4 等）はアップロードしない。
+# CI の smoke は構造検査（technical_pass）であり、作品採用や実曲の同期精度の保証ではない。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Dependabot は action の SHA/タグのみ更新するため、uv 本体の版は本変数で手動更新する。
+  # pyproject.toml の [tool.uv] required-version と揃える。
+  # uv < 0.13.4 は emSign ECC Root CA - G3 を含む CA bundle を同梱する (GHSA-hq85-5cpj-mr62)。
+  UV_VERSION: "0.13.5"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    # README が宣言する Python 3.11〜3.13 の両端を検証する (pytest は Chrome/librosa 不要)。
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.13']
+    env:
+      # setup-python が PATH に置いた matrix 版を uv に使わせ、別版の黙示取得を禁止する。
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      # --locked: uv.lock が pyproject.toml と食い違えば更新せず失敗する。dev group (pytest) は既定で入る。
+      - name: Install (locked)
+        run: uv sync --locked
+
+      # lint は ruff 設定の導入 (別 PR) 後に追加する。
+      - name: Test
+        run: uv run --no-sync pytest -q --tb=short
+
+  node:
+    # README が宣言する Node.js 22 以上の下端のみ検証する (Remotion は保守凍結)。
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      # package.json の packageManager (pnpm) を corepack に解決させる。third-party action を増やさない。
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # 残る指摘は zod (Remotion が版を固定する推移依存。docs/dependencies.md)。
+      # Remotion 更新まで blocking にはせず、警告に留める。
+      - name: pnpm audit (report-only)
+        run: pnpm audit --prod --audit-level=high || echo "::warning::pnpm audit reported advisories (report-only)"
+
+  render-smoke:
+    # 合成素材 (mv demo) で Python -> Remotion -> MP4 -> verify の一気通貫を実描画する。
+    # 画素/フォント一致は検証しない (technical_pass = 構造検査のみ)。
+    # 初回 runner で Chrome Headless Shell が起動するか未確認のため、結果は失敗しても CI 全体を落とさない。
+    needs: [python, node]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    env:
+      UV_PYTHON: '3.12'
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Enable corepack (pnpm from packageManager)
+        run: corepack enable
+
+      - name: Install Python (locked)
+        run: uv sync --locked
+
+      - name: Install Node (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      # Chrome Headless Shell は Remotion が node_modules/.remotion に取得する。
+      # 版は @remotion/renderer に内蔵なので pnpm-lock.yaml をキーにする。
+      # pnpm install の後に復元する (install が node_modules を再構成しても壊されないように)。
+      - name: Cache Chrome Headless Shell
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules/.remotion
+          key: remotion-chrome-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # 命中時は no-op、未命中時のみ取得する。render.mjs は ORPHEUS_BROWSER 未設定なら
+      # 自動取得するので、ここで取得を独立ステップに切り出す。
+      - name: Ensure Chrome Headless Shell
+        run: pnpm exec remotion browser ensure
+
+      - name: Demo -> render -> verify
+        run: |
+          uv run --no-sync mv demo "$RUNNER_TEMP/demo"
+          uv run --no-sync mv render "$RUNNER_TEMP/demo"
+          uv run --no-sync mv verify "$RUNNER_TEMP/demo"
+
+  dependency-audit:
+    # uv.lock の固定版を export した requirements (全 extras + 全 group) を pip-audit で照合する。
+    # lock には Python 版による fork があり得るため両端の版で回す。
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.13']
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      # pip-audit は [dependency-groups] audit (uv.lock 管理) で固定する。プロジェクト本体は入れない。
+      - name: Install pip-audit (locked)
+        run: uv sync --locked --only-group audit --no-install-project
+
+      - name: Export locked requirements (all extras, all groups)
+        run: uv export --frozen --all-extras --all-groups --no-emit-project --no-hashes -o "$RUNNER_TEMP/audit-requirements.txt"
+
+      - name: pip-audit
+        run: uv run --no-sync pip-audit --strict --no-deps --disable-pip -r "$RUNNER_TEMP/audit-requirements.txt"

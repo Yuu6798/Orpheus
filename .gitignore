@@ -12,3 +12,5 @@ dist/
 .remotion/
 build/
 *.egg-info/
+.ruff_cache/
+fx_runs/

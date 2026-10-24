@@ -1,0 +1,21 @@
+# CLAUDE.md — Orpheus
+
+@AGENTS.md
+
+AGENTS.md（契約不変・実測/推定の区別・採点器で止めない・依頼なき送信/公開禁止・検証/依存ルール）が正。
+Claude Code 固有の運用だけをここに置く（詳細は docs/ へ）。
+
+## Commands（リポジトリルートで実行。uv は 0.13.5 以上）
+
+```sh
+uv sync --locked --extra analysis && pnpm install --frozen-lockfile
+uv run pytest                  # 約 5 秒（Chrome/librosa 不要）
+pnpm typecheck && pnpm test    # tsc --noEmit / node --test
+uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv verify projects/demo
+```
+
+## Git
+
+- main へ直接 push しない。`claude/<topic>` ブランチで変更し PR にする。コミットは Conventional Commits（日本語可）。
+- このリポジトリは public。素材・鍵・モデル・動画・作品名・Drive ID・費用は Git に入れない（.gitignore 済みでも書かない）。
+- `contracts/` は変更しない。依存を変えたら lock も同じ PR で更新する。
