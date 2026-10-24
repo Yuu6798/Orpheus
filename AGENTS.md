@@ -10,7 +10,7 @@
 
 ## 検証・依存
 
-- 変更は PR 前に `uv run pytest` / `pnpm typecheck` / `pnpm test` を通す。描画に触れたら `mv demo → render → verify` も実行する。CI も同じ 3 点 + 合成素材の実描画 + `pip-audit` を回す。
+- 変更は PR 前に `uv run pytest` / `pnpm typecheck` / `pnpm test` を通す。描画に触れたら `mv demo → render → verify` も、fx に触れたら `mv fx demo → fx render`（`technical_pass` を確認）も実行する。CI も同じ 3 点 + 合成素材の実描画 + fx の smoke + `pip-audit` を回す。
 - 依存は `uv.lock` / `pnpm-lock.yaml` で固定し、直接依存は exact pin。依存を変えたら lock も同じ PR で更新する。
 - uv は 0.13.5 以上（GHSA-hq85-5cpj-mr62。`pyproject.toml` の `required-version` と CI の `UV_VERSION` を揃える）。
 - GitHub Actions は commit SHA 固定＋版コメント。更新は Dependabot（cooldown 7 日）に任せる。

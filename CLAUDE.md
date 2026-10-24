@@ -9,9 +9,10 @@ Claude Code 固有の運用だけをここに置く（詳細は docs/ へ）。
 
 ```sh
 uv sync --locked --extra analysis && pnpm install --frozen-lockfile
-uv run pytest                  # 約 5 秒（Chrome/librosa 不要）
+uv run pytest                  # 約 45 秒（fx の E2E を含む。Chrome/librosa 不要）
 pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv verify projects/demo
+uv sync --locked --extra analysis --extra fx && uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md）
 ```
 
 ## Git

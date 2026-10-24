@@ -33,6 +33,12 @@
 - **fast-uri 3.1.8 → 3.1.9**（`pnpm update fast-uri --depth Infinity --lockfile-only`）：Remotion bundlerの推移依存で、`pnpm audit --prod` の5件（high 1・moderate 2・low 2）のうち、fast-uriの4件（moderate 2・low 2。修正版は3.1.9以上）が解消します。`package.json` とRemotionの版は変えていません。
 - **zod は据え置き**：Remotionが4.5.4に固定しており、`pnpm audit --prod` に残る指摘は `zod`（<4.6.6）の1件のみです。Remotionが検証していない版の組合せになるため、zodだけを上書きせず、Remotion更新の機会に解消します。CIでは `pnpm audit` をreport-onlyにしています。
 
+## 2026-10-24 更新（fx）
+
+- **opencv-python-headless 4.14.0.94**（`fx` extra・Apache-2.0）：実験的な演出エンジン `mv fx …` だけが使い、既存コマンドは入れなくても動きます。公開2026-07-28、cp37-abi3 の wheel、NumPy 2.3.5・Python 3.11〜3.13 で pytest 通過。導入は `uv sync --locked --extra fx`。
+- **fx は ffmpeg だけを使い、ffprobe に依存しません**：構造検査（technical_pass）は `ffmpeg -i` と `ffmpeg -progress` で行います。ffmpeg は PATH のもの、なければ imageio-ffmpeg 同梱版を使います（PATH に ffprobe が無い環境でも動きます）。`ORPHEUS_FFMPEG` で差し替えられます。
+- CI の python job は `--extra fx` で同期し、pytest の後に合成素材（320x180・2秒）で `mv fx demo → mv fx render` の technical_pass を確認します。
+
 GPU情報はOS報告であり、利用可能VRAMやモデル性能を保証しません。描画はCPU経路です。
 既存HTDemucs/Qwenの実行経路は未設定です。大型モデルを自動導入せず、別環境のCLIを接続できます。
 

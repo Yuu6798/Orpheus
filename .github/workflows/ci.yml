@@ -58,6 +58,16 @@ jobs:
       - name: Test
         run: uv run --no-sync pytest -q --tb=short
 
+      # fx (実験的な演出エンジン) の一気通貫: 合成素材 -> 4 版 + グリッド -> technical_pass。
+      # technical_pass は構造検査 (復号・寸法・fps・フレーム数・色タグ・音声の尺) であり、見た目の合否ではない。
+      # 検査は ffmpeg だけで行うので ffprobe は要らない (ffmpeg は PATH 上のもの、無ければ imageio-ffmpeg 同梱版)。
+      - name: fx smoke (demo -> render -> technical_pass)
+        run: |
+          uv run --no-sync mv fx demo "$RUNNER_TEMP/fxdemo" --width 320 --height 180 --duration 2
+          uv run --no-sync mv fx render "$RUNNER_TEMP/fxdemo/spec.json" --out "$RUNNER_TEMP/fxruns" > "$RUNNER_TEMP/fx-render.json"
+          cat "$RUNNER_TEMP/fx-render.json"
+          uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); assert r['status'] == 'succeeded' and r['technical_pass'] is True and r['grid'], r" "$RUNNER_TEMP/fx-render.json"
+
   node:
     # README が宣言する Node.js 22 以上の下端のみ検証する (Remotion は保守凍結)。
     runs-on: ubuntu-latest
