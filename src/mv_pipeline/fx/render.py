@@ -107,7 +107,7 @@ def prepare(spec, scale=1.0, size=None):
     size = tuple(size) if size else scaled_size(spec, scale)
     data = spec.data
     assets = load_assets(spec, size)
-    path = camera.CameraPath(data["camera"], data["duration_s"], size)
+    path = camera.CameraPath(data["camera"], data["duration_s"], size, assets.box)
     warnings = list(spec.warnings) + list(assets.warnings)
     bounds = path.out_of_bounds()
     if bounds:
@@ -173,9 +173,7 @@ def _layered(ctx, t, active):
                                  path.depth_amplitude(t), path.direction)
     for item in ctx.stack:
         if isinstance(item, layers.Plane):
-            glow = None
-            if item.id in hosted:
-                glow, _ = light.compose(active, plate, size, set(), hosted[item.id])
+            glow = light.hosted_glow(active, plate, size, hosted[item.id]) if item.id in hosted else None
             color, alpha = layers.plane_layer(item, path, t, size, plate_lit, glow)
             out = layers.over(out, color, alpha)
         elif isinstance(item, layers.Fog):

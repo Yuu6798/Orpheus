@@ -32,7 +32,7 @@ def test_full_spec_loads_and_fills_defaults(tmp_path):
     assert full["assets"]["masks"]["subject"] == {"path": "mask_subject.png", "feather_px": 0.0}
     assert full["assets"]["masks"]["ground"]["feather_px"] == 2.0
     light = full["lights"][0]
-    assert light["emitter"] == {"size": 0.03, "glow": 0.6}
+    assert light["emitter"] == {"size": 0.03, "glow": 0.6, "attach": None}
     assert light["receivers"][1] == {"mask": "ground", "gain": 0.6, "rim": 0.0, "reflection": 0.5}
     assert full["layers"]["planes"][0]["drift_px"] == [0.0, 0.0]
 
@@ -178,6 +178,37 @@ def test_rejects_bad_values(tmp_path):
         mutate(data)
         with pytest.raises(PipelineError, match="invalid"):
             parse(tmp_path, data)
+
+
+def test_emitter_attach_accepts_a_plane_id_or_background(tmp_path):
+    for attach in ("subject", "background"):
+        data = spec_dict()
+        data["lights"][0]["emitter"]["attach"] = attach
+        assert parse(tmp_path, data).data["lights"][0]["emitter"]["attach"] == attach
+    assert parse(tmp_path, spec_dict()).data["lights"][0]["emitter"]["attach"] is None      # 未指定 = 自動で決める
+    data = spec_dict()
+    data["lights"][0]["emitter"]["attach"] = "subject"
+    key = fxspec.canonical_json(parse(tmp_path, data).data)
+    assert key != fxspec.canonical_json(parse(tmp_path, spec_dict()).data)                  # attach はキャッシュ key に入る
+
+
+def test_emitter_attach_must_name_an_existing_plane(tmp_path):
+    data = spec_dict()
+    data["lights"][0]["emitter"]["attach"] = "ghost"
+    with pytest.raises(PipelineError, match="attach.*ghost|ghost.*attach"):
+        parse(tmp_path, data)
+    data = spec_dict(layers=None)                                                          # layers が無ければ plane も無い
+    data["lights"][0]["emitter"]["attach"] = "subject"
+    with pytest.raises(PipelineError, match="attach"):
+        parse(tmp_path, data)
+    data = spec_dict()
+    data["lights"][0]["emitter"]["attach"] = "no good!"
+    with pytest.raises(PipelineError, match="invalid"):
+        parse(tmp_path, data)
+    data = spec_dict()
+    data["layers"]["planes"][0]["id"] = "background"                                       # 背景を指す予約語
+    with pytest.raises(PipelineError, match="background"):
+        parse(tmp_path, data)
 
 
 def test_effect_type_errors_are_specific(tmp_path):

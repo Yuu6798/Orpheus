@@ -4,6 +4,10 @@
 level(t) = intensity(t) × flicker(t) の積なので、形は prepare() で 1 回だけ作り、
 フレームごとには level と色を掛けて足すだけにしている。
 
+座標規約: light.position・radius・emitter.size は**元画像**の正規化座標（半径・size は元画像の幅が基準）。
+出力の縦横比が違って cover で切られても、光は元画像の同じ画素に付く（prepare が assets.Assets.box で
+出力画素へ写す。9:16 の出力にしても、マスク・被写体に対する光の位置と半径は変わらない）。
+
     r      = 光源からの距離（元画像の幅で正規化）
     falloff(r) = 1/(1+(r/(0.25R))²) × clamp(1−(r/R)⁴, 0, 1)²      （r ≥ R で厳密に 0）
     diffuse    = 基準画像 × color × level × falloff × gain × EXPOSURE × M_r
@@ -24,7 +28,8 @@ import cv2
 import numpy as np
 
 from . import timeline
-from .color import color_to_linear
+from .assets import to_screen, width_scale
+from .color import color_to_linear, soft_add
 
 EXPOSURE = 4.0
 REFLECT_RADIUS = 0.5
@@ -51,7 +56,7 @@ class Light:
     roi_glow: tuple
     glow_w: np.ndarray | None             # float32 (h, w) roi_glow 内
     receivers: list = field(default_factory=list)
-    host: str | None = None               # emitter が載る plane の id。None = 背景
+    host: str | None = None               # emitter が載る層。plane の id、None = 背景
 
 
 def _roi(cx, cy, half_x, half_y, size):
@@ -96,36 +101,57 @@ def _rim_geometry(mask, kpx):
     return ys, xs, band[ys, xs], -gx / norm, -gy / norm
 
 
-def _host_plane(px, py, planes, size):
-    """光源の位置を覆う最前面の plane の id（なければ None = 背景）。"""
-    x, y = int(px), int(py)
-    if not (0 <= x < size[0] and 0 <= y < size[1]):
+def _auto_host(px, py, reach, planes, size):
+    """emitter の影響半径（reach 画素）内に不透明部分（alpha > 0.5）を持つ plane のうち、z が最も前のものの id。
+
+    なければ None（背景）。z が同じなら宣言の後ろの plane（描画で手前に来る方）。
+    """
+    if reach <= 0 or not planes:
         return None
-    covering = [p for p in planes if p.alpha[y, x] > 0.5]
-    return max(covering, key=lambda p: p.z).id if covering else None
+    roi = _roi(px, py, reach, reach, size)
+    y0, y1, x0, x1 = roi
+    if y1 <= y0 or x1 <= x0:
+        return None
+    ys, xs = _coords(roi)
+    inside = ((xs - np.float32(px)) ** 2 + (ys - np.float32(py)) ** 2) <= np.float32(reach * reach)
+    touching = [(p.z, index, p.id) for index, p in enumerate(planes) if ((p.alpha[y0:y1, x0:x1] > 0.5) & inside).any()]
+    return max(touching)[2] if touching else None
+
+
+def _host(attach, px, py, reach, planes, size):
+    """emitter が載る層: attach が plane の id ならその plane、"background" なら背景、未指定なら _auto_host。"""
+    if attach == "background":
+        return None
+    if attach is not None:
+        return attach
+    return _auto_host(px, py, reach, planes, size)
 
 
 def prepare(data, assets, size, planes):
     """spec の lights から静的な光の形を作る。planes は layers.Plane の列（光源の載る層の判定用）。"""
     width, height = size
     kpx = width / 1920.0
+    box = assets.box
+    scale = width * width_scale(box)      # 元画像の幅 1.0 = 出力の何画素か（長さの変換）
     rims = {}
     lights = []
     for spec in data["lights"]:
-        px, py = spec["position"][0] * width, spec["position"][1] * height
-        radius = spec["radius"] * width
+        u, v = to_screen(box, *spec["position"])
+        px, py = u * width, v * height
+        radius = spec["radius"] * scale
         use_depth = spec["depth"] is not None and assets.depth is not None
         roi_main = _roi(px, py, radius, radius, size)
         roi_spec = _roi(px, py, REFLECT_RADIUS * radius, REFLECT_RADIUS * radius / REFLECT_SQUASH, size)
         emitter = spec["emitter"]
-        reach = 0.0 if emitter is None else EMITTER_REACH * emitter["size"] * width
+        emitter_px = 0.0 if emitter is None else emitter["size"] * scale
+        reach = EMITTER_REACH * emitter_px
         roi_glow = _roi(px, py, reach, reach, size)
         light = Light(spec["id"], spec, color_to_linear(spec["color"]),
                       timeline.flicker_phases(data["seed"], spec["id"]), roi_main, roi_spec, roi_glow, None,
-                      host=_host_plane(px, py, planes, size))
+                      host=_host(None if emitter is None else emitter["attach"], px, py, reach, planes, size))
         if emitter is not None and reach > 0:
             ys, xs = _coords(roi_glow)
-            q = ((xs - np.float32(px)) ** 2 + (ys - np.float32(py)) ** 2) / np.float32((emitter["size"] * width) ** 2)
+            q = ((xs - np.float32(px)) ** 2 + (ys - np.float32(py)) ** 2) / np.float32(emitter_px ** 2)
             window = np.clip(np.float32(1.0) - q / np.float32(EMITTER_REACH ** 2), np.float32(0.0), np.float32(1.0))
             core = np.exp(-q) + np.float32(emitter["glow"]) * (np.float32(1.0) + q) ** np.float32(-1.5)
             light.glow_w = (core * window * window).astype(np.float32)
@@ -228,3 +254,18 @@ def compose(active, albedo, size, mask_ids=None, glow_for=None):
             add[y0:y1, x0:x1] += light.glow_w[..., None] * lc
             roi = _union(roi, light.roi_glow)
     return add, roi
+
+
+def hosted_glow(active, plate, size, light_ids):
+    """plane に載った光点の発光 (H, W, 3)。plane の色に足して一緒に動かす加算分（None = 発光なし）。
+
+    flat 経路（light 版）と同じソフトニーを通す: 基準画像 plate に対して soft_add した差分
+    （knee(plate + glow) − knee(plate)）を返すので、plane の不透明部分では light 版と同じ芯の見え方になる。
+    """
+    add, roi = compose(active, plate, size, set(), light_ids)
+    if add is None:
+        return None
+    y0, y1, x0, x1 = roi
+    out = np.zeros_like(add)
+    out[y0:y1, x0:x1] = soft_add(plate, add, roi)[y0:y1, x0:x1] - plate[y0:y1, x0:x1]
+    return out

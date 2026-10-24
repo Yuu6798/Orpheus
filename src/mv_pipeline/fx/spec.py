@@ -5,9 +5,11 @@ load_spec(path) は検証済みで既定値を埋めた Spec を返す。以降�
 素材パスは spec ファイルのあるディレクトリ基準で、io.safe_path により逸脱を拒否する
 （存在確認は assets 読み込み時）。
 
-座標（light.position・camera.center など）は基準画像の正規化座標 0..1。出力と縦横比が違うときは
-cover で中央に合わせて切った後の画面（zoom 1 で見える範囲）を 0..1 とする。時間は**ショット時刻**
-（spec の時間軸。区間を切って描いても同じ t は同じ絵になる）。
+座標（light.position・camera.center）は**元画像（基準画像）の正規化座標** 0..1、長さ（light.radius・
+emitter.size）は元画像の幅が基準。出力と縦横比が違って cover で中央に合わせて切られても、被写体・マスクに
+対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈し、出力画素へ写す。
+写し方は assets.to_screen / width_scale）。時間は**ショット時刻**（spec の時間軸。区間を切って描いても
+同じ t は同じ絵になる）。
 """
 import json
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from ..io import PipelineError, read_json, safe_path, sha256
 from . import SCHEMA_VERSION
 
 _SCHEMA_PATH = Path(__file__).with_name("fx_shot.schema.json")
+BACKGROUND = "background"   # emitter.attach で背景の層を指す予約語（plane の id には使えない）
 
 
 def schema():
@@ -202,7 +205,8 @@ def _normalize_light(light):
         "intensity": intensity,
         "flicker": {"amount": _f(flicker.get("amount", 0)), "hz": _f(flicker.get("hz", 5.0)), **_ext(flicker)},
         "emitter": None if emitter is None else {"size": _f(emitter.get("size", 0.03)),
-                                                 "glow": _f(emitter.get("glow", 0.5)), **_ext(emitter)},
+                                                 "glow": _f(emitter.get("glow", 0.5)),
+                                                 "attach": emitter.get("attach"), **_ext(emitter)},
         "receivers": [{"mask": r["mask"], "gain": _f(r.get("gain", 1.0)), "rim": _f(r.get("rim", 0)),
                        "reflection": _f(r.get("reflection", 0)), **_ext(r)} for r in light.get("receivers", [])],
         "depth": None if light.get("depth") is None else _f(light["depth"]),
@@ -230,11 +234,18 @@ def _validate_semantics(data):
         for plane in layers["planes"]:
             if plane["mask"] not in masks:
                 raise PipelineError(f"fx spec: plane {plane['id']!r} の mask {plane['mask']!r} が assets.masks にありません")
+            if plane["id"] == BACKGROUND:
+                raise PipelineError(f"fx spec: plane の id に {BACKGROUND!r} は使えません（emitter.attach で背景を指す予約語）")
     ids = [light["id"] for light in data["lights"]]
     if len(set(ids)) != len(ids):
         raise PipelineError(f"fx spec: lights の id が重複しています: {sorted(ids)}")
+    plane_ids = {p["id"] for p in layers["planes"]} if layers else set()
     for light in data["lights"]:
         _increasing(light["intensity"], f"lights[{light['id']}].intensity")
+        attach = light["emitter"]["attach"] if light["emitter"] else None
+        if attach is not None and attach != BACKGROUND and attach not in plane_ids:
+            raise PipelineError(f"fx spec: light {light['id']!r} の emitter.attach {attach!r} が layers.planes にありません"
+                                f"（plane の id か {BACKGROUND!r} を指定してください）")
         for receiver in light["receivers"]:
             if receiver["mask"] not in masks:
                 raise PipelineError(f"fx spec: light {light['id']!r} の receiver mask {receiver['mask']!r} が assets.masks にありません")

@@ -189,14 +189,116 @@ def test_particles_move_by_velocity_and_wrap(tmp_path):
     assert np.allclose((mx0 / 320 + 0.5 / 320 - 0.1) % 1.0, (mx1 + 0.5) / 320)    # カメラが右へ → 画面では左へ流れる
 
 
-def test_emitter_rides_the_plane_that_covers_it(tmp_path):
-    def host(position):
-        light = copy.deepcopy(FULL["lights"][0])
-        light["position"] = position
-        return build(tmp_path, camera=STILL, layers=layer_spec(), lights=[light]).lights[0].host
+def emitter_light(position, **emitter):
+    """明滅なし・受光なしで、光点だけを描く光（深度ゲートなし）。"""
+    light = copy.deepcopy(FULL["lights"][0])
+    light.update(position=position, receivers=[], intensity=1.0, flicker={"amount": 0.0, "hz": 5.0})
+    light["emitter"] = {"size": 0.03, "glow": 0.5, **emitter}
+    del light["depth"]
+    return light
 
-    assert host([0.4, 0.5]) == "subject"                                           # 人物の上 → 人物と一緒に動く
-    assert host([0.8, 0.2]) is None                                               # 空の上 → 背景と一緒
+
+def host_of(tmp_path, position, planes=(PLANE,), **emitter):
+    return build(tmp_path, camera=STILL, layers=layer_spec(planes=planes),
+                 lights=[emitter_light(position, **emitter)]).lights[0].host
+
+
+def test_emitter_rides_the_plane_within_its_reach(tmp_path):
+    # size 0.03 → 影響半径 4×size = 画像幅の 0.12。人物の右の縁（y=0.5 で x≈0.49）から 0.07 離れた点は半径内、0.15 は外
+    assert host_of(tmp_path, [0.4, 0.5]) == "subject"                              # 人物の上
+    assert host_of(tmp_path, [0.56, 0.5]) == "subject"                             # マスクの外でも、半径内に人物がある
+    assert host_of(tmp_path, [0.64, 0.5]) is None                                  # 半径内に人物がない → 背景
+    assert host_of(tmp_path, [0.8, 0.2]) is None                                   # 空の上 → 背景と一緒
+    assert host_of(tmp_path, [0.64, 0.5], size=0.05) == "subject"                  # 半径は size に比例する
+
+
+def test_emitter_host_prefers_the_front_most_plane_and_attach_overrides(tmp_path):
+    floor = {"id": "floor", "mask": "ground", "z": 1}
+    both = lambda z: (PLANE, {**floor, "z": z})  # noqa: E731
+    assert host_of(tmp_path, [0.4, 0.62], planes=both(1)) == "subject"            # 人物（z=2）と地面（z=1）の境 → 前の人物
+    assert host_of(tmp_path, [0.4, 0.62], planes=both(3)) == "floor"              # z を逆にすれば地面
+    assert host_of(tmp_path, [0.4, 0.62], planes=both(2)) == "floor"              # 同じ z は宣言の後ろ（描画で手前）
+    assert host_of(tmp_path, [0.4, 0.5], attach="background") is None             # 明示した背景が優先
+    assert host_of(tmp_path, [0.9, 0.1], attach="subject") == "subject"           # 明示した plane は距離に依らない
+
+
+def glow_diff(tmp_path, t, variant, position, camera, width=320, height=180, **emitter):
+    """光点だけの寄与（光あり − 光 0）の輝度合計の画像と、光ありの ctx。"""
+    light = emitter_light(position, **emitter)
+    dark = copy.deepcopy(light)
+    dark["intensity"] = 0.0
+    lit = build(tmp_path, width, height, camera=camera, layers=layer_spec(), lights=[light])
+    off = build(tmp_path, width, height, camera=camera, layers=layer_spec(), lights=[dark])
+    delta = render.frame(lit, t, variant).astype(int) - render.frame(off, t, variant).astype(int)
+    return delta.sum(axis=2), lit
+
+
+def centroid(diff, floor=30):
+    ys, xs = np.nonzero(diff > floor)
+    return float(xs.mean()), float(ys.mean())
+
+
+def test_hosted_emitter_matches_the_flat_light_version(tmp_path):
+    camera = {"keys": [{"t": 0.0}, {"t": 2.0, "zoom": 1.15, "center": [0.56, 0.47]}]}
+    source = np.array([0.4 * 320 - 0.5, 0.5 * 180 - 0.5, 1.0])
+    for t in (0.0, 1.0, 2.0):
+        both, ctx = glow_diff(tmp_path, t, "both", [0.4, 0.5], camera, glow=5.0)
+        flat, _ = glow_diff(tmp_path, t, "light", [0.4, 0.5], camera, glow=5.0)
+        assert ctx.lights[0].host == "subject"
+        cx, cy = centroid(both)
+        assert (cx, cy) == pytest.approx(centroid(flat), abs=0.3)                  # light 版と光点の中心が一致
+        assert (cx, cy) == pytest.approx(tuple((ctx.path.matrix(t, 1.0) @ source)[:2]), abs=1.0)   # p=1 の plane の動き
+        assert both.max() == pytest.approx(flat.max(), abs=6)                      # 芯の見え方もそろう（ソフトニー）
+        assert (both > 0).sum() == pytest.approx((flat > 0).sum(), rel=0.03)
+
+
+def test_hosted_emitter_core_goes_through_the_same_soft_knee_as_the_flat_route(tmp_path):
+    light = emitter_light([0.4, 0.5], size=0.05, glow=1.5)
+    light["intensity"] = 2.0                                                        # 芯は 0.8 を大きく超え、裾は 0.8 の手前に入る
+    ctx = build(tmp_path, camera=STILL, layers=layer_spec(), lights=[light])
+    both, flat, base = (render.frame(ctx, T, v).astype(int) for v in ("both", "light", "base"))
+    core = core_of(ctx)
+    lit = (flat > base).any(axis=2) & core
+    knee = lit & (flat.max(axis=2) > 200) & (flat.max(axis=2) < 250)               # ソフトニーが効いている帯
+    assert lit.sum() > 50 and knee.sum() > 10
+    assert np.abs(both - flat)[core].max() <= 2                                     # 加算の素通しではなく flat と同じ圧縮
+
+
+def test_attach_decides_which_layer_hides_the_emitter(tmp_path):
+    spot = dict(glow=2.0, size=0.015)                                               # 影響半径 0.06 = 人物の幅の内側
+    on_plane, _ = glow_diff(tmp_path, T, "both", [0.4, 0.5], STILL, **spot)                        # 既定: 人物の層
+    behind, ctx = glow_diff(tmp_path, T, "both", [0.4, 0.5], STILL, attach="background", **spot)   # 背景に付けた
+    flat, _ = glow_diff(tmp_path, T, "light", [0.4, 0.5], STILL, **spot)
+    assert ctx.lights[0].host is None
+    assert on_plane.max() >= 0.9 * flat.max()                                       # 載った層は自分の層に隠れない
+    assert behind.max() == 0                                                        # 背景に付ければ人物（前の層）の後ろに隠れる
+
+
+def test_emitter_on_a_plane_is_not_covered_by_effects_behind_it(tmp_path):
+    camera = {"keys": [{"t": 0.0}, {"t": 2.0, "zoom": 1.15, "center": [0.56, 0.47]}]}
+    light = emitter_light([0.4, 0.5], glow=2.0)
+    dark = copy.deepcopy(light)
+    dark["intensity"] = 0.0
+    dense_fog = {**FOG, "opacity": 1.0}                                             # z=1（人物の後ろ）の濃い霧
+    lit = build(tmp_path, camera=camera, layers=layer_spec(effects=[dense_fog]), lights=[light])
+    off = build(tmp_path, camera=camera, layers=layer_spec(effects=[dense_fog]), lights=[dark])
+    delta = (render.frame(lit, 2.0, "both").astype(int) - render.frame(off, 2.0, "both").astype(int)).sum(axis=2)
+    clear, _ = glow_diff(tmp_path, 2.0, "both", [0.4, 0.5], camera, glow=2.0)
+    assert delta.max() >= 0.95 * clear.max()
+
+
+def test_emitter_on_the_subject_moves_with_the_plane_not_the_background(tmp_path):
+    light = emitter_light([0.4, 0.5], glow=0.5)
+    camera = {"keys": [{"t": 0.0}, {"t": 2.0, "zoom": 1.15, "center": [0.56, 0.47]}]}
+    ctx = build(tmp_path, 320, 180, camera=camera, layers=layer_spec(), lights=[light])
+    assert ctx.lights[0].host == "subject"
+    diff, _ = glow_diff(tmp_path, 2.0, "both", [0.4, 0.5], camera, glow=0.5)
+    ys, xs = np.nonzero(diff > 30)
+    source = np.array([0.4 * 320 - 0.5, 0.5 * 180 - 0.5, 1.0])
+    on_plane = ctx.path.matrix(2.0, 1.0) @ source
+    on_background = ctx.path.matrix(2.0, 0.4) @ source
+    assert np.hypot(*(on_plane[:2] - on_background[:2])) > 4
+    assert np.hypot(xs.mean() - on_plane[0], ys.mean() - on_plane[1]) < 1.5       # 載っている層（人物）と一緒に動く
 
 
 def test_both_composes_layers_and_light_and_degrades_exactly(tmp_path):
@@ -239,26 +341,6 @@ def test_light_for_the_subject_never_lands_on_the_revealed_background(tmp_path):
     bg_shift = abs(float(ctx.path.matrix(2.0, 1.0)[0, 2] - ctx.path.matrix(2.0, 0.4)[0, 2]))
     assert bg_shift > 4 and diff.sum() > 300                   # 人物と背景は実際にずれていて、光は当たっている
     assert not (diff & ~plane).any()                            # 人物の形の光が背景（のぞいた部分）に残らない
-
-
-def test_emitter_on_the_subject_moves_with_the_plane_not_the_background(tmp_path):
-    light = copy.deepcopy(FULL["lights"][0])
-    light.update(position=[0.4, 0.5], receivers=[], intensity=1.0, flicker={"amount": 0.0, "hz": 5.0},
-                 emitter={"size": 0.03, "glow": 0.5})
-    del light["depth"]
-    camera = {"keys": [{"t": 0.0}, {"t": 2.0, "zoom": 1.15, "center": [0.56, 0.47]}]}
-    ctx = build(tmp_path, 320, 180, camera=camera, layers=layer_spec(), lights=[light])
-    assert ctx.lights[0].host == "subject"
-    dark = copy.deepcopy(light)
-    dark["intensity"] = 0.0
-    off = build(tmp_path, 320, 180, camera=camera, layers=layer_spec(), lights=[dark])
-    diff = (render.frame(ctx, 2.0, "both").astype(int) - render.frame(off, 2.0, "both").astype(int)).sum(axis=2)
-    ys, xs = np.nonzero(diff > 30)
-    source = np.array([0.4 * 320 - 0.5, 0.5 * 180 - 0.5, 1.0])
-    on_plane = ctx.path.matrix(2.0, 1.0) @ source
-    on_background = ctx.path.matrix(2.0, 0.4) @ source
-    assert np.hypot(*(on_plane[:2] - on_background[:2])) > 4
-    assert np.hypot(xs.mean() - on_plane[0], ys.mean() - on_plane[1]) < 1.5       # 載っている層（人物）と一緒に動く
 
 
 def test_camera_leaving_the_image_is_reported_only_when_it_does(tmp_path):

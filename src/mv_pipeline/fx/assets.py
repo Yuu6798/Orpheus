@@ -1,7 +1,9 @@
 """素材（基準画像・深度・マスク）の読み込みと前処理。描画サイズごとに 1 回だけ行う。
 
 - 基準画像: 出力の縦横比に cover で中央合わせし（余る側を切る）、描画サイズへ縮尺して線形 float32 に。
-  切った割合は warnings に残す（黙って切らない）。
+  切った割合は warnings に残す（黙って切らない）。切り出し範囲は Assets.box（元画像の正規化座標）。
+  spec の座標（light.position・radius・emitter.size・camera.center）は**元画像**の正規化座標で、
+  to_screen() / width_scale() が box を使って出力画素へ写す（出力の縦横比が変わっても対象に付いてくる）。
 - マスク: 輝度（RGBA で alpha が一定でなければ alpha）を 0..1 にし、feather_px でぼかす
   （σ = feather_px/2、出力幅 1920 換算）。基準画像と同じ縦横比（誤差 1% 以内）であること。
 - 深度: 8/16bit/float/RGB を 2〜98 パーセンタイルで 0..1 に正規化（外れ値で潰れない）。
@@ -29,6 +31,7 @@ class Assets:
     masks: dict                      # id -> float32 (H, W) 0..1（ぼかし済み）
     depth: np.ndarray | None         # float32 (H, W) 0..1（1 = 手前）
     warnings: list = field(default_factory=list)
+    box: tuple = (0.0, 0.0, 1.0, 1.0)   # cover の切り出し (x0, y0, x1, y1)。元画像の正規化座標
 
 
 def _open(path, role):
@@ -51,6 +54,23 @@ def cover_box(src_w, src_h, out_w, out_h):
         return ((1 - keep) / 2, 0.0, (1 + keep) / 2, 1.0)
     keep = (src_w / target) / src_h
     return (0.0, (1 - keep) / 2, 1.0, (1 + keep) / 2)
+
+
+def _pixel_box(box, size):
+    """box を基準画像の画素格子に丸める（実際に切り出す範囲と一致させ、座標変換の誤差を 1 画素未満にする）。"""
+    width, height = size
+    return (round(box[0] * width) / width, round(box[1] * height) / height,
+            round(box[2] * width) / width, round(box[3] * height) / height)
+
+
+def to_screen(box, u, v):
+    """元画像の正規化座標 (u, v) → cover で切った後の画面の正規化座標（0..1 が画面の端）。"""
+    return (u - box[0]) / (box[2] - box[0]), (v - box[1]) / (box[3] - box[1])
+
+
+def width_scale(box):
+    """元画像の幅 1.0 が、画面の幅の何倍か（= 1 / 切り出し幅）。半径・size など元画像の幅基準の長さに掛ける。"""
+    return 1.0 / (box[2] - box[0])
 
 
 def _crop_resize(arr, box, size):
@@ -109,7 +129,7 @@ def load_assets(spec, size):
     warnings = []
     base_image = _open(spec.resolve(data["assets"]["base"]), "base")
     base_size = base_image.size
-    box = cover_box(base_size[0], base_size[1], width, height)
+    box = _pixel_box(cover_box(base_size[0], base_size[1], width, height), base_size)
     cut = 1.0 - (box[2] - box[0]) * (box[3] - box[1])
     if cut > CROP_WARN_FRACTION:
         axis = "左右" if box[0] > 0 else "上下"
@@ -136,7 +156,8 @@ def load_assets(spec, size):
         depth, informative = normalize_depth(values, data["assets"]["depth"]["near"])
         if not informative:
             warnings.append("深度画像がほぼ一定のため、深度は使いません（0.5 一定）")
-    return Assets(size=size, plate_u8=plate_u8, plate=to_linear(plate_u8), masks=masks, depth=depth, warnings=warnings)
+    return Assets(size=size, plate_u8=plate_u8, plate=to_linear(plate_u8), masks=masks, depth=depth, warnings=warnings,
+                  box=box)
 
 
 def describe(spec):

@@ -1,4 +1,5 @@
 import copy
+import json
 
 import numpy as np
 import pytest
@@ -6,7 +7,8 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 
 from fx_synth import FULL, make_project  # noqa: E402
-from mv_pipeline.fx import color, light as fxlight, render  # noqa: E402
+from mv_pipeline.fx import camera as fxcamera, color, light as fxlight, render  # noqa: E402
+from mv_pipeline.fx.assets import cover_box, to_screen, width_scale  # noqa: E402
 from mv_pipeline.fx import spec as fxspec  # noqa: E402
 
 T = 1.0
@@ -210,3 +212,80 @@ def test_srgb_roundtrip_is_lossless_for_every_8bit_value():
     assert np.array_equal(color.to_srgb8(color.to_linear(levels)), levels)
     assert color.to_srgb8(np.float32(-1.0) * np.ones(3, dtype=np.float32)).tolist() == [0, 0, 0]
     assert color.to_srgb8(np.float32(7.0) * np.ones(3, dtype=np.float32)).tolist() == [255, 255, 255]
+
+
+def contexts(tmp_path, **changes):
+    """同じ素材（16:9）・同じ spec を 16:9 と 9:16 の出力で prepare した {名前: ctx}。"""
+    raw = json.loads(make_project(tmp_path, 320, 180, **changes).read_text(encoding="utf-8"))
+    out = {}
+    for name, (width, height) in {"wide": (320, 180), "tall": (144, 256)}.items():
+        data = copy.deepcopy(raw)
+        data["output"].update(width=width, height=height)
+        out[name] = render.prepare(fxspec.parse_spec(data, tmp_path))
+    return out
+
+
+def source_box(ctx):
+    """cover の切り出し範囲を、ctx に頼らず素材（320x180）と出力寸法から求め直したもの。"""
+    return cover_box(320, 180, *ctx.size)
+
+
+def to_original(ctx, x, y):
+    """出力の画素位置（画素中心規約）→ 元画像の正規化座標。"""
+    x0, y0, x1, y1 = source_box(ctx)
+    return x0 + (x + 0.5) / ctx.size[0] * (x1 - x0), y0 + (y + 0.5) / ctx.size[1] * (y1 - y0)
+
+
+def test_light_position_and_lengths_are_in_original_image_coordinates(tmp_path):
+    lights = one_light(position=[0.47, 0.4], radius=0.12, receivers=[], emitter={"size": 0.03, "glow": 0.5})
+    pair = contexts(tmp_path, camera=None, lights=lights)
+    assert source_box(pair["tall"])[2] - source_box(pair["tall"])[0] < 0.4       # 9:16 は元画像の幅の 3 割ほどしか見えない
+    for name, ctx in pair.items():
+        diff = lum(render.frame(ctx, T, "light")) - lum(render.frame(ctx, T, "base"))
+        ys, xs = np.nonzero(diff > 0)
+        weight = diff[ys, xs].astype(float)
+        u, v = to_original(ctx, (xs * weight).sum() / weight.sum(), (ys * weight).sum() / weight.sum())
+        assert (u, v) == pytest.approx((0.47, 0.4), abs=0.006), name              # 光点の中心は元画像の同じ位置
+        light = ctx.lights[0]
+        x0, y0, x1, y1 = source_box(ctx)
+        for roi, expected in ((light.roi_glow, 4 * 0.03), (light.roi_main, 0.12)):  # 影響半径も元画像の幅が基準
+            half = (roi[3] - roi[2] - 1) / 2 / ctx.size[0] * (x1 - x0)
+            assert half == pytest.approx(expected, abs=0.008), name
+
+
+def test_the_same_spot_of_the_original_image_gets_the_same_light_at_any_aspect(tmp_path):
+    receivers = [{"mask": "subject", "gain": 1.0}]
+    pair = contexts(tmp_path, camera=None, lights=one_light(position=[0.47, 0.45], radius=0.2, receivers=receivers,
+                                                            drop=("emitter", "depth")))
+    fields = []
+    for ctx in pair.values():
+        weight = ctx.lights[0].receivers[0].diffuse_w                           # 受光 × falloff（roi_main の中）
+        y0, y1, x0, x1 = ctx.lights[0].roi_main
+        x0b, y0b, x1b, y1b = source_box(ctx)
+        samples = []
+        for u, v in ((0.45, 0.4), (0.42, 0.55), (0.47, 0.6)):                   # 人物の上の 3 点（元画像の座標）
+            px = int((u - x0b) / (x1b - x0b) * ctx.size[0])
+            py = int((v - y0b) / (y1b - y0b) * ctx.size[1])
+            assert x0 <= px < x1 and y0 <= py < y1 and ctx.assets.masks["subject"][py, px] > 0.99
+            samples.append(float(weight[py - y0, px - x0]))
+        fields.append(samples)
+    assert fields[0] == pytest.approx(fields[1], rel=0.08)
+
+
+def test_camera_center_is_in_original_image_coordinates(tmp_path):
+    keys = [{"t": 0.0}, {"t": 2.0, "zoom": 1.2, "center": [0.56, 0.45]}]
+    for name, ctx in contexts(tmp_path, lights=None, camera={"keys": keys}).items():
+        width, height = ctx.size
+        x0, y0, x1, y1 = source_box(ctx)
+        source = np.array([(0.56 - x0) / (x1 - x0) * width - 0.5, (0.45 - y0) / (y1 - y0) * height - 0.5, 1.0])
+        # 元画像の (0.56, 0.45) の画素が、t=2 に出力の中心へ来る（縦横比に依らない）
+        assert ctx.path.matrix(2.0, 1.0) @ source == pytest.approx([width / 2 - 0.5, height / 2 - 0.5], abs=1.0), name   # cover は基準画像の画素格子に丸める（1 画素未満）
+        assert fxcamera.is_identity(ctx.path.matrix(0.0, 1.0))
+
+
+def test_original_coordinates_reduce_to_the_screen_when_the_aspect_matches(tmp_path):
+    ctx = build(tmp_path, 320, 180)
+    assert ctx.assets.box == (0.0, 0.0, 1.0, 1.0)
+    assert to_screen(ctx.assets.box, 0.3, 0.7) == (0.3, 0.7) and width_scale(ctx.assets.box) == 1.0
+    tall = contexts(tmp_path, lights=None)["tall"].assets.box
+    assert to_screen(tall, 0.5, 0.5) == pytest.approx((0.5, 0.5)) and width_scale(tall) == pytest.approx(1 / (tall[2] - tall[0]))

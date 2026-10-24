@@ -64,14 +64,19 @@ manifest に `"empty": true` と理由が記録され、グリッドのラベル
                          {"id": "embers", "type": "particles", "z": 3, "count": 140, "color": [255, 170, 80], "size_px": [1.5, 4.0], "velocity": [0.0, -0.06], "flicker": 0.4, "parallax": 1.3}]},
   "lights": [{"id": "white_flame", "type": "point", "position": [0.64, 0.42], "color": [230, 236, 255], "radius": 0.45,
               "intensity": [{"t": 0.0, "v": 0.0}, {"t": 1.0, "v": 1.2}, {"t": 10.0, "v": 0.9}],
-              "flicker": {"amount": 0.12, "hz": 5.0}, "emitter": {"size": 0.03, "glow": 0.6},
+              "flicker": {"amount": 0.12, "hz": 5.0}, "emitter": {"size": 0.03, "glow": 0.6, "attach": "subject"},
               "receivers": [{"mask": "subject", "gain": 1.0, "rim": 0.5}, {"mask": "ground", "gain": 0.6, "reflection": 0.5}],
               "depth": 0.7, "depth_falloff": 0.25}]
 }
 ```
 
 - 必須は `schema_version`・`output.width/height`・`duration_s`・`assets.base`。他は任意（未指定の機能は無効）。出力寸法は偶数。
-- 座標はすべて**基準画像の正規化座標**（0..1）。カメラが動いても光と対象は一緒に動く。出力と縦横比が違うときは cover で中央に合わせて切った後の画面（zoom 1 で見える範囲）が 0..1 で、切った割合は warnings に残る（黙って切らない）。
+- 座標（`light.position`・`camera.center`）は**元画像（基準画像）の正規化座標**（0..1）、長さ（`light.radius`・`emitter.size`）は**元画像の幅**が基準。
+  出力と縦横比が違うときは cover で中央に合わせて切るが（切った割合は warnings に残る。黙って切らない）、座標は切った後の画面ではなく元画像で解釈して出力画素へ写す。
+  そのため同じ spec を 16:9 と 9:16 で描いても、光やカメラの中心は元画像の同じ画素・同じマスクに対する同じ位置に乗る（半径も元画像の幅の同じ割合）。カメラが動いても光と対象は一緒に動く。
+- `emitter.attach`（任意）: 光点が載る層。`layers.planes` の id か `"background"`。未指定なら**光点の影響半径（`size`×4）内に不透明部分（alpha > 0.5）を持つ plane のうち z が最も前のもの**
+  （z が同じなら宣言の後ろ）、なければ背景。載った層と同じカメラ変換で動き、その層の画素の上に描かれる（自分の層には隠れず、その層より後ろの霧や火の粉にも覆われない。
+  手前の plane や z が前の effects には覆われる）。plane に載った光点も `light` 版と同じソフトニーを通すので、`light` 版と `both` 版で芯の見え方がそろう。`"background"` は予約語で plane の id に使えない。
 - 時間は秒で、**ショット時刻**（spec の時間軸）。`--start` で区間を切って描いても、同じ時刻は同じ絵になる。色は sRGB 0〜255。`ease` は `linear | in | out | in_out`。
 - マスクとデプスは基準画像と同じ縦横比（誤差 1%）。RGBA のマスクは alpha が一定でなければ alpha、一定なら輝度を使う（切り抜き PNG をそのまま使える）。深度は 2〜98 パーセンタイルで正規化（外れ値で潰れない）。`near` は白が手前か黒が手前か。
 - 参照切れ・id 重複・キーの `t` が昇順でない・奇数の出力寸法は拒否。`depth` を指定したのに `assets.depth` が無い等は無視して warnings に記録する。
@@ -80,7 +85,7 @@ manifest に `"empty": true` と理由が記録され、グリッドのラベル
 
 合成はすべて線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
 
-**カメラ** — keys を補間して zoom・center を得る（区間の曲線は到達側キーの `ease`）。plane ごとに視差 p を取り、
+**カメラ** — keys を補間して zoom・center（元画像の座標）を得る（区間の曲線は到達側キーの `ease`）。plane ごとに視差 p を取り、
 `zoom_p = z0 + (zoom(t) − z0)·p`、`center_p = c0 + (center(t) − c0)·p`（z0・c0 は最初のキー）、さらに `drift_px × t`。最初のキーの状態では全 plane が重なる。
 深度視差（`parallax_px > 0` かつ深度あり）は `parallax_px × (W/1920) × s(t) × (D − 0.5) × parallax_dir` の変位で、s(t) は −0.5→+0.5 を in_out で。
 
@@ -88,7 +93,7 @@ manifest に `"empty": true` と理由が記録され、グリッドのラベル
 z の小さい順に背面から合成し、effects も z で挟む（霧 z=1 は人物 z=2 の後ろ、火の粉 z=3 は前）。
 霧は seed から作った周期ノイズを drift とカメラ移動でずらして重ねる。火の粉は位置を `(x0 + velocity·t + カメラ移動·parallax) mod 1` でフレームごとに状態なしで計算し、加算で描く。
 
-**局所光**（基準画像空間・カメラの前） — 光の場 `L = color × I(t) × flicker(t) × falloff(r)`。`r` は光源からの距離を画像の幅で割ったもの、
+**局所光**（基準画像空間・カメラの前） — 光の場 `L = color × I(t) × flicker(t) × falloff(r)`。`r` は光源からの距離を元画像の幅で割ったもの、
 `falloff = 1/(1+(r/(0.25R))²) × clamp(1−(r/R)⁴, 0, 1)²`（`r ≥ R` で厳密に 0）。受光マスク `M` の内側だけが照らされる。
 
 | 項 | 内容 |
@@ -96,7 +101,7 @@ z の小さい順に背面から合成し、effects も z で挟む（霧 z=1 �
 | diffuse | `基準画像 × L × gain × M × 4.0`（面の明るさに比例するので全体の明るさ変更にならない） |
 | rim | マスクの内側の輪郭帯 × `L × rim` × 光源の向きの重み。輪郭に光が回る |
 | reflection | 縦に潰した距離（dy×0.35）・半径 0.5R の鋭い falloff。地面の照り返し |
-| emitter | 光源位置のガウスの光点と裾（半径 4×size で厳密に 0） |
+| emitter | 光源位置のガウスの光点と裾（半径 4×size で厳密に 0）。layers のある版では `attach` の層に載る（上の `emitter.attach`） |
 | depth | `exp(−((D−depth)/depth_falloff)²)` を受光に掛ける（光と同じ奥行きの面だけ） |
 | flicker | `1 + amount × (0.6 sin(2π·hz·t+φ1) + 0.4 sin(2π·hz·2.37·t+φ2))`、φ は seed から。負にしない |
 

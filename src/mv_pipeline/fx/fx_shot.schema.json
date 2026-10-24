@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "fx-shot/0.1",
-  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。座標は基準画像の正規化座標（0..1。出力と縦横比が違うときは cover で中央に合わせて切った後の画面を指す。カメラが動いても光と対象は一緒に動く）、時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
+  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。座標（light.position・camera.center）は元画像（基準画像）の正規化座標 0..1、長さ（light.radius・emitter.size）は元画像の幅が基準。出力の縦横比が違って cover で切られても、被写体・マスクに対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈する）。カメラが動いても光と対象は一緒に動く。時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
   "type": "object",
   "required": ["schema_version", "output", "duration_s", "assets"],
   "properties": {
@@ -246,7 +246,11 @@
           "type": "object",
           "properties": {
             "size": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.5, "default": 0.03},
-            "glow": {"type": "number", "minimum": 0, "maximum": 20, "default": 0.5}
+            "glow": {"type": "number", "minimum": 0, "maximum": 20, "default": 0.5},
+            "attach": {
+              "$ref": "#/$defs/id",
+              "description": "光点が載る層: layers.planes の id か \"background\"。未指定なら、光点の影響半径（size×4）内に不透明部分を持つ plane のうち z が最も前のもの、なければ背景。載った層と同じカメラ変換で動き、その層の画素の上に描かれる。"
+            }
           },
           "additionalProperties": false,
           "patternProperties": {"^x_": {}}

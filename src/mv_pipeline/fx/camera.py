@@ -1,6 +1,8 @@
 """カメラ: zoom・center のキーフレーム、plane ごとの視差付き変換、深度視差。
 
-座標系: 画像上の位置は元画像の正規化座標 (u, v)（0..1）。描画サイズ W×H の画素へは
+座標系: spec の camera.center は**元画像**の正規化座標（0..1）。出力の縦横比が元画像と違うときは cover で
+中央に合わせて切るので、CameraPath が box（assets.Assets.box）を使って「切った後の画面」の正規化座標
+(u, v) に直してから使う。画面の正規化座標 (u, v) は描画サイズ W×H の画素へ
 x_out = (u − cx)·zoom·W + W/2 + drift の関係で写る（画素中心規約。cv2.warpAffine の 2×3 行列で表す）。
 
 plane の視差（parallax = p）: キー 0 番の状態 (z0, c0) を基準に
@@ -14,11 +16,13 @@ import cv2
 import numpy as np
 
 from . import timeline
+from .assets import to_screen
 
 
 class CameraPath:
-    def __init__(self, camera, duration_s, size):
+    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0)):
         self.keys = camera["keys"]
+        self.box = tuple(box)
         self.parallax_px = camera["parallax_px"]
         direction = np.asarray(camera["parallax_dir"], dtype=np.float64)
         norm = float(np.hypot(*direction))
@@ -27,12 +31,13 @@ class CameraPath:
         self.size = size
         self.kpx = size[0] / 1920.0
         first = self.keys[0]
-        self.z0, self.c0 = first["zoom"], first["center"]
+        self.z0, self.c0 = first["zoom"], to_screen(self.box, *first["center"])
 
     def at(self, t):
-        """時刻 t のカメラ (zoom, cx, cy)。"""
+        """時刻 t のカメラ (zoom, cx, cy)。cx, cy は切った後の画面の正規化座標（keys は元画像の座標）。"""
         state = timeline.interp(self.keys, t, ["zoom", "center"])
-        return state["zoom"], state["center"][0], state["center"][1]
+        cx, cy = to_screen(self.box, *state["center"])
+        return state["zoom"], cx, cy
 
     def plane_view(self, t, parallax, drift_px=(0.0, 0.0)):
         """parallax p の層の (zoom_p, cx_p, cy_p, drift_x, drift_y)。drift は出力画素。"""

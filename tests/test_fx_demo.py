@@ -1,4 +1,6 @@
+import copy
 import hashlib
+import json
 
 import numpy as np
 import pytest
@@ -97,3 +99,30 @@ def test_demo_versions_get_brighter_step_by_step(tmp_path):
     ctx = render.prepare(fxspec.load_spec(tmp_path / "spec.json"))
     mean = {v: render.frame(ctx, 3.0, v).astype(float).mean() for v in ("base", "layers", "light", "both")}
     assert mean["light"] > mean["base"] and mean["layers"] > mean["base"] and mean["both"] > mean["layers"]
+
+
+def test_demo_flame_stays_on_the_hand_in_both_and_is_not_hidden_by_the_sleeve(tmp_path):
+    demo.create(tmp_path, 320, 180, 4.0, 12)
+    raw = json.loads((tmp_path / "spec.json").read_text(encoding="utf-8"))
+    lit = render.prepare(fxspec.parse_spec(raw, tmp_path))
+    bare_raw = copy.deepcopy(raw)
+    del bare_raw["lights"][0]["emitter"]                                           # 受光は同じで、光点だけ無い版
+    bare = render.prepare(fxspec.parse_spec(bare_raw, tmp_path))
+    assert lit.lights[0].host == "subject"                                         # 炎は手（subject plane）に載る
+    source = np.array([demo.FLAME[0] * 320 - 0.5, demo.FLAME[1] * 180 - 0.5, 1.0])
+    peaks = {}
+
+    def core_of_spot(spot):                                                         # 芯（最大の 9 割以上）の中心
+        ys, xs = np.nonzero(spot >= 0.9 * spot.max())
+        return xs.mean(), ys.mean()
+
+    for t in (0.5, 2.0, 3.5):                                                      # 開始・中盤・終盤（カメラが寄る）
+        spots = {v: (render.frame(lit, t, v).astype(int) - render.frame(bare, t, v).astype(int)).sum(axis=2)
+                 for v in ("both", "light")}
+        both_x, both_y = core_of_spot(spots["both"])
+        on_hand = (lit.path.matrix(t, 1.0) @ source)[:2]
+        assert np.hypot(both_x - on_hand[0], both_y - on_hand[1]) < 1.0            # 手に対する位置が時間で変わらない
+        light_x, light_y = core_of_spot(spots["light"])
+        assert np.hypot(both_x - light_x, both_y - light_y) < 1.0                  # light 版の光点と中心が一致
+        peaks[t] = spots["both"].max() / spots["light"].max()
+    assert min(peaks.values()) > 0.8                                               # 袖の plane に隠れず、芯も light 版と同じ
