@@ -8,8 +8,11 @@
     audio.wav        合成音（低い持続音 + 点火の風切り音 + 脈動。尺 = duration + 1 秒）
     spec.json        上の素材を使う fx-shot/0.1 の設定
 
-演出が目で分かる値にしてある: 白い炎の光が人物の顔・袖・地面に当たる / 霧は人物の後ろ / 火の粉は人物の前 /
-カメラはゆっくり寄る。
+演出が目で分かる値にしてある:
+- 白い炎は手の上にあり（emitter.attach = subject。手と一緒に動き、袖に隠れない）、光は対象物ごとに違う当たり方をする。
+  手・袖・顔・肩の炎側が明るく、人物の反対側や遠い裾は暗いまま。輪郭光が炎側の縁に出る。
+  地面は炎の真下に縦長の反射が出るだけで、霧の塊のようには広がらない。
+- 霧は人物の後ろ / 火の粉は人物の前 / カメラはゆっくり寄る。
 """
 import math
 import os
@@ -29,7 +32,8 @@ SEED = 7
 HORIZON = 0.66            # 地面の上端（画像の高さに対する割合）
 FIGURE_X = 0.45           # 人物の中心（画像の幅に対する割合）
 FLAME = (0.61, 0.43)      # 白い炎の位置（正規化座標）
-REVEAL = 0.055            # 地面マスクが人物の輪郭から内側へ落ちきるまでの距離（高さに対する割合。視差でのぞく穴埋め板の幅より大きく）
+REVEAL = 0.045            # 地面マスクが人物の輪郭から内側へ落ちきるまでの距離（高さに対する割合。視差でのぞく穴埋め板の幅より大きく）
+HORIZON_FADE = 0.07       # 人物の内側の帯を、地平線から下へ 0 → 1 に立ち上げる距離（高さに対する割合。地平線で段差を作らない）
 
 
 def _save(path, writer):
@@ -186,10 +190,15 @@ def _scene(width, height):
     horizon_y = int(HORIZON * height)
     # 地面マスク: 地平線より下。人物の体の中央には載せない（光の版で人物が二重に照らされないように）が、
     # 視差で人物の背後の穴埋め板がのぞく分（REVEAL）は地面として照らしたいので、人物の輪郭から内側へ
-    # 距離に応じて 1 → 0 に落とす（硬い境目を作らない）。
+    # 距離に応じて 1 → 0 に落とす（硬い境目を作らない）。人物の内側の帯は地平線付近でも縦方向に
+    # なだらかに（smoothstep で 0 → 1）立ち上げ、受光マスクと plane マスクが重なる light 版（レイヤーなし）で
+    # 裾に白い面や水平の段差が出ないようにする。
     reach = max(2.0, REVEAL * height)
     inside = cv2.distanceTransform(subject_mask, cv2.DIST_L2, 5)
-    ramp = np.where(subject_mask > 0, np.clip(1.0 - inside / reach, 0.0, 1.0), 1.0).astype(np.float32)
+    band = np.clip(1.0 - inside / reach, 0.0, 1.0)
+    rise = np.clip((np.arange(height, dtype=np.float32)[:, None] - horizon_y) / max(2.0, HORIZON_FADE * height), 0.0, 1.0)
+    band = band * rise * rise * (3.0 - 2.0 * rise)
+    ramp = np.where(subject_mask > 0, band, 1.0).astype(np.float32)
     ground_mask = np.zeros((height, width), np.uint8)
     ground_mask[horizon_y:] = np.rint(255 * ramp[horizon_y:]).astype(np.uint8)
     ys = np.linspace(0, 1, height, dtype=np.float32)[:, None]
@@ -252,12 +261,12 @@ def _spec(width, height, duration, fps):
             ],
         },
         "lights": [{
-            "id": "white_flame", "type": "point", "position": list(FLAME), "color": [230, 236, 255], "radius": 0.45,
+            "id": "white_flame", "type": "point", "position": list(FLAME), "color": [230, 236, 255], "radius": 0.30,
             "intensity": [{"t": 0.0, "v": 0.0}, {"t": intro, "v": 1.2}, {"t": duration, "v": 0.9}],
             "flicker": {"amount": 0.12, "hz": 5.0},
-            "emitter": {"size": 0.03, "glow": 0.6},
-            "receivers": [{"mask": "subject", "gain": 1.0, "rim": 0.5}, {"mask": "ground", "gain": 0.6, "reflection": 0.5}],
-            "depth": 0.7, "depth_falloff": 0.25,
+            "emitter": {"size": 0.03, "glow": 0.6, "attach": "subject"},
+            "receivers": [{"mask": "subject", "gain": 2.2, "rim": 4.0}, {"mask": "ground", "gain": 0.35, "reflection": 0.8}],
+            "depth": 0.7, "depth_falloff": 0.45,
         }],
     }
 

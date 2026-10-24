@@ -4,6 +4,7 @@ import json
 
 import numpy as np
 import pytest
+from PIL import Image
 
 cv2 = pytest.importorskip("cv2")
 
@@ -126,3 +127,68 @@ def test_demo_flame_stays_on_the_hand_in_both_and_is_not_hidden_by_the_sleeve(tm
         assert np.hypot(both_x - light_x, both_y - light_y) < 1.0                  # light 版の光点と中心が一致
         peaks[t] = spots["both"].max() / spots["light"].max()
     assert min(peaks.values()) > 0.8                                               # 袖の plane に隠れず、芯も light 版と同じ
+
+
+def lit_demo(tmp_path, t=3.0, rim=None, receivers=None):
+    """デモ（320x180・4 秒）の ctx と、時刻 t の base / light の差（3 チャンネル平均の増分）。"""
+    demo.create(tmp_path, 320, 180, 4.0, 12)
+    raw = json.loads((tmp_path / "spec.json").read_text(encoding="utf-8"))
+    if rim is not None:
+        raw["lights"][0]["receivers"][0]["rim"] = rim
+    ctx = render.prepare(fxspec.parse_spec(raw, tmp_path))
+    base, light = (render.frame(ctx, t, v).astype(int) for v in ("base", "light"))
+    height, width = base.shape[:2]
+    ys, xs = np.mgrid[0:height, 0:width]
+    fx, fy = (ctx.path.matrix(t, 1.0) @ np.array([demo.FLAME[0] * width - 0.5, demo.FLAME[1] * height - 0.5, 1.0]))[:2]
+    flame = np.hypot(xs - fx, ys - fy) / width                                  # カメラで動いた炎からの距離（画像の幅の割合）
+    return ctx, (light - base).mean(axis=2), (xs, ys, flame, fx)
+
+
+def test_demo_ground_mask_rises_smoothly_inside_the_figure(tmp_path):
+    demo.create(tmp_path, 320, 180, 2.0, 12)
+    ground = np.asarray(Image.open(tmp_path / "mask_ground.png")).astype(float) / 255
+    subject = np.asarray(Image.open(tmp_path / "mask_subject.png")) > 0
+    horizon = int(demo.HORIZON * ground.shape[0])
+    assert ground[:horizon].max() == 0                                          # 地平線より上は地面ではない
+    assert ground[horizon, subject[horizon]].max() == 0                         # 人物の内側は地平線で 0 から立ち上がる
+    inside = subject[:-1] & subject[1:]
+    assert np.abs(np.diff(ground, axis=0))[inside].max() < 0.2                  # 縦方向に段差がない（以前は帯の上端が 1 の段差）
+    deep = cv2.erode(subject.astype(np.uint8), np.ones((3 * int(demo.REVEAL * ground.shape[0]),) * 2, np.uint8)) > 0
+    assert deep.sum() > 1000 and ground[deep].max() == 0                        # 人物の体の中央には載せない（二重に照らさない）
+    assert ground[~subject & (np.arange(ground.shape[0])[:, None] > horizon + 2)].min() == 1.0   # 外の地面は全面
+
+
+def test_demo_light_differs_by_object_and_the_far_side_stays_dark(tmp_path):
+    ctx, gain, (xs, ys, flame, _) = lit_demo(tmp_path)
+    subject = ctx.planes[0].alpha > 0.99
+    hand, face_and_shoulder = subject & (flame < 0.08), subject & (flame > 0.12) & (flame < 0.22) & (ys < 0.4 * 180)
+    far = subject & (flame > 0.30)
+    assert hand.sum() > 100 and face_and_shoulder.sum() > 300 and far.sum() > 50
+    assert gain[hand].mean() > 60                                                # 炎の真下の手・袖は強く照らされる
+    assert 8 < gain[face_and_shoulder].mean() < 0.5 * gain[hand].mean()          # 顔・肩の炎側は明るいが、手ほどではない
+    assert gain[far].max() <= 1                                                  # 人物の反対側・遠い裾は暗いまま（半径 0.30 のほぼ外）
+    assert gain[ctx.assets.masks["ground"] > 0.99].max() > 20                    # 地面は地面で別の当たり方（照り返し）をする
+
+
+def test_demo_ground_reflection_is_a_narrow_vertical_streak_under_the_flame(tmp_path):
+    ctx, gain, (xs, ys, flame, flame_x) = lit_demo(tmp_path)
+    height, width = gain.shape
+    near_figure = cv2.dilate((ctx.planes[0].alpha > 0).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+    ground = (ys > demo.HORIZON * height + 2) & ~near_figure
+    lit = ground & (gain > 8)
+    ly, lx = np.nonzero(lit)
+    assert lit.sum() > 500
+    assert abs(lx.mean() - flame_x) < 0.03 * width                               # 炎の真下
+    assert lx.max() - lx.min() < 0.16 * width                                    # 霧の塊のように横へ広がらない
+    assert ly.max() - ly.min() > 0.8 * (height - demo.HORIZON * height)          # 縦に長い（地面の奥行き方向）
+    away = ground & (np.abs(xs - flame_x) > 0.12 * width)
+    assert gain[away].mean() < 1 and gain[away].max() <= 8                       # 筋の外の地面はほとんど変わらない
+
+
+def test_demo_rim_light_sits_on_the_edges_facing_the_flame(tmp_path):
+    ctx, with_rim, (xs, ys, flame, _) = lit_demo(tmp_path, rim=4.0)
+    _, without, _ = lit_demo(tmp_path / "again", rim=0.0)
+    rim = np.abs(with_rim - without)
+    centre = demo.FIGURE_X * 320
+    assert rim[xs > centre + 10].sum() > 10 * rim[xs < centre - 10].sum()      # 光源側の縁に出て、反対側の縁には出ない
+    assert rim[flame > 0.34].max() == 0                                         # 半径の外には出ない（カメラの寄りぶん余裕を見る）

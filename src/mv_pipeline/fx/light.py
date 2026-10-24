@@ -12,7 +12,7 @@ level(t) = intensity(t) × flicker(t) の積なので、形は prepare() で 1 �
     falloff(r) = 1/(1+(r/(0.25R))²) × clamp(1−(r/R)⁴, 0, 1)²      （r ≥ R で厳密に 0）
     diffuse    = 基準画像 × color × level × falloff × gain × EXPOSURE × M_r
     rim        = 受光マスクの内側の輪郭帯 × color × level × falloff × rim × 向き重み × M_r
-    reflection = color × level × falloff'(縦に潰した距離 dy×0.35・半径 0.5R) × reflection × M_r
+    reflection = color × level × falloff'(縦に潰した距離 dy×0.10・半径 0.18R) × reflection × M_r
     emitter    = color × level × ガウス核+裾（半径 4×size で厳密に 0）
     depth      = 受光の 3 項に exp(−((D−depth)/depth_falloff)²) を掛ける
 
@@ -32,8 +32,8 @@ from .assets import to_screen, width_scale
 from .color import color_to_linear, soft_add
 
 EXPOSURE = 4.0
-REFLECT_RADIUS = 0.5
-REFLECT_SQUASH = 0.35
+REFLECT_RADIUS = 0.18     # 照り返しの横の半径（光の半径 R に対する割合）。狭いので光源の真下の縦長の筋になる
+REFLECT_SQUASH = 0.10     # 縦の距離に掛ける係数（縦の半径 = 横の半径 / 0.10）。霧の塊のように広がらない
 EMITTER_REACH = 4.0
 
 
