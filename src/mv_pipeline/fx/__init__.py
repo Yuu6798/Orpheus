@@ -4,7 +4,7 @@
 決定論: 同じ spec・seed・環境（ライブラリ版）なら同じフレームを返す。LLM もネットワークも使わない。
 
 このパッケージを import しても cv2 は読み込まない（既存コマンドは cv2 なしで動く）。
-cv2 が要るのは layers / light / camera / assets / render。fx 系コマンドだけがそれらを import する。
+cv2 が要るのは layers / light / camera / assets / render / compare / demo。fx 系コマンドだけがそれらを import する。
 
 使い方（CLI や run 管理の担当者向け）:
 
@@ -17,16 +17,16 @@ cv2 が要るのは layers / light / camera / assets / render。fx 系コマン�
 版（variants）は VARIANTS。fingerprint() は fx パッケージの全ファイル（.py と schema）から作る
 エンジン指紋で、run の manifest とキャッシュ key に入れる。
 
-run 管理・グリッド・legacy の担当者向けの部品表:
-  - manifest の材料: spec.canonical_json(sp.data)（正規化 spec。`x_` の鍵も含むので、コメントだけの変更でも
-    key が変わる＝安全側）、sp.sha256、assets.describe(sp)（全素材の sha256・寸法。無ければ PipelineError）、
-    fingerprint()、render.library_versions()、ctx.size、ctx.warnings、ctx.variant_notes()（機能なしの版の記録）。
-  - 描画サイズ: render.scaled_size(sp, scale)。prepare(sp, scale) の ctx.size と一致する。key には scale を入れる。
-  - フレーム数: timeline.frame_count(duration, fps)（= round(duration×fps)）。legacy の検査もこれで数える。
-  - グリッド: 4 版を frame() で描いてタイル状に並べ、render.write_video(out, frames, size, fps, crf, n_frames,
-    audio=render.audio_for(ctx, start, n_frames), log_path=...) に渡す。静止画は render.save_png(img, path)。
-  - 失敗しても最終名の MP4 は作らない（write_video は一時名に書いて成功時だけ置き換える）。
-  - 例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
+モジュールの構成（CLI は `mv fx demo|render|stills|legacy|accept`。詳細は docs/fx.md）:
+  - spec / timeline / assets / camera / layers / light / color / render: 描画の中核（cv2 を使う。上の使い方）。
+  - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート。
+  - probe: ffmpeg だけで行う構造検査 check_video（technical_pass。ffprobe 不要）。
+  - runs: run ディレクトリ・manifest・キャッシュ（index.json）・stills・accept。key は描画に影響する入力すべて
+    （正規化 spec・素材の sha256・fingerprint()・版の集合・区間・出力寸法と scale・ライブラリ版）から作る。入力を足したら key にも足す。
+  - legacy: 外部の実制作レンダラを呼んで run として記録する（cv2 不要・キャッシュしない）。
+  - demo: 合成デモ素材と spec.json（cv2 を使う）。
+  runs / legacy / probe は cv2 を import しない（fx accept と fx legacy は fx extra なしで動く）。
+  例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
 """
 import hashlib
 from pathlib import Path

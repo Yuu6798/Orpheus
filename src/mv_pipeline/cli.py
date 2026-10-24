@@ -42,11 +42,103 @@ def parser():
     adapter.add_argument("project", type=Path)
     adapter.add_argument("config", type=Path)
     adapter.add_argument("--kind", choices=["alignment", "separation"], required=True)
+    _fx_parser(commands)
     return p
+
+
+def _fx_parser(commands):
+    """実験的な演出エンジン fx（docs/fx.md）。`project` 引数を持たず、project_lock も通らない。"""
+    fx = commands.add_parser("fx", help="experimental effects engine: camera, layers, local light")
+    sub = fx.add_subparsers(dest="fx_command", required=True)
+    demo = sub.add_parser("demo", help="write synthetic demo assets and a spec")
+    demo.add_argument("dir", type=Path)
+    demo.add_argument("--width", type=int, default=960)
+    demo.add_argument("--height", type=int, default=540)
+    demo.add_argument("--duration", type=float, default=10.0)
+    demo.add_argument("--fps", type=int, default=24)
+    render = sub.add_parser("render", help="render variants (base, layers, light, both) and a 2x2 grid")
+    render.add_argument("spec", type=Path)
+    render.add_argument("--variants", help="comma-separated: base,layers,light,both (default: all)")
+    render.add_argument("--start", type=float, default=0.0)
+    render.add_argument("--duration", type=float)
+    render.add_argument("--out", type=Path, help="default: <spec dir>/fx_runs")
+    render.add_argument("--scale", type=float, default=1.0)
+    render.add_argument("--no-grid", action="store_true")
+    render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    stills = sub.add_parser("stills", help="still sheet: rows = times, columns = variants")
+    stills.add_argument("spec", type=Path)
+    stills.add_argument("--times", type=float, nargs="+", required=True)
+    stills.add_argument("--variants")
+    stills.add_argument("--out", type=Path)
+    stills.add_argument("--scale", type=float, default=1.0)
+    legacy = sub.add_parser("legacy", help="run an external production renderer and record it as a run")
+    legacy.add_argument("--renderer", type=Path, required=True)
+    legacy.add_argument("--config", type=Path, required=True)
+    legacy.add_argument("--start", type=float, default=0.0)
+    legacy.add_argument("--duration", type=float, required=True)
+    legacy.add_argument("--python", help="interpreter for the renderer (default: this one)")
+    legacy.add_argument("--width", type=int)
+    legacy.add_argument("--height", type=int)
+    legacy.add_argument("--fps", type=float)
+    legacy.add_argument("--out", type=Path, help="default: <config dir>/fx_runs")
+    legacy.add_argument("--timeout", type=float, help="seconds (default: max(600, 120 x duration))")
+    legacy.add_argument("--cwd", type=Path, help="working directory for the renderer (default: its own directory)")
+    accept = sub.add_parser("accept", help="append a human decision to acceptance.jsonl")
+    accept.add_argument("run_dir", type=Path)
+    accept.add_argument("--variant", required=True)
+    accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
+    accept.add_argument("--by", required=True)
+    accept.add_argument("--note")
+
+
+def _require_fx():
+    try:
+        import cv2  # noqa: F401
+    except ModuleNotFoundError as error:
+        if error.name != "cv2":
+            raise
+        raise PipelineError("fx には opencv-python-headless が必要です。`uv sync --locked --extra fx` を実行してください") from error
+
+
+def _progress(message):
+    print(message, file=sys.stderr, flush=True)
+
+
+def fx_command(args):
+    """fx サブコマンドを実行して結果の辞書を返す。fx の import はここで遅延させる（既存コマンドは cv2 なしで動く）。"""
+    command = args.fx_command
+    if command == "accept":
+        from .fx import runs
+        return runs.accept(args.run_dir, args.variant, args.decision, args.by, args.note)
+    if command == "legacy":
+        from .fx import legacy
+        return legacy.run_legacy(args.renderer, args.config, args.start, args.duration, args.python, args.width,
+                                 args.height, args.fps, args.out, args.timeout, args.cwd, _progress)
+    _require_fx()
+    from .fx import demo, runs
+    if command == "demo":
+        return demo.create(args.dir, args.width, args.height, args.duration, args.fps)
+    if command == "render":
+        return runs.render_run(args.spec, args.variants, args.start, args.duration, args.out, args.scale,
+                               not args.no_grid, args.force, _progress)
+    if command == "stills":
+        return runs.stills(args.spec, args.times, args.variants, args.out, args.scale)
+    raise PipelineError(f"Unsupported fx command: {command}")
+
+
+def _run_fx(args):
+    try:
+        print(json.dumps(fx_command(args), ensure_ascii=False, indent=2))
+        return 0
+    except (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "fx":
+        return _run_fx(args)
     root = args.project.resolve()
     try:
         with project_lock(root):

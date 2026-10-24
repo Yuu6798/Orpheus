@@ -93,3 +93,17 @@ def make_project(directory, width=160, height=90, **changes):
     data = spec_dict(**changes)
     data["output"]["width"], data["output"]["height"] = width, height
     return write_spec(directory, data)
+
+
+def run_cli(*argv):
+    """`mv ...` を同じプロセスで実行し、(終了コード, stdout の JSON または None, stderr の文字列) を返す。"""
+    import contextlib
+    import io
+
+    from mv_pipeline import cli
+
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = cli.main([str(a) for a in argv])
+    text = out.getvalue()
+    return code, (json.loads(text) if text.strip() else None), err.getvalue()
