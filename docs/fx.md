@@ -220,7 +220,9 @@ argv は `[python, renderer, config, "seg", start, end, out]`（`end = start + d
 ## 出力の色
 
 `libx264 -crf <crf> -preset medium`、`scale=out_color_matrix=bt709:out_range=tv,format=yuv420p`（`accurate_rnd+full_chroma_int`）、
-タグは `bt709 / bt709 / bt709 / tv`。音声は AAC 192k・48kHz・ステレオ、頭 0.02 秒・終わり 0.25 秒のフェード、`offset_s + start` から区間の長さだけ切る。
+タグは `bt709 / bt709 / bt709 / tv`。タグはフィルタの `setparams` と出力オプションの両方で付ける（ffmpeg 7.1 などフレームの色属性が
+出力オプションより優先される版では、`-color_primaries` / `-color_trc` だけだと `bt709/unknown/unknown` になり technical_pass に落ちる。
+Windows で PATH に ffmpeg が無いと使われる imageio-ffmpeg 同梱版がこれに当たる）。音声は AAC 192k・48kHz・ステレオ、頭 0.02 秒・終わり 0.25 秒のフェード、`offset_s + start` から区間の長さだけ切る。
 フレーム数は `round(duration×fps)` ちょうど（`-shortest` は使わない）。グリッドは版の MP4 を同じ書式で復号して並べ直したもので、
 タイルは W/2×H/2（版ごとに枠が固定: base=左上 / layers=右上 / light=左下 / both=右下）。
 

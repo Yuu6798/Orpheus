@@ -205,7 +205,9 @@ def ffmpeg_command(out_path, size, fps, crf, n_frames, audio=None):
     if audio:
         command += ["-ss", f"{audio['start']:.6f}", "-t", f"{audio['duration']:.6f}", "-i", str(audio["path"])]
     command += ["-map", "0:v:0"] + (["-map", "1:a:0"] if audio else [])
-    command += ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+    # ffmpeg 7.1（imageio-ffmpeg 同梱の Windows 版など）はフレームの色属性が出力オプションより優先されるため、setparams でも付ける
+    command += ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+                "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
                 "-sws_flags", "accurate_rnd+full_chroma_int",
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]

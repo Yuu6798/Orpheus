@@ -161,7 +161,7 @@ def small(tmp_path):
 
 
 def snapshot(out):
-    return {str(p.relative_to(out)): p.read_bytes() for p in out.rglob("*") if p.is_file() and p.name != ".lock"}
+    return {p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file() and p.name != ".lock"}
 
 
 def test_failed_render_never_damages_earlier_runs_or_the_index(small, monkeypatch):
