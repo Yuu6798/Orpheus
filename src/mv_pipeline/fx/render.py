@@ -157,7 +157,7 @@ def _flat(ctx, t, active):
 
 def _layered(ctx, t, active):
     size, path, plate = ctx.size, ctx.path, ctx.assets.plate
-    background, plate_lit, hosted = ctx.background, None, {}
+    background, plate_lit, hosted, lit_add, lit_roi = ctx.background, None, {}, None, None
     if active:
         plane_masks = {p.mask_id for p in ctx.planes}
         for lt, _ in active:
@@ -165,15 +165,16 @@ def _layered(ctx, t, active):
         add, roi = light.compose(active, background, size, set(ctx.assets.masks) - plane_masks, hosted.get(None, set()))
         if add is not None:
             background = soft_add(background, add, roi)
-        add, roi = light.compose(active, plate, size, None, None)
-        if add is not None:
-            plate_lit = soft_add(plate, add, roi)
+        lit_add, lit_roi = light.compose(active, plate, size, None, None)
+        if lit_add is not None:
+            plate_lit = soft_add(plate, lit_add, lit_roi)
     spec_bg = ctx.spec.data["layers"]["background"]
     out = camera.warp_with_depth(background, path.matrix(t, spec_bg["parallax"]), size, ctx.assets.depth,
                                  path.depth_amplitude(t), path.direction)
     for item in ctx.stack:
         if isinstance(item, layers.Plane):
-            glow = light.hosted_glow(active, plate, size, hosted[item.id]) if item.id in hosted else None
+            glow = light.hosted_glow(active, plate, size, hosted[item.id], lit_add, lit_roi, plate_lit) \
+                if item.id in hosted else None
             color, alpha = layers.plane_layer(item, path, t, size, plate_lit, glow)
             out = layers.over(out, color, alpha)
         elif isinstance(item, layers.Fog):

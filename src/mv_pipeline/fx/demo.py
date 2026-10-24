@@ -3,7 +3,7 @@
 `mv fx demo DIR` が DIR に次を書く。素材は固定の乱数だけで作るので、同じ引数なら同じ内容になる。
 
     base.png         基準画像（出力の 2 倍の解像度。空・遠景の丘と木・地面・人物。光は当たっていない）
-    depth.png        深度（16bit。白 = 手前。空が最奥、地面は下ほど手前、人物は中間）
+    depth.png        深度（16bit。白 = 手前。空が最奥、地面は下ほど手前、人物は中間。人物の境界は人物マスクの羽根と同じなだらかさ）
     mask_subject.png 人物のマスク   mask_ground.png 地面のマスク
     audio.wav        合成音（低い持続音 + 点火の風切り音 + 脈動。尺 = duration + 1 秒）
     spec.json        上の素材を使う fx-shot/0.1 の設定
@@ -34,6 +34,7 @@ FIGURE_X = 0.45           # 人物の中心（画像の幅に対する割合）
 FLAME = (0.61, 0.43)      # 白い炎の位置（正規化座標）
 REVEAL = 0.045            # 地面マスクが人物の輪郭から内側へ落ちきるまでの距離（高さに対する割合。視差でのぞく穴埋め板の幅より大きく）
 HORIZON_FADE = 0.07       # 人物の内側の帯を、地平線から下へ 0 → 1 に立ち上げる距離（高さに対する割合。地平線で段差を作らない）
+SUBJECT_FEATHER_PX = 3    # 人物マスクの羽根（出力幅 1920 換算。spec の feather_px と、深度の境界のぼかしに共通）
 
 
 def _save(path, writer):
@@ -206,7 +207,13 @@ def _scene(width, height):
     near = np.clip((ys - HORIZON) / (1 - HORIZON), 0, 1) ** 0.8         # 地面: 地平線 0.20 -> 最前面 1.0
     depth = np.where(ys >= HORIZON, 0.20 + 0.80 * near, depth) + np.zeros((1, width), np.float32)
     figure_depth = 0.62 + 0.06 * np.clip((ys - 0.2) / 0.65, 0, 1) + np.zeros((1, width), np.float32)
-    depth = np.where(subject_mask > 0, figure_depth, depth)
+    # 深度の境界は人物マスクの境界に揃える: 内側は人物の（手前の）深度、外側は背景の深度。境界のなだらかさは
+    # 読み込み側が掛けるマスクの羽根（σ = feather_px/2、出力幅 1920 換算）と同じにし、それより広げない。
+    # 境界が硬い段差だと、深度視差のとき近い面と遠い面の移動量の差で輪郭が背景側へ折り返し、手や袖の輪郭が
+    # 二重に複製されて見える（base / light 版）。マスクの羽根と同じなだらかさにすると折り返しが減る。
+    sigma = SUBJECT_FEATHER_PX * width / 1920.0 / 2.0
+    inside_weight = cv2.GaussianBlur((subject_mask > 0).astype(np.float32), (0, 0), sigma, borderType=cv2.BORDER_REPLICATE)
+    depth = depth + (figure_depth - depth) * inside_weight
     return np.asarray(base), subject_mask, ground_mask, np.round(np.clip(depth, 0, 1) * 65535).astype(np.uint16)
 
 
@@ -242,7 +249,7 @@ def _spec(width, height, duration, fps):
         "assets": {
             "base": "base.png",
             "depth": {"path": "depth.png", "near": "white"},
-            "masks": {"subject": {"path": "mask_subject.png", "feather_px": 3},
+            "masks": {"subject": {"path": "mask_subject.png", "feather_px": SUBJECT_FEATHER_PX},
                       "ground": {"path": "mask_ground.png", "feather_px": 6}},
         },
         "camera": {

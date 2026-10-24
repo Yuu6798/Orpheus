@@ -161,6 +161,42 @@ def test_unreadable_fps_without_the_fps_option_is_a_failure_not_a_silent_pass(wo
     assert legacy._expected_frames(1.0, None, None) is None and legacy._expected_frames(1.0, 12.0, None) == (10, 12)
 
 
+def blind_fps(monkeypatch):
+    """出力から fps を読めない状況（inspect が fps=None を返す）にする。"""
+    real = probe.inspect
+
+    def blind(path):
+        info = real(path)
+        info["video"]["fps"] = None
+        return info
+
+    monkeypatch.setattr(probe, "inspect", blind)
+
+
+def test_unreadable_fps_passes_with_the_fps_option_and_checks_only_the_frame_count(work, monkeypatch):
+    studio, config = work
+    config(fps=12)
+    blind_fps(monkeypatch)
+    code, _, err = legacy_cli(studio)                                                        # 指定なし: 従来どおり不合格
+    assert code == 1 and "fps が分からない" in err and "--fps" in err
+    code, result, err = legacy_cli(studio, "--fps", "12")                                    # 指定あり: 案内どおりに合格する
+    assert code == 0, err
+    manifest = read_json(studio / "runs" / result["run_id"] / "manifest.json")
+    item = manifest["variants"]["legacy"]
+    assert manifest["status"] == "succeeded" and item["technical_pass"] is True and item["frames"] == 12
+    assert any("fps の照合を省" in w for w in manifest["warnings"])                           # 省いたことは記録に残る
+    config(fps=12, extra=-3)                                                                 # フレーム数は指定した fps で照合する
+    code, _, err = legacy_cli(studio, "--fps", "12")
+    assert code == 1 and "フレーム数" in err and "fps が違います" not in err
+
+
+def test_readable_fps_is_still_compared_with_the_fps_option(work):
+    studio, config = work
+    config(fps=12)
+    code, _, err = legacy_cli(studio, "--fps", "24")
+    assert code == 1 and "fps が違います" in err
+
+
 def test_nonzero_exit_fails_without_touching_earlier_runs(work):
     studio, config = work
     config(fps=12)

@@ -256,16 +256,23 @@ def compose(active, albedo, size, mask_ids=None, glow_for=None):
     return add, roi
 
 
-def hosted_glow(active, plate, size, light_ids):
+def hosted_glow(active, plate, size, light_ids, lit_add=None, lit_roi=None, plate_lit=None):
     """plane に載った光点の発光 (H, W, 3)。plane の色に足して一緒に動かす加算分（None = 発光なし）。
 
-    flat 経路（light 版）と同じソフトニーを通す: 基準画像 plate に対して soft_add した差分
-    （knee(plate + glow) − knee(plate)）を返すので、plane の不透明部分では light 版と同じ芯の見え方になる。
+    受光を当てた基準画像 plate_lit（= soft_add(plate, lit_add)）を基準に、発光を足した結果を**受光と合わせて
+    1 回の soft_add** で作り、その差分（soft_add(plate, lit_add + glow) − plate_lit）を返す。plane の不透明部分
+    （plate_lit が載る）では plate_lit + 差分 = flat 経路（light 版）と同じ合成になり、受光と光点が重なる画素でも
+    ソフトニーが 2 回かからない。受光がない（lit_add が None）なら plate_lit は plate。
     """
-    add, roi = compose(active, plate, size, set(), light_ids)
-    if add is None:
+    glow, glow_roi = compose(active, plate, size, set(), light_ids)
+    if glow is None:
         return None
+    base, roi = plate, glow_roi
+    if lit_add is not None:
+        y0, y1, x0, x1 = lit_roi
+        glow[y0:y1, x0:x1] += lit_add[y0:y1, x0:x1]       # glow は compose が作った新しい配列。受光の加算量を足し込む
+        base, roi = plate_lit, _union(glow_roi, lit_roi)
     y0, y1, x0, x1 = roi
-    out = np.zeros_like(add)
-    out[y0:y1, x0:x1] = soft_add(plate, add, roi)[y0:y1, x0:x1] - plate[y0:y1, x0:x1]
+    out = np.zeros_like(glow)
+    out[y0:y1, x0:x1] = soft_add(plate, glow, roi)[y0:y1, x0:x1] - base[y0:y1, x0:x1]
     return out

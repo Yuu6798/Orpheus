@@ -6,7 +6,7 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 
 from fx_synth import FULL, make_project  # noqa: E402
-from mv_pipeline.fx import camera as fxcamera, layers as fxlayers, render  # noqa: E402
+from mv_pipeline.fx import camera as fxcamera, layers as fxlayers, light as fxlight, render  # noqa: E402
 from mv_pipeline.fx import spec as fxspec  # noqa: E402
 
 T = 1.0
@@ -294,6 +294,28 @@ def test_hosted_emitter_core_goes_through_the_same_soft_knee_as_the_flat_route(t
     knee = lit & (flat.max(axis=2) > 200) & (flat.max(axis=2) < 250)               # ソフトニーが効いている帯
     assert lit.sum() > 50 and knee.sum() > 10
     assert np.abs(both - flat)[core].max() <= 2                                     # 加算の素通しではなく flat と同じ圧縮
+
+
+def test_hosted_glow_over_diffuse_goes_through_one_soft_knee_like_the_flat_route(tmp_path):
+    light = emitter_light([0.4, 0.5], size=0.05, glow=1.5)
+    light["receivers"] = [{"mask": "subject", "gain": 1.5}]                         # 受光と光点が人物の上で重なる
+    light["intensity"] = 2.0                                                        # 重なりは 0.8 を大きく超える（ソフトニーが効く）
+    ctx = build(tmp_path, 320, 180, camera=STILL, layers=layer_spec(), lights=[light])   # 静止・深度視差なし
+    assert ctx.lights[0].host == "subject" and ctx.path.parallax_px == 0
+    both, flat = (render.frame(ctx, T, v).astype(int) for v in ("both", "light"))
+    lt = ctx.lights[0]
+    diffuse = np.zeros(ctx.size[::-1], dtype=bool)
+    glow = np.zeros_like(diffuse)
+    y0, y1, x0, x1 = lt.roi_main
+    diffuse[y0:y1, x0:x1] = lt.receivers[0].diffuse_w > 0
+    y0, y1, x0, x1 = lt.roi_glow
+    glow[y0:y1, x0:x1] = lt.glow_w > 0
+    (active,) = fxlight.levels(ctx.lights, T)
+    add, _ = fxlight.compose([active], ctx.assets.plate, ctx.size, None, "all")
+    hot = ((ctx.assets.plate + add) > 0.8).any(axis=2)                              # 合計がニーに入る画素
+    overlap = core_of(ctx) & diffuse & glow & hot
+    assert overlap.sum() > 50                                                       # 検査する重なりが十分ある
+    assert np.abs(both - flat)[overlap].max() <= 1                                  # 二重にニーを掛けず、flat と同じ 1 回の合成
 
 
 def test_attach_decides_which_layer_hides_the_emitter(tmp_path):

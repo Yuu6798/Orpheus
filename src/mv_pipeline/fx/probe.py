@@ -96,9 +96,12 @@ def decode(path, stream):
             "error": None if ok else (error[-400:] or f"ffmpeg が終了コード {result.returncode} で失敗しました")}
 
 
-def check_video(path, *, width=None, height=None, fps=None, frames=None, audio=None, audio_s=None, bt709=False):
+def check_video(path, *, width=None, height=None, fps=None, frames=None, audio=None, audio_s=None, bt709=False,
+                fps_unreadable_ok=False):
     """動画の構造検査。指定した項目だけを照合し、失敗は例外でなく `failures` に集める。
 
+    fps:     期待 fps。動画から fps を読めないときは不合格。fps_unreadable_ok=True なら、読めないときだけ
+             fps の照合を省く（読めた fps は従来どおり照合する。legacy が --fps 指定で期待枚数だけ照合するのに使う）。
     frames:  期待フレーム数。整数なら一致、(最小, 最大) ならその範囲（legacy の `-shortest` 許容）。
     audio:   True なら音声ストリームが必須、False なら不要、None なら問わない。
     audio_s: 復号した音声の尺（秒）の期待値。許容 = 1 フレーム + AAC の 1 パケット (1024 サンプル)。
@@ -115,7 +118,8 @@ def check_video(path, *, width=None, height=None, fps=None, frames=None, audio=N
         failures.append(f"復号エラー: {run['error']}")
     if (width is not None and video["width"] != width) or (height is not None and video["height"] != height):
         failures.append(f"寸法が違います: {video['width']}x{video['height']}（期待 {width}x{height}）")
-    if fps is not None and (video["fps"] is None or not math.isclose(video["fps"], fps, rel_tol=2e-3)):
+    if fps is not None and not (video["fps"] is None and fps_unreadable_ok) and (
+            video["fps"] is None or not math.isclose(video["fps"], fps, rel_tol=2e-3)):
         failures.append(f"fps が違います: {video['fps']}（期待 {fps:g}）")
     if frames is not None:
         low, high = (frames, frames) if isinstance(frames, int) else frames

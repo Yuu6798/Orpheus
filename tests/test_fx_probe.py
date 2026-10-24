@@ -51,6 +51,23 @@ def test_each_mismatch_is_reported_as_a_failure_not_an_exception(good, expect, t
     assert result["pass"] is False and any(text in f for f in result["failures"]), result["failures"]
 
 
+def test_unreadable_fps_fails_unless_the_caller_allows_skipping_it(good, monkeypatch):
+    path = good / "good.mp4"
+    real = probe.inspect
+
+    def blind(p):
+        info = real(p)
+        info["video"]["fps"] = None
+        return info
+
+    monkeypatch.setattr(probe, "inspect", blind)
+    assert probe.check_video(path, fps=12)["pass"] is False
+    assert probe.check_video(path, fps=12, fps_unreadable_ok=True)["pass"] is True           # 読めないときだけ省く
+    monkeypatch.undo()
+    assert probe.check_video(path, fps=12, fps_unreadable_ok=True)["pass"] is True
+    assert probe.check_video(path, fps=24, fps_unreadable_ok=True)["pass"] is False          # 読めた fps は従来どおり照合
+
+
 def test_frames_may_be_given_as_a_range_and_audio_may_be_required(good):
     assert probe.check_video(good / "good.mp4", frames=(16, 18))["pass"] is True
     assert probe.check_video(good / "good.mp4", frames=(18, 20))["pass"] is True

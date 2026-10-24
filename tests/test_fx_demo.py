@@ -158,6 +158,22 @@ def test_demo_ground_mask_rises_smoothly_inside_the_figure(tmp_path):
     assert ground[~subject & (np.arange(ground.shape[0])[:, None] > horizon + 2)].min() == 1.0   # 外の地面は全面
 
 
+def test_demo_depth_edge_follows_the_subject_mask_edge_and_is_no_softer_than_its_feather(tmp_path):
+    demo.create(tmp_path, 640, 360, 1.0, 12)
+    ctx = render.prepare(fxspec.load_spec(tmp_path / "spec.json"))
+    depth, mask = ctx.assets.depth, ctx.assets.masks["subject"] > 0.5
+    height = depth.shape[0]
+    rows = slice(int(0.2 * height), int(demo.HORIZON * height) - 2)                 # 地平線より上: 外側は空（遠い）
+    inside = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)[rows]
+    outside = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 5)[rows]
+    sigma = demo.SUBJECT_FEATHER_PX * 640 / 1920 / 2                                  # マスクの羽根 σ（出力画素）
+    reach = 3 * sigma + 1                                                            # 境界からこの距離の外は、羽根の影響が及ばない
+    core, away = inside > reach, outside > reach
+    assert core.sum() > 500 and away.sum() > 5000
+    assert depth[rows][core].min() > 0.55                                            # 人物の内側は手前の深度
+    assert depth[rows][away].max() < 0.25                                            # 外側は背景の深度（人物の深度が染み出さない）
+
+
 def test_demo_light_differs_by_object_and_the_far_side_stays_dark(tmp_path):
     ctx, gain, (xs, ys, flame, _) = lit_demo(tmp_path)
     subject = ctx.planes[0].alpha > 0.99

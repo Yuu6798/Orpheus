@@ -74,7 +74,8 @@ def plane_layer(plane, path, t, size, lit=None, glow=None):
     """plane をカメラ変換して (premult 色, alpha) を返す。
 
     lit: 光を当てた基準画像（線形 H×W×3）。None なら光なしの静的な premult を使う。
-    glow: この plane が持つ光源の発光（層と一緒に動く加算分。alpha の外にも載る）。
+    glow: この plane が持つ光源の発光（層と一緒に動く加算分。alpha の外にも載る）。light.hosted_glow が
+          「受光と発光を合わせて 1 回 soft_add した色 − lit」として作るので、lit と足すとソフトニーは 1 回だけ掛かる。
     """
     matrix = path.matrix(t, plane.parallax, plane.drift_px)
     if lit is None and glow is None:
