@@ -10,9 +10,12 @@ emitter.size）は元画像の幅が基準。出力と縦横比が違って cove
 対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈し、出力画素へ写す。
 写し方は assets.to_screen / width_scale）。時間は**ショット時刻**（spec の時間軸。区間を切って描いても
 同じ t は同じ絵になる）。
+
+look（色調整・周辺減光・粒状感）は上の座標規約の外: 出力画面基準で、表示用の値（ガンマ符号化した 0..1）の上で掛ける。
+時間は評価時刻 τ = 時刻 + look.grade.time_offset_s の軸（look.py）。
 """
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import jsonschema
@@ -40,6 +43,16 @@ class Spec:
     def resolve(self, rel):
         """spec 内の相対パスを絶対パスにする（safe_path で逸脱を拒否）。"""
         return safe_path(self.base_dir, rel)
+
+
+LOOK_WARNING_PREFIX = "look"   # look 由来の warnings は必ずこの語で始める（without_look が一緒に外す）
+
+
+def without_look(sp):
+    """look を外した有効 spec（`--no-look`）。正規化 spec が変わるのでキャッシュ key が分かれ、look 由来の warnings も外れる。
+    path・sha256 は元のファイルのまま（run の spec.json は元ファイルの写しで、有効 spec との差は manifest の look に残る）。"""
+    return replace(sp, data={**sp.data, "look": None},
+                   warnings=tuple(w for w in sp.warnings if not w.startswith(LOOK_WARNING_PREFIX)))
 
 
 def canonical_json(data):
@@ -173,6 +186,7 @@ def _normalize(raw):
         },
         "layers": None if layers is None else _normalize_layers(layers),
         "lights": [_normalize_light(light) for light in raw.get("lights", [])],
+        "look": None if raw.get("look") is None else _normalize_look(raw["look"]),
     }
     data.update(_ext(raw))
     return data
@@ -222,6 +236,31 @@ def _normalize_light(light):
     return out
 
 
+def _grade_key(key):
+    """配列形 [t, sat, [r, g, b], con] とオブジェクト形 {t, sat, gain, con} を、オブジェクト形に揃える。"""
+    if isinstance(key, list):
+        key = {"t": key[0], "sat": key[1], "gain": key[2], "con": key[3]}
+    return {"t": _f(key["t"]), "sat": _f(key.get("sat", 1.0)), "gain": _vec(key.get("gain", [1.0, 1.0, 1.0])),
+            "con": _f(key.get("con", 0.0)), **_ext(key)}
+
+
+def _normalize_look(look):
+    """既定値は実制作レンダラと同じ（周辺減光 0.38 / 0.55 / 1.6 / 0.55、粒状感 σ2.0・2px・6 枚・seed 7、ブレンド 1.2 秒）。"""
+    grade, vignette, grain = look.get("grade"), look.get("vignette"), look.get("grain")
+    return {
+        "grade": None if grade is None else {
+            "keys": [_grade_key(k) for k in grade["keys"]], "blend_s": _f(grade.get("blend_s", 1.2)),
+            "time_offset_s": _f(grade.get("time_offset_s", 0.0)), **_ext(grade)},
+        "vignette": None if vignette is None else {
+            "amount": _f(vignette.get("amount", 0.38)), "start": _f(vignette.get("start", 0.55)),
+            "power": _f(vignette.get("power", 1.6)), "floor": _f(vignette.get("floor", 0.55)), **_ext(vignette)},
+        "grain": None if grain is None else {
+            "sigma": _f(grain.get("sigma", 2.0)), "size_px": _i(grain.get("size_px", 2)),
+            "frames": _i(grain.get("frames", 6)), "seed": _i(grain.get("seed", 7)), **_ext(grain)},
+        **_ext(look),
+    }
+
+
 def _increasing(keys, label):
     times = [k["t"] for k in keys]
     if any(b <= a for a, b in zip(times, times[1:])):
@@ -259,4 +298,16 @@ def _validate_semantics(data):
             warnings.append(f"light {light['id']!r}: depth を指定していますが assets.depth がないため無視します")
     if data["camera"]["parallax_px"] > 0 and not data["assets"]["depth"]:
         warnings.append("camera.parallax_px > 0 ですが assets.depth がないため深度視差は無効です")
+    look = data["look"]
+    if look is not None:
+        if look["grade"] is None and look["vignette"] is None and look["grain"] is None:
+            warnings.append(f"{LOOK_WARNING_PREFIX}: grade / vignette / grain のどれも指定がないため、何も変わりません")
+        if look["grade"] is not None:
+            keys = look["grade"]["keys"]
+            _increasing(keys, "look.grade.keys")
+            blend = look["grade"]["blend_s"]
+            short = [(a["t"], b["t"]) for a, b in zip(keys, keys[1:]) if b["t"] - a["t"] < blend]
+            if short:
+                warnings.append(f"{LOOK_WARNING_PREFIX}.grade: キーの間隔が blend_s（{blend:g} 秒）より短い区間 {short} があり、"
+                                f"区間の頭で色が段差になります（blend_s を縮めるか、キーの間隔を空けてください）")
     return warnings

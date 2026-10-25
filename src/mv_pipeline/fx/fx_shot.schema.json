@@ -101,7 +101,18 @@
       "additionalProperties": false,
       "patternProperties": {"^x_": {}}
     },
-    "lights": {"type": "array", "items": {"$ref": "#/$defs/light"}}
+    "lights": {"type": "array", "items": {"$ref": "#/$defs/light"}},
+    "look": {
+      "type": "object",
+      "description": "最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式・同じ既定値）。光とレイヤーの後、表示用の値（ガンマ符号化した 0..1）の上で全 4 版に同じものを掛ける。周辺減光と粒状感は出力画面基準（元画像の座標ではない）。無い子（grade / vignette / grain）は無効、look 自体が無ければ従来とバイト同一。",
+      "properties": {
+        "grade": {"$ref": "#/$defs/look_grade"},
+        "vignette": {"$ref": "#/$defs/look_vignette"},
+        "grain": {"$ref": "#/$defs/look_grain"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    }
   },
   "additionalProperties": false,
   "patternProperties": {"^x_": {}},
@@ -130,6 +141,77 @@
         "zoom": {"type": "number", "minimum": 1, "maximum": 8, "default": 1},
         "center": {"$ref": "#/$defs/point", "default": [0.5, 0.5]},
         "ease": {"$ref": "#/$defs/ease", "default": "linear"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "grade_gain": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number", "minimum": 0, "maximum": 4},
+        {"type": "number", "minimum": 0, "maximum": 4},
+        {"type": "number", "minimum": 0, "maximum": 4}
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "grade_key": {
+      "description": "区間 [t, 次のキーの t) の色。配列形 [t, sat, [r, g, b], con]（実制作の grade_keys と同じ）かオブジェクト形。オブジェクト形で省いた項目は中立（sat 1・gain [1,1,1]・con 0）。t は評価時刻 τ = 時刻 + time_offset_s の軸（秒）。",
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {"type": "number"},
+            {"type": "number", "minimum": 0, "maximum": 3},
+            {"$ref": "#/$defs/grade_gain"},
+            {"type": "number", "minimum": 0, "maximum": 1}
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        {
+          "type": "object",
+          "required": ["t"],
+          "properties": {
+            "t": {"type": "number"},
+            "sat": {"type": "number", "minimum": 0, "maximum": 3, "default": 1},
+            "gain": {"$ref": "#/$defs/grade_gain", "default": [1, 1, 1]},
+            "con": {"type": "number", "minimum": 0, "maximum": 1, "default": 0}
+          },
+          "additionalProperties": false,
+          "patternProperties": {"^x_": {}}
+        }
+      ]
+    },
+    "look_grade": {
+      "type": "object",
+      "required": ["keys"],
+      "properties": {
+        "keys": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/grade_key"}},
+        "blend_s": {"type": "number", "minimum": 0, "maximum": 10, "default": 1.2, "description": "次のキーの時刻の何秒前から次の色へ移るか（smoothstep）。0 なら段差。"},
+        "time_offset_s": {"type": "number", "default": 0, "description": "評価時刻 τ = 時刻 + time_offset_s。曲の絶対秒で書いたキーを使うときは、区間の曲上の開始秒を入れる。grain のコマ番号 round(τ·fps) も同じ τ で数える。"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "look_vignette": {
+      "type": "object",
+      "properties": {
+        "amount": {"type": "number", "minimum": 0, "maximum": 2, "default": 0.38},
+        "start": {"type": "number", "minimum": 0, "maximum": 2, "default": 0.55, "description": "減光が始まる楕円距離 r（辺の中点が 1、角が √2）。"},
+        "power": {"type": "number", "minimum": 0.1, "maximum": 8, "default": 1.6},
+        "floor": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.55, "description": "乗算ゲインの下限。"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "look_grain": {
+      "type": "object",
+      "properties": {
+        "sigma": {"type": "number", "minimum": 0, "maximum": 50, "default": 2.0, "description": "正規分布の標準偏差（0..255 の単位）。"},
+        "size_px": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2, "description": "粒の一辺（出力画素。解像度に比例しない）。"},
+        "frames": {"type": "integer", "minimum": 1, "maximum": 64, "default": 6, "description": "パターンの枚数。コマ番号で巡回する。"},
+        "seed": {"type": "integer", "minimum": 0, "default": 7, "description": "粒の乱数の seed。spec の seed とは独立で、版にも依らない。"}
       },
       "additionalProperties": false,
       "patternProperties": {"^x_": {}}

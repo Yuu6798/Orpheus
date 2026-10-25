@@ -13,6 +13,9 @@
   手・袖・顔・肩の炎側が明るく、人物の反対側や遠い裾は暗いまま。輪郭光が炎側の縁に出る。
   地面は炎の真下に縦長の反射が出るだけで、霧の塊のようには広がらない。
 - 霧は人物の後ろ / 火の粉は人物の前 / カメラはゆっくり寄る。
+
+既定の spec には look（色調整・周辺減光・粒状感）を入れない（光とレイヤーの数値を目で・テストで確かめる素の絵のまま）。
+`--look` を付けると、夜向けの look の例を足した spec を書く（素材は同じ）。
 """
 import math
 import os
@@ -238,9 +241,21 @@ def _audio(seconds, rate=48000):
     return (stereo * 32767).astype("<i2"), rate
 
 
-def _spec(width, height, duration, fps):
-    intro = round(min(1.0, duration / 4), 3)
+def _look(duration):
+    """夜向けの look の例: 冷たく落とした色から、後半は少し彩度とコントラストを上げた赤紫寄りへ。周辺減光と粒状感は実制作と同じ既定値。"""
+    second = round(duration * 0.6, 3)
     return {
+        "grade": {"keys": [[0.0, 0.85, [0.95, 1.0, 1.07], 0.12],
+                           {"t": second, "sat": 1.12, "gain": [1.06, 0.94, 1.08], "con": 0.18}],
+                  "blend_s": round(min(1.2, second), 3), "time_offset_s": 0.0},
+        "vignette": {"amount": 0.38, "start": 0.55, "power": 1.6, "floor": 0.55},
+        "grain": {"sigma": 2.0, "size_px": 2, "frames": 6, "seed": 7},
+    }
+
+
+def _spec(width, height, duration, fps, look=False):
+    intro = round(min(1.0, duration / 4), 3)
+    spec = {
         "schema_version": SCHEMA_VERSION,
         "output": {"width": width, "height": height, "fps": fps, "crf": 18},
         "duration_s": duration,
@@ -276,10 +291,13 @@ def _spec(width, height, duration, fps):
             "depth": 0.7, "depth_falloff": 0.45,
         }],
     }
+    if look:
+        spec["look"] = _look(duration)
+    return spec
 
 
-def create(directory, width=960, height=540, duration=10.0, fps=24):
-    """DIR にデモ素材と spec.json を作る。戻り値は CLI が stdout に出す要約。"""
+def create(directory, width=960, height=540, duration=10.0, fps=24, look=False):
+    """DIR にデモ素材と spec.json を作る。look=True なら spec に夜向けの look の例を足す。戻り値は CLI が stdout に出す要約。"""
     if width < 160 or height < 90 or width % 2 or height % 2:
         raise PipelineError(f"--width / --height は偶数で 160x90 以上にしてください: {width}x{height}")
     if not 0.5 <= duration <= 600 or not 1 <= fps <= 120:
@@ -301,7 +319,7 @@ def create(directory, width=960, height=540, duration=10.0, fps=24):
             stream.writeframes(samples.tobytes())
 
     _save(directory / "audio.wav", write_wav)
-    spec = _spec(width, height, float(duration), float(fps))
+    spec = _spec(width, height, float(duration), float(fps), look)
     atomic_json(directory / "spec.json", spec)  # 最後に書く: spec.json があれば素材は揃っている
     return {"spec": str((directory / "spec.json").resolve()), "size": [width, height], "duration_s": float(duration),
             "fps": float(fps), "files": ["base.png", "depth.png", "mask_subject.png", "mask_ground.png", "audio.wav", "spec.json"],

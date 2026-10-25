@@ -10,6 +10,8 @@
 run_id = `20261024T120000Z-<key 先頭 8>`。同じ入力は同じ key になり、出力が揃って技術検査を通っていれば再描画しない。
 key は**描画に影響する入力すべて**（正規化 spec・全素材の sha256・fx パッケージの指紋・版の集合・区間・出力寸法と scale・
 ライブラリ版）から作る。キャッシュが古い絵を返さないための要で、入力を足したらここに足す。
+spec の look は正規化 spec に入るので key に入る。`--no-look` は spec から look を外した有効 spec で key を作るため、
+look 有りの run とは key が分かれ（キャッシュが混ざらない）、spec に look が無いときは付けても付けなくても同じ key になる。
 
 manifest の status は running -> succeeded | failed。running のまま残った run（プロセスが強制終了した）は、
 次に同じ <out> をロックしたとき failed に直す。
@@ -80,6 +82,13 @@ def render_key(sp, assets, variants, start, duration, n_frames, size, scale, gri
 
 def default_out(sp):
     return sp.base_dir / "fx_runs"
+
+
+def resolve_look(sp, no_look=False):
+    """(有効な spec, look の状態)。状態は applied（spec の look を描く）/ disabled（--no-look で外した）/ absent（spec に look が無い）。"""
+    if sp.data["look"] is None:
+        return sp, "absent"
+    return (fxspec.without_look(sp), "disabled") if no_look else (sp, "applied")
 
 
 # ---- run ---------------------------------------------------------------------
@@ -192,21 +201,22 @@ def summarize(run_dir, manifest, reused):
     grid = manifest.get("grid")
     return {"run_id": manifest["run_id"], "run_dir": str(run_dir), "reused": reused, "status": manifest["status"],
             "technical_pass": manifest["technical_pass"], "interval": manifest["interval"],
-            "size": manifest["output"]["size"], "variants": variants,
+            "size": manifest["output"]["size"], "look": manifest.get("look"), "variants": variants,
             "grid": str(run_dir / grid["path"]) if grid else None, "warnings": manifest["warnings"]}
 
 
 # ---- render ------------------------------------------------------------------
 
 def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, scale=1.0, grid=True, force=False,
-               progress=None):
-    """spec から版ごとの MP4（と grid.mp4）を描き、run として記録する。同じ入力で成功済みなら再利用する。"""
+               progress=None, no_look=False):
+    """spec から版ごとの MP4（と grid.mp4）を描き、run として記録する。同じ入力で成功済みなら再利用する。
+    no_look=True なら spec の look を外して描く（比較用。manifest の look は disabled）。"""
     from . import assets as fxassets
     from . import compare, render
 
     began = time.monotonic()
     say = progress or (lambda message: None)
-    sp = fxspec.load_spec(spec_path)
+    sp, look_state = resolve_look(fxspec.load_spec(spec_path), no_look)
     variants = parse_variants(variants)
     start, duration, n_frames = resolve_interval(sp, start, duration)
     size = render.scaled_size(sp, scale)
@@ -223,7 +233,8 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
             manifest = reusable(out, index, key)
             if manifest:
                 say(f"[fx] 同じ入力の成功 run を再利用します: {manifest['run_id']}（作り直すには --force）")
-                return summarize(out / manifest["run_id"], manifest, reused=True)
+                # 再利用した run の manifest.look は作ったときの呼び出しの状態。この呼び出しの状態（映像は同じ）を返す
+                return {**summarize(out / manifest["run_id"], manifest, reused=True), "look": look_state}
         run = Run(out, key, "render", "render.log")
         try:
             shutil.copyfile(sp.path, run.dir / "spec.json")
@@ -232,13 +243,15 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
                       "normalized_sha256": hashlib.sha256(fxspec.canonical_json(sp.data).encode("utf-8")).hexdigest()},
                 assets=assets,
                 engine={"name": "fx", "version": VERSION, "schema_version": SCHEMA_VERSION, "fingerprint": fingerprint()},
-                libraries=libraries, seed=sp.data["seed"],
+                libraries=libraries, seed=sp.data["seed"], look=look_state,
                 interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
                 output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
                 variants={}, grid=None, warnings=[])
             run.save()
             run.log(f"render start key={key} variants={','.join(variants)} start={start:g} duration={duration:g} "
-                    f"frames={n_frames} size={size[0]}x{size[1]}")
+                    f"frames={n_frames} size={size[0]}x{size[1]} look={look_state}")
+            if look_state == "disabled":
+                say("[fx] --no-look: spec の look を外して描きます")
             ctx = render.prepare(sp, scale)
             run.manifest["warnings"] = list(ctx.warnings)
             for warning in ctx.warnings:
@@ -295,13 +308,14 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
 
 # ---- stills ------------------------------------------------------------------
 
-def stills(spec_path, times, variants=None, out=None, scale=1.0):
-    """行=時刻・列=版の静止画シートを <out>/stills-<key8>.png に書く（同じ入力は同じファイル名）。"""
+def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False):
+    """行=時刻・列=版の静止画シートを <out>/stills-<key8>.png に書く（同じ入力は同じファイル名）。
+    no_look=True なら spec の look を外して描く（look の有無はファイル名＝key に出る）。"""
     from . import assets as fxassets
     from . import compare, render
 
     began = time.monotonic()
-    sp = fxspec.load_spec(spec_path)
+    sp, look_state = resolve_look(fxspec.load_spec(spec_path), no_look)
     variants = parse_variants(variants)
     times = [float(t) for t in times]
     total = sp.data["duration_s"]
@@ -318,7 +332,7 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0):
     sheet = compare.stills_sheet(ctx, times, variants, ctx.variant_notes())
     path = (Path(out) if out else default_out(sp)).resolve() / f"stills-{key[:8]}.png"
     compare.save_png_atomic(sheet, path)
-    return {"path": str(path), "times": times, "variants": list(variants), "cell": list(size),
+    return {"path": str(path), "times": times, "variants": list(variants), "cell": list(size), "look": look_state,
             "sheet": [sheet.shape[1], sheet.shape[0]], "warnings": list(ctx.warnings),
             "seconds": round(time.monotonic() - began, 1)}
 
