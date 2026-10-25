@@ -13,9 +13,11 @@
   フレームごとの仕事は読むだけ（Look は不変。frame は乱数を引かず、ctx も linear も書き換えない）。
 - spec に look が無ければ呼ばれない（render.frame は従来の to_srgb8 の経路を通り、出力は従来とバイト単位で同じ）。
 
-評価時刻 τ = 時刻 t + grade.time_offset_s。grade のキーの t と、grain のコマ番号 round(τ·fps) は τ で数える
-（実制作の grade_keys は曲の絶対秒なので、区間の曲上の開始秒を time_offset_s に入れるとそのまま移せる）。
+評価時刻 τ = 時刻 t + grade.time_offset_s。grade のキーの t と、grain のコマ番号 grain_index(τ, fps)（= τ·fps を四捨五入、
+ちょうど半コマは切り上げ）は τ で数える（実制作の grade_keys は曲の絶対秒なので、区間の曲上の開始秒を time_offset_s に入れると
+そのまま移せる）。
 """
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -26,6 +28,7 @@ from .color import to_srgb_float
 LUMA = (0.299, 0.587, 0.114)    # Rec.601。彩度の基準は各画素自身の輝度
 _LUMA32 = tuple(np.float32(w) for w in LUMA)
 _BAND_PIXELS = 1 << 15          # 帯 1 枚の画素数の目安（行数 = これ // 幅）
+_TIE_EPS = 1e-6                 # コマ番号の「ちょうど半コマ」を一貫して切り上げるための余裕（単位はコマ。float の誤差 ≈ 1e-9 より十分大きい）
 
 
 @dataclass
@@ -37,6 +40,16 @@ class Look:
     grain: object
     fps: float
     time_offset_s: float
+
+
+def grain_index(tau, fps):
+    """評価時刻 tau の grain のコマ番号（巡回する前の整数）= tau·fps を四捨五入。ちょうど半コマは切り上げる。
+
+    Python の round() は半端を偶数へ寄せ、float の誤差が残りを決めるので、(start + time_offset_s)·fps が半コマに当たると
+    連続する出力フレームが同じ粒になり別の粒が飛ばされる（実制作は整数のコマ番号を数えるので起きない）。
+    _TIE_EPS ぶん余裕を持たせて半コマを一貫して切り上げれば、出力フレームが 1 つ進むたびに番号がちょうど 1 進む。
+    """
+    return math.floor(tau * fps + 0.5 + _TIE_EPS)
 
 
 def vignette_map(size, params):
@@ -156,7 +169,7 @@ def _run(look, source, t, encode):
     """
     tau = t + look.time_offset_s
     grade = grade_params(look.grade, tau) if look.grade is not None else None
-    grain = look.grain[round(tau * look.fps) % len(look.grain)] if look.grain is not None else None
+    grain = look.grain[grain_index(tau, look.fps) % len(look.grain)] if look.grain is not None else None
     height, width = source.shape[:2]
     rows = max(1, _BAND_PIXELS // width)
     out = np.empty(source.shape[:2] + (3,), dtype=np.uint8)
@@ -169,7 +182,7 @@ def _run(look, source, t, encode):
 def finish(look, display, t):
     """表示用の値 display（float32 (H, W, 3)、ガンマ符号化・0..1）に look を掛けて uint8 (H, W, 3) を返す。
 
-    grade → ×255 → vignette（乗算）→ grain（加算、コマは round(τ·fps) % frames）→ 切り捨て。display は変更しない。
+    grade → ×255 → vignette（乗算）→ grain（加算、コマは grain_index(τ, fps) % frames）→ 切り捨て。display は変更しない。
     """
     return _run(look, display, t, lambda band: np.asarray(band, dtype=np.float32))
 

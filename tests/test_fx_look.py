@@ -168,6 +168,28 @@ def test_finish_never_modifies_its_input(tmp_path):
     assert np.array_equal(display, before)
 
 
+def test_apply_from_linear_differs_from_the_reference_in_only_a_handful_of_values(tmp_path):
+    """上の test_apply_from_linear_... の許容（2%）は実測（約 6e-6）よりずっと緩い。符号化の誤差で切り捨ての境目がずれる値は、ごくわずかのはず。"""
+    w, h, fps = 160, 90, 24.0
+    u8 = np.random.default_rng(5).integers(0, 256, (h, w, 3), dtype=np.uint8)
+    state = prepared_look(tmp_path, LOOK, (w, h), fps)
+    for t in (0.5, 2.4, 7.0):
+        want = legacy_frame(u8.astype(np.float32), t, LEGACY_KEYS, 1.2, legacy_vig(w, h), legacy_grain(w, h), fps)
+        diff = np.abs(fxlook.apply(state, color.to_linear(u8), t).astype(int) - want.astype(int))
+        assert diff.max() <= 1 and (diff > 0).mean() < 1e-4, (t, diff.max(), (diff > 0).mean())
+
+
+def test_a_look_with_no_active_stage_still_truncates_so_it_is_not_the_same_as_no_look(tmp_path):
+    """警告と docs の主張どおり: 効く段が無い look でも look の経路（float の sRGB 符号化 → 切り捨て）を通り、look なしの to_srgb8（丸め）に対して
+    値の一部が 1 段階暗くなる（明るくなる値は無い）。同じ出力にしたいなら look を外す。"""
+    linear = np.random.default_rng(1).random((90, 160, 3), dtype=np.float32)
+    for look in ({}, {"vignette": {"amount": 0.0}, "grain": {"sigma": 0.0}}):
+        state = prepared_look(tmp_path, look, (160, 90), 24.0)
+        assert state.grade is None and state.vignette is None and state.grain is None
+        diff = fxlook.apply(state, linear, 0.0).astype(int) - color.to_srgb8(linear).astype(int)
+        assert diff.min() == -1 and diff.max() == 0 and 0.3 < (diff != 0).mean() < 0.7
+
+
 # ---- grade: キーの補間 ------------------------------------------------------------
 
 def grade_at(tmp_path, keys, tau, blend_s=1.2):
@@ -313,6 +335,50 @@ def test_grain_depends_only_on_its_own_seed_and_sigma_zero_is_disabled(tmp_path)
     assert state.grain is None and state.vignette is None
 
 
+# ---- grain: 半コマでもコマ番号は 1 つずつ進む / time_offset_s は τ で効く -----------------
+
+HALF_FRAME_CASES = [(25, 0.5, 0.0), (25, 2.5, 0.0), (30, 0.0, 62.45), (25, 0.0, 10.02), (24, 0.0, 0.0625), (30, 0.05, 62.4)]
+
+
+@pytest.mark.parametrize("fps,start,offset", HALF_FRAME_CASES)
+def test_grain_index_advances_by_exactly_one_per_output_frame_even_when_start_lands_on_a_half_frame(fps, start, offset):
+    """(start + time_offset_s)·fps が半コマに当たると、Python の round() は偶数へ寄せ、連続する 2 フレームが同じ粒になって別の粒が飛んでいた。"""
+    from mv_pipeline.fx import timeline
+    indices = [fxlook.grain_index(timeline.frame_time(i, fps, start) + offset, fps) for i in range(60)]
+    assert [b - a for a, b in zip(indices, indices[1:])] == [1] * 59
+
+
+def test_grain_index_rounds_to_the_nearest_frame_and_sends_exact_halves_up():
+    values = (0.0, 0.4, 0.5, 0.6, 1.0, 45.6, -0.4, -0.5, -0.6, -24.0)
+    assert [fxlook.grain_index(x / 24, 24) for x in values] == [0, 0, 1, 1, 1, 46, 0, 0, -1, -24]
+
+
+@pytest.mark.parametrize("fps,start,offset", HALF_FRAME_CASES[:1] + HALF_FRAME_CASES[2:5])
+def test_consecutive_output_frames_get_different_grain_patterns_on_half_frames(tmp_path, fps, start, offset):
+    from mv_pipeline.fx import timeline
+    look = {"grade": {"keys": [[0, 1, [1, 1, 1], 0]], "time_offset_s": offset}, "grain": GRAIN}
+    state = prepared_look(tmp_path, look, (160, 90), float(fps))
+    flat = np.full((90, 160, 3), 0.5, np.float32)
+    frames = [fxlook.finish(state, flat, timeline.frame_time(i, fps, start)) for i in range(12)]
+    assert all(not np.array_equal(a, b) for a, b in zip(frames, frames[1:]))
+    assert len({f.tobytes() for f in frames[:6]}) == 6 and len({f.tobytes() for f in frames[6:]}) == 6      # 6 枚が 1 周する
+    assert all(np.array_equal(frames[i], frames[i + 6]) for i in range(6))
+
+
+def test_grain_follows_tau_when_the_offset_does_not_wrap_to_the_same_pattern(tmp_path):
+    """time_offset_s 0.125 秒 = 3 コマ（24fps）で frames=6: t で数えると 3 枚ずれる。他の offset 系のテストは offset が frames の倍数コマ
+    （100 秒×30fps÷5、99 秒×24fps÷6）で、grain の番号を t で数える取り違えを検出できない。"""
+    w, h, fps = 160, 90, 24.0
+    f, display = random_frame(w, h, seed=21)
+    keys = [[0.0, 0.85, [0.95, 1.0, 1.07], 0.12]]
+    state = prepared_look(tmp_path, {"grade": {"keys": keys, "time_offset_s": 0.125}, "vignette": {}, "grain": {}}, (w, h), fps)
+    vig, grain = legacy_vig(w, h), legacy_grain(w, h)
+    for t in (-0.125, 0.0, 1 / 24, 0.5, 1.0, 2.5):
+        got = fxlook.finish(state, display, t)
+        assert np.array_equal(got, legacy_frame(f, t, keys, 1.2, vig, grain, fps, offset=0.125)), t
+        assert not np.array_equal(got, legacy_frame(f, t, keys, 1.2, vig, grain, fps)), t        # offset を無視した（t で数えた）粒とは違う
+
+
 # ---- color: float の sRGB 符号化 ----------------------------------------------------
 
 def test_to_srgb_float_is_the_exact_transfer_function_and_clips():
@@ -406,6 +472,21 @@ def test_range_edges_are_accepted(tmp_path):
           "grain": {"sigma": 50, "size_px": 8, "frames": 64, "seed": 0}}
     assert look_of(tmp_path, ok)["grade"]["time_offset_s"] == -1e6
     assert look_of(tmp_path, {"vignette": {"amount": 0, "power": 0.1, "floor": 0}, "grain": {"sigma": 0, "size_px": 1, "frames": 1}})
+
+
+def test_time_offset_s_is_bounded_at_the_schema_so_a_huge_value_cannot_crash_every_frame(tmp_path):
+    """上限なしだと 1e300 などがスキーマを通り、描画で frame ごとに素の OverflowError（PipelineError ではない）になっていた。"""
+    keys = [[0, 1, [1, 1, 1], 0]]
+    for ok in (1e6, -1e6, 0, 62.45):
+        assert look_of(tmp_path, {"grade": {"keys": keys, "time_offset_s": ok}})["grade"]["time_offset_s"] == ok
+    for bad in (1e6 + 1, -1e6 - 1, 1e300, -1e300, float("inf"), float("-inf")):
+        with pytest.raises(PipelineError, match="time_offset_s"):
+            look_of(tmp_path, {"grade": {"keys": keys, "time_offset_s": bad}})
+
+
+def test_the_empty_look_warning_says_the_output_is_still_truncated(tmp_path):
+    texts = [w for w in parse(tmp_path, spec_dict(look={})).warnings if w.startswith("look")]
+    assert len(texts) == 1 and "何も変わりません" in texts[0] and "切り捨て" in texts[0] and "1 段階暗い" in texts[0]
 
 
 def test_keys_must_ascend_strictly(tmp_path):
@@ -580,6 +661,30 @@ def test_output_size_changes_the_vignette_but_not_the_grain_block_size(render, t
     small, large = render.prepare(spec, scale=0.5), render.prepare(spec, scale=2.0)
     assert small.look.vignette.shape == (small.size[1], small.size[0], 1) and large.look.grain[0].shape[:2] == (large.size[1], large.size[0])
     assert (large.look.grain[0][0::2, 0::2] == large.look.grain[0][1::2, 1::2]).all()                  # 粒は常に 2 出力画素角
+
+
+def test_frame_matches_the_independent_reference_for_every_variant_and_time(render, tmp_path):
+    """render.frame の最終段を、look なしの文脈の線形フレーム（_flat / _layered）から独立に組んだ参照（実制作の式の書き写し）と突き合わせる。
+    grade の取りこぼし・look へ渡す時刻の取り違え（0 固定など）・time_offset_s の無視（粒を t で数える）を検出する。
+    12fps で offset 0.25 秒 = 3 コマ（frames=6 の半分ずれ）。ブレンド区間は τ ∈ [0.5, 1.5) = t ∈ [0.25, 1.25)。"""
+    look = {"grade": {"keys": [[0.0, 0.85, [0.95, 1.0, 1.07], 0.12],
+                               {"t": 1.5, "sat": 1.12, "gain": [1.06, 0.94, 1.08], "con": 0.18}],
+                      "blend_s": 1.0, "time_offset_s": 0.25},
+            "vignette": {}, "grain": {}}
+    keys = [[0.0, 0.85, [0.95, 1.0, 1.07], 0.12], [1.5, 1.12, [1.06, 0.94, 1.08], 0.18]]
+    plain, styled = build(render, tmp_path / "plain"), build(render, tmp_path / "styled", look=look)
+    assert plain.look is None and styled.look is not None and plain.size == styled.size
+    w, h = styled.size
+    vig, grain = legacy_vig(w, h), legacy_grain(w, h)
+    for variant in fx.VARIANTS:
+        for t in (0.0, 0.5, 0.9, 1.25, 1.9):                    # 12fps の半コマにも、offset を足した後の半コマにも当たらない時刻
+            use_layers = plain.has_layers and variant in ("layers", "both")
+            active = render.light.levels(plain.lights, t) if plain.has_lights and variant in ("light", "both") else []
+            linear = render._layered(plain, t, active) if use_layers else render._flat(plain, t, active)
+            display = color.to_srgb_float(linear)
+            want = legacy_frame(display * np.float32(255.0), t, keys, 1.0, vig, grain, styled.fps, offset=0.25)
+            diff = np.abs(render.frame(styled, t, variant).astype(int) - want.astype(int))
+            assert diff.max() <= 1 and (diff > 0).mean() < 1e-3, (variant, t, diff.max(), (diff > 0).mean())
 
 
 # ---- CLI: --no-look / demo --look -----------------------------------------------------

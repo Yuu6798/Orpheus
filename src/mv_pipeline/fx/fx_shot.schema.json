@@ -189,7 +189,7 @@
       "properties": {
         "keys": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/grade_key"}},
         "blend_s": {"type": "number", "minimum": 0, "maximum": 10, "default": 1.2, "description": "次のキーの時刻の何秒前から次の色へ移るか（smoothstep）。0 なら段差。"},
-        "time_offset_s": {"type": "number", "default": 0, "description": "評価時刻 τ = 時刻 + time_offset_s。曲の絶対秒で書いたキーを使うときは、区間の曲上の開始秒を入れる。grain のコマ番号 round(τ·fps) も同じ τ で数える。"}
+        "time_offset_s": {"type": "number", "minimum": -1000000, "maximum": 1000000, "default": 0, "description": "評価時刻 τ = 時刻 + time_offset_s（±1e6 秒まで。曲の長さには十分）。曲の絶対秒で書いたキーを使うときは、区間の曲上の開始秒を入れる。grain のコマ番号 τ·fps の四捨五入（半コマは切り上げ）も同じ τ で数える。"}
       },
       "additionalProperties": false,
       "patternProperties": {"^x_": {}}

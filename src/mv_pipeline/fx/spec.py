@@ -301,7 +301,8 @@ def _validate_semantics(data):
     look = data["look"]
     if look is not None:
         if look["grade"] is None and look["vignette"] is None and look["grain"] is None:
-            warnings.append(f"{LOOK_WARNING_PREFIX}: grade / vignette / grain のどれも指定がないため、何も変わりません")
+            warnings.append(f"{LOOK_WARNING_PREFIX}: grade / vignette / grain のどれも指定がないため、色・減光・粒の調整は何も変わりません"
+                            f"（ただし look の経路を通るので、float の sRGB 符号化と切り捨てになり、look なしより最大 1 段階暗い画素があります）")
         if look["grade"] is not None:
             keys = look["grade"]["keys"]
             _increasing(keys, "look.grade.keys")
