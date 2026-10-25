@@ -18,8 +18,8 @@ uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.js
 ## Session Memory（引き継ぎ）
 
 - セッション開始時に `.claude/memory/_index.md` と `.claude/memory/STATUS.md` を読み、直近の日付ファイルで詳細を確かめる。
-- 終了の合図（「今日はここまで」「引き継ぎ」など）や `/wrap-up` で `.claude/skills/wrap-up/SKILL.md` の手順を実行する（手順はスキルが正）。
-- 記憶ファイルも public。作品名・素材・費用・Drive ID・個人のパスは書かない。
+- 終了の合図（「今日はここまで」「セッションの引き継ぎ」など。「引き継ぎ」単体では発火しない）や `/wrap-up` で `.claude/skills/wrap-up/SKILL.md` の手順を実行する（手順はスキルが正）。
+- 記憶ファイルも public。下の Git 節の禁止対象に加えて、個人のパスも書かない。
 
 ## Git
 

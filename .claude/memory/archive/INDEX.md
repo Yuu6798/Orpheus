@@ -12,3 +12,7 @@
 
 | 元パス | アーカイブ先 | 移動日 |
 |---|---|---|
+
+## STATUS_MERGED_LOG.md
+
+`STATUS.md ## Recently Merged` の 5 件 cap 溢れ分（まだ移送なし）。
