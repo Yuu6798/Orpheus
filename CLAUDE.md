@@ -15,6 +15,12 @@ uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv veri
 uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md。--extra fx が前提）
 ```
 
+## Session Memory（引き継ぎ）
+
+- セッション開始時に `.claude/memory/_index.md` と `.claude/memory/STATUS.md` を読み、直近の日付ファイルで詳細を確かめる。
+- 終了の合図（「今日はここまで」「セッションの引き継ぎ」など。「引き継ぎ」単体では発火しない）や `/wrap-up` で `.claude/skills/wrap-up/SKILL.md` の手順を実行する（手順はスキルが正）。
+- 記憶ファイルも public。下の Git 節の禁止対象に加えて、個人のパスも書かない。
+
 ## Git
 
 - main へ直接 push しない。`claude/<topic>` ブランチで変更し PR にする。コミットは Conventional Commits（日本語可）。
