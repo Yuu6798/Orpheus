@@ -19,6 +19,7 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
 
 モジュールの構成（CLI は `mv fx demo|render|stills|legacy|accept`。詳細は docs/fx.md）:
   - spec / timeline / assets / camera / layers / light / color / render: 描画の中核（cv2 を使う。上の使い方）。
+  - look: 最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式。spec に look があるときだけ、全版に同じものを掛ける）。
   - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート。
   - probe: ffmpeg だけで行う構造検査 check_video（technical_pass。ffprobe 不要）。
   - runs: run ディレクトリ・manifest・キャッシュ（index.json）・stills・accept。key は描画に影響する入力すべて

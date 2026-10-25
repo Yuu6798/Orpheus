@@ -7,6 +7,8 @@
 t は**ショット時刻**（spec の時間軸。start 付きで描いても同じ t は同じ絵）。
 版: base = カメラ + 深度視差のみ / layers = + plane と effects / light = + 局所光 / both = 全部。
 spec に layers や lights が無ければその機能はどの版でも無効（版は残り、variant_notes に記録される）。
+spec に look（色調整・周辺減光・粒状感）があれば、光とレイヤーの後の最終段で**全 4 版に同じものを**掛ける
+（look.py）。look が無ければ従来の to_srgb8 の経路で、出力は従来とバイト単位で同じ。
 
 CLI や run 管理の担当者向け:
   - write_video(out, frames, size, fps, crf, n_frames, audio=None, log_path=None) は任意のフレーム列
@@ -32,6 +34,7 @@ from PIL import Image
 from .. import media
 from ..io import PipelineError
 from . import VARIANTS, camera, layers, light, timeline
+from . import look as fxlook
 from .assets import Assets, load_assets
 from .color import soft_add, to_srgb8
 
@@ -51,6 +54,7 @@ class Context:
     lights: list
     warnings: list = field(default_factory=list)
     hole: object = None              # 背景の穴埋め重み float32 (H, W)。plane が無ければ None
+    look: object = None              # look.Look（周辺減光・粒状感は prepare で 1 回だけ作る）。spec に look が無ければ None
 
     @property
     def fps(self):
@@ -83,6 +87,7 @@ class Context:
         """版ごとの {features: 有効な機能, empty: その機能が spec に無く base と同じ映像か}（manifest 用）。"""
         data = self.spec.data
         base = ["camera"] + (["depth_parallax"] if self.assets.depth is not None and data["camera"]["parallax_px"] > 0 else [])
+        base += ["look"] if self.look is not None else []     # look は全 4 版に同じものが掛かる
         notes = {"base": {"features": base, "empty": False}}
         notes["layers"] = {"features": base + ["layers"], "empty": False} if self.has_layers \
             else {"features": base, "empty": True, "note": "spec に layers が無い（または plane/effects が空）ため base と同じ映像"}
@@ -132,7 +137,8 @@ def prepare(spec, scale=1.0, size=None):
     for lt in lights:
         if not lt.receivers and lt.glow_w is None:
             warnings.append(f"light {lt.id!r} は receivers も emitter も無く、何も描きません")
-    return Context(spec, size, assets, path, background, planes, items, lights, warnings, hole)
+    look = fxlook.prepare(data["look"], size, data["output"]["fps"]) if data["look"] is not None else None
+    return Context(spec, size, assets, path, background, planes, items, lights, warnings, hole, look)
 
 
 def frame(ctx, t, variant):
@@ -142,6 +148,8 @@ def frame(ctx, t, variant):
     use_layers = ctx.has_layers and variant in ("layers", "both")
     active = light.levels(ctx.lights, t) if ctx.has_lights and variant in ("light", "both") else []
     linear = _layered(ctx, t, active) if use_layers else _flat(ctx, t, active)
+    if ctx.look is not None:      # linear は ctx.assets.plate そのものでありうる（静止カメラ）。look は新しい配列を返す
+        return fxlook.apply(ctx.look, linear, t)
     return to_srgb8(linear)
 
 

@@ -1,6 +1,7 @@
 """sRGB と線形光の変換、ハイライトの緩やかな圧縮（ソフトニー）。
 
 合成はすべて線形の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
+spec に look があるときだけ、uint8 にする前に float の sRGB（to_srgb_float）へ符号化し、look がその上で仕上げる。
 """
 import numpy as np
 
@@ -36,6 +37,24 @@ def to_srgb8(lin):
     """float32 線形 (…, C) → uint8 sRGB。[0, 1] の外は切る。"""
     idx = (np.clip(lin, 0.0, 1.0) * np.float32(_ENCODE_STEPS) + np.float32(0.5)).astype(np.int32)
     return _ENCODE_LUT[idx]
+
+
+def to_srgb_float(lin):
+    """float32 線形 (…, C) → float32 の sRGB 符号化値 0..1（丸めない）。[0, 1] の外は切る。
+
+    正確な sRGB 伝達関数（0.0031308 以下は 12.92 倍、それより上は 1.055·x^(1/2.4)−0.055）。look が
+    ガンマ符号化後の値に掛ける調色・粒状感のために、uint8 にする前の値を取り出す。LUT は使わない
+    （量子化を最後の 1 回だけに保つため）。常に新しい配列を返すので、呼び出し側は結果を書き換えてよい。
+
+    上側は 1.055·x^(1/2.4)−0.055 と同じ式を 1.055·(x^(1/2.4)−1)+1 の形で計算する。float32 では前者の x=1 が
+    0.99999994 になり、look の切り捨て（×255 → uint8）で純白が 254 に落ちるため（この形なら 0 と 1 が端点で厳密）。
+    """
+    x = np.clip(lin, 0.0, 1.0)
+    upper = np.power(x, 1.0 / 2.4)
+    upper -= 1.0
+    upper *= 1.055
+    upper += 1.0
+    return np.where(x <= 0.0031308, x * 12.92, upper).astype(np.float32, copy=False)
 
 
 def knee(x):

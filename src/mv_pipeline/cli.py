@@ -56,6 +56,7 @@ def _fx_parser(commands):
     demo.add_argument("--height", type=int, default=540)
     demo.add_argument("--duration", type=float, default=10.0)
     demo.add_argument("--fps", type=int, default=24)
+    demo.add_argument("--look", action="store_true", help="add a night look (grade, vignette, grain) to the demo spec")
     render = sub.add_parser("render", help="render variants (base, layers, light, both) and a 2x2 grid")
     render.add_argument("spec", type=Path)
     render.add_argument("--variants", help="comma-separated: base,layers,light,both (default: all)")
@@ -65,12 +66,14 @@ def _fx_parser(commands):
     render.add_argument("--scale", type=float, default=1.0)
     render.add_argument("--no-grid", action="store_true")
     render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    render.add_argument("--no-look", action="store_true", help="ignore spec.look (render without the look stage)")
     stills = sub.add_parser("stills", help="still sheet: rows = times, columns = variants")
     stills.add_argument("spec", type=Path)
     stills.add_argument("--times", type=float, nargs="+", required=True)
     stills.add_argument("--variants")
     stills.add_argument("--out", type=Path)
     stills.add_argument("--scale", type=float, default=1.0)
+    stills.add_argument("--no-look", action="store_true", help="ignore spec.look (render without the look stage)")
     legacy = sub.add_parser("legacy", help="run an external production renderer and record it as a run")
     legacy.add_argument("--renderer", type=Path, required=True)
     legacy.add_argument("--config", type=Path, required=True)
@@ -117,12 +120,12 @@ def fx_command(args):
     _require_fx()
     from .fx import demo, runs
     if command == "demo":
-        return demo.create(args.dir, args.width, args.height, args.duration, args.fps)
+        return demo.create(args.dir, args.width, args.height, args.duration, args.fps, look=args.look)
     if command == "render":
         return runs.render_run(args.spec, args.variants, args.start, args.duration, args.out, args.scale,
-                               not args.no_grid, args.force, _progress)
+                               not args.no_grid, args.force, _progress, no_look=args.no_look)
     if command == "stills":
-        return runs.stills(args.spec, args.times, args.variants, args.out, args.scale)
+        return runs.stills(args.spec, args.times, args.variants, args.out, args.scale, no_look=args.no_look)
     raise PipelineError(f"Unsupported fx command: {command}")
 
 

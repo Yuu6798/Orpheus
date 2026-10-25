@@ -4,3 +4,4 @@
 
 | PR | Title | Date | Phase |
 |---|---|---|---|
+| #1 | fix(deps): emSign CA 鍵漏洩対応で certifi を 2026.10.19 へ更新 | 2026-10-23 | 依存の緊急更新 |
