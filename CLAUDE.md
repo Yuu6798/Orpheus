@@ -15,6 +15,8 @@ uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv veri
 uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md。--extra fx が前提）
 ```
 
+Windows でスマート アプリ コントロールがオンの PC は、uv が入れる署名なしの Python が止められる。.venv を新しく作るときだけ、署名つき Python を `--python` で渡す（手順は docs/dependencies.md の 2026-10-30 節）。できた .venv では上のコマンドがそのまま動く。
+
 ## Session Memory（引き継ぎ）
 
 - セッション開始時に `.claude/memory/_index.md` と `.claude/memory/STATUS.md` を読み、直近の日付ファイルで詳細を確かめる。
