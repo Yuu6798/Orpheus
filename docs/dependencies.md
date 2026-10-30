@@ -41,21 +41,24 @@
 
 ## 2026-10-30 更新（Windows のスマート アプリ コントロール）
 
-Windows 11 のスマート アプリ コントロール（SAC）が「オン」の PC では、uv が入れる Python（python-build-standalone）に署名が無いため、`python313.dll` の読み込みが止められて Python 自体が起動しません（終了コード `-1058471934` = `0xC0E90002`、CodeIntegrity のイベント 3077・3033）。同じファイルでも SAC が「評価中」の間は動くので、ある日突然止まることがあります。SAC は一度切ると元に戻せないため、切らずに次の手順で対処します。以下はすべて 2026-10-30 に SAC オンの Windows 11 で実測した内容です。
+Windows 11 のスマート アプリ コントロール（SAC）が「オン」の PC では、uv が入れる Python（python-build-standalone）に署名が無いため、`python313.dll` の読み込みが止められて Python 自体が起動しません（終了コード `-1058471934` = `0xC0E90002`、CodeIntegrity のイベント 3077・3033）。SAC は「評価中」の間は何も止めず、その後自動でオンになることがあります（Microsoft の説明）。実測した PC でも、以前は動いていた同じ Python が、ある日から止められていました。SAC は一度切ると Windows の版によっては再インストールしないと戻せないため、切らずに次の手順で対処します。手順と結果は 2026-10-30 に、SAC がオンの Windows 11 で実測したものです。
 
-1. **状態を見る**（読み取りだけ）
-   - `(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy').VerifiedAndReputablePolicyState`（0 = オフ、1 = オン、2 = 評価中）
-   - 止められたファイル: `Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational' -MaxEvents 3000 | Where-Object Id -in 3033,3077`。ログは既定 1MB の上書き式なので、古い記録は残りません。
-2. **署名つき Python を置く**（インストール不要。リポジトリの外）
-   - python.org の NuGet パッケージ（例: `https://api.nuget.org/v3-flatcontainer/python/3.13.17/python.3.13.17.nupkg`。3.13.17 の SHA256 は `DCE409744B088F94C6E37BA41F8100C384C27E029E843237364C602D30D475E5`）を `%LOCALAPPDATA%\orpheus-python\3.13.17` に置き、拡張子を `.zip` にして展開する。
-   - `Get-AuthenticodeSignature` で `tools\python.exe` と `tools\python313.dll` が `Valid`・`CN=Python Software Foundation` であることを確かめる。
-3. **.venv をこの Python で作る**
-   - 同じ PowerShell で `$env:UV_PYTHON_DOWNLOADS = "never"` にしてから、`uv sync --locked --extra analysis --extra fx --python "$env:LOCALAPPDATA\orpheus-python\3.13.17\tools\python.exe"`。
-   - 確認: `.venv\Scripts\python.exe -c "import sys; print(sys.base_prefix)"` が上の `tools` を指し、`.venv\Scripts\python.exe` の署名が `Valid` であること。
-4. **以後は通常どおり**: いったん署名つき Python の .venv ができれば、`--python` を付けない `uv sync --locked …` でも .venv はそのまま保たれ、`uv run pytest`・`uv run mv …`・`.venv\Scripts\mv.exe`（mv.exe 自体は署名なし）も動く。新たにブロックされた記録も出なかった。
-   - **注意が要るのは .venv を新しく作るときだけ**（.venv を消した・新しく clone した・Python の版を変えた）。手順 3 の `UV_PYTHON_DOWNLOADS=never` と `--python` を付けないと、uv が署名の無い Python を選び、また起動しなくなる。
+1. **状態を見ます**（読み取りだけ）
+   - SAC の状態：`(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy').VerifiedAndReputablePolicyState`（0 = オフ、1 = オン、2 = 評価中）
+   - 止められたファイル：`Get-WinEvent -LogName 'Microsoft-Windows-CodeIntegrity/Operational' -MaxEvents 3000 | Where-Object Id -in 3033,3077`。このログは上書き式で（実測した PC では 1MB）、古い記録は残りません。
+2. **署名つき Python を置きます**（インストール不要。リポジトリの外で、AppData の外）
+   - python.org の NuGet パッケージ（例：`https://api.nuget.org/v3-flatcontainer/python/3.13.17/python.3.13.17.nupkg`。3.13.17 の SHA256 は `DCE409744B088F94C6E37BA41F8100C384C27E029E843237364C602D30D475E5`）を取得し、拡張子を `.zip` にして `%USERPROFILE%\.local\share\orpheus-python\3.13.17` に展開します。
+   - `Get-AuthenticodeSignature` で `tools\python.exe` と `tools\python313.dll` が `Valid`・`CN=Python Software Foundation` であることを確かめます。
+   - **AppData の下には置きません**：Claude デスクトップアプリのようにパッケージ化されたアプリ（MSIX）の中から AppData に書いたファイルは、アプリ専用の場所（`%LOCALAPPDATA%\Packages\<アプリ>\LocalCache`）へ振り替えられます（実測）。振り替えられたファイルは他のアプリからは見えないため（Microsoft の説明）、そこに置いた Python で作った .venv は、そのアプリの外のターミナルでは基の Python を見失います。
+3. **.venv をこの Python で作ります**
+   - 同じ PowerShell で `$env:UV_PYTHON_DOWNLOADS = "never"` にしてから、`uv sync --locked --extra analysis --extra fx --python "$env:USERPROFILE\.local\share\orpheus-python\3.13.17\tools\python.exe"` を実行します。既存の .venv が別の Python で作られていれば、uv が消して作り直します。その .venv の python が実行中（別のターミナルやサーバーなど）だと消せずに失敗するので、先に止めます。
+   - 確認：`.venv\Scripts\python.exe -c "import sys; print(sys.base_prefix)"` が上の `tools` を指し、`.venv\Scripts\python.exe` の署名が `Valid` であること。
+4. **以後は通常どおりです**：署名つき Python の .venv ができれば、`--python` を付けない `uv sync --locked …` でも .venv はそのまま保たれ、`uv run pytest`・`uv run mv …`・`.venv\Scripts\mv.exe`（mv.exe 自体は署名なし）も動きます。
+   - .venv を新しく作るとき（.venv を消した・新しく clone した・Python の版を変えた）は、手順 3 のとおり `UV_PYTHON_DOWNLOADS=never` と `--python` を付けます。付けないと、uv が自分で入れた署名なしの Python を選び、また起動しなくなるおそれがあります（未検証）。
 
-通った拡張モジュール（いずれも署名なし）: numpy・OpenCV（cv2）・Pillow・rpds（jsonschema）・librosa・numba・llvmlite・scipy・soundfile。全体の pytest（`.venv\Scripts\python.exe -m pytest`）は 375 passed・1 skipped、`uv run pytest` は `tests/test_fx_look.py` の 114 件で確認、`mv fx render` は 1920x1080 の 4 版とグリッドが technical_pass。uv.exe と Git for Windows は署名つきで、そのまま動いた。Node.js・pnpm（Remotion の経路）は SAC 下では未確認。
+- **通ったもの**：署名なしの拡張モジュール（numpy・OpenCV・Pillow・rpds・scipy・soundfile・soxr・scikit-learn・llvmlite・numba・librosa）の import、librosa のリサンプリング（44.1kHz の音声を 22050Hz で読む）、`uv run pytest`（375 passed・1 skipped）、`mv fx render`（1920x1080 の 4 版とグリッドが technical_pass）。uv.exe・Git for Windows・GitHub CLI は署名つきで、そのまま動きました。
+- **一度だけ止められた例**：soxr の拡張モジュール（`soxr_ext.pyd`）が 1 回だけ止められ（イベント 3077）、その後の実行では通りました。原因は確かめていません。import が `DLL load failed` と「アプリケーション制御ポリシーによってこのファイルがブロックされました」で失敗したら、手順 1 のログでファイル名を控え、もう一度実行して再現するかを確かめます。
+- **未確認**：Node.js・pnpm（Remotion の経路）の SAC 下での動作。
 
 GPU情報はOS報告であり、利用可能VRAMやモデル性能を保証しません。描画はCPU経路です。
 既存HTDemucs/Qwenの実行経路は未設定です。大型モデルを自動導入せず、別環境のCLIを接続できます。
