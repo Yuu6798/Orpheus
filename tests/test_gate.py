@@ -27,6 +27,13 @@ def test_lyric_must_lead_the_singing_by_zero_to_point_two_seconds(sung, status):
     assert gate.check_lyric_time(timeline(), measured, "band", TH)["status"] == status
 
 
+def test_the_inclusive_boundary_survives_floating_point_subtraction():
+    line = timeline()
+    line["lyrics"][2]["start"] = 0.6
+    assert 0.8 - 0.6 > 0.2
+    assert gate.check_lyric_time(line, [{"start": 0.8}, {"start": 3.1}], "band", TH)["status"] == "pass"
+
+
 def test_lyric_time_fails_on_a_line_count_mismatch_and_warns_on_unmeasured_lines():
     assert gate.check_lyric_time(timeline(), [{"start": 0.6}], "band", TH)["status"] == "fail"
     measured = [{"start": 0.6, "method": "not_found"}, {"start": 3.1}]
@@ -101,11 +108,25 @@ def test_partial_render_is_checked_against_its_interval(tmp_path):
     assert gate.check_export(timeline(), path, path, None, TH)["status"] == "fail"
 
 
+def test_text_that_does_not_fit_fails_the_ui_check():
+    moved = timeline()
+    moved["lyrics"][0]["overflow"] = True
+    check = gate.check_ui(moved)
+    assert check["status"] == "fail" and "収まらず" in check["problems"][0]["detail"]
+
+
 def test_jitter_catches_shake_but_not_smooth_motion():
     smooth = [[i / 24, 100 + 5.0 * i, 200.0] for i in range(48)]
     shaky = [[i / 24, 100 + 5.0 * i + (6 if i % 2 else -6), 200.0] for i in range(48)]
     assert gate.check_jitter({"flame": smooth}, TH)["status"] == "pass"
     assert gate.check_jitter({"flame": shaky}, TH)["status"] == "fail"
+
+
+def test_tracks_too_short_to_measure_are_not_passed():
+    smooth = [[i / 24, 100 + 5.0 * i, 200.0] for i in range(48)]
+    assert gate.check_jitter({"main": [[0, 0, 0]]}, TH)["status"] == "skip"
+    check = gate.check_jitter({"flame": smooth, "main": [[0, 0, 0]]}, TH)
+    assert check["status"] == "warn" and "main" in check["summary"]
 
 
 def test_big_pose_jump_at_a_seam_is_a_proposal():
@@ -114,6 +135,11 @@ def test_big_pose_jump_at_a_seam_is_a_proposal():
     still = [{"t": 3.0 - 1 / 24, "points": [[0.5, 0.5]]}, {"t": 3.0, "points": [[0.51, 0.5]]}]
     assert gate.check_seams(timeline(), still, TH)["status"] == "pass"
     assert gate.check_seams(timeline(seams=[]), None, TH)["status"] == "pass"
+
+
+def test_empty_pose_points_are_not_a_zero_difference():
+    poses = [{"t": 3.0 - 1 / 24, "points": []}, {"t": 3.0, "points": []}]
+    assert gate.check_seams(timeline(), poses, TH)["status"] == "warn"
 
 
 @pytest.mark.parametrize("times", [[0.0], [3.0], [2.9], [2.0, 3.0], [2.9, 4.0]])
@@ -166,6 +192,12 @@ def _vocals(path, onsets, rate=16000, seconds=6.0):
         stream.setsampwidth(2)
         stream.setframerate(rate)
         stream.writeframes((samples * 32767).astype(np.int16).tobytes())
+
+
+def test_json_lines_skip_empty_end_markers(tmp_path):
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps([{"start": 1, "text": "hello"}, {"start": 2, "text": ""}, {"start": 3, "line": "　"}, {"start": 4}]), encoding="utf-8")
+    assert lines_table.read_lines(path) == [{"text": "hello", "start": 1.0}]
 
 
 def test_lrc_is_parsed_and_the_end_marker_skipped(tmp_path):

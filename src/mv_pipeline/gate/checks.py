@@ -43,6 +43,7 @@ THRESHOLDS = {
     "ssim": 0.98,
 }
 MAX_STILLS = 12
+EPS = 1e-6   # 秒の引き算の丸め誤差。0.8 - 0.6 = 0.20000000000000007 のような境目を不合格にしない
 UNMEASURED = ("not_found", "estimate")   # 推定のままの行。実測として照合しない（method が無い行は実測として扱う）
 
 
@@ -76,7 +77,7 @@ def check_lyric_time(timeline, measured, layer, th):
     problems = []
     for line, sung in pairs:
         lead = sung["start"] - line["start"]   # 正 = 字が歌より先に出る
-        if not th["lead_min_s"] <= lead <= th["lead_max_s"]:
+        if not th["lead_min_s"] - EPS <= lead <= th["lead_max_s"] + EPS:
             problems.append({"t": line["start"], "text": line["text"], "detail": f"字が歌の {lead:+.3f} 秒前（許容 {th['lead_min_s']}〜{th['lead_max_s']}）"})
     unverified = len(lines) - len(pairs)
     summary = f"{len(pairs)} 行を照合、外れ {len(problems)} 行"
@@ -122,6 +123,8 @@ def check_ui(timeline):
     fps = timeline["fps"]
     problems, frames = [], 0
     for line in timeline["lyrics"]:
+        if line.get("overflow"):
+            problems.append({"t": line["start"], "text": line["text"], "detail": "字が箱に収まらず、欠けている可能性があります"})
         for region in timeline["ui_regions"]:
             if _intersects(line["box"], region["box"]):
                 count = int(round((line["end"] - line["start"]) * fps))
@@ -134,9 +137,10 @@ def check_jitter(tracks, th):
     name = "揺れ"
     if tracks is None:
         return skip(name, "tracks")
-    problems = []
+    problems, short = [], []
     for label, points in tracks.items():
-        if len(points) < 3:
+        if len(points) < 3:      # 2 階差分が取れない要素は、揺れていないとは言えない
+            short.append(label)
             continue
         worst, at, total, count = 0.0, 0.0, 0.0, 0
         for p0, p1, p2 in zip(points, points[1:], points[2:]):
@@ -148,7 +152,13 @@ def check_jitter(tracks, th):
         rms = math.sqrt(total / count)
         if rms > th["jitter_px"]:
             problems.append({"t": at, "text": label, "detail": f"小刻みな動き RMS {rms:.2f} 画素（しきい値 {th['jitter_px']}）"})
-    return result(name, "fail" if problems else "pass", f"{len(tracks)} 要素を確認、超過 {len(problems)}", problems)
+    measured = len(tracks) - len(short)
+    if not measured:
+        return skip(name, "3 点以上ある tracks")
+    summary = f"{measured} 要素を確認、超過 {len(problems)}"
+    if short:
+        summary += f"（点が足りず見ていない要素 {len(short)}: {', '.join(short)}）"
+    return result(name, "fail" if problems else "warn" if short else "pass", summary, problems)
 
 
 def check_seams(timeline, poses, th):
@@ -163,11 +173,12 @@ def check_seams(timeline, poses, th):
     for seam in seams:
         before = [p for p in poses if seam - reach <= p["t"] < seam]
         after = [p for p in poses if seam <= p["t"] <= seam + reach]
-        if not before or not after:      # 同じ骨格どうしを比べると差が 0 で合格に見えるので、両側に無ければ見ていない扱い
+        pairs = list(zip(max(before, key=lambda p: p["t"])["points"], min(after, key=lambda p: p["t"])["points"])) \
+            if before and after else []
+        if not pairs:      # 同じ骨格どうしや空の点を比べると差が 0 で合格に見えるので、見ていない扱い
             problems.append({"t": seam, "text": "", "detail": "切れ目の前後 2 コマ以内に骨格がなく、姿勢の差を見ていません"})
             continue
-        pairs = list(zip(max(before, key=lambda p: p["t"])["points"], min(after, key=lambda p: p["t"])["points"]))
-        move = sum(math.dist(a, b) for a, b in pairs) / max(1, len(pairs))
+        move = sum(math.dist(a, b) for a, b in pairs) / len(pairs)
         if move > th["seam_pose"]:
             problems.append({"t": seam, "text": "", "detail": f"姿勢の差 {move:.3f}。切るコマを変えるか camera.seams を入れてください"})
     return result(name, "warn" if problems else "pass", f"切れ目 {len(seams)}、姿勢の差が大きいもの {len(problems)}", problems)
@@ -179,7 +190,7 @@ def check_hook_overlap(timeline, th):
     problems = []
     for left, right in zip(hooks, hooks[1:]):
         shared = left["end"] - right["start"]
-        if shared > th["hook_overlap_s"]:
+        if shared > th["hook_overlap_s"] + EPS:
             problems.append({"t": right["start"], "text": f"{left['text']} / {right['text']}", "detail": f"{shared:.3f} 秒同時に見えます"})
     return result(name, "fail" if problems else "pass", f"入れ替わり {max(0, len(hooks) - 1)} 回、超過 {len(problems)}", problems)
 
@@ -196,7 +207,7 @@ def check_beats(timeline, analysis, th):
     problems = []
     for label, t in events:
         off = min(abs(t - g) for g in grid)
-        if off > limit:
+        if off > limit + EPS:
             problems.append({"t": t, "text": label, "detail": f"拍から {off:.3f} 秒ずれています（許容 {limit:.3f} 秒）"})
     kind = "小節頭" if analysis.get("downbeats") else "拍"
     return result(name, "fail" if problems else "pass", f"{len(events)} 件を{kind}と照合、ずれ {len(problems)}", problems)

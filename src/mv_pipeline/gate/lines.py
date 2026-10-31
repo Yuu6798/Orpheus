@@ -33,8 +33,12 @@ def read_lines(path):
     path = Path(path)
     text = path.read_text(encoding="utf-8-sig")
     if path.suffix.lower() == ".json":
-        rows = json.loads(text)
-        return [{"text": str(r.get("display") or r.get("line") or r.get("text")).replace("　", " "), "start": float(r["start"])} for r in rows]
+        lines = []
+        for row in json.loads(text):
+            words = str(row.get("display") or row.get("line") or row.get("text") or "").replace("　", " ").strip()
+            if words:
+                lines.append({"text": words, "start": float(row["start"])})
+        return lines
     lines = []
     for raw in text.splitlines():
         found = re.match(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)", raw.strip())
