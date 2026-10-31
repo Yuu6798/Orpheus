@@ -1,6 +1,6 @@
 """合成デモ: プログラムで描いたステージ・緑背景の人物（棒人間）・クリック音と spec.json を作る。実作品の素材は使わない。
 
-    mv dance demo DIR → stage.png / clip_a〜c.mp4 / end.png / audio.wav / spec.json
+    mv dance demo DIR → stage.mp4 / clip_a〜c.mp4 / end.png / audio.wav / spec.json
 
 クリップは腕の振りの位相が違うので、切れ目で姿勢が飛ぶ。そこに camera.seams の動きが入る。
 0.2 のデモのクリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶ（fit の確認用）。
@@ -21,6 +21,7 @@ from . import SCHEMA_V01, SCHEMA_VERSION
 GREEN = (0, 255, 0)
 BPM = 120.0
 JUMP_S = 0.3
+LOOP_S = 2.0
 
 
 def _stage(width, height):
@@ -33,6 +34,15 @@ def _stage(width, height):
         center = (int(fx_pos * width), int(fy_pos * height))
         cv2.circle(image, center, int(0.03 * width), (255, 190, 110), -1, cv2.LINE_AA)
     return cv2.GaussianBlur(image, (0, 0), max(1.0, width / 400))
+
+
+def _stage_frame(width, height, t):
+    """2 秒で一周する動くステージ（グラデーションと横切る光）。"""
+    image = _stage(width, height).astype(np.float32)
+    phase = 2 * math.pi * t / LOOP_S
+    x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :, None]
+    glow = np.exp(-((x - 0.5 - 0.35 * math.sin(phase)) / 0.18) ** 2)
+    return np.clip(image + glow * np.array([70, 40, 20], np.float32), 0, 255).astype(np.uint8)
 
 
 def _dancer(width, height, t, phase):
@@ -137,6 +147,7 @@ def _cuts(duration):
 def _spec(width, height, duration, fps):
     first, second, third = _cuts(duration)
     half = {"beat": second}
+    count = int(round(duration * BPM / 60))
     return {
         "schema_version": SCHEMA_VERSION,
         "seed": 0,
@@ -144,7 +155,7 @@ def _spec(width, height, duration, fps):
         "duration_s": duration,
         "beats": {"bpm": BPM, "offset_s": 0.0, "beats_per_bar": 4, "count": int(duration * BPM / 60) + 8},
         "audio": {"path": "audio.wav", "fit": "pad", "end_s": duration - 0.25, "fade_in_s": 0.0, "fade_out_s": 0.06},
-        "stage": {"path": "stage.png"},
+        "stage": {"path": "stage.mp4", "loop": True, "parallax": 0.7},
         "performer": {
             "clips": [{"path": "clip_a.mp4", "start": 0.0, "end": {"beat": first}, "source_start": -0.04},
                       {"path": "clip_b.mp4", "start": {"beat": first}, "end": {"beat": second}},
@@ -154,9 +165,14 @@ def _spec(width, height, duration, fps):
             "placement": {"anchor": [0.5, 0.92]},
             "fit": {"mode": "body", "body_height": 0.62, "x": "median", "ground": "lock", "ground_window_s": 0.7, "ground_smooth_s": 0.3},
         },
-        "camera": {"keys": [{"t": 0.0, "zoom": 1.0}, {"t": duration, "zoom": 1.08, "center": [0.5, 0.55], "ease": "in_out"}],
-                   "seams": [{"t": half, "span_s": 0.4, "zoom": 1.3, "rotate_deg": 8}]},
-        "flashes": [{"t": half, "strength": 0.6, "decay_s": 0.2}],
+        "camera": {
+            "keys": [{"t": 0.0, "zoom": 1.0}, {"t": duration, "zoom": 1.08, "center": [0.5, 0.55], "ease": "in_out"}],
+            "accents": [{"at": {"grid": "downbeats", "to": {"beat": third}, "except": [half]}, "zoom": 1.02, "decay_s": 0.12},
+                        {"at": [{"beat": first}], "zoom": 1.05, "decay_s": 0.12, "shake_px": 14, "shake_decay_s": 0.18}],
+            "seams": [{"t": half, "pre_s": min(0.3, count / 40), "post_s": min(0.5, count / 24), "zoom": 1.3, "rotate_deg": 6, "rotate_post_deg": 9,
+                       "blur": {"samples": 8, "shutter_frames": 1.0, "peak_shutter_frames": 1.6}}],
+            "cover_rotation": True},
+        "flashes": [{"t": half, "strength": 0.22, "decay_s": 0.08, "mode": "add_display"}],
         "lyrics": {"lines": [
             {"layer": "back", "text": "HOLD", "start": {"beat": 1, "offset_s": -0.04}, "end": {"beat": second}},
             {"layer": "back", "text": "LIGHT", "start": half, "end": {"beat": third},
@@ -184,15 +200,17 @@ def _write_spec(directory, spec):
 def create(directory, width=540, height=960, duration=6.0, fps=24, schema="0.2"):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(_stage(width, height)).save(directory / "stage.png")
     clip_w, clip_h = 2 * (width // 3), 2 * (height // 3)   # 素材は出力より小さい。人物の縮尺を確かめるため
     if schema == "0.1":
         half = duration / 2
+        Image.fromarray(_stage(width, height)).save(directory / "stage.png")
         _write_clip(directory / "clip_a.mp4", clip_w, clip_h, half, fps, 0.0)
         _write_clip(directory / "clip_b.mp4", clip_w, clip_h, half, fps, math.pi)
         _write_wav(directory / "audio.wav", _audio(duration))
         spec_path = _write_spec(directory, _spec_v01(width, height, duration, fps))
         return {"spec": str(spec_path), "size": [width, height], "duration_s": duration, "fps": fps}
+    loop = int(round(LOOP_S * fps))
+    fxrender.write_video(directory / "stage.mp4", (_stage_frame(width, height, i / fps) for i in range(loop)), (width, height), fps, 12, loop)
     first, second, third = (cut * 60 / BPM for cut in _cuts(duration))
     jump = lambda length: length / 2 if length > 2 * JUMP_S else None  # noqa: E731
     shapes = [{"scale": 0.8, "x": 0.42, "foot": 0.86, "drift": 0.012, "jump": jump(first)},

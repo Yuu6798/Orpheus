@@ -119,8 +119,9 @@ def test_camera_matrix_is_identity_at_rest_and_keeps_the_center():
 
 
 def test_seam_peaks_at_the_cut_and_ends_after_the_span():
-    camera = {"keys": [{"t": 0.0, "zoom": 1.0, "center": [0.5, 0.5], "rotate_deg": 0.0}],
-              "seams": [{"t": 3.0, "span_s": 0.4, "zoom": 1.3, "rotate_deg": 8.0}]}
+    camera = {"keys": [{"t": 0.0, "zoom": 1.0, "center": [0.5, 0.5], "rotate_deg": 0.0}], "accents": [], "cover_rotation": False,
+              "seams": [{"t": 3.0, "span_s": 0.4, "zoom": 1.3, "rotate_deg": 8.0, "pre_s": None, "post_s": None, "rotate_post_deg": None,
+                         "pivot": [0.5, 0.5], "blur": None}]}
     assert compose.camera_state(camera, 3.0)[0] == pytest.approx(1.3) and compose.camera_state(camera, 3.0)[2] == pytest.approx(8.0)
     before, after = compose.camera_state(camera, 2.9), compose.camera_state(camera, 3.1)
     assert 1.0 < before[0] < 1.3 and before[0] == pytest.approx(after[0])

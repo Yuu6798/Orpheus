@@ -57,6 +57,12 @@ def to_srgb_float(lin):
     return np.where(x <= 0.0031308, x * 12.92, upper).astype(np.float32, copy=False)
 
 
+def from_srgb_float(x):
+    """to_srgb_float の逆: float32 の sRGB 符号化値 0..1 → float32 線形。[0, 1] の外は切る。"""
+    x = np.clip(x, 0.0, 1.0)
+    return np.where(x <= 0.04045, x / 12.92, np.power((x + 0.055) / 1.055, 2.4)).astype(np.float32, copy=False)
+
+
 def knee(x):
     """0.8 までは恒等、それ以上は 1.0 へ漸近する圧縮（連続・傾き連続・単調）: x − d²/(d+h)。
 

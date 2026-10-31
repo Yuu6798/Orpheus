@@ -147,6 +147,16 @@
       "properties": {
         "path": {
           "type": "string"
+        },
+        "source_start": {
+          "type": "number"
+        },
+        "loop": {
+          "type": "boolean"
+        },
+        "parallax": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },
@@ -430,6 +440,102 @@
               },
               "rotate_deg": {
                 "type": "number"
+              },
+              "pre_s": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "post_s": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "rotate_post_deg": {
+                "type": "number"
+              },
+              "pivot": {
+                "$ref": "#/$defs/point"
+              },
+              "blur": {
+                "type": "object",
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x_": {}
+                },
+                "properties": {
+                  "samples": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 64
+                  },
+                  "shutter_frames": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "peak_shutter_frames": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cover_rotation": {
+          "type": "boolean"
+        },
+        "accents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "at"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "at": {
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/time"
+                    }
+                  },
+                  {
+                    "$ref": "#/$defs/time_grid"
+                  }
+                ]
+              },
+              "zoom": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "attack_s": {
+                "type": "number",
+                "minimum": 0
+              },
+              "decay_s": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "shake_px": {
+                "type": "number",
+                "minimum": 0
+              },
+              "shake_decay_s": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "shake_hz": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
               }
             }
           }
@@ -462,6 +568,15 @@
           },
           "color": {
             "$ref": "#/$defs/rgb"
+          },
+          "mode": {
+            "enum": [
+              "lerp_linear",
+              "add_display"
+            ]
+          },
+          "beat_exempt": {
+            "type": "boolean"
           }
         }
       }
@@ -689,6 +804,41 @@
           }
         }
       ]
+    },
+    "time_grid": {
+      "type": "object",
+      "required": [
+        "grid"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grid": {
+          "enum": [
+            "beats",
+            "downbeats"
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/time"
+        },
+        "to": {
+          "$ref": "#/$defs/time"
+        },
+        "every": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "except": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/time"
+          }
+        },
+        "except_tolerance_s": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
     }
   }
 }
