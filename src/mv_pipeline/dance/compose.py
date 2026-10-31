@@ -1,11 +1,12 @@
-"""1 フレームの合成。
+"""1 フレームの合成。公開の入口は api.py。
 
     ctx = prepare(spec, scale=1.0)        # ステージ・字・人物の配置。描画サイズごとに 1 回
-    img = frame(ctx, t)                   # uint8 (H, W, 3) RGB。同じ ctx・t なら同じバイト列
+    L = layers(ctx, t)                    # 層（FrameLayers）。hooks を掛ける前
+    img = compose_layers(ctx, L, t)       # uint8 (H, W, 3) RGB。frame(ctx, t) と同じバイト列。同じ ctx・t なら同じバイト列
 
 重ね順は 背景ステージ → behind の字 → 人物 → フラッシュ → front の字。カメラはステージと人物に掛かる。字は follow_camera の行だけカメラに乗る。
 カメラの式は camera.py。ブレは seams の窓の中だけで、カメラに乗る層ごとに変換をずらして平均する。
-合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
+合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。spec に look があれば fx と同じ look.apply で仕上げる。
 """
 import math
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from ..fx import look as fxlook
 from ..fx import timeline
 from ..fx.color import color_to_linear, from_srgb_float, to_linear, to_srgb8, to_srgb_float
 from ..io import PipelineError, sha256
@@ -42,7 +44,9 @@ class Context:
     analysis: list = field(default_factory=list)     # fit の解析の記録（clip ごと。fit を使わない clip は含まない）
     stills: dict = field(default_factory=dict)       # 静止画クリップの切り抜き（clip 番号 -> 色・アルファ）
     camera: object = None            # camera.Camera
-    text: dict = field(default_factory=dict)         # z -> Line の列（層を書いた順）
+    text: dict = field(default_factory=dict)         # z -> [(層名, Line の列)]（層を書いた順）
+    hooks: object = None             # hooks.Hooks
+    look: object = None              # fx.look.Look
 
     @property
     def fps(self):
@@ -183,8 +187,8 @@ def _fit_analysis(spec, clips, out):
     return found
 
 
-def prepare(spec, scale=1.0, out=None):
-    """out は fit の解析のキャッシュを置く場所（既定は spec の隣の dance_runs）。"""
+def prepare(spec, scale=1.0, out=None, hooks=None):
+    """out は fit の解析のキャッシュを置く場所（既定は spec の隣の dance_runs）。hooks は hooks.Hooks。"""
     size = scaled_size(spec, scale)
     stage = Stage(spec, size)
     clips = Timeline(spec)
@@ -206,8 +210,17 @@ def prepare(spec, scale=1.0, out=None):
     records = [dancefit.record(path, *found) for path, found in analysis.items()]
     camera = Camera(spec.data["camera"], size, spec.data["output"]["fps"])
     layers = spec.data["lyrics"]["layers"]
-    text = {z: [line for layer in layers if layer["z"] == z for line in lines if line.layer == layer["name"]] for z in ("behind", "front")}
-    return Context(spec, size, stage, clips, place, lines, warnings, flashes, records, camera=camera, text=text)
+    text = {z: [(layer["name"], [line for line in lines if line.layer == layer["name"]]) for layer in layers if layer["z"] == z]
+            for z in ("behind", "front")}
+    look = fxlook.prepare(spec.data["look"], size, spec.data["output"]["fps"]) if spec.data["look"] is not None else None
+    ctx = Context(spec, size, stage, clips, place, lines, warnings, flashes, records, camera=camera, text=text, hooks=hooks, look=look)
+    if hooks is not None:
+        try:
+            hooks.prepare(ctx)
+        except BaseException:
+            ctx.close()
+            raise
+    return ctx
 
 
 # ---- 1 フレーム ---------------------------------------------------------------
@@ -226,12 +239,12 @@ def _warp_stage(ctx, image, matrix):
 
 
 def _stage_view(ctx, t, state, samples):
-    """カメラ・視差・ブレを掛けたステージ。書き換えてよい新しい配列を返す。"""
+    """カメラ・視差・ブレを掛けたステージ。動かないときは素材の配列そのものを返すので、書き換えない。"""
     image, parallax = ctx.stage.at(t), ctx.spec.data["stage"]["parallax"]
     if samples:
         return sum(_warp_stage(ctx, image, ctx.camera.matrix(item, parallax)) for item in samples) / np.float32(len(samples))
     matrix = ctx.camera.matrix(state, parallax)
-    return image.copy() if is_identity(matrix) else _warp_stage(ctx, image, matrix)
+    return image if is_identity(matrix) else _warp_stage(ctx, image, matrix)
 
 
 def _cut(ctx, index, image):
@@ -282,14 +295,21 @@ def _performer(ctx, t, matrix, samples=()):
     return old_color + (new_color - old_color) * weight, old_alpha + (new_alpha - old_alpha) * weight
 
 
-def _flash(out, flash, t):
-    age = t - flash["t"]
-    if not 0 <= age < 5 * flash["decay_s"]:
-        return out
-    strength = float(flash["strength"] * math.exp(-age / flash["decay_s"]))
-    if flash["mode"] == "add_display":
-        return from_srgb_float(to_srgb_float(out) + flash["display"] * np.float32(strength))
-    return out + (flash["linear"] - out) * strength
+def _active_flashes(ctx, t):
+    """時刻 t に効いているフラッシュの [(強さ, 色, mode)]。色は lerp_linear なら線形、add_display なら表示用の値 0..1。"""
+    active = []
+    for flash in ctx.flashes:
+        age = t - flash["t"]
+        if 0 <= age < 5 * flash["decay_s"]:
+            strength = float(flash["strength"] * math.exp(-age / flash["decay_s"]))
+            active.append((strength, flash["display"] if flash["mode"] == "add_display" else flash["linear"], flash["mode"]))
+    return active
+
+
+def _flash(out, strength, color, mode):
+    if mode == "add_display":
+        return from_srgb_float(to_srgb_float(out) + color * np.float32(strength))
+    return out + (color - out) * strength
 
 
 def _following(ctx, line, t, dt, matrix, samples):
@@ -303,35 +323,135 @@ def _following(ctx, line, t, dt, matrix, samples):
     return sum(item[0] for item in warped) / count, sum(item[1] for item in warped) / count
 
 
-def _text(ctx, out, z, t, dt, matrix, samples):
-    """z（behind / front）の層の字を、層を書いた順に描く。"""
-    for line in ctx.text[z]:
-        if not line.start <= t < line.end:
-            continue
-        if line.follow_camera:
-            color, alpha = _following(ctx, line, t, dt, matrix, samples)
-            out = color + out * (1.0 - alpha[..., None])
-        else:
-            dancelyrics.draw(out, line, t, dt)
-    return out
+def _over(out, color, alpha):
+    return color + out * (1.0 - alpha[..., None])
+
+
+class TextLayer:
+    """字の 1 層。(層名, 色, アルファ) に展開できる。全画面の色とアルファは展開したときだけ作り、合成では直接描く
+    （描画の速さと、0.1 と同じ浮動小数の演算の順を保つため）。"""
+
+    def __init__(self, ctx, name, lines, t, dt, matrix, samples):
+        self.ctx, self.name, self.lines = ctx, name, lines
+        self.t, self.dt, self.matrix, self.samples = t, dt, matrix, samples
+        self.flat = None
+
+    def paint(self, out):
+        """out（書き換えてよい配列）に字を描いた配列を返す。"""
+        for line in self.lines:
+            if line.follow_camera:
+                out = _over(out, *_following(self.ctx, line, self.t, self.dt, self.matrix, self.samples))
+            else:
+                dancelyrics.draw(out, line, self.t, self.dt)
+        return out
+
+    def _flatten(self):
+        if self.flat is None:
+            height, width = self.ctx.size[1], self.ctx.size[0]
+            color, alpha = np.zeros((height, width, 3), np.float32), np.zeros((height, width), np.float32)
+            for line in self.lines:
+                if line.follow_camera:
+                    over_color, over_alpha = _following(self.ctx, line, self.t, self.dt, self.matrix, self.samples)
+                    color, alpha = _over(color, over_color, over_alpha), over_alpha + alpha * (1.0 - over_alpha)
+                else:
+                    dancelyrics.draw(color, line, self.t, self.dt, alpha)
+            self.flat = color, alpha
+        return self.flat
+
+    def __iter__(self):
+        return iter((self.name, *self._flatten()))
+
+    def __getitem__(self, index):
+        return tuple(self)[index]
+
+    def __len__(self):
+        return 3
+
+
+def _paint(out, layer):
+    if isinstance(layer, TextLayer):
+        return layer.paint(out)
+    return _over(out, layer[1], layer[2])
+
+
+@dataclass
+class FrameLayers:
+    """1 フレームの層（hooks を掛ける前）。すべて float32・線形・出力の大きさで、色は前乗算。
+
+    stage: カメラ・視差・ブレを掛けた後のステージ。書き換えない。
+    behind / front: [(層名, 色, アルファ)]。その時刻に見えている層だけ。
+    performer: (色, アルファ)。人物のいない時刻は None。
+    performer_info: clip・source_frame・placement（元→画面、カメラの前の 2×3）・camera（2×3）・blend（重み。窓の外は None）。人物のいない時刻は None。
+    flashes: [(強さ, 色, mode)]。camera: zoom・center・rotate・shake・seams・matrix。
+    """
+    t: float
+    frame_index: int
+    stage: np.ndarray
+    behind: list
+    front: list
+    performer: object
+    performer_info: object
+    flashes: list
+    camera: dict
+
+
+def _text_layers(ctx, z, t, dt, matrix, samples):
+    visible = [(name, [line for line in lines if line.start <= t < line.end]) for name, lines in ctx.text[z]]
+    return [TextLayer(ctx, name, lines, t, dt, matrix, samples) for name, lines in visible if lines]
+
+
+def layers(ctx, t):
+    """時刻 t の層を作る。"""
+    dt = 1.0 / ctx.fps
+    state = ctx.camera.state(t)
+    samples = ctx.camera.blur_states(t)
+    matrix = ctx.camera.matrix(state)
+    view = ctx.camera.view(state)
+    mapped = ctx.clips.mapping(t)
+    info = None
+    if mapped:
+        index, number, weight = mapped[-1]
+        info = {"clip": index, "source_frame": number, "placement": placement_matrix(ctx.place[index], number), "camera": matrix.tolist(),
+                "blend": weight if len(mapped) == 2 else None}
+    return FrameLayers(t, int(round(t * ctx.fps)), _stage_view(ctx, t, state, samples), _text_layers(ctx, "behind", t, dt, matrix, samples),
+                       _text_layers(ctx, "front", t, dt, matrix, samples), _performer(ctx, t, matrix, samples), info, _active_flashes(ctx, t),
+                       {"zoom": view.total_zoom, "center": view.center, "rotate": view.total_rotate, "shake": view.shake,
+                        "seams": view.seams, "matrix": matrix.tolist()})
+
+
+def compose_layers(ctx, L, t):
+    """層を重ねて uint8 (H, W, 3) RGB にする。順は stage → behind → performer → flashes → front → look。"""
+    hooks = ctx.hooks
+    out = L.stage if hooks is None else hooks.image("stage", L.stage, t, ctx, L)
+    if out is L.stage:
+        out = out.copy()
+    for layer in L.behind:
+        out = _paint(out, layer)
+    if hooks is not None:
+        out = hooks.image("behind", out, t, ctx, L)
+    if L.performer is not None:
+        color, alpha = L.performer if hooks is None else hooks.performer(*L.performer, t, ctx, L)
+        out = _over(out, color, alpha)
+    for flash in L.flashes:
+        out = _flash(out, *flash)
+    if hooks is not None:
+        out = hooks.image("front", out, t, ctx, L)
+    for layer in L.front:
+        out = _paint(out, layer)
+    if hooks is not None:
+        out = hooks.image("final", out, t, ctx, L)
+    return fxlook.apply(ctx.look, out, t) if ctx.look is not None else to_srgb8(out)
 
 
 def frame(ctx, t):
     """時刻 t の 1 フレームを uint8 (H, W, 3) RGB で返す。"""
-    dt = 1.0 / ctx.fps
+    return compose_layers(ctx, layers(ctx, t), t)
+
+
+def performer_at(ctx, t):
+    """人物だけを作る（gate の字と顔の検査用）。"""
     state = ctx.camera.state(t)
-    samples = ctx.camera.blur_states(t)
-    out = _stage_view(ctx, t, state, samples)
-    matrix = ctx.camera.matrix(state)
-    out = _text(ctx, out, "behind", t, dt, matrix, samples)
-    person = _performer(ctx, t, matrix, samples)
-    if person is not None:
-        color, alpha = person
-        out = color + out * (1.0 - alpha[..., None])
-    for flash in ctx.flashes:
-        out = _flash(out, flash, t)
-    out = _text(ctx, out, "front", t, dt, matrix, samples)
-    return to_srgb8(out)
+    return _performer(ctx, t, ctx.camera.matrix(state), ctx.camera.blur_states(t))
 
 
 def _frame_row(ctx, t, fitted):
@@ -350,7 +470,7 @@ def _frame_row(ctx, t, fitted):
 
 
 def timeline_record(ctx, start=0.0, duration=None, frames=None):
-    """run に残す timeline.json の中身。`mv gate check` はこれを読む（描画の入力ではない）。"""
+    """run に残す timeline.json の中身。`mv gate check` はこれを読む（描画の入力ではない）。spec だけから作るので、hooks で時刻と構造は変わらない。"""
     data, (width, height) = ctx.spec.data, ctx.size
     norm = lambda b: [round(b[0] / width, 5), round(b[1] / height, 5), round(b[2] / width, 5), round(b[3] / height, 5)]  # noqa: E731
     length = ctx.duration - start if duration is None else duration
@@ -367,8 +487,9 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "flashes": [f["t"] for f in data["flashes"]],
         "ui_regions": data["lyrics"]["ui_regions"],
     }
+    finished = None if ctx.hooks is None else {"hooks": ctx.hooks.record}
     if data["source_schema"] == SCHEMA_V01:
-        return record
+        return {**record, "finished": finished} if finished else record
     clips = data["performer"]["clips"]
     fitted = bool(ctx.analysis)
     audio = data["audio"]
@@ -388,7 +509,7 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "accents": data["camera"]["accents"],
         "flash_info": [{k: f[k] for k in ("t", "strength", "decay_s", "mode", "beat_exempt")} for f in data["flashes"]],
         "audio": None if audio is None else {"fit": audio["fit"], "end_s": audio["end_s"]},
-        "finished": None,
+        "finished": finished,
     })
     for row, line in zip(record["lyrics"], ctx.lines):
         row.update(sung=line.sung, reveal=line.style["reveal"], exclusive=line.style["exclusive"],

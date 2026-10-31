@@ -115,6 +115,7 @@ def _dance_parser(commands):
     render.add_argument("--scale", type=float, default=1.0)
     render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
     render.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
+    render.add_argument("--hooks", type=Path, help="finishing hooks (Python). Runs only when given here")
     plan = sub.add_parser("plan", help="print the resolved times as tables")
     plan.add_argument("spec", type=Path)
     stills = sub.add_parser("stills", help="still sheet of the given times")
@@ -124,6 +125,8 @@ def _dance_parser(commands):
     stills.add_argument("--scale", type=float, default=1.0)
     stills.add_argument("--guides", nargs="?", const="visible", choices=["visible", "all"],
                         help="draw the UI regions and the boxes of the visible lines (all: every line)")
+    stills.add_argument("--layers", action="store_true", help="one row per time: final, stage, performer alpha, behind text, front text")
+    stills.add_argument("--hooks", type=Path, help="finishing hooks (Python). Runs only when given here")
     accept = sub.add_parser("accept", help="append a human decision to acceptance.jsonl")
     accept.add_argument("run_dir", type=Path)
     accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
@@ -197,9 +200,9 @@ def dance_command(args):
         return demo.create(args.dir, args.width, args.height, args.duration, args.fps, args.schema)
     from .dance import runs
     if command == "render":
-        return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress, args.quiet)
+        return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress, args.quiet, args.hooks)
     if command == "stills":
-        return runs.stills(args.spec, args.times, args.out, args.scale, args.guides)
+        return runs.stills(args.spec, args.times, args.out, args.scale, args.guides, layers=args.layers, hooks=args.hooks)
     raise PipelineError(f"Unsupported dance command: {command}")
 
 
