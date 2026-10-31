@@ -126,6 +126,13 @@ def test_rows_share_one_size_and_stay_inside_the_box(tmp_path):
     assert tops[1] - tops[0] > 100 and tops[1] - tops[0] == pytest.approx(tops[2] - tops[1], abs=8)
 
 
+def test_rows_with_different_ascenders_and_descenders_stay_inside_the_box(tmp_path):
+    words = [{"text": "AAA", "row": 0}, {"text": " ggg", "row": 1}]
+    layers = {"back": {"box": [0.1, 0.2, 0.9, 0.3], "size_px": 900, "rows": {"gap_em": 0.0}, "stroke_px": 0}}
+    line = line_of(tmp_path, text="AAA ggg", words=words, layers=layers)
+    assert not line.overflow and line.box_px[1] >= 0.2 * 1920 - 2 and line.box_px[3] <= 0.3 * 1920 + 2
+
+
 def test_the_head_space_of_a_row_is_dropped(tmp_path):
     line = line_of(tmp_path, text="ONE TWO THREE", words=THREE, layers={"back": {"box": [0.1, 0.2, 0.9, 0.6]}})
     centers = [(b["box_px"][0] + b["box_px"][2]) / 2 for b in line.words]
