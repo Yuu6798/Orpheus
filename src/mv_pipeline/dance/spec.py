@@ -29,13 +29,15 @@ SHAKE_HZ = [15.1, 12.7]
 PORTRAIT_UI = [{"name": "top", "box": [0.0, 0.0, 1.0, 0.06]},
                {"name": "right", "box": [0.86, 0.45, 1.0, 0.88]},
                {"name": "bottom", "box": [0.0, 0.80, 1.0, 1.0]}]
+_TEXT_DEFAULTS = {"font": None, "rows": {"align": "center", "gap_em": 0.05}, "reveal": "line", "enter": None, "exit": None, "glow": None,
+                  "follow_camera": False, "exclusive": True, "sung": True}
 LAYER_DEFAULTS = {
-    "back": {"box": [0.04, 0.18, 0.96, 0.44], "size_px": 180.0, "color": [255.0, 255.0, 255.0],
+    "back": {"z": "behind", "box": [0.04, 0.18, 0.96, 0.44], "size_px": 180.0, "color": [255.0, 255.0, 255.0],
              "accent_color": [255.0, 90.0, 170.0], "opacity": 0.92, "stroke_px": 0.0, "stroke_color": [0.0, 0.0, 0.0],
-             "fade_in_s": 0.04, "fade_out_s": 0.08},
-    "band": {"box": [0.04, 0.07, 0.96, 0.15], "size_px": 64.0, "color": [255.0, 255.0, 255.0],
+             "fade_in_s": 0.04, "fade_out_s": 0.08, **_TEXT_DEFAULTS},
+    "band": {"z": "front", "box": [0.04, 0.07, 0.96, 0.15], "size_px": 64.0, "color": [255.0, 255.0, 255.0],
              "accent_color": [255.0, 215.0, 90.0], "opacity": 1.0, "stroke_px": 6.0, "stroke_color": [12.0, 10.0, 24.0],
-             "fade_in_s": 0.04, "fade_out_s": 0.08},
+             "fade_in_s": 0.04, "fade_out_s": 0.08, **_TEXT_DEFAULTS},
 }
 AUDIO_FADE_IN_S = 0.02    # fx の書き出しと同じ既定値
 AUDIO_FADE_OUT_S = 0.25
@@ -65,8 +67,8 @@ def asset_refs(data):
         refs[f"clip:{index}"] = clip["path"]
     if data["audio"]:
         refs["audio"] = data["audio"]["path"]
-    if data["lyrics"]["font"]:
-        refs["font"] = data["lyrics"]["font"]
+    for name, font in data["lyrics"]["fonts"].items():
+        refs[f"font:{name}"] = font["path"]
     if data["beats"] and data["beats"]["path"]:
         refs["beats"] = data["beats"]["path"]
     return refs
@@ -176,19 +178,69 @@ def _normalize_fit(fit):
             "analysis_scale": float(fit.get("analysis_scale", 0.5)), **_ext(fit)}
 
 
-def _normalize_layer(raw, name):
-    defaults = LAYER_DEFAULTS[name]
-    raw = raw or {}
-    out = {key: (_vec(raw[key]) if isinstance(value, list) else float(raw[key])) if key in raw else value
-           for key, value in defaults.items()}
+def _style_fields(raw):
+    """層の設定のうち書かれた欄だけを正規化する（行の style の上書きにも使う）。"""
+    out = {}
+    for key in ("box", "color", "accent_color", "stroke_color"):
+        if key in raw:
+            out[key] = _vec(raw[key])
+    for key in ("size_px", "opacity", "stroke_px", "fade_in_s", "fade_out_s"):
+        if key in raw:
+            out[key] = float(raw[key])
+    for key in ("font", "reveal"):
+        if key in raw:
+            out[key] = raw[key]
+    for key in ("follow_camera", "exclusive", "sung"):
+        if key in raw:
+            out[key] = bool(raw[key])
+    if "rows" in raw:
+        out["rows"] = {"align": raw["rows"].get("align", "center"), "gap_em": float(raw["rows"].get("gap_em", 0.05)), **_ext(raw["rows"])}
+    if "enter" in raw:
+        come = raw["enter"]
+        out["enter"] = {"scale_from": float(come.get("scale_from", 1.3)), "rise_px": float(come.get("rise_px", 26)),
+                        "dur_s": float(come.get("dur_s", 0.14)), **_ext(come)}
+    if "exit" in raw:
+        leave = raw["exit"]
+        out["exit"] = {"scale_to": float(leave.get("scale_to", 1.16)), "dur_s": float(leave.get("dur_s", 0.30)), **_ext(leave)}
+    if "glow" in raw:
+        glow = raw["glow"]
+        out["glow"] = {"color": _vec(glow.get("color", [255, 255, 255])), "radius_px": float(glow.get("radius_px", 16)),
+                       "strength": float(glow.get("strength", 0.6)), **_ext(glow)}
     return {**out, **_ext(raw)}
 
 
+def _normalize_layer(raw, name):
+    """既定の層（back / band）以外は z が必須で、残りの既定値は band と同じ。"""
+    raw = raw or {}
+    if name not in LAYER_DEFAULTS and "z" not in raw:
+        raise PipelineError(f"dance spec: lyrics の層 {name!r} には z（behind / front）が必要です")
+    defaults = LAYER_DEFAULTS.get(name, LAYER_DEFAULTS["band"])
+    return {"name": name, **defaults, "z": raw.get("z", defaults["z"]), **_style_fields(raw)}
+
+
+def _normalize_layers(lyrics, legacy):
+    """層の列。描く順は z ごとに書いた順なので、順序が残るように配列にする（既定の層を書かなければ先頭に置く）。"""
+    written = {"back": lyrics.get("back"), "band": lyrics.get("band")} if legacy else lyrics.get("layers", {})
+    names = [name for name in LAYER_DEFAULTS if name not in written] + list(written)
+    return [_normalize_layer(written.get(name), name) for name in names]
+
+
+def _normalize_fonts(lyrics):
+    """(既定の書体名, {名前: {path, index}})。fonts が無ければ font はパスで、"default" の書体にする（0.1 の書き方）。"""
+    if "fonts" in lyrics:
+        return lyrics.get("font"), {name: {"path": f["path"], "index": int(f.get("index", 0))} for name, f in lyrics["fonts"].items()}
+    if lyrics.get("font"):
+        return "default", {"default": {"path": lyrics["font"], "index": int(lyrics.get("font_index", 0))}}
+    return None, {}
+
+
 def _normalize_line(line, time):
-    words = [{"text": w["text"], "t": None if w.get("t") is None else time(w["t"], "語の t"), "accent": bool(w.get("accent", True))}
+    words = [{"text": w["text"], "t": None if w.get("t") is None else time(w["t"], "語の t"), "accent": bool(w.get("accent", True)),
+              "color": None if w.get("color") is None else _vec(w["color"]), "row": int(w.get("row", 0))}
              for w in line.get("words", [])]
     return {"layer": line["layer"], "text": line["text"], "start": time(line["start"], "歌詞の start"),
-            "end": time(line["end"], "歌詞の end"), "words": words, **_ext(line)}
+            "end": time(line["end"], "歌詞の end"), "words": words, "style": _style_fields(line.get("style", {})),
+            "sung": line.get("sung"), **_ext(line)}
 
 
 def _normalize_audio(audio):
@@ -208,6 +260,7 @@ def _normalize(raw, base_dir):
     lyrics = raw.get("lyrics", {})
     portrait = out["height"] > out["width"]
     legacy = raw["schema_version"] == SCHEMA_V01
+    font, fonts = _normalize_fonts(lyrics)
     grid = dancebeats.load_grid(raw.get("beats"), lambda rel: safe_path(base_dir, rel))
     time = lambda value, where: dancebeats.resolve_time(value, grid, where)  # noqa: E731
     data = {
@@ -243,11 +296,10 @@ def _normalize(raw, base_dir):
                      "color": _vec(f.get("color", [255, 255, 255])), "mode": f.get("mode", "lerp_linear"),
                      "beat_exempt": bool(f.get("beat_exempt", False)), **_ext(f)} for f in raw.get("flashes", [])],
         "lyrics": {
-            "font": lyrics.get("font"), "font_index": int(lyrics.get("font_index", 0)),
+            "font": font, "fonts": fonts,
             "ui_regions": [{"name": r["name"], "box": _vec(r["box"])} for r in lyrics["ui_regions"]] if "ui_regions" in lyrics
             else (PORTRAIT_UI if portrait else []),
-            "back": _normalize_layer(lyrics.get("back"), "back"),
-            "band": _normalize_layer(lyrics.get("band"), "band"),
+            "layers": _normalize_layers(lyrics, legacy),
             "lines": [_normalize_line(line, time) for line in lyrics.get("lines", [])],
             **_ext(lyrics),
         },
@@ -314,19 +366,32 @@ def _validate_semantics(data):
     _validate_clips(data["performer"]["clips"], duration, warnings)
     _validate_audio(data["audio"], warnings, duration)
     lyrics = data["lyrics"]
-    for name in ("back", "band"):
-        if not _box_ok(lyrics[name]["box"]):
-            raise PipelineError(f"dance spec: lyrics.{name}.box は [x0, y0, x1, y1]（x0 < x1, y0 < y1）にしてください")
+    layers = {layer["name"]: layer for layer in lyrics["layers"]}
+    if lyrics["font"] is not None and lyrics["font"] not in lyrics["fonts"]:
+        raise PipelineError(f"dance spec: lyrics.font の書体 {lyrics['font']!r} が lyrics.fonts にありません")
+    for layer in layers.values():
+        if not _box_ok(layer["box"]):
+            raise PipelineError(f"dance spec: lyrics.{layer['name']}.box は [x0, y0, x1, y1]（x0 < x1, y0 < y1）にしてください")
     for region in lyrics["ui_regions"]:
         if not _box_ok(region["box"]):
             raise PipelineError(f"dance spec: ui_regions の {region['name']!r} の box が不正です")
     for line in lyrics["lines"]:
+        if line["layer"] not in layers:
+            raise PipelineError(f"dance spec: 歌詞 {line['text']!r} の層 {line['layer']!r} が lyrics.layers にありません")
+        style = {**layers[line["layer"]], **line["style"]}
+        if "box" in line["style"] and not _box_ok(style["box"]):
+            raise PipelineError(f"dance spec: 歌詞 {line['text']!r} の style.box は [x0, y0, x1, y1]（x0 < x1, y0 < y1）にしてください")
+        name = style["font"] or lyrics["font"]
+        if name is not None and name not in lyrics["fonts"]:
+            raise PipelineError(f"dance spec: 歌詞 {line['text']!r} の書体 {name!r} が lyrics.fonts にありません")
+        if name is None and not line["text"].isascii():
+            raise PipelineError("dance spec: ASCII 以外の歌詞には lyrics.font が必要です（フォントファイルを spec の隣に置いてください）")
+        if style["exit"] is not None and style["exit"]["dur_s"] > line["end"] - line["start"]:
+            warnings.append(f"lyrics: {line['text']!r} の exit が行の長さより長いので、行の頭から動きます")
         if line["end"] <= line["start"]:
             raise PipelineError(f"dance spec: 歌詞 {line['text']!r} の end は start より後にしてください")
         if line["words"] and "".join(w["text"] for w in line["words"]) != line["text"]:
             raise PipelineError(f"dance spec: 歌詞 {line['text']!r} の words をつなげた文字列が text と一致しません")
         if line["start"] >= duration:
             warnings.append(f"lyrics: {line['text']!r} はショットの長さの後に始まるので出ません")
-    if not lyrics["font"] and any(not line["text"].isascii() for line in lyrics["lines"]):
-        raise PipelineError("dance spec: ASCII 以外の歌詞には lyrics.font が必要です（フォントファイルを spec の隣に置いてください）")
     return warnings

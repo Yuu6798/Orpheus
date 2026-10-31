@@ -173,13 +173,29 @@ def _spec(width, height, duration, fps):
                        "blur": {"samples": 8, "shutter_frames": 1.0, "peak_shutter_frames": 1.6}}],
             "cover_rotation": True},
         "flashes": [{"t": half, "strength": 0.22, "decay_s": 0.08, "mode": "add_display"}],
-        "lyrics": {"lines": [
-            {"layer": "back", "text": "HOLD", "start": {"beat": 1, "offset_s": -0.04}, "end": {"beat": second}},
-            {"layer": "back", "text": "LIGHT", "start": half, "end": {"beat": third},
-             "words": [{"text": "LI", "t": half}, {"text": "GHT", "t": {"beat": second, "offset_s": 0.25}}]},
-            {"layer": "band", "text": "demo band line one", "start": {"beat": 1, "offset_s": -0.1}, "end": {"beat": second}},
-            {"layer": "band", "text": "demo band line two", "start": half, "end": {"beat": third}},
-        ]},
+        "lyrics": {
+            "layers": {
+                "back": {"box": [0.04, 0.12, 0.84, 0.46], "size_px": 300, "reveal": "word", "rows": {"align": "stagger", "gap_em": 0.04},
+                         "enter": {"scale_from": 1.3, "rise_px": 26, "dur_s": 0.14}, "exit": {"scale_to": 1.16, "dur_s": 0.3},
+                         "glow": {"color": [255, 150, 70], "radius_px": 22, "strength": 0.8}},
+                "band": {"size_px": 72, "stroke_px": 6, "fade_in_s": 0.1},
+                "title": {"z": "front", "box": [0.06, 0.08, 0.84, 0.2], "size_px": 132, "sung": False},
+            },
+            "lines": [
+                {"layer": "back", "text": "HOLD ON TIGHT", "start": {"beat": 1, "offset_s": -0.04}, "end": {"beat": second},
+                 "words": [{"text": "HOLD", "t": {"beat": 1, "offset_s": -0.04}, "row": 0},
+                           {"text": " ON", "t": {"beat": 1.5, "offset_s": -0.04}, "row": 1},
+                           {"text": " TIGHT", "t": {"beat": 2, "offset_s": -0.04}, "row": 2}]},
+                {"layer": "back", "text": "LIGHT", "start": half, "end": {"beat": third},
+                 "words": [{"text": "LI", "t": half}, {"text": "GHT", "t": {"beat": second, "offset_s": 0.25}}]},
+                {"layer": "band", "text": "demo band line one", "start": {"beat": 1, "offset_s": -0.1}, "end": {"beat": second},
+                 "words": [{"text": "demo", "t": {"beat": 1, "offset_s": -0.1}, "color": [205, 160, 255]},
+                           {"text": " band line one", "accent": False}]},
+                {"layer": "band", "text": "demo band line two", "start": half, "end": {"beat": third},
+                 "style": {"color": [255, 222, 170], "glow": {"color": [255, 150, 60], "radius_px": 14, "strength": 0.55}}},
+                {"layer": "title", "text": "TITLE", "start": {"beat": third}, "end": duration},
+            ],
+        },
     }
 
 

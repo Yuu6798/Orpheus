@@ -614,12 +614,6 @@
             }
           }
         },
-        "back": {
-          "$ref": "#/$defs/lyric_layer"
-        },
-        "band": {
-          "$ref": "#/$defs/lyric_layer"
-        },
         "lines": {
           "type": "array",
           "items": {
@@ -636,10 +630,8 @@
             },
             "properties": {
               "layer": {
-                "enum": [
-                  "back",
-                  "band"
-                ]
+                "type": "string",
+                "minLength": 1
               },
               "text": {
                 "type": "string",
@@ -670,11 +662,49 @@
                     },
                     "accent": {
                       "type": "boolean"
+                    },
+                    "color": {
+                      "$ref": "#/$defs/rgb"
+                    },
+                    "row": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   }
                 }
+              },
+              "style": {
+                "$ref": "#/$defs/lyric_style"
+              },
+              "sung": {
+                "type": "boolean"
               }
             }
+          }
+        },
+        "fonts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "layers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/lyric_layer"
           }
         }
       }
@@ -720,48 +750,6 @@
       },
       "minItems": 4,
       "maxItems": 4
-    },
-    "lyric_layer": {
-      "type": "object",
-      "additionalProperties": false,
-      "patternProperties": {
-        "^x_": {}
-      },
-      "properties": {
-        "box": {
-          "$ref": "#/$defs/box"
-        },
-        "size_px": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "color": {
-          "$ref": "#/$defs/rgb"
-        },
-        "accent_color": {
-          "$ref": "#/$defs/rgb"
-        },
-        "opacity": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "stroke_px": {
-          "type": "number",
-          "minimum": 0
-        },
-        "stroke_color": {
-          "$ref": "#/$defs/rgb"
-        },
-        "fade_in_s": {
-          "type": "number",
-          "minimum": 0
-        },
-        "fade_out_s": {
-          "type": "number",
-          "minimum": 0
-        }
-      }
     },
     "time": {
       "description": "秒の数値か拍の参照。読み込み時に秒へ解決する",
@@ -837,6 +825,288 @@
         "except_tolerance_s": {
           "type": "number",
           "minimum": 0
+        }
+      }
+    },
+    "lyric_style": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "box": {
+          "$ref": "#/$defs/box"
+        },
+        "size_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "color": {
+          "$ref": "#/$defs/rgb"
+        },
+        "accent_color": {
+          "$ref": "#/$defs/rgb"
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stroke_px": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stroke_color": {
+          "$ref": "#/$defs/rgb"
+        },
+        "fade_in_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fade_out_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "font": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "align": {
+              "enum": [
+                "center",
+                "left",
+                "right",
+                "stagger"
+              ]
+            },
+            "gap_em": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "reveal": {
+          "enum": [
+            "line",
+            "word"
+          ]
+        },
+        "enter": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "scale_from": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "rise_px": {
+              "type": "number"
+            },
+            "dur_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "exit": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "scale_to": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "dur_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "glow": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/rgb"
+            },
+            "radius_px": {
+              "type": "number",
+              "minimum": 0
+            },
+            "strength": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "follow_camera": {
+          "type": "boolean"
+        },
+        "exclusive": {
+          "type": "boolean"
+        },
+        "sung": {
+          "type": "boolean"
+        }
+      }
+    },
+    "lyric_layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "box": {
+          "$ref": "#/$defs/box"
+        },
+        "size_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "color": {
+          "$ref": "#/$defs/rgb"
+        },
+        "accent_color": {
+          "$ref": "#/$defs/rgb"
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stroke_px": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stroke_color": {
+          "$ref": "#/$defs/rgb"
+        },
+        "fade_in_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fade_out_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "font": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "align": {
+              "enum": [
+                "center",
+                "left",
+                "right",
+                "stagger"
+              ]
+            },
+            "gap_em": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "reveal": {
+          "enum": [
+            "line",
+            "word"
+          ]
+        },
+        "enter": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "scale_from": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "rise_px": {
+              "type": "number"
+            },
+            "dur_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "exit": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "scale_to": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "dur_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "glow": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/rgb"
+            },
+            "radius_px": {
+              "type": "number",
+              "minimum": 0
+            },
+            "strength": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "follow_camera": {
+          "type": "boolean"
+        },
+        "exclusive": {
+          "type": "boolean"
+        },
+        "sung": {
+          "type": "boolean"
+        },
+        "z": {
+          "enum": [
+            "behind",
+            "front"
+          ]
         }
       }
     }
