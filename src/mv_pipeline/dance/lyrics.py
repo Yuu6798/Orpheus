@@ -89,19 +89,21 @@ def layout(line, lyrics_spec, resolve, size):
     origin_x = int(round((box[0] + box[2]) / 2 - (ink[0] + ink[2]) / 2))
     baseline = int(round((box[1] + box[3]) / 2 - (ink[1] + ink[3]) / 2))
     words = line["words"] or [{"text": line["text"], "t": None, "accent": False}]
-    runs, pen = [], 0.0
+    # 行全体を 1 回で描いてから語の境目の列で切る。語ごとに描くと字詰めや合字が変わり、強調で字の位置が動くため
     pad = stroke + 2
-    for word in words:
-        wx0, wy0, wx1, wy1 = font.getbbox(word["text"], anchor="ls", stroke_width=stroke)
-        w, h = wx1 - wx0 + 2 * pad, wy1 - wy0 + 2 * pad
-        run_x = origin_x + int(round(pen)) + wx0 - pad
-        run_y = baseline + wy0 - pad
-        local = (pad - wx0, pad - wy0)
-        fill = _mask(font, word["text"], w, h, *local)
-        edge = _mask(font, word["text"], w, h, *local, stroke=stroke) if stroke else None
-        accent_at = (word["t"] if word["t"] is not None else line["start"]) if word["accent"] else None
-        runs.append(Run(run_x, run_y, fill, edge, accent_at))
-        pen += font.getlength(word["text"])
+    w, h = ink[2] - ink[0] + 2 * pad, ink[3] - ink[1] + 2 * pad
+    local = (pad - ink[0], pad - ink[1])
+    fill = _mask(font, line["text"], w, h, *local)
+    edge = _mask(font, line["text"], w, h, *local, stroke=stroke) if stroke else None
+    runs, left, prefix = [], 0, ""
+    for index, word in enumerate(words):
+        prefix += word["text"]
+        right = w if index == len(words) - 1 else min(w, local[0] + int(round(font.getlength(prefix))))
+        if right > left:
+            accent_at = (word["t"] if word["t"] is not None else line["start"]) if word["accent"] else None
+            runs.append(Run(origin_x + ink[0] - pad + left, baseline + ink[1] - pad, fill[:, left:right],
+                            None if edge is None else edge[:, left:right], accent_at))
+            left = right
     # getbbox は字の送り幅を含むので、実際のインクの範囲で箱の中央に合わせ直す
     ink = _ink_extent(runs)
     shift_x = int(round((box[0] + box[2]) / 2 - (ink[0] + ink[2]) / 2))

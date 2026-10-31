@@ -204,10 +204,21 @@ def test_text_is_centered_in_the_box():
     assert (box[0] + box[2]) / 2 == pytest.approx(540, abs=3)
 
 
-def test_words_keep_the_same_position_as_the_plain_line():
-    plain = layout_line("LIGHT", stroke_px=0).box_px
-    split = layout_line("LIGHT", words=[{"text": "LI", "t": 1.5, "accent": True}, {"text": "GHT", "t": None, "accent": False}]).box_px
-    assert abs(plain[0] - split[0]) <= 2 and abs(plain[2] - split[2]) <= 4 and plain[1] == split[1]
+@pytest.mark.parametrize("text, cut", [("LIGHT", 2), ("AVATAR", 1), ("AVATAR", 3)])
+def test_splitting_into_words_does_not_change_a_single_pixel(text, cut):
+    """語の境目が字詰めの対（A と V など）をまたいでも、強調の無い絵は行全体を描いたものと同じ。"""
+    words = [{"text": text[:cut], "t": None, "accent": False}, {"text": text[cut:], "t": None, "accent": False}]
+    plain, split = layout_line(text), layout_line(text, words=words)
+    a, b = np.zeros((1920, 1080, 3), np.float32), np.zeros((1920, 1080, 3), np.float32)
+    lyrics.draw(a, plain, 1.5, 1 / 24)
+    lyrics.draw(b, split, 1.5, 1 / 24)
+    assert plain.box_px == split.box_px and len(split.runs) == 2 and (a == b).all()
+
+
+def test_boundary_between_words_follows_the_kerned_position():
+    line = layout_line("AVATAR", words=[{"text": "AV", "t": None, "accent": False}, {"text": "ATAR", "t": None, "accent": False}])
+    font = lyrics.ImageFont.load_default(180)
+    assert line.runs[1].x - line.runs[0].x == pytest.approx(font.getlength("AV") + 2 - font.getbbox("AVATAR", anchor="ls")[0], abs=2)
 
 
 def test_accent_changes_only_the_color_at_the_word_time():
