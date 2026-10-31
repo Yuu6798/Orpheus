@@ -76,6 +76,16 @@ class Source:
         """index が最後のフレームより後か（read(index) の後に呼ぶ）。"""
         return self.end_index is not None and index > self.end_index
 
+    def count(self):
+        """全フレーム数。CAP_PROP_FRAME_COUNT は環境で変わるので数える。読み位置は変えない。"""
+        cap, frames = cv2.VideoCapture(str(self.path)), 0
+        while cap.grab():
+            frames += 1
+        cap.release()
+        if not frames:
+            raise PipelineError(f"動画からフレームを読めません: {self.path.name}")
+        return frames
+
     def close(self):
         self.cap.release()
 

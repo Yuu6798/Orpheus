@@ -18,10 +18,12 @@ from ..fx.spec import canonical_json  # noqa: F401  キャッシュ key の正�
 from ..io import PipelineError, read_json, safe_path, sha256
 from . import SCHEMA_V01, SCHEMA_VERSION
 from . import beats as dancebeats
+from . import camera as dancecamera
 
 _SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("dance_shot.schema.json"),
             SCHEMA_V01: Path(__file__).with_name("dance_shot_0_1.schema.json")}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+SHAKE_HZ = [15.1, 12.7]
 
 # 縦画面の上・右・下の操作部品のおおよその範囲（値は目安。spec の lyrics.ui_regions で上書きできる）
 PORTRAIT_UI = [{"name": "top", "box": [0.0, 0.0, 1.0, 0.06]},
@@ -114,16 +116,57 @@ def _vec(value):
     return [float(v) for v in value]
 
 
-def _normalize_clip(clip, time):
+def _normalize_clip(clip, time, legacy):
     place = clip.get("placement", {})
     transition = clip.get("transition_in", {"type": "cut"})
-    return {"path": clip["path"], "kind": "image" if clip["path"].lower().endswith(IMAGE_SUFFIXES) else "video",
+    return {"path": clip["path"], "kind": "image" if not legacy and clip["path"].lower().endswith(IMAGE_SUFFIXES) else "video",
             "start": time(clip["start"], "clip の start"), "end": time(clip["end"], "clip の end"),
             "source_start": float(clip.get("source_start", 0)), "speed": float(clip.get("speed", 1.0)),
             "placement": {"offset": _vec(place.get("offset", [0, 0])), "scale": float(place.get("scale", 1.0)),
                           "flip_x": bool(place.get("flip_x", False)), **_ext(place)},
             "fit": clip.get("fit", True), "beat_exempt": bool(clip.get("beat_exempt", False)),
             "transition_in": {"type": transition["type"], "frames": int(transition.get("frames", 0))}, **_ext(clip)}
+
+
+def _normalize_stage(stage, legacy):
+    return {"path": stage["path"], "kind": "video" if not legacy and not stage["path"].lower().endswith(IMAGE_SUFFIXES) else "image",
+            "source_start": float(stage.get("source_start", 0)), "loop": bool(stage.get("loop", True)),
+            "parallax": float(stage.get("parallax", 1.0)), **_ext(stage)}
+
+
+def _accent_times(at, grid, time, duration):
+    """accents の at を秒の配列にする（時刻の配列か、拍の格子の指定）。"""
+    if isinstance(at, list):
+        return sorted(time(value, "accents の at") for value in at)
+    if grid is None:
+        raise PipelineError("dance spec: accents の grid の指定には beats が必要です")
+    source = grid.downbeats if at["grid"] == "downbeats" else grid.beats
+    first, last = time(at.get("from", 0), "accents の from"), time(at.get("to", duration), "accents の to")
+    picked = [t for t in source if first <= t <= last][::int(at.get("every", 1))]
+    tolerance = float(at.get("except_tolerance_s", 0.05))
+    skip = [time(value, "accents の except") for value in at.get("except", [])]
+    return [t for t in picked if all(abs(t - other) > tolerance for other in skip)]
+
+
+def _normalize_accent(accent, grid, time, duration):
+    decay = float(accent.get("decay_s", 0.12))
+    return {"times": _accent_times(accent["at"], grid, time, duration), "zoom": float(accent.get("zoom", 1.0)),
+            "attack_s": float(accent.get("attack_s", 0)), "decay_s": decay, "shake_px": float(accent.get("shake_px", 0)),
+            "shake_decay_s": float(accent.get("shake_decay_s", decay)), "shake_hz": _vec(accent.get("shake_hz", SHAKE_HZ)), **_ext(accent)}
+
+
+def _normalize_seam(seam, time):
+    span = float(seam.get("span_s", 0.4))
+    shaped = "pre_s" in seam or "post_s" in seam or "rotate_post_deg" in seam
+    blur = seam.get("blur")
+    return {"t": time(seam["t"], "camera.seams の t"), "span_s": span, "zoom": float(seam.get("zoom", 1.25)),
+            "rotate_deg": float(seam.get("rotate_deg", 6)), "pre_s": float(seam.get("pre_s", span)) if shaped else None,
+            "post_s": float(seam.get("post_s", span)) if shaped else None,
+            "rotate_post_deg": None if seam.get("rotate_post_deg") is None else float(seam["rotate_post_deg"]),
+            "pivot": _vec(seam.get("pivot", [0.5, 0.5])),
+            "blur": None if blur is None else {"samples": int(blur.get("samples", 8)), "shutter_frames": float(blur.get("shutter_frames", 1.0)),
+                                               "peak_shutter_frames": float(blur.get("peak_shutter_frames", 1.6)), **_ext(blur)},
+            **_ext(seam)}
 
 
 def _normalize_fit(fit):
@@ -164,6 +207,7 @@ def _normalize(raw, base_dir):
     camera = raw.get("camera", {})
     lyrics = raw.get("lyrics", {})
     portrait = out["height"] > out["width"]
+    legacy = raw["schema_version"] == SCHEMA_V01
     grid = dancebeats.load_grid(raw.get("beats"), lambda rel: safe_path(base_dir, rel))
     time = lambda value, where: dancebeats.resolve_time(value, grid, where)  # noqa: E731
     data = {
@@ -175,9 +219,9 @@ def _normalize(raw, base_dir):
         "duration_s": float(raw["duration_s"]),
         "beats": None if grid is None else {"path": grid.path, **grid.record()},
         "audio": None if audio is None else _normalize_audio(audio),
-        "stage": {"path": raw["stage"]["path"], **_ext(raw["stage"])},
+        "stage": _normalize_stage(raw["stage"], legacy),
         "performer": {
-            "clips": [_normalize_clip(c, time) for c in performer["clips"]],
+            "clips": [_normalize_clip(c, time, legacy) for c in performer["clips"]],
             "key": {"color": _vec(key.get("color", [0, 255, 0])), "tolerance": float(key.get("tolerance", 0.22)),
                     "softness": float(key.get("softness", 0.12)), "spill": float(key.get("spill", 1.0)),
                     "choke_px": float(key.get("choke_px", 1)), "feather_px": float(key.get("feather_px", 1)), **_ext(key)},
@@ -190,12 +234,14 @@ def _normalize(raw, base_dir):
             "keys": [{"t": time(k["t"], "camera.keys の t"), "zoom": float(k.get("zoom", 1.0)), "center": _vec(k.get("center", [0.5, 0.5])),
                       "rotate_deg": float(k.get("rotate_deg", 0)), "ease": k.get("ease", "linear"), **_ext(k)}
                      for k in camera.get("keys") or [{"t": 0.0}]],
-            "seams": [{"t": time(s["t"], "camera.seams の t"), "span_s": float(s.get("span_s", 0.4)), "zoom": float(s.get("zoom", 1.25)),
-                       "rotate_deg": float(s.get("rotate_deg", 6)), **_ext(s)} for s in camera.get("seams", [])],
+            "accents": [_normalize_accent(a, grid, time, float(raw["duration_s"])) for a in camera.get("accents", [])],
+            "seams": [_normalize_seam(s, time) for s in camera.get("seams", [])],
+            "cover_rotation": bool(camera.get("cover_rotation", not legacy)),
             **_ext(camera),
         },
         "flashes": [{"t": time(f["t"], "flashes の t"), "strength": float(f.get("strength", 0.6)), "decay_s": float(f.get("decay_s", 0.2)),
-                     "color": _vec(f.get("color", [255, 255, 255])), **_ext(f)} for f in raw.get("flashes", [])],
+                     "color": _vec(f.get("color", [255, 255, 255])), "mode": f.get("mode", "lerp_linear"),
+                     "beat_exempt": bool(f.get("beat_exempt", False)), **_ext(f)} for f in raw.get("flashes", [])],
         "lyrics": {
             "font": lyrics.get("font"), "font_index": int(lyrics.get("font_index", 0)),
             "ui_regions": [{"name": r["name"], "box": _vec(r["box"])} for r in lyrics["ui_regions"]] if "ui_regions" in lyrics
@@ -241,6 +287,21 @@ def _validate_audio(audio, warnings, duration):
         warnings.append(f"audio: end_s {audio['end_s']:g} 秒がショットの長さ {duration:g} 秒より後です")
 
 
+def _validate_seams(seams, fps, warnings):
+    for seam in seams:
+        post = seam["rotate_post_deg"]
+        if post is None:
+            continue
+        rotate = seam["rotate_deg"]
+        if rotate * post <= 0 or abs(post) < abs(rotate):
+            raise PipelineError(f"dance spec: seams（{seam['t']:g} 秒）の rotate_post_deg は rotate_deg と同じ符号で、絶対値が rotate_deg 以上にしてください")
+        if seam["post_s"] * fps < 3:
+            raise PipelineError(f"dance spec: seams（{seam['t']:g} 秒）の rotate_post_deg には 3 コマ以上の post_s が要ります")
+        curve, raised = dancecamera.rotate_curve(seam, fps)
+        if raised:
+            warnings.append(f"camera: seams（{seam['t']:g} 秒）の回転が切れ目で止まらないよう、頂点を {curve.sign * curve.peak:.2f} 度に上げました")
+
+
 def _validate_semantics(data):
     warnings = []
     out, duration = data["output"], data["duration_s"]
@@ -249,6 +310,7 @@ def _validate_semantics(data):
     keys = [k["t"] for k in data["camera"]["keys"]]
     if any(b <= a for a, b in zip(keys, keys[1:])):
         raise PipelineError(f"dance spec: camera.keys の t は厳密な昇順にしてください: {keys}")
+    _validate_seams(data["camera"]["seams"], out["fps"], warnings)
     _validate_clips(data["performer"]["clips"], duration, warnings)
     _validate_audio(data["audio"], warnings, duration)
     lyrics = data["lyrics"]

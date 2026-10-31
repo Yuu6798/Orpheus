@@ -22,7 +22,7 @@ uv run mv dance render projects/dancedemo/spec.json                      # dance
 uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepted --by NAME
 ```
 
-デモは夜のステージに、緑背景の棒人間のクリップ 3 本と静止画 1 枚をつなぐ。クリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶので、`fit` の効きを確かめられる。最後の静止画は blend 3 コマでつなぐ。音声は描画より短く、`fit: "pad"` と `end_s` で足す。クリップは腕の振りの位相が違うので切れ目で姿勢が飛び、そこにフラッシュと「回転しながら寄って引く」カメラが入る。
+デモは動く夜のステージ（2 秒ループの動画。`parallax` 0.7）に、緑背景の棒人間のクリップ 3 本と静止画 1 枚をつなぐ。クリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶので、`fit` の効きを確かめられる。最後の静止画は blend 3 コマでつなぐ。音声は描画より短く、`fit: "pad"` と `end_s` で足す。カメラは小節頭のアクセントと揺れつきの打ち込みが 1 回。クリップは腕の振りの位相が違うので切れ目で姿勢が飛び、そこにフラッシュと、非対称の seams とブレ（回転は切れ目を越えて続く）が入る。
 
 `mv dance demo --schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 
@@ -38,7 +38,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
   "duration_s": 30.0,
   "beats": {"bpm": 120.0, "offset_s": 0.0, "beats_per_bar": 4, "count": 80},
   "audio": {"path": "audio.wav", "offset_s": 0.0, "fit": "pad", "end_s": 29.0, "fade_in_s": 0.02, "fade_out_s": 0.25},
-  "stage": {"path": "stage.png"},
+  "stage": {"path": "stage.mp4", "source_start": 0.0, "loop": true, "parallax": 0.7},
   "performer": {
     "clips": [{"path": "a.mp4", "start": 0.0, "end": {"beat": 20}, "source_start": -0.07, "speed": 1.0},
               {"path": "b.mp4", "start": {"beat": 20}, "end": 20.0, "placement": {"offset": [0.01, 0.0], "scale": 1.1, "flip_x": true}},
@@ -50,9 +50,14 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
   "camera": {
     "keys": [{"t": 0.0, "zoom": 1.0, "center": [0.5, 0.5], "rotate_deg": 0},
              {"t": 30.0, "zoom": 1.08, "center": [0.5, 0.55], "ease": "in_out"}],
-    "seams": [{"t": 10.0, "span_s": 0.4, "zoom": 1.25, "rotate_deg": 6}]
+    "accents": [{"at": {"grid": "downbeats", "from": {"beat": 8}, "to": 30.0, "except": [{"beat": 20}]}, "zoom": 1.018, "decay_s": 0.12},
+                {"at": [{"beat": 4}], "zoom": 1.06, "decay_s": 0.12, "shake_px": 14, "shake_decay_s": 0.18}],
+    "seams": [{"t": 10.0, "span_s": 0.4, "zoom": 1.25, "rotate_deg": 6},
+              {"t": {"beat": 40}, "pre_s": 0.3, "post_s": 0.5, "zoom": 1.55, "rotate_deg": 6, "rotate_post_deg": 9, "pivot": [0.5, 0.5],
+               "blur": {"samples": 8, "shutter_frames": 1.0, "peak_shutter_frames": 1.6}}],
+    "cover_rotation": true
   },
-  "flashes": [{"t": 10.0, "strength": 0.6, "decay_s": 0.2, "color": [255, 255, 255]}],
+  "flashes": [{"t": 10.0, "strength": 0.6, "decay_s": 0.2, "color": [255, 255, 255], "mode": "lerp_linear"}],
   "lyrics": {
     "font": "font.ttf", "font_index": 0,
     "ui_regions": [{"name": "right", "box": [0.86, 0.45, 1.0, 0.88]}],
@@ -74,7 +79,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `clips[].placement`（`fit` の後に掛ける）: `offset`（[dx, dy]。出力の正規化座標）、`scale`（倍率。`anchor` のまわり）、`flip_x`（全体の `flip_x` と重ねると元に戻る）。
 - `clips[].transition_in`: `{"type": "cut"}`（既定）か `{"type": "blend", "frames": 3}`。blend は clip の start から frames コマの間、前のクリップの再生を続け（素材の終わりを越えたら最後のフレームを保つ）、両方をそれぞれの配置で置いて、前乗算の色とアルファを smoothstep で重ねる。前のクリップと隙間なく接していること。
 - `clips[].beat_exempt`: この切れ目は意図して拍から外している（`mv gate check` が対象外として数える）。
-- ステージの画像は出力の縦横比に cover で中央に合わせる（余る側を切る）。
+- `stage`: 画像（png/jpg/webp）か動画。出力の縦横比に cover で中央に合わせる（余る側を切る。縮尺の計算は 1 回だけ）。動画は `source_start`（秒）から再生し、`loop`（既定 true）で折り返す。false なら最後のフレームを保つ。読み出しは人物と同じく前方向だけ。`parallax`（既定 1.0）はステージだけの視差（下の「カメラ」）。
 - ASCII 以外の歌詞には `lyrics.font` が要る（フォントファイルを spec の隣に置く。素材と同じく sha256 が記録される）。無ければ Pillow の既定の欧文フォントを使う。
 
 ### 拍と時刻の参照
@@ -84,7 +89,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `{"path": "beats.json"}`: `beats`（または `beats_s`）と任意の `downbeats` の配列。gate・`mv analyze` と同じ形。素材として sha256 を manifest に残す。
 - `{"bpm": 120, "offset_s": 0.0, "beats_per_bar": 4, "count": 512, "downbeat_phase": 0}`
 
-時刻の欄（clips の start/end、`camera.keys` の t、seams・flashes の t、歌詞の start/end と語の t）は、秒の数値か次の参照で書ける。読み込み時に秒へ解決するので、`spec.data` には秒だけが入る。`beats` が無いのに参照があればエラー。解決した結果は `mv dance plan` で見られる。
+時刻の欄（clips の start/end、`camera.keys` の t、seams・accents・flashes の t、歌詞の start/end と語の t）は、秒の数値か次の参照で書ける。読み込み時に秒へ解決するので、`spec.data` には秒だけが入る。`beats` が無いのに参照があればエラー。解決した結果は `mv dance plan` で見られる。
 
 - `{"beat": 12.5}`: 拍の番号（0 始まり）。小数は前後の拍の間を線形補間し、格子の外は端の間隔で外挿する。
 - `{"bar": 3, "beat": 1.5}`: 小節頭の番号 + 拍数。
@@ -120,7 +125,17 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 **緑抜き** — 透明度は色差（BT.709 の Cb・Cr）の距離で決める（明るさを見ないので、背景の濃淡に強い）。距離が `tolerance` 以下は透明、`tolerance + softness` 以上は不透明で、間はなだらかに変わる。`spill` はキー色の成分が他の成分を超える分を削る割合（緑かぶりの除去。緑の衣装には 1 未満を使う）。`choke_px` で縁を内側へ削り、`feather_px` でぼかす（どちらも元動画の画素）。
 
-**カメラ** — ステージと人物に掛かり、字には掛からない。`keys` は zoom・center・rotate_deg を補間する（曲線は到達側のキーの `ease`）。`center` の点が画面の中央に来る。`seams` は切れ目の時刻 `t` で最大になり、前後 `span_s` 秒で戻る動き（姿勢の飛びを隠す「回転しながら寄って引く」）で、`keys` の値に掛け合わされる。ステージの外が見えるときは端の画素を引き伸ばす（zoom は 1 以上にする）。
+**カメラ** — ステージと人物に掛かり、字には掛からない。`keys` は zoom・center・rotate_deg を補間する（曲線は到達側のキーの `ease`）。`center` の点が画面の中央に来る。ステージの外が見えるときは端の画素を引き伸ばす（zoom は 1 以上にする）。変換の順番は 基本（keys + accents + 揺れ）→ seams（pivot のまわり）。
+
+- `accents`: 拍に合わせたアクセント。拍の前後で形が違う。`at` は時刻の配列か、grid の指定 `{"grid": "beats"|"downbeats", "from": …, "to": …, "every": 1, "except": [時刻…], "except_tolerance_s": 0.05}`。`zoom`・`attack_s`（既定 0）・`decay_s`（既定 0.12）。包絡は dt = t − アクセントの時刻 として、−attack ≤ dt < 0 で smoothstep の 0→1、0 ≤ dt < 5·decay で exp(−dt/decay)、それ以外は 0。zoom に 1 + (zoom_a − 1)·包絡 を掛ける。
+- 揺れ（任意）: `shake_px`（幅 1080 換算）・`shake_decay_s`（既定は decay_s）・`shake_hz`（既定 [15.1, 12.7]）。exp(−dt/shake_decay)·(sin 2πf₁dt, cos 2πf₂dt) の平行移動で、画面座標でズームの後に掛ける。乱数は使わない。
+- `seams`: 切れ目の時刻 `t` で最大になる動き（姿勢の飛びを隠す「回転しながら寄って引く」）。`span_s` だけなら前後対称で 0.1 と同じ式。
+  - `pre_s`・`post_s`: 寄りは前を u³（u: 0→1）、後を (1 − v)^2.5（v: 0→1）で描く。拍の前から寄り始めないよう、前の寄りは切れ目の直前に集まる。
+  - `rotate_deg`: 切れ目で到達する角度。`rotate_post_deg` を書くと、切れ目の後も同じ向きに回り続け、この角度で頂点になって、`post_s` の終わりで 0（傾き 0）に戻る。`rotate_deg` と同じ符号で、絶対値が `rotate_deg` 以上でなければエラー。切れ目の前後の 1 コマの回転の変化量がそろうように解く（切れ目で回転が止まらない）。頂点が切れ目に近すぎて 1 コマ目で越えるときは、頂点を上げて warnings に残す。`post_s` は 3 コマ以上要る。
+  - `pivot`: 寄りと回転の中心（出力の正規化座標、既定 [0.5, 0.5]）。
+  - `blur`: `{"samples": 8, "shutter_frames": 1.0, "peak_shutter_frames": 1.6}`。seams の窓（前後 + 0.05 秒）の中だけで効き、カメラに乗る層ごとに、カメラの変換を samples 回ずらして平均する。シャッター幅 = (shutter + (peak − shutter)·exp(−|t − T|/0.04)) / fps。
+- `cover_rotation`（0.2 の既定は true、0.1 は false）: 回転で画面の角に縁が出ないよう、zoom を cos|θ| + (長辺/短辺)·sin|θ| 以上にする（画面の中央のまわりの回転を前提にした式）。
+- `stage.parallax`: 式は fx の camera と同じ。zoom_p = z0·(zoom/z0)^p、center_p = c0 + (center − c0)·p、回転 × p（z0・c0 は最初のキー）。人物は p = 1。
 
 **縦の歌詞** — 字は画面に固定で、カメラに乗らない（時刻によらず箱が 1 つに決まり、UI 枠を確かめやすい）。
 
@@ -130,7 +145,12 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `start` の最初のフレームから見え、`fade_in_s` / `fade_out_s` で出入りする（既定 0.04 / 0.08 秒）。
 - 縦画面の `ui_regions` の既定値は上・右・下の操作部品のおおよその範囲（目安）。字のインクが重なると warnings に残す（描画は止めない）。横画面の既定は空。
 
-**フラッシュ** — `t` から `strength × exp(−経過/decay_s)` の割合で色へ寄せる。帯の字はその上に載るので白飛びしない。
+**フラッシュ** — `t` から `strength × exp(−経過/decay_s)` だけ効く。帯の字はその上に載るので白飛びしない。
+
+- `mode: "lerp_linear"`（既定。0.1 と同じ）: 線形光で色へ寄せる。
+- `mode: "add_display"`: 表示用の値に strength·exp(−経過/decay)·color を足す（線形光のままではなく、sRGB に符号化した値に足す）。
+- **同じ値でも `lerp_linear` は暗部で強く見える**（線形光の補間は暗部の持ち上がりが表示空間で足す方式の 2〜3 倍になる。計算値）。旧来の実制作レンダラと同じ見え方が欲しければ `add_display` を使う。
+- `beat_exempt`: 意図して拍から外している（`mv gate check` が対象外として数える）。
 
 ## run
 
@@ -151,6 +171,8 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 - `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt}]`（from・to は clip の番号）。
 - `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
 - `analysis`: クリップごとの `{path, sha256, p90_height, median_cx, ground, file}`。
+- `camera_seams`: seams の設定（pre_s・post_s・zoom・rotate・pivot・blur）。`accents`: 解決した時刻と設定。
+- `flash_info`: `[{t, strength, decay_s, mode, beat_exempt}]`。
 - `audio`: `{fit, end_s}`。
 - `finished`: 仕上げの記録か null。
 
@@ -160,8 +182,8 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 |---|---|
 | `mv dance demo DIR [--width 540 --height 960 --duration 6 --fps 24] [--schema 0.2\|0.1]` | 合成素材と spec.json を作る |
 | `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet]` | dance.mp4 と timeline.json を run として出す。約 5% ごとに stderr へ進み具合（コマ数・経過時間・残りの見込み）を出す（`--quiet` で消す） |
-| `mv dance plan SPEC` | 解決した時刻の一覧（clips・つなぎ・seams・フラッシュ・歌詞）を表で出す。判定はしない |
-| `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線を重ねる。`--guides all` は全行の箱 |
+| `mv dance plan SPEC` | 解決した時刻の一覧（clips・つなぎ・accents・seams・フラッシュ・歌詞）を表で出す。判定はしない |
+| `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線、seams の pivot を重ねる。`--guides all` は全行の箱 |
 | `mv dance accept RUN_DIR --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を追記する |
 
 ## 限界

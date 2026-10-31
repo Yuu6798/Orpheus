@@ -168,7 +168,7 @@ def _visible(line, t):
 
 
 def _guides(image, ctx, t, mode):
-    """UI 枠（赤）と字の箱（シアン。層名つき）、fit の地面の線（緑）を重ねた写しを返す。mode "all" は全行の箱を描く。"""
+    """UI 枠（赤）と字の箱（シアン。層名つき）、fit の地面の線（緑）、seams の pivot（黄の十字）を重ねた写しを返す。mode "all" は全行の箱を描く。"""
     import cv2
 
     out = image.copy()
@@ -186,6 +186,10 @@ def _guides(image, ctx, t, mode):
     if performer["fit"] and performer["fit"]["ground"] != "none":
         y = int(round(performer["placement"]["anchor"][1] * height))
         cv2.line(out, (0, y), (width - 1, y), (60, 255, 90), thick)
+    state = ctx.camera.state(t)
+    if state.seam_zoom != 1.0 or state.seam_rotate != 0.0:
+        center = (int(round(state.pivot[0] * width)), int(round(state.pivot[1] * height)))
+        cv2.drawMarker(out, center, (255, 230, 60), cv2.MARKER_CROSS, max(12, width // 30), thick)
     return out
 
 
