@@ -168,6 +168,13 @@ def test_flip_x_mirrors_around_the_pivot(scene):
     assert b == (180 - a[2], a[1], 180 - a[0], a[3]) and c == a
 
 
+def test_flip_x_keeps_an_off_center_pivot_on_the_anchor(scene):
+    place = {"anchor": [0.5, 1.0], "pivot": [40 / 180, 1.0], "height": 1.0}
+    flipped = {"clips": [{"path": "still.png", "start": 0, "end": 2, "placement": {"flip_x": True}}], "placement": place, "key": SHARP}
+    x0, _, x1, _ = extent(alpha_at(dancespec.parse_spec(base(performer=flipped), scene), 0.5))
+    assert (x0 + x1) / 2 == pytest.approx(90, abs=1)      # 箱の中央が pivot なので、反転しても anchor に来る
+
+
 def test_clip_offset_and_scale_apply_after_the_placement(scene):
     shifted = {"clips": [{"path": "still.png", "start": 0, "end": 2, "placement": {"offset": [0.1, -0.1]}}], "placement": PLACE, "key": SHARP}
     assert extent(alpha_at(dancespec.parse_spec(base(performer=shifted), scene), 0.5)) == (38, 68, 78, 168)
