@@ -190,7 +190,7 @@ def timeline_record(ctx):
         "size": [width, height], "fps": ctx.fps, "duration_s": ctx.duration,
         "lyrics": [{"layer": line.layer, "text": line.text, "start": line.start, "end": line.end,
                     "fade_in_s": line.style["fade_in_s"], "fade_out_s": line.style["fade_out_s"],
-                    "box_px": line.box_px, "box": norm(line.box_px)} for line in ctx.lines],
+                    "box_px": line.box_px, "box": norm(line.box_px), "overflow": line.overflow} for line in ctx.lines],
         "clips": [{"path": c["path"], "start": c["start"], "end": c["end"]} for c in data["performer"]["clips"]],
         "seams": ctx.clips.seams(),
         "flashes": [f["t"] for f in data["flashes"]],

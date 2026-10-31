@@ -183,6 +183,22 @@ def test_long_text_shrinks_to_stay_inside_the_box():
     assert box[0] >= x0 * 1080 - 2 and box[2] <= x1 * 1080 + 2 and box[1] >= y0 * 1920 - 2 and box[3] <= y1 * 1920 + 2
 
 
+def test_text_that_cannot_fit_is_reported_and_not_hidden_by_the_clipped_box(tmp_path):
+    long_text = "LONG HOOK " * 40
+    data = parse(tmp_path, lyrics={"lines": [{"layer": "back", "text": long_text, "start": 0, "end": 1}]}).data
+    lines, warnings = lyrics.prepare(data, None, (1080, 1920))
+    assert lines[0].overflow is True and any("収まりません" in w for w in warnings)
+    assert lines[0].box_px[0] == 0 and lines[0].box_px[2] == 1080       # 箱は画面に切られるので、欠けは overflow でしか分からない
+
+
+def test_preview_scale_fits_the_same_line_as_full_size(tmp_path):
+    text = "A LINE THAT NEEDS A SMALL FONT TO FIT IN THE BOX " * 4
+    data = parse(tmp_path, lyrics={"lines": [{"layer": "band", "text": text, "start": 0, "end": 1}]}).data
+    full, _ = lyrics.prepare(data, None, (1080, 1920))
+    preview, warnings = lyrics.prepare(data, None, (270, 480))
+    assert full[0].overflow is False and preview[0].overflow is False and warnings == []
+
+
 def test_text_is_centered_in_the_box():
     box = layout_line("HOLD").box_px
     assert (box[0] + box[2]) / 2 == pytest.approx(540, abs=3)

@@ -77,7 +77,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 **縦の歌詞** — 字は画面に固定で、カメラに乗らない（時刻によらず箱が 1 つに決まり、UI 枠を確かめやすい）。
 
 - `back` は人物の後ろの大きな字、`band` は上の帯の字。
-- 字は `size_px`（幅 1080 の画面での値）から、箱に収まるまで 5% ずつ縮め、箱の中央に置く。
+- 字は `size_px`（幅 1080 の画面での値）から、箱に収まるまで 5% ずつ縮め、箱の中央に置く。最小は幅 1080 で 8px（画面の幅に比例）で、それでも収まらない行は warnings に残し、`timeline.json` の `overflow` を true にする（`box_px` は画面内に切った値なので、欠けはこの印で分かる）。
 - 強調は**色だけ**（大きさも位置も変えない）。`words` の `t` が来たら語が `accent_color` に変わる。`t` が無ければ最初から、`accent: false` なら強調しない。`words` をつなげた文字列は `text` と一致させる。
 - `start` の最初のフレームから見え、`fade_in_s` / `fade_out_s` で出入りする（既定 0.04 / 0.08 秒）。
 - 縦画面の `ui_regions` の既定値は上・右・下の操作部品のおおよその範囲（目安）。字のインクが重なると warnings に残す（描画は止めない）。横画面の既定は空。
