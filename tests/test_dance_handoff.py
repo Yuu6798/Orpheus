@@ -266,6 +266,31 @@ def test_look_uses_the_fx_schema_and_normalization(tmp_path):
     assert any(w.startswith("look") for w in dancespec.parse_spec({**raw, "look": {}}, tmp_path).warnings)
 
 
+def test_a_graded_look_passes_the_dance_schema(tmp_path):
+    raw = {"schema_version": dance.SCHEMA_VERSION, "output": {"width": 180, "height": 320}, "duration_s": 2, "stage": {"path": "s.png"},
+           "performer": {"clips": [{"path": "a.mp4", "start": 0, "end": 2}]},
+           "look": {"grade": {"keys": [{"t": 0}, [1.0, 1.1, [1.0, 0.9, 1.0], 0.2]]}}}
+    data = dancespec.parse_spec(raw, tmp_path).data
+    assert data["look"]["grade"]["keys"][1]["sat"] == 1.1
+
+
+def test_hooks_run_the_source_they_hashed(shot, tmp_path):
+    """同じ長さ・同じ時刻のまま書き換えても、古い .pyc を実行しない。"""
+    import os
+
+    root, _ = shot
+    hooks = write_hooks(tmp_path, "VALUE = 1\n")
+    stamp = os.stat(hooks).st_mtime_ns
+    first = api.prepare(root / "spec.json", hooks=hooks, out=root / "runs")
+    api.close(first)
+    hooks.write_text("VALUE = 2\n", encoding="utf-8")
+    os.utime(hooks, ns=(stamp, stamp))
+    second = api.prepare(root / "spec.json", hooks=hooks, out=root / "runs")
+    api.close(second)
+    assert first.hooks.module.VALUE == 1 and second.hooks.module.VALUE == 2
+    assert second.hooks.record["sha256"] == hashlib.sha256(hooks.read_bytes()).hexdigest()
+
+
 def test_01_has_no_look(tmp_path):
     raw = {"schema_version": dance.SCHEMA_V01, "output": {"width": 180, "height": 320}, "duration_s": 2, "stage": {"path": "s.png"},
            "performer": {"clips": [{"path": "a.mp4", "start": 0, "end": 2}]}}

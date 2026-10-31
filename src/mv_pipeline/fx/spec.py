@@ -247,7 +247,23 @@ def _grade_key(key):
 def look_schema():
     """look の JSON Schema。{"look": プロパティの定義, "defs": その $defs}。dance も同じスキーマを使う。"""
     data = schema()
-    return {"look": data["properties"]["look"], "defs": {k: v for k, v in data["$defs"].items() if k.startswith("look_")}}
+    return {"look": data["properties"]["look"], "defs": {name: data["$defs"][name] for name in _references(data["properties"]["look"], data["$defs"])}}
+
+
+def _references(node, defs, found=None):
+    """node から $ref でたどれる $defs の名前の集合（推移的に）。"""
+    found = set() if found is None else found
+    if isinstance(node, dict):
+        target = node.get("$ref", "")
+        if target.startswith("#/$defs/") and target[8:] not in found:
+            found.add(target[8:])
+            _references(defs[target[8:]], defs, found)
+        for value in node.values():
+            _references(value, defs, found)
+    elif isinstance(node, list):
+        for value in node:
+            _references(value, defs, found)
+    return found
 
 
 def normalize_look(look):

@@ -13,13 +13,15 @@ img・color は float32 の線形で、color は前乗算。決定論を保つ�
 ネットワークは禁止。乱数は api.rng から取る）。hooks ファイルの sha256 は run のキャッシュ key と manifest に入る。
 hooks で時刻と構造は変わらない（timeline は spec だけから作る）。
 """
-import importlib.util
+import hashlib
+import sys
 import traceback
+import types
 from pathlib import Path
 
 import numpy as np
 
-from ..io import PipelineError, sha256
+from ..io import PipelineError
 
 NAMES = ("prepare", "stage", "behind", "performer", "front", "final")
 
@@ -29,10 +31,12 @@ class Hooks:
         self.path = Path(path)
         if not self.path.is_file():
             raise PipelineError(f"hooks のファイルが見つかりません: {path}")
-        self.record = {"path": str(path), "sha256": sha256(self.path)}
-        module_spec = importlib.util.spec_from_file_location(f"dance_hooks_{self.record['sha256'][:12]}", self.path)
-        self.module = importlib.util.module_from_spec(module_spec)
-        self._guarded("読み込み", lambda: module_spec.loader.exec_module(self.module))
+        source = self.path.read_bytes()      # 記録する sha256 と実行するソースを同じバイト列にする（.pyc のキャッシュを通さない）
+        self.record = {"path": str(path), "sha256": hashlib.sha256(source).hexdigest()}
+        self.module = types.ModuleType(f"dance_hooks_{self.record['sha256'][:12]}")
+        self.module.__file__ = str(self.path)
+        sys.modules[self.module.__name__] = self.module    # dataclass などが自分のモジュールを引けるように
+        self._guarded("読み込み", lambda: exec(compile(source, str(self.path), "exec"), self.module.__dict__))
         self.functions = {name: getattr(self.module, name) for name in NAMES if callable(getattr(self.module, name, None))}
 
     def has(self, name):
