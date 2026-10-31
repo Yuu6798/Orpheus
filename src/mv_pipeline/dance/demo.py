@@ -158,9 +158,9 @@ def _spec(width, height, duration, fps):
         "stage": {"path": "stage.mp4", "loop": True, "parallax": 0.7},
         "performer": {
             "clips": [{"path": "clip_a.mp4", "start": 0.0, "end": {"beat": first}, "source_start": -0.04},
-                      {"path": "clip_b.mp4", "start": {"beat": first}, "end": {"beat": second}},
-                      {"path": "clip_c.mp4", "start": {"beat": second}, "end": {"beat": third}, "placement": {"flip_x": True}},
-                      {"path": "end.png", "start": {"beat": third}, "end": duration, "transition_in": {"type": "blend", "frames": 3}}],
+                      {"path": "clip_b.mp4", "start": {"beat": first}, "end": {"beat": second}, "beat_exempt": first % 4 != 0},
+                      {"path": "clip_c.mp4", "start": {"beat": second}, "end": {"beat": third}, "placement": {"flip_x": True}, "beat_exempt": second % 4 != 0},
+                      {"path": "end.png", "start": {"beat": third}, "end": duration, "transition_in": {"type": "blend", "frames": 3}, "beat_exempt": third % 4 != 0}],
             "key": {"color": list(GREEN)},
             "placement": {"anchor": [0.5, 0.92]},
             "fit": {"mode": "body", "body_height": 0.62, "x": "median", "ground": "lock", "ground_window_s": 0.7, "ground_smooth_s": 0.3},
@@ -172,7 +172,7 @@ def _spec(width, height, duration, fps):
             "seams": [{"t": half, "pre_s": min(0.3, count / 40), "post_s": min(0.5, count / 24), "zoom": 1.3, "rotate_deg": 6, "rotate_post_deg": 9,
                        "blur": {"samples": 8, "shutter_frames": 1.0, "peak_shutter_frames": 1.6}}],
             "cover_rotation": True},
-        "flashes": [{"t": half, "strength": 0.22, "decay_s": 0.08, "mode": "add_display"}],
+        "flashes": [{"t": half, "strength": 0.22, "decay_s": 0.08, "mode": "add_display", "beat_exempt": second % 4 != 0}],
         "look": {"vignette": {"amount": 0.3}, "grain": {"sigma": 1.5}},
         "lyrics": {
             "layers": {

@@ -9,18 +9,22 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "master": "master.mp4",                            元データ（SSIM の相手）
      "expected_sha256": "…",                            元データの SHA-256 の控え
      "measured_lines": "lines_measured.json",           `mv gate lines` の出力。字と歌の時刻の照合に使う
-     "lyric_layer": "band",                             実測と照合する歌詞の層
+     "lyric_layer": "band",                             実測と照合する歌詞の層（"lyric_layers": [...] で複数）
      "confirmed": "confirmed.json",                     確かめ済みの時刻 [{"text": …, "start": …}]
-     "faces": "faces.json",                             [{"start", "end", "box": [x0,y0,x1,y1], "role": "main"}]（正規化座標）
+     "confirmed_overrides_measured": true,              確認済みの行は実測との差を要確認にする
+     "faces": "faces.json",                             [{"start", "end", "box": [x0,y0,x1,y1], "role": "main"}]（正規化座標）。"auto" で推定
+     "spec": "spec.json",                               "faces": "auto" のときの dance の spec
      "tracks": "tracks.json",                           {"名前": [[t, x, y], …]}（人物に付く要素の位置。画素）
      "poses": "poses.json",                             [{"t": 秒, "points": [[x, y], …]}]（骨格。正規化座標）
-     "beats": "analysis.json",                          "downbeats"・"beats"・"beats_s" のどれかの配列
+     "beats": "analysis.json",                          "downbeats"・"beats"・"beats_s" のどれかの配列（無ければ timeline の beats）
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
 全体は fail が 1 つでもあれば fail、skip があれば pass_with_skips（一覧に何を見ていないかが残る）、
 warn があれば pass_with_warnings、なければ pass。
 しきい値は最初の 1 作で確かめて直す前提の仮の値。好みの判断はしない。終了コードは fail のとき 1。
+
+timeline は dance-timeline/0.1 と 0.2 の両方を読む。dance/dance_timeline.schema.json で検証し、知らない欄は無視する。
 """
 import itertools
 import json
@@ -28,6 +32,8 @@ import math
 import re
 import subprocess
 from pathlib import Path
+
+import jsonschema
 
 from ..fx.probe import decode
 from ..io import PipelineError, sha256
@@ -42,7 +48,11 @@ THRESHOLDS = {
     "hook_overlap_s": 0.1,
     "beat_frames": 1.0,
     "ssim": 0.98,
+    "confirmed_overrides_measured": True,
 }
+TIMELINE_SCHEMA = Path(__file__).resolve().parents[1] / "dance" / "dance_timeline.schema.json"
+HEAD_SHARE = 0.12     # 頭の帯は、体の高さ × 寄りの倍率 のこの割合
+FACE_SCALE = 0.25     # 顔の推定に使う描画の縮尺
 MAX_STILLS = 12
 EPS = 1e-6   # 秒の引き算の丸め誤差。0.8 - 0.6 = 0.20000000000000007 のような境目を不合格にしない
 UNMEASURED = ("not_found", "estimate")   # 推定のままの行。実測として照合しない（method が無い行は実測として扱う）
@@ -71,7 +81,9 @@ def _scoped(timeline):
                "stable": [max(_stable(ln)[0], first), min(_stable(ln)[1], last)]}
               for ln in timeline["lyrics"] if ln["start"] < last and ln["end"] > first]
     inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
-    return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", []))}
+    within = lambda items: [item for item in items if first <= item["t"] < last]  # noqa: E731
+    return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", [])),
+            "seam_info": within(timeline.get("seam_info", [])), "flash_info": within(timeline.get("flash_info", []))}
 
 
 def _intersects(a, b):
@@ -86,11 +98,17 @@ def _stable(line):
     return line["start"] + line.get("fade_in_s", 0), line["end"] - line.get("fade_out_s", 0)
 
 
-def check_lyric_time(timeline, measured, layer, th):
+def _is_confirmed(line, confirmed, th):
+    return any(item["text"] == line["text"] and abs(item["start"] - line["start"]) <= th["confirmed_eps_s"] for item in confirmed or [])
+
+
+def check_lyric_time(timeline, measured, layers, th, confirmed=None):
+    """layers は層の名前か、その配列。sung が false の行（題字・クレジット）は数えない。"""
     name = "歌詞の時刻"
     if measured is None:
         return skip(name, "measured_lines")
-    lines = [ln for ln in timeline["lyrics"] if ln["layer"] == layer]
+    layers = [layers] if isinstance(layers, str) else layers
+    lines = [ln for ln in timeline["lyrics"] if ln["layer"] in layers and ln.get("sung", True)]
     if len(lines) != len(measured):
         return result(name, "fail", f"行数が合いません（字 {len(lines)} 行 / 実測 {len(measured)} 行）")
     first, last = _window(timeline)     # 実測は曲全体の行と順に対応するので、対応させてから区間で絞る
@@ -100,16 +118,22 @@ def check_lyric_time(timeline, measured, layer, th):
     pairs = [(line, sung) for line, sung in shown if sung.get("method") not in UNMEASURED]
     if not pairs:
         return skip(name, "実測した行（どの行も推定のまま）")
-    problems = []
+    problems, settled = [], 0
     for line, sung in pairs:
         lead = sung["start"] - line["start"]   # 正 = 字が歌より先に出る
         if not th["lead_min_s"] - EPS <= lead <= th["lead_max_s"] + EPS:
-            problems.append({"t": line["start"], "text": line["text"], "detail": f"字が歌の {lead:+.3f} 秒前（許容 {th['lead_min_s']}〜{th['lead_max_s']}）"})
+            detail = f"字が歌の {lead:+.3f} 秒前（許容 {th['lead_min_s']}〜{th['lead_max_s']}）"
+            if th["confirmed_overrides_measured"] and _is_confirmed(line, confirmed, th):
+                settled += 1
+                detail = f"要確認（試聴で確定済み）: {detail}"
+            problems.append({"t": line["start"], "text": line["text"], "detail": detail})
     unverified = len(shown) - len(pairs)
     summary = f"{len(pairs)} 行を照合、外れ {len(problems)} 行"
+    if settled:
+        summary += f"（うち確定済み {settled} 行）"
     if unverified:
         summary += f"（実測できず見ていない行 {unverified}）"
-    return result(name, "fail" if problems else "warn" if unverified else "pass", summary, problems)
+    return result(name, "fail" if len(problems) > settled else "warn" if problems or unverified else "pass", summary, problems)
 
 
 def check_confirmed(timeline, confirmed, th):
@@ -126,22 +150,73 @@ def check_confirmed(timeline, confirmed, th):
     return result(name, "fail" if problems else "pass", f"{len(confirmed)} 件を照合、動いたもの {len(problems)}", problems)
 
 
+def _behind_layers(timeline):
+    """人物の後ろに描く層の名前。layers の無い timeline は back だけ。"""
+    return {layer["name"] for layer in timeline["layers"] if layer["z"] == "behind"} if "layers" in timeline else {"back"}
+
+
+def _on_frames(seconds, fps):
+    """時刻をコマに丸めた秒。"""
+    return round(seconds * fps) / fps
+
+
 def check_faces(timeline, faces):
     name = "字と顔"
     if faces is None:
         return skip(name, "faces")
+    fps = timeline["fps"]
+    behind = _behind_layers(timeline)
+    guessed = any(face.get("estimated") for face in faces)
     problems = []
     for line in timeline["lyrics"]:
-        if line["layer"] == "back":      # 人物の後ろの字は顔に隠れるので重なっても読みに関係しない
+        if line["layer"] in behind:      # 人物の後ろの字は顔に隠れるので重なっても読みに関係しない
             continue
         a, b = _stable(line)
         for face in faces:
             if face.get("role", "main") != "main":
                 continue
-            start, end = max(a, face["start"]), min(b, face["end"])
+            start, end = max(a, _on_frames(face["start"], fps)), min(b, _on_frames(face["end"], fps))
             if end > start and _intersects(line["box"], face["box"]):
-                problems.append({"t": start, "text": line["text"], "detail": f"主役の顔に {end - start:.2f} 秒重なります"})
-    return result(name, "fail" if problems else "pass", f"重なり {len(problems)} 件", problems)
+                problems.append({"t": start, "text": line["text"], "detail": f"主役の顔{'（推定）' if face.get('estimated') else ''}に {end - start:.2f} 秒重なります"})
+    if not guessed:
+        return result(name, "fail" if problems else "pass", f"重なり {len(problems)} 件", problems)
+    # 推定の顔は実測ではないので、不合格にしない（AGENTS.md「推定を実測扱いしない」）
+    return result(name, "warn" if problems else "pass", f"推定の顔と {len(faces)} 区間を照合、重なり {len(problems)} 件", problems)
+
+
+def estimate_faces(spec_path, timeline):
+    """dance の api から 2 コマごとに人物のアルファを取り、頭の帯から顔の箱を推定する。
+
+    頭の帯は、fit の体の高さ（無ければその時刻のアルファの高さ）× 寄りの倍率の、上端から HEAD_SHARE。"""
+    import numpy as np
+
+    from ..dance import api
+
+    first, last = _window(timeline)
+    fps = timeline["fps"]
+    ctx = api.prepare(spec_path, scale=FACE_SCALE)
+    faces = []
+    try:
+        body = api.body_height(ctx)
+        count = int(round((last - first) * fps))
+        for index in range(0, count, 2):
+            t = first + index / fps
+            person = api.performer(ctx, t)
+            if person is None:
+                continue
+            solid = person[1] > 0.5
+            rows = np.nonzero(solid.any(axis=1))[0]
+            if not len(rows):
+                continue
+            tall = (rows[-1] + 1 - rows[0]) if body is None else body * api.zoom(ctx, t)
+            bottom = min(solid.shape[0], rows[0] + max(1, int(round(HEAD_SHARE * tall))))
+            columns = np.nonzero(solid[rows[0]:bottom].any(axis=0))[0]
+            height, width = solid.shape
+            faces.append({"start": t, "end": t + 2.0 / fps, "role": "main", "estimated": True,
+                          "box": [columns[0] / width, rows[0] / height, (columns[-1] + 1) / width, bottom / height]})
+    finally:
+        api.close(ctx)
+    return faces
 
 
 def check_ui(timeline):
@@ -189,6 +264,15 @@ def check_jitter(tracks, th, window=None):
     return result(name, "fail" if problems else "warn" if short else "pass", summary, problems)
 
 
+def _camera_note(timeline, seam):
+    """切れ目の 1 コマ以内にある camera.seams の設定の文言。"""
+    fps = timeline["fps"]
+    for item in timeline.get("camera_seams", []):
+        if abs(round(item["t"] * fps) - round(seam * fps)) <= 1:
+            return f"（camera.seams あり: zoom {item.get('zoom')}・回転 {item.get('rotate_deg')} 度）"
+    return ""
+
+
 def check_seams(timeline, poses, th):
     name = "つなぎ目"
     seams = timeline.get("seams", [])
@@ -196,49 +280,75 @@ def check_seams(timeline, poses, th):
         return result(name, "pass", "切れ目がありません")
     if poses is None:
         return skip(name, "poses")
-    reach = 2.0 / timeline["fps"]
+    fps = timeline["fps"]
+    frame_of = lambda t: int(round(t * fps))  # noqa: E731  時刻の丸め（4 桁など）で切れ目の前後を取り違えないよう、コマで比べる
     problems = []
     for seam in seams:
-        before = [p for p in poses if seam - reach <= p["t"] < seam]
-        after = [p for p in poses if seam <= p["t"] <= seam + reach]
+        at = frame_of(seam)
+        before = [p for p in poses if at - 2 <= frame_of(p["t"]) < at]
+        after = [p for p in poses if at <= frame_of(p["t"]) <= at + 2]
         pairs = list(zip(max(before, key=lambda p: p["t"])["points"], min(after, key=lambda p: p["t"])["points"])) \
             if before and after else []
+        note = _camera_note(timeline, seam)
         if not pairs:      # 同じ骨格どうしや空の点を比べると差が 0 で合格に見えるので、見ていない扱い
-            problems.append({"t": seam, "text": "", "detail": "切れ目の前後 2 コマ以内に骨格がなく、姿勢の差を見ていません"})
+            problems.append({"t": seam, "text": "", "detail": f"切れ目の前後 2 コマ以内に骨格がなく、姿勢の差を見ていません{note}"})
             continue
         move = sum(math.dist(a, b) for a, b in pairs) / len(pairs)
         if move > th["seam_pose"]:
-            problems.append({"t": seam, "text": "", "detail": f"姿勢の差 {move:.3f}。切るコマを変えるか camera.seams を入れてください"})
+            proposal = note or "。切るコマを変えるか camera.seams を入れてください"
+            problems.append({"t": seam, "text": "", "detail": f"姿勢の差 {move:.3f}{proposal}"})
     return result(name, "warn" if problems else "pass", f"切れ目 {len(seams)}、姿勢の差が大きいもの {len(problems)}", problems)
 
 
 def check_hook_overlap(timeline, th):
+    """同時に 1 行だけの層（exclusive）ごとに、行の重なりを見る。exclusive の無い timeline は back だけ。"""
     name = "字の重なり"
-    hooks = sorted((ln for ln in timeline["lyrics"] if ln["layer"] == "back"), key=lambda ln: ln["start"])
-    problems = []
-    for left, right in itertools.combinations(hooks, 2):
-        shared = min(left["end"], right["end"]) - right["start"]
-        if shared > th["hook_overlap_s"] + EPS:
-            problems.append({"t": right["start"], "text": f"{left['text']} / {right['text']}", "detail": f"{shared:.3f} 秒同時に見えます"})
-    return result(name, "fail" if problems else "pass", f"入れ替わり {max(0, len(hooks) - 1)} 回、超過 {len(problems)}", problems)
+    grouped = {}
+    for line in timeline["lyrics"]:
+        if line.get("exclusive", line["layer"] == "back"):
+            grouped.setdefault(line["layer"], []).append(line)
+    problems, changes = [], 0
+    for lines in grouped.values():
+        lines = sorted(lines, key=lambda ln: ln["start"])
+        changes += max(0, len(lines) - 1)
+        for left, right in itertools.combinations(lines, 2):
+            shared = min(left["end"], right["end"]) - right["start"]
+            if shared > th["hook_overlap_s"] + EPS:
+                problems.append({"t": right["start"], "text": f"{left['text']} / {right['text']}", "detail": f"{shared:.3f} 秒同時に見えます"})
+    return result(name, "fail" if problems else "pass", f"入れ替わり {changes} 回、超過 {len(problems)}", problems)
+
+
+def _beat_events(timeline):
+    """[(種類, 時刻, 対象外か)]。0.1 の timeline は数値の配列だけを持つ。blend の切れ目の時刻は blend の開始時刻。"""
+    flashes = [("フラッシュ", f["t"], f["beat_exempt"]) for f in timeline["flash_info"]] if "flash_info" in timeline \
+        else [("フラッシュ", t, False) for t in timeline.get("flashes", [])]
+    seams = [("切れ目", item["t"], item["beat_exempt"]) for item in timeline["seam_info"]] if "seam_info" in timeline \
+        else [("切れ目", t, False) for t in timeline.get("seams", [])]
+    return flashes + seams
 
 
 def check_beats(timeline, analysis, th):
     name = "拍"
+    analysis = analysis if analysis is not None else timeline.get("beats")
     if analysis is None:
         return skip(name, "beats")
     grid = analysis.get("downbeats") or analysis.get("beats") or analysis.get("beats_s")
     if not grid:
         return skip(name, "beats の downbeats / beats / beats_s 配列")
-    events = [("フラッシュ", t) for t in timeline.get("flashes", [])] + [("切れ目", t) for t in timeline.get("seams", [])]
+    events = _beat_events(timeline)
     limit = th["beat_frames"] / timeline["fps"]
-    problems = []
-    for label, t in events:
+    problems, exempt = [], 0
+    for label, t, excused in events:
         off = min(abs(t - g) for g in grid)
-        if off > limit + EPS:
+        if excused:
+            exempt += 1
+        elif off > limit + EPS:
             problems.append({"t": t, "text": label, "detail": f"拍から {off:.3f} 秒ずれています（許容 {limit:.3f} 秒）"})
     kind = "小節頭" if analysis.get("downbeats") else "拍"
-    return result(name, "fail" if problems else "pass", f"{len(events)} 件を{kind}と照合、ずれ {len(problems)}", problems)
+    summary = f"{len(events) - exempt} 件を{kind}と照合、ずれ {len(problems)}"
+    if exempt:
+        summary += f"（対象外（意図）{exempt} 件）"
+    return result(name, "fail" if problems else "pass", summary, problems)
 
 
 def _info(path):
@@ -327,6 +437,14 @@ def _markdown(report):
     return "\n".join(lines) + "\n"
 
 
+def _validate_timeline(timeline):
+    schema = json.loads(TIMELINE_SCHEMA.read_text(encoding="utf-8"))
+    errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(timeline), key=lambda e: [str(p) for p in e.absolute_path])
+    if errors:
+        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
+        raise PipelineError("timeline の形式が違います:\n" + "\n".join(lines))
+
+
 def run(config_path, out=None):
     config_path = Path(config_path).resolve()
     base = config_path.parent
@@ -340,12 +458,23 @@ def run(config_path, out=None):
     timeline = load("timeline")
     if timeline is None:
         raise PipelineError("gate の設定に timeline がありません（mv dance render の run にある timeline.json を指定してください）")
+    _validate_timeline(timeline)
     th = {**THRESHOLDS, **config.get("thresholds", {})}
+    if "confirmed_overrides_measured" in config:
+        th["confirmed_overrides_measured"] = config["confirmed_overrides_measured"]
     video, master = path_of("video"), path_of("master")
     scoped = _scoped(timeline)
-    checks = [check_lyric_time(timeline, load("measured_lines"), config.get("lyric_layer", "band"), th),
-              check_confirmed(timeline, load("confirmed"), th),
-              check_faces(scoped, load("faces")),
+    confirmed = load("confirmed")
+    if config.get("faces") == "auto":
+        if not config.get("spec"):
+            raise PipelineError('gate の設定の "faces": "auto" には "spec"（dance の spec のパス）が必要です')
+        faces = estimate_faces(path_of("spec"), timeline)
+    else:
+        faces = load("faces")
+    layers = config.get("lyric_layers") or config.get("lyric_layer", "band")
+    checks = [check_lyric_time(timeline, load("measured_lines"), layers, th, confirmed),
+              check_confirmed(timeline, confirmed, th),
+              check_faces(scoped, faces),
               check_ui(scoped),
               check_jitter(load("tracks"), th, _window(timeline)),
               check_seams(scoped, load("poses"), th),

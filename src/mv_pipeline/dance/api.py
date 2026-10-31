@@ -42,6 +42,17 @@ def performer(ctx, t):
     return _compose.performer_at(ctx, t)
 
 
+def zoom(ctx, t):
+    """時刻 t のカメラの倍率（seams を含む）。"""
+    return ctx.camera.view(ctx.camera.state(t)).total_zoom
+
+
+def body_height(ctx):
+    """fit の体の高さ（画面の画素）。mode body でなければ None。"""
+    fit = ctx.spec.data["performer"]["fit"]
+    return fit["body_height"] * ctx.size[1] if fit and fit["mode"] == "body" else None
+
+
 def rng(ctx, name):
     """spec の seed と名前から決まる乱数生成器。"""
     return timeline.seeded_rng(ctx.spec.data["seed"], name)
