@@ -6,6 +6,7 @@
     <out>/index.json      キャッシュ key -> run_id
     <out>/acceptance.jsonl  人間の判定（追記のみ。`mv dance accept`）
     <out>/stills-<key8>.png
+    <out>/analysis/       fit の解析のキャッシュ（内容のハッシュの名前。fit.py）
 """
 import hashlib
 import shutil
@@ -41,13 +42,45 @@ def _key(kind, sp, assets, extra):
 
 
 def _audio(ctx, start, n_frames):
+    """write_video の audio 引数。fit・end_s・フェードの値が既定なら fx と同じ形。"""
     path = ctx.audio_path()
     if path is None:
         return None
-    return {"path": path, "start": ctx.spec.data["audio"]["offset_s"] + start, "duration": n_frames / ctx.fps}
+    audio = ctx.spec.data["audio"]
+    seconds = n_frames / ctx.fps
+    plan = {"path": path, "start": audio["offset_s"] + start, "duration": seconds}
+    if not path.is_file():
+        raise PipelineError(f"音声が見つかりません: {audio['path']}")
+    if audio["fit"] == "strict" and audio["end_s"] is None and audio["fade_in_s"] == dancespec.AUDIO_FADE_IN_S \
+            and audio["fade_out_s"] == dancespec.AUDIO_FADE_OUT_S:
+        return plan
+    length = seconds if audio["end_s"] is None else min(seconds, audio["end_s"] - start)
+    available = probe.media_seconds(path)
+    remaining = seconds if available is None else available - plan["start"]
+    if audio["fit"] == "pad":
+        length = min(length, remaining)
+    if length <= 0:
+        return {**plan, "silent": True}
+    # strict で素材が end_s まで届かないときは埋めない（足りないことを technical_pass で止める）
+    pad = length < seconds and (audio["fit"] == "pad" or remaining >= length)
+    return {**plan, "length": length, "fade_in": audio["fade_in_s"], "fade_out": audio["fade_out_s"], "pad": pad}
 
 
-def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=False, progress=None):
+def _meter(say, total):
+    """render の進み具合を約 5% ごとに知らせる関数を返す（say が None なら何もしない）。"""
+    if say is None:
+        return lambda done: None
+    began = time.monotonic()
+    every = max(1, round(total / 20))
+
+    def report(done):
+        if done % every == 0 or done == total:
+            spent = time.monotonic() - began
+            say(f"[dance] {done}/{total} コマ 経過 {spent:.1f} 秒 残り約 {spent / done * (total - done):.1f} 秒")
+    return report
+
+
+def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=False, progress=None, quiet=False):
     """spec から dance.mp4 を描き、run として記録する。同じ入力で成功済みなら再利用する。"""
     from ..fx import render as fxrender
     from . import compose
@@ -85,18 +118,19 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
                 variants={}, grid=None, warnings=[])
             run.save()
             run.log(f"render start key={key} start={start:g} duration={duration:g} frames={n_frames} size={size[0]}x{size[1]}")
-            ctx = compose.prepare(sp, scale)
+            ctx = compose.prepare(sp, scale, out)
             run.manifest["warnings"] = list(ctx.warnings)
+            run.manifest["analysis"] = [{"path": item["file"], "sha256": item["sha256"]} for item in ctx.analysis]
             for warning in ctx.warnings:
                 run.log(f"warning: {warning}")
             atomic_json(run.dir / "timeline.json", compose.timeline_record(ctx, start, duration, n_frames))
             audio = _audio(ctx, start, n_frames)
-            if audio and not audio["path"].is_file():
-                raise PipelineError(f"音声が見つかりません: {sp.data['audio']['path']}")
+            meter = _meter(None if quiet else progress, n_frames)
 
             def frames():
                 for i in range(n_frames):
                     yield compose.frame(ctx, timeline.frame_time(i, fps, start))
+                    meter(i + 1)
 
             path = run.dir / f"{VARIANT}.mp4"
             result = fxrender.write_video(path, frames(), size, fps, ctx.crf, n_frames, audio, run.log_path)
@@ -129,23 +163,36 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
     return result
 
 
-def _guides(image, ctx):
-    """UI 枠（赤）と字の箱（シアン）を重ねた写しを返す。"""
+def _visible(line, t):
+    return line.start <= t < line.end
+
+
+def _guides(image, ctx, t, mode):
+    """UI 枠（赤）と字の箱（シアン。層名つき）、fit の地面の線（緑）を重ねた写しを返す。mode "all" は全行の箱を描く。"""
     import cv2
 
     out = image.copy()
     width, height = ctx.size
+    thick = max(1, round(width / 540))
     for region in ctx.spec.data["lyrics"]["ui_regions"]:
         x0, y0, x1, y1 = region["box"]
         cv2.rectangle(out, (int(x0 * width), int(y0 * height)), (int(x1 * width) - 1, int(y1 * height) - 1), (255, 40, 40), 2)
     for line in ctx.lines:
-        box = line.box_px
-        cv2.rectangle(out, (box[0], box[1]), (max(box[0], box[2] - 1), max(box[1], box[3] - 1)), (40, 230, 255), 1)
+        if mode == "all" or _visible(line, t):
+            box = line.box_px
+            cv2.rectangle(out, (box[0], box[1]), (max(box[0], box[2] - 1), max(box[1], box[3] - 1)), (40, 230, 255), thick)
+            cv2.putText(out, line.layer, (box[0], max(12, box[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * thick, (40, 230, 255), thick, cv2.LINE_AA)
+    performer = ctx.spec.data["performer"]
+    if performer["fit"] and performer["fit"]["ground"] != "none":
+        y = int(round(performer["placement"]["anchor"][1] * height))
+        cv2.line(out, (0, y), (width - 1, y), (60, 255, 90), thick)
     return out
 
 
-def stills(spec_path, times, out=None, scale=1.0, guides=False, columns=4):
-    """指定時刻のフレームを並べたシートを <out>/stills-<key8>.png に書く。guides=True で UI 枠と字の箱を重ねる。"""
+def stills(spec_path, times, out=None, scale=1.0, guides=None, columns=4):
+    """指定時刻のフレームを並べたシートを <out>/stills-<key8>.png に書く。
+
+    guides: None = 描かない / "visible" = UI 枠とその時刻に見えている行の箱 / "all" = 全行の箱。"""
     import numpy as np
 
     from ..fx import compare
@@ -164,17 +211,18 @@ def stills(spec_path, times, out=None, scale=1.0, guides=False, columns=4):
     assets = describe_assets(sp)
     key = _key("dance-stills", sp, assets, {"times": times, "size": list(size), "scale": float(scale), "guides": guides,
                                             "libraries": fxrender.library_versions()})
-    ctx = compose.prepare(sp, scale)
+    out = (Path(out) if out else default_out(sp)).resolve()
+    ctx = compose.prepare(sp, scale, out)
     try:
         cells = [compose.frame(ctx, t) for t in times]
         if guides:
-            cells = [_guides(cell, ctx) for cell in cells]
+            cells = [_guides(cell, ctx, t, guides) for cell, t in zip(cells, times)]
     finally:
         ctx.close()
     blank = np.zeros_like(cells[0])
     rows = [cells[i:i + columns] for i in range(0, len(cells), columns)]
     rows = [np.hstack(row + [blank] * (columns - len(row))) for row in rows]
-    path = (Path(out) if out else default_out(sp)).resolve() / f"stills-{key[:8]}.png"
+    path = out / f"stills-{key[:8]}.png"
     compare.save_png_atomic(np.vstack(rows), path)
     return {"path": str(path), "times": times, "cell": list(size), "warnings": list(ctx.warnings),
             "seconds": round(time.monotonic() - began, 1)}

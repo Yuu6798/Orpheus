@@ -1,9 +1,9 @@
 # dance（ダンス合成・実験的）
 
-緑背景の人物動画をステージの画像に合成し、カメラと縦の歌詞を載せた縦動画を作る。CLI と設定ファイルだけで動く。
+緑背景の人物動画をステージの画像に合成し、カメラと歌詞を載せた動画を作る**下書きエンジン**。下書きは構造の決定（時刻・人物の配置とつながり・カメラ・歌詞・切れ目）と、検査できる記録（`timeline.json`）のこと。CLI と設定ファイルだけで動く。縦・横どちらの出力でも動く（UI 枠の既定は縦だけ）。
 
 - 決定論: 同じ spec・素材・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
-- **実験的**: 設定スキーマ `dance-shot/0.1` は `contracts/` の外（`src/mv_pipeline/dance/`）にある。`contracts/` への昇格はユーザー承認が要る。
+- **実験的**: 設定スキーマ `dance-shot/0.2`（`dance-shot/0.1` も読める）は `contracts/` の外（`src/mv_pipeline/dance/`）にある。`contracts/` への昇格はユーザー承認が要る。
 - **汎用の部品だけ**: 作品固有の値はコードに持たず、spec に書く。作品ごとの spec・素材・出力は Git に入れない。
 - **採点しない**: `technical_pass` は構造検査、`accept` は人間の判定。絵の良し悪しや時刻の合否は `mv dance` では判定しない（書き出し前の機械的な検査は `mv gate check` で行う。run の `timeline.json` を読む。`docs/gate.md`）。
 - 動作確認は**プログラムで描いた合成素材のみ**。実素材（緑抜きの質・字の見え方・動画のコーデック）での挙動は、素材のある環境で実測すること。
@@ -16,29 +16,36 @@ fx と同じく opencv が要る（`uv sync --locked --extra fx`）。Windows �
 
 ```sh
 uv run mv dance demo projects/dancedemo                                  # 素材と spec.json（540x960・6 秒・24fps）
-uv run mv dance stills projects/dancedemo/spec.json --times 1 3 5 --guides   # 静止画シート（--guides で UI 枠と字の箱を重ねる）
+uv run mv dance plan projects/dancedemo/spec.json                        # 解決した時刻の一覧
+uv run mv dance stills projects/dancedemo/spec.json --times 1 3 5 --guides   # 静止画シート（--guides で UI 枠と見えている字の箱を重ねる）
 uv run mv dance render projects/dancedemo/spec.json                      # dance.mp4 と timeline.json を run として出す
 uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepted --by NAME
 ```
 
-デモは夜のステージに、緑背景の棒人間 2 本を切り替える。2 本は腕の振りの位相が違うので切れ目で姿勢が飛び、そこにフラッシュと「回転しながら寄って引く」カメラが入る。
+デモは夜のステージに、緑背景の棒人間のクリップ 3 本と静止画 1 枚をつなぐ。クリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶので、`fit` の効きを確かめられる。最後の静止画は blend 3 コマでつなぐ。音声は描画より短く、`fit: "pad"` と `end_s` で足す。クリップは腕の振りの位相が違うので切れ目で姿勢が飛び、そこにフラッシュと「回転しながら寄って引く」カメラが入る。
 
-## spec（dance-shot/0.1）
+`mv dance demo --schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
+
+## spec（dance-shot/0.2）
 
 素材パスは **spec ファイルのあるディレクトリ基準の相対パス**（`io.safe_path` で逸脱を拒否）。検証は JSON Schema 2020-12（`src/mv_pipeline/dance/dance_shot.schema.json`）。未知の鍵は拒否し、`x_` で始まる鍵はどの階層でも許す（描画には使われないが、キャッシュ key には入る）。
 
 ```json
 {
-  "schema_version": "dance-shot/0.1",
+  "schema_version": "dance-shot/0.2",
+  "seed": 0,
   "output": {"width": 1080, "height": 1920, "fps": 24, "crf": 18},
   "duration_s": 30.0,
-  "audio": {"path": "audio.wav", "offset_s": 0.0},
+  "beats": {"bpm": 120.0, "offset_s": 0.0, "beats_per_bar": 4, "count": 80},
+  "audio": {"path": "audio.wav", "offset_s": 0.0, "fit": "pad", "end_s": 29.0, "fade_in_s": 0.02, "fade_out_s": 0.25},
   "stage": {"path": "stage.png"},
   "performer": {
-    "clips": [{"path": "a.mp4", "start": 0.0, "end": 10.0, "source_start": 0.0, "speed": 1.0},
-              {"path": "b.mp4", "start": 10.0, "end": 20.0}],
+    "clips": [{"path": "a.mp4", "start": 0.0, "end": {"beat": 20}, "source_start": -0.07, "speed": 1.0},
+              {"path": "b.mp4", "start": {"beat": 20}, "end": 20.0, "placement": {"offset": [0.01, 0.0], "scale": 1.1, "flip_x": true}},
+              {"path": "end.png", "start": 20.0, "end": 30.0, "transition_in": {"type": "blend", "frames": 3}, "beat_exempt": true}],
     "key": {"color": [0, 255, 0], "tolerance": 0.22, "softness": 0.12, "spill": 1.0, "choke_px": 1, "feather_px": 1},
-    "placement": {"anchor": [0.5, 0.92], "pivot": [0.5, 1.0], "height": 0.72}
+    "placement": {"anchor": [0.5, 0.92], "pivot": [0.5, 1.0], "height": 0.72, "flip_x": false},
+    "fit": {"mode": "body", "body_height": 0.62, "x": "median", "ground": "lock", "ground_window_s": 0.7, "ground_smooth_s": 0.3}
   },
   "camera": {
     "keys": [{"t": 0.0, "zoom": 1.0, "center": [0.5, 0.5], "rotate_deg": 0},
@@ -61,10 +68,51 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 - 必須は `schema_version`・`output.width/height`・`duration_s`・`stage`・`performer.clips`。他は任意。出力寸法は偶数。
 - 座標はすべて**出力画面の正規化座標** 0..1。時間は秒で、**ショット時刻**（`--start` で区間を切って描いても同じ時刻は同じ絵）。色は sRGB 0〜255。
-- `performer.clips`: start の昇順で、区間は重ねない。元動画のフレームは `(source_start + (t − start) × speed) × 元動画の fps` の切り捨て。動画の末尾を越えたら最後のフレームを保つ。人物のいない区間は warnings に残る。同じ `path` を何度使ってもよい。
-- `placement`: 元動画の点 `pivot`（元動画の幅・高さに対する割合）を画面の点 `anchor` に合わせる。`height` は元動画の高さが画面の高さの何倍か（全身が映る動画なら、人物の身長の割合ではない）。
+- `seed`（既定 0）: 乱数の種。
+- `performer.clips`: start の昇順で、区間は重ねない。元動画のフレームは `(source_start + (t − start) × speed) × 元動画の fps` の切り捨て。`source_start` は負でもよく、0 より前は先頭のフレームを保つ。動画の末尾を越えたら最後のフレームを保つ。人物のいない区間は warnings に残る。同じ `path` を何度使ってもよい。`path` に静止画（png/jpg/webp）を書くと 1 枚を保つ（`speed` は無視。アルファは見ないので、緑抜きの背景にしておく）。
+- `placement`: 元動画の点 `pivot`（元動画の幅・高さに対する割合）を画面の点 `anchor` に合わせる。`height` は元動画の高さが画面の高さの何倍か（全身が映る動画なら、人物の身長の割合ではない）。`flip_x` は全体の左右反転。
+- `clips[].placement`（`fit` の後に掛ける）: `offset`（[dx, dy]。出力の正規化座標）、`scale`（倍率。`anchor` のまわり）、`flip_x`（全体の `flip_x` と重ねると元に戻る）。
+- `clips[].transition_in`: `{"type": "cut"}`（既定）か `{"type": "blend", "frames": 3}`。blend は clip の start から frames コマの間、前のクリップの再生を続け（素材の終わりを越えたら最後のフレームを保つ）、両方をそれぞれの配置で置いて、前乗算の色とアルファを smoothstep で重ねる。前のクリップと隙間なく接していること。
+- `clips[].beat_exempt`: この切れ目は意図して拍から外している（`mv gate check` が対象外として数える）。
 - ステージの画像は出力の縦横比に cover で中央に合わせる（余る側を切る）。
 - ASCII 以外の歌詞には `lyrics.font` が要る（フォントファイルを spec の隣に置く。素材と同じく sha256 が記録される）。無ければ Pillow の既定の欧文フォントを使う。
+
+### 拍と時刻の参照
+
+`beats` は次のどちらかで書く。どちらも正規化で `beats`・`downbeats` の配列になる。
+
+- `{"path": "beats.json"}`: `beats`（または `beats_s`）と任意の `downbeats` の配列。gate・`mv analyze` と同じ形。素材として sha256 を manifest に残す。
+- `{"bpm": 120, "offset_s": 0.0, "beats_per_bar": 4, "count": 512, "downbeat_phase": 0}`
+
+時刻の欄（clips の start/end、`camera.keys` の t、seams・flashes の t、歌詞の start/end と語の t）は、秒の数値か次の参照で書ける。読み込み時に秒へ解決するので、`spec.data` には秒だけが入る。`beats` が無いのに参照があればエラー。解決した結果は `mv dance plan` で見られる。
+
+- `{"beat": 12.5}`: 拍の番号（0 始まり）。小数は前後の拍の間を線形補間し、格子の外は端の間隔で外挿する。
+- `{"bar": 3, "beat": 1.5}`: 小節頭の番号 + 拍数。
+- どちらも `"offset_s": -0.1` を足せる（字を歌の少し前に出す、など）。解決した時刻が負ならエラー。
+
+### 人物の合わせ（performer.fit）
+
+生成した人物動画は、本ごとに縮尺・左右の位置・足元の高さが違い、1 本の中でも足元が流れる。`fit` はそれを輪郭から合わせる。無ければ 0.1 と同じ動き。
+
+- `mode`: `"frame"`（`placement.height` のまま）か `"body"`（`body_height` = 人物の体の高さ（アルファの高さの p90）が出力の高さに占める比。既定 0.62）。
+- `x`: `"median"`（クリップごとに、アルファの中心 x の中央値を anchor x に合わせる）/ `"track"`（毎フレームの中心 x を `x_smooth_s`（既定 0.5 秒）でならして anchor x に合わせる）/ `"none"`（既定）。
+- `ground`: `"lock"`（毎フレームの足元を求め、`ground_window_s`（既定 0.7 秒）の窓で接地している足の位置を取り、`ground_smooth_s`（既定 0.3 秒）でならして anchor y に固定する）/ `"median"`（クリップの足元の中央値を anchor y に合わせる）/ `"none"`（既定）。
+- 足元は、アルファ 0.5 超の画素が 3 個以上ある最下行。接地の位置は窓の最大値（低い方の足）を取った後に同じ窓の最小値を取る（最大値だけだと、足元の流れより窓の半分だけ先走るため）。
+- `analysis_scale`（既定 0.5）: 解析の解像度の比。
+- `clips[].fit: false` で、そのクリップだけ外して `placement` のまま置く。
+- 解析はクリップを 1 回だけ読み、`<out>/analysis/<clip の sha256>-<key と fit の設定の sha256>.json` にキャッシュする（内容だけで決まる）。path と sha256 を manifest に残す。
+
+注意:
+
+- しゃがみの多いクリップは p90 が小さく出て、大きく置かれる。`clips[].placement.scale` で直すか、`clips[].fit: false` で外す。
+- ジャンプが `ground_window_s` より長いと、接地として扱われて跳んだ分が消える。
+- この解析は人物を置くための**合成の入力**で、評価にも `technical_pass` にも使わない。
+
+### 音声
+
+- `fit`: `"strict"`（既定。足りなければ `technical_pass` で止まる）/ `"pad"`（足りない分を無音で足して、描画区間ちょうどにする）。
+- `end_s`（ショット時刻）: 曲の終わり。ここで `fade_out_s` を終え、以降は無音にする。
+- `fade_in_s`（既定 0.02）・`fade_out_s`（既定 0.25）。
 
 ## 描画モデル
 
@@ -94,17 +142,26 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 └── stills-<key8>.png
 ```
 
-run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と同じ（`docs/fx.md` の「run と再現性」）。キャッシュ key は正規化 spec・全素材の sha256・エンジン指紋（dance と fx の全ファイル）・区間・出力寸法・ライブラリ版から作る。
+run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と同じ（`docs/fx.md` の「run と再現性」）。キャッシュ key は正規化 spec・全素材の sha256（`beats` のファイルも含む）・エンジン指紋（dance と fx の全ファイル）・区間・出力寸法・ライブラリ版から作る。
 
-**timeline.json**（`dance-timeline/0.1`）は、描いた区間（`interval`）、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、`mv gate check` に渡すためのもの。
+**timeline.json**（`dance-timeline/0.2`。0.1 の spec からは `dance-timeline/0.1`）は、描いた区間（`interval`）、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、`mv gate check` に渡すためのもの。0.2 は次を足す:
+
+- `beats`: `{"beats": […], "downbeats": […]}`（spec にあれば）。
+- `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`。
+- `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt}]`（from・to は clip の番号）。
+- `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
+- `analysis`: クリップごとの `{path, sha256, p90_height, median_cx, ground, file}`。
+- `audio`: `{fit, end_s}`。
+- `finished`: 仕上げの記録か null。
 
 ## コマンド
 
 | コマンド | 内容 |
 |---|---|
-| `mv dance demo DIR [--width 540 --height 960 --duration 6 --fps 24]` | 合成素材と spec.json を作る |
-| `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force]` | dance.mp4 と timeline.json を run として出す |
-| `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides]` | 指定時刻を 4 列に並べた静止画シート |
+| `mv dance demo DIR [--width 540 --height 960 --duration 6 --fps 24] [--schema 0.2\|0.1]` | 合成素材と spec.json を作る |
+| `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet]` | dance.mp4 と timeline.json を run として出す。約 5% ごとに stderr へ進み具合（コマ数・経過時間・残りの見込み）を出す（`--quiet` で消す） |
+| `mv dance plan SPEC` | 解決した時刻の一覧（clips・つなぎ・seams・フラッシュ・歌詞）を表で出す。判定はしない |
+| `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線を重ねる。`--guides all` は全行の箱 |
 | `mv dance accept RUN_DIR --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を追記する |
 
 ## 限界

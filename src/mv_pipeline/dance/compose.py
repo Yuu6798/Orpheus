@@ -8,6 +8,7 @@
 """
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -15,10 +16,15 @@ from PIL import Image
 
 from ..fx import timeline
 from ..fx.color import color_to_linear, to_linear, to_srgb8
-from ..io import PipelineError
+from ..io import PipelineError, sha256
+from . import SCHEMA_V01
+from . import fit as dancefit
 from . import key as dancekey
 from . import lyrics as dancelyrics
 from .clips import Timeline
+
+FRAME_FIELDS = ["t", "clip", "source_frame", "blend", "zoom", "cx", "cy", "rotate", "shake_x", "shake_y", "blur"]
+PLACEMENT_FIELDS = ["p_a", "p_b", "p_tx", "p_c", "p_d", "p_ty"]
 
 
 @dataclass
@@ -27,10 +33,12 @@ class Context:
     size: tuple
     stage: np.ndarray
     clips: Timeline
-    place: dict
+    place: list                      # clip ごとの配置（_placement）
     lines: list
     warnings: list = field(default_factory=list)
     flashes: list = field(default_factory=list)
+    analysis: list = field(default_factory=list)     # fit の解析の記録（clip ごと。fit を使わない clip は含まない）
+    stills: dict = field(default_factory=dict)       # 静止画クリップの切り抜き（clip 番号 -> 色・アルファ）
 
     @property
     def fps(self):
@@ -79,33 +87,88 @@ def _load_stage(spec, size):
         return to_linear(_cover(np.asarray(image.convert("RGB")), size))
 
 
-def _placement(spec, source, size):
-    """人物の縮尺と、縮尺後の左上の出力座標。height は元動画の高さが画面の高さの何倍かを表す。"""
-    place = spec.data["performer"]["placement"]
+def _placement(spec, clip, source, size, analysis=None):
+    """1 クリップの縮尺と、縮尺後の左上の出力座標。height は元動画の高さが画面の高さの何倍かを表す。
+
+    analysis があれば fit で合わせる。xs・ys は元のフレームごとの左上（固定なら None で x・y を使う）。"""
+    performer = spec.data["performer"]
+    place, fit = performer["placement"], performer["fit"]
     width, height = size
     scale = place["height"] * height / source.height
+    if analysis is not None and fit["mode"] == "body":
+        scale = fit["body_height"] * height / analysis["p90_height"]
+    scale *= clip["placement"]["scale"]
     new = (max(2, int(round(source.width * scale))), max(2, int(round(source.height * scale))))
     x = place["anchor"][0] * width - place["pivot"][0] * new[0]
     y = place["anchor"][1] * height - place["pivot"][1] * new[1]
-    return {"scale": scale, "size": new, "x": x, "y": y}
+    flip = place["flip_x"] != clip["placement"]["flip_x"]
+    xs = ys = None
+    if analysis is not None:
+        sx, sy = new[0] / source.width, new[1] / source.height
+        center = lambda value: place["anchor"][0] * width - sx * (source.width - value if flip else value)  # noqa: E731
+        if fit["x"] == "median":
+            x = center(analysis["median_cx"])
+        elif fit["x"] == "track":
+            xs = center(np.asarray(analysis["cx"], dtype=np.float64))
+        if fit["ground"] == "median":
+            y = place["anchor"][1] * height - sy * analysis["median_foot"]
+        elif fit["ground"] == "lock":
+            ys = place["anchor"][1] * height - sy * np.asarray(analysis["ground"], dtype=np.float64)
+    dx, dy = clip["placement"]["offset"][0] * width, clip["placement"]["offset"][1] * height
+    return {"scale": scale, "size": new, "x": x + dx, "y": y + dy, "flip": flip, "source": (source.width, source.height),
+            "xs": None if xs is None else xs + dx, "ys": None if ys is None else ys + dy}
 
 
-def prepare(spec, scale=1.0):
+def _origin(place, number):
+    """元のフレーム番号 number のときの、縮尺後の左上の出力座標。"""
+    x = place["x"] if place["xs"] is None else float(place["xs"][min(number, len(place["xs"]) - 1)])
+    y = place["y"] if place["ys"] is None else float(place["ys"][min(number, len(place["ys"]) - 1)])
+    return x, y
+
+
+def placement_matrix(place, number):
+    """元動画の画素 → カメラの前の画面の画素の 2×3（左右反転を含む）。"""
+    x, y = _origin(place, number)
+    sx, sy = place["size"][0] / place["source"][0], place["size"][1] / place["source"][1]
+    if place["flip"]:
+        return [[-sx, 0.0, x + place["size"][0]], [0.0, sy, y]]
+    return [[sx, 0.0, x], [0.0, sy, y]]
+
+
+def _fit_analysis(spec, clips, out):
+    """{path: (解析の結果, キャッシュのパス)}。fit を使わない spec では空。"""
+    performer = spec.data["performer"]
+    fit = performer["fit"]
+    if fit is None or (fit["mode"] == "frame" and fit["x"] == "none" and fit["ground"] == "none"):
+        return {}
+    found = {}
+    for clip in performer["clips"]:
+        if clip["fit"] and clip["path"] not in found:
+            found[clip["path"]] = dancefit.load(clips.sources[clip["path"]], sha256(spec.resolve(clip["path"])),
+                                                performer["key"], fit, out)
+    return found
+
+
+def prepare(spec, scale=1.0, out=None):
+    """out は fit の解析のキャッシュを置く場所（既定は spec の隣の dance_runs）。"""
     size = scaled_size(spec, scale)
     stage = _load_stage(spec, size)
     clips = Timeline(spec)
     try:
-        place = {path: _placement(spec, source, size) for path, source in clips.sources.items()}
+        analysis = _fit_analysis(spec, clips, Path(out) if out else spec.base_dir / "dance_runs")
+        place = [_placement(spec, clip, clips.sources[clip["path"]], size, analysis[clip["path"]][0] if clip["fit"] and clip["path"] in analysis else None)
+                 for clip in clips.clips]
         lines, text_warnings = dancelyrics.prepare(spec.data, spec.resolve, size)
     except BaseException:
         clips.close()
         raise
     warnings = list(spec.warnings) + text_warnings
     sizes = {(s.width, s.height) for s in clips.sources.values()}
-    if len(sizes) > 1:
+    if len(sizes) > 1 and not analysis:
         warnings.append(f"performer: 人物動画の寸法がそろっていません {sorted(sizes)}（切れ目で人物の大きさが変わることがあります）")
     flashes = [{**f, "linear": color_to_linear(f["color"])} for f in spec.data["flashes"]]
-    return Context(spec, size, stage, clips, place, lines, warnings, flashes)
+    records = [dancefit.record(path, *found) for path, found in analysis.items()]
+    return Context(spec, size, stage, clips, place, lines, warnings, flashes, records)
 
 
 # ---- カメラ ------------------------------------------------------------------
@@ -137,22 +200,42 @@ def _is_identity(matrix):
     return bool(np.all(np.abs(matrix - np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)) < 1e-9))
 
 
-def _performer(ctx, t, matrix):
-    """人物の (前乗算の線形色, アルファ) を画面の大きさで返す。人物のいない時刻は None。"""
-    found = ctx.clips.frame_at(t)
-    if found is None:
-        return None
-    index, image = found
-    place = ctx.place[ctx.clips.clips[index]["path"]]
+def _cut(ctx, index, image):
+    """clip index の 1 枚を緑抜きして配置の大きさにした (前乗算の線形色, アルファ)。静止画は 1 回だけ作る。"""
+    if index in ctx.stills:
+        return ctx.stills[index]
+    place = ctx.place[index]
     color, alpha = dancekey.cutout(image, ctx.spec.data["performer"]["key"])
     method = cv2.INTER_AREA if place["scale"] < 1 else cv2.INTER_LINEAR
     color = cv2.resize(color, place["size"], interpolation=method)
     alpha = cv2.resize(alpha, place["size"], interpolation=method)
-    full = np.vstack([matrix, [0.0, 0.0, 1.0]]) @ np.array([[1, 0, place["x"]], [0, 1, place["y"]], [0, 0, 1]], dtype=np.float64)
+    if place["flip"]:
+        color, alpha = color[:, ::-1].copy(), alpha[:, ::-1].copy()
+    if ctx.clips.clips[index]["kind"] == "image":
+        ctx.stills[index] = color, alpha
+    return color, alpha
+
+
+def _placed(ctx, shown, matrix):
+    color, alpha = _cut(ctx, shown.index, shown.image)
+    x, y = _origin(ctx.place[shown.index], shown.frame)
+    full = np.vstack([matrix, [0.0, 0.0, 1.0]]) @ np.array([[1, 0, x], [0, 1, y], [0, 0, 1]], dtype=np.float64)
     warp = full[:2].astype(np.float32)
     color = cv2.warpAffine(color, warp, ctx.size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     alpha = cv2.warpAffine(alpha, warp, ctx.size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     return color, alpha
+
+
+def _performer(ctx, t, matrix):
+    """人物の (前乗算の線形色, アルファ) を画面の大きさで返す。人物のいない時刻は None。blend の窓では 2 本を重ねる。"""
+    shown = ctx.clips.shown(t)
+    if not shown:
+        return None
+    if len(shown) == 1:
+        return _placed(ctx, shown[0], matrix)
+    (old_color, old_alpha), (new_color, new_alpha) = [_placed(ctx, item, matrix) for item in shown]
+    weight = np.float32(shown[1].weight)
+    return old_color + (new_color - old_color) * weight, old_alpha + (new_alpha - old_alpha) * weight
 
 
 def frame(ctx, t):
@@ -181,15 +264,30 @@ def frame(ctx, t):
     return to_srgb8(out)
 
 
+def _frame_row(ctx, t, fitted):
+    """timeline の frames の 1 行。hooks に関わらず spec だけから決まる値。"""
+    shown = ctx.clips.mapping(t)
+    zoom, center, rotate = camera_state(ctx.spec.data["camera"], t)
+    last = shown[-1] if shown else None
+    row = [round(t, 5), None if last is None else last[0], None if last is None else last[1],
+           None if len(shown) < 2 else round(last[2], 5), round(zoom, 6), round(center[0], 6), round(center[1], 6), round(rotate, 5),
+           0.0, 0.0, 0]
+    if fitted:
+        matrix = placement_matrix(ctx.place[last[0]], last[1]) if last else None
+        row += [round(v, 4) for r in matrix for v in r] if matrix else [None] * len(PLACEMENT_FIELDS)
+    return row
+
+
 def timeline_record(ctx, start=0.0, duration=None, frames=None):
     """run に残す timeline.json の中身。`mv gate check` はこれを読む（描画の入力ではない）。"""
     data, (width, height) = ctx.spec.data, ctx.size
     norm = lambda b: [round(b[0] / width, 5), round(b[1] / height, 5), round(b[2] / width, 5), round(b[3] / height, 5)]  # noqa: E731
-    return {
+    length = ctx.duration - start if duration is None else duration
+    count = timeline.frame_count(ctx.duration - start, ctx.fps) if frames is None else frames
+    record = {
         "schema_version": "dance-timeline/0.1",
         "size": [width, height], "fps": ctx.fps, "duration_s": ctx.duration,
-        "interval": {"start": start, "duration": ctx.duration - start if duration is None else duration,
-                     "frames": timeline.frame_count(ctx.duration - start, ctx.fps) if frames is None else frames},
+        "interval": {"start": start, "duration": length, "frames": count},
         "lyrics": [{"layer": line.layer, "text": line.text, "start": line.start, "end": line.end,
                     "fade_in_s": line.style["fade_in_s"], "fade_out_s": line.style["fade_out_s"],
                     "box_px": line.box_px, "box": norm(line.box_px), "overflow": line.overflow} for line in ctx.lines],
@@ -198,3 +296,22 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "flashes": [f["t"] for f in data["flashes"]],
         "ui_regions": data["lyrics"]["ui_regions"],
     }
+    if data["source_schema"] == SCHEMA_V01:
+        return record
+    clips = data["performer"]["clips"]
+    fitted = bool(ctx.analysis)
+    audio = data["audio"]
+    record.update({
+        "schema_version": "dance-timeline/0.2",
+        "beats": None if data["beats"] is None else {"beats": data["beats"]["beats"], "downbeats": data["beats"]["downbeats"]},
+        "clips": [{"path": c["path"], "start": c["start"], "end": c["end"], "kind": c["kind"], "transition_in": c["transition_in"],
+                   "beat_exempt": c["beat_exempt"]} for c in clips],
+        "seam_info": [{"t": t, "from": left, "to": right, "kind": clips[right]["transition_in"]["type"], "beat_exempt": clips[right]["beat_exempt"]}
+                      for t, left, right in ctx.clips.seam_list()],
+        "frames_fields": FRAME_FIELDS + (PLACEMENT_FIELDS if fitted else []),
+        "frames": [_frame_row(ctx, timeline.frame_time(i, ctx.fps, start), fitted) for i in range(count)],
+        "analysis": ctx.analysis,
+        "audio": None if audio is None else {"fit": audio["fit"], "end_s": audio["end_s"]},
+        "finished": None,
+    })
+    return record

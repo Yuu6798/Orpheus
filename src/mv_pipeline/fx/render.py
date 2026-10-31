@@ -210,8 +210,10 @@ def ffmpeg_command(out_path, size, fps, crf, n_frames, audio=None):
     command = [media.ffmpeg(), "-y", "-hide_banner", "-nostdin", "-loglevel", "warning",
                "-thread_queue_size", "512", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
                "-framerate", f"{fps:g}", "-i", "pipe:0"]
-    if audio:
-        command += ["-ss", f"{audio['start']:.6f}", "-t", f"{audio['duration']:.6f}", "-i", str(audio["path"])]
+    if audio and audio.get("silent"):
+        command += ["-f", "lavfi", "-t", f"{audio['duration']:.6f}", "-i", "anullsrc=r=48000:cl=stereo"]
+    elif audio:
+        command += ["-ss", f"{audio['start']:.6f}", "-t", f"{audio.get('length', audio['duration']):.6f}", "-i", str(audio["path"])]
     command += ["-map", "0:v:0"] + (["-map", "1:a:0"] if audio else [])
     # ffmpeg 7.1（imageio-ffmpeg 同梱の Windows 版など）はフレームの色属性が出力オプションより優先されるため、setparams でも付ける
     command += ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
@@ -220,12 +222,22 @@ def ffmpeg_command(out_path, size, fps, crf, n_frames, audio=None):
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
     if audio:
-        fade_in = min(FADE_IN_S, audio["duration"] / 2)
-        fade_out = min(FADE_OUT_S, audio["duration"] / 2)
-        command += ["-af", f"afade=t=in:st=0:d={fade_in:.4f},afade=t=out:st={audio['duration'] - fade_out:.4f}:d={fade_out:.4f}",
-                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+        command += ["-af", _audio_filter(audio), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
     command += ["-frames:v", str(n_frames), "-movflags", "+faststart", str(out_path)]
     return command
+
+
+def _audio_filter(audio):
+    """音声のフィルタ。length・fade_in・fade_out・pad・silent は dance だけが使う（無ければ fx の既定どおり全区間に掛ける）。"""
+    if audio.get("silent"):
+        return "anull"
+    length = audio.get("length", audio["duration"])
+    fade_in = min(audio.get("fade_in", FADE_IN_S), length / 2)
+    fade_out = min(audio.get("fade_out", FADE_OUT_S), length / 2)
+    steps = [f"afade=t=in:st=0:d={fade_in:.4f}"] if fade_in > 0 else []
+    steps += [f"afade=t=out:st={length - fade_out:.4f}:d={fade_out:.4f}"] if fade_out > 0 else []
+    steps += [f"apad=whole_dur={audio['duration']:.6f}"] if audio.get("pad") else []
+    return ",".join(steps) or "anull"
 
 
 def _close(stream):
@@ -238,7 +250,7 @@ def _close(stream):
 def write_video(out_path, frames, size, fps, crf, n_frames, audio=None, log_path=None):
     """フレーム列 (uint8 H×W×3) を n_frames ちょうど書く。-shortest は使わない。
 
-    audio: None または {"path", "start", "duration"}（audio_for が作る）。
+    audio: None または {"path", "start", "duration"}（audio_for が作る）。dance は length・fade_in・fade_out・pad・silent も渡す。
     一時名 (<stem>.part<suffix>) に書き、ffmpeg が成功し枚数が揃ったときだけ out_path へ置き換える。
     戻り値: {"frames", "command", "seconds"}。ffmpeg の警告と実行行は log_path に追記する。
     """

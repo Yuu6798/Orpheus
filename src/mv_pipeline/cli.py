@@ -106,6 +106,7 @@ def _dance_parser(commands):
     demo.add_argument("--height", type=int, default=960)
     demo.add_argument("--duration", type=float, default=6.0)
     demo.add_argument("--fps", type=int, default=24)
+    demo.add_argument("--schema", choices=["0.1", "0.2"], default="0.2", help="spec version of the demo")
     render = sub.add_parser("render", help="render dance.mp4 and timeline.json as a run")
     render.add_argument("spec", type=Path)
     render.add_argument("--start", type=float, default=0.0)
@@ -113,12 +114,16 @@ def _dance_parser(commands):
     render.add_argument("--out", type=Path, help="default: <spec dir>/dance_runs")
     render.add_argument("--scale", type=float, default=1.0)
     render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    render.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
+    plan = sub.add_parser("plan", help="print the resolved times as tables")
+    plan.add_argument("spec", type=Path)
     stills = sub.add_parser("stills", help="still sheet of the given times")
     stills.add_argument("spec", type=Path)
     stills.add_argument("--times", type=float, nargs="+", required=True)
     stills.add_argument("--out", type=Path)
     stills.add_argument("--scale", type=float, default=1.0)
-    stills.add_argument("--guides", action="store_true", help="draw the UI regions and the lyric boxes")
+    stills.add_argument("--guides", nargs="?", const="visible", choices=["visible", "all"],
+                        help="draw the UI regions and the boxes of the visible lines (all: every line)")
     accept = sub.add_parser("accept", help="append a human decision to acceptance.jsonl")
     accept.add_argument("run_dir", type=Path)
     accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
@@ -183,13 +188,16 @@ def dance_command(args):
         from .dance import VARIANT
         from .fx import runs as fxruns
         return fxruns.accept(args.run_dir, VARIANT, args.decision, args.by, args.note)
+    if command == "plan":
+        from .dance import plan
+        return plan.text(args.spec)
     _require_fx()
     if command == "demo":
         from .dance import demo
-        return demo.create(args.dir, args.width, args.height, args.duration, args.fps)
+        return demo.create(args.dir, args.width, args.height, args.duration, args.fps, args.schema)
     from .dance import runs
     if command == "render":
-        return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress)
+        return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress, args.quiet)
     if command == "stills":
         return runs.stills(args.spec, args.times, args.out, args.scale, args.guides)
     raise PipelineError(f"Unsupported dance command: {command}")
@@ -214,7 +222,8 @@ def _run_gate(args):
 
 def _run_json(function, args):
     try:
-        print(json.dumps(function(args), ensure_ascii=False, indent=2))
+        result = function(args)
+        print(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error) as error:
         print(f"Error: {error}", file=sys.stderr)
