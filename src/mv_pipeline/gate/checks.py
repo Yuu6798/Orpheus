@@ -14,7 +14,7 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "faces": "faces.json",                             [{"start", "end", "box": [x0,y0,x1,y1], "role": "main"}]（正規化座標）
      "tracks": "tracks.json",                           {"名前": [[t, x, y], …]}（人物に付く要素の位置。画素）
      "poses": "poses.json",                             [{"t": 秒, "points": [[x, y], …]}]（骨格。正規化座標）
-     "beats": "analysis.json",                          "downbeats" か "beats" の配列
+     "beats": "analysis.json",                          "downbeats"・"beats"・"beats_s" のどれかの配列
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
@@ -55,6 +55,23 @@ def skip(name, needs):
     return result(name, "skip", f"見ていません（{needs} がありません）")
 
 
+def _window(timeline):
+    """描いた区間 (開始, 終わり)。interval が無い timeline はショット全体。"""
+    interval = timeline.get("interval")
+    if not interval:
+        return 0.0, timeline["duration_s"]
+    return interval["start"], interval["start"] + interval["duration"]
+
+
+def _scoped(timeline):
+    """描いた区間に出るものだけを残した timeline。区間をまたぐ字の時間は区間に切る。"""
+    first, last = _window(timeline)
+    lyrics = [{**ln, "start": max(ln["start"], first), "end": min(ln["end"], last)}
+              for ln in timeline["lyrics"] if ln["start"] < last and ln["end"] > first]
+    inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
+    return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", []))}
+
+
 def _intersects(a, b):
     return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
 
@@ -71,7 +88,11 @@ def check_lyric_time(timeline, measured, layer, th):
     lines = [ln for ln in timeline["lyrics"] if ln["layer"] == layer]
     if len(lines) != len(measured):
         return result(name, "fail", f"行数が合いません（字 {len(lines)} 行 / 実測 {len(measured)} 行）")
-    pairs = [(line, sung) for line, sung in zip(lines, measured) if sung.get("method") not in UNMEASURED]
+    first, last = _window(timeline)     # 実測は曲全体の行と順に対応するので、対応させてから区間で絞る
+    shown = [(line, sung) for line, sung in zip(lines, measured) if line["start"] < last and line["end"] > first]
+    if not shown:
+        return result(name, "pass", "描いた区間に照合する行がありません")
+    pairs = [(line, sung) for line, sung in shown if sung.get("method") not in UNMEASURED]
     if not pairs:
         return skip(name, "実測した行（どの行も推定のまま）")
     problems = []
@@ -79,7 +100,7 @@ def check_lyric_time(timeline, measured, layer, th):
         lead = sung["start"] - line["start"]   # 正 = 字が歌より先に出る
         if not th["lead_min_s"] - EPS <= lead <= th["lead_max_s"] + EPS:
             problems.append({"t": line["start"], "text": line["text"], "detail": f"字が歌の {lead:+.3f} 秒前（許容 {th['lead_min_s']}〜{th['lead_max_s']}）"})
-    unverified = len(lines) - len(pairs)
+    unverified = len(shown) - len(pairs)
     summary = f"{len(pairs)} 行を照合、外れ {len(problems)} 行"
     if unverified:
         summary += f"（実測できず見ていない行 {unverified}）"
@@ -199,9 +220,9 @@ def check_beats(timeline, analysis, th):
     name = "拍"
     if analysis is None:
         return skip(name, "beats")
-    grid = analysis.get("downbeats") or analysis.get("beats")
+    grid = analysis.get("downbeats") or analysis.get("beats") or analysis.get("beats_s")
     if not grid:
-        return skip(name, "beats の downbeats / beats 配列")
+        return skip(name, "beats の downbeats / beats / beats_s 配列")
     events = [("フラッシュ", t) for t in timeline.get("flashes", [])] + [("切れ目", t) for t in timeline.get("seams", [])]
     limit = th["beat_frames"] / timeline["fps"]
     problems = []
@@ -223,9 +244,19 @@ def _probe(path):
     return int(frames[-1]) if frames else 0, seconds, "Audio:" in run.stderr
 
 
+def _size(path):
+    """映像の (幅, 高さ)。ffmpeg の情報の出力から読む。"""
+    run = subprocess.run([ffmpeg(), "-hide_banner", "-nostdin", "-i", str(path)],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    found = re.search(r"Video:.*?(\d{2,})x(\d{2,})", run.stderr)
+    return (int(found[1]), int(found[2])) if found else None
+
+
 def _ssim(preview, master):
-    run = subprocess.run([ffmpeg(), "-hide_banner", "-nostdin", "-i", str(preview), "-i", str(master), "-lavfi",
-                          "[0:v][1:v]scale2ref=flags=bicubic[a][b];[a][b]ssim", "-f", "null", "-"],
+    # scale2ref は 2 本のコマがずれることがあり（環境で変わる）、同じ動画でも SSIM が下がるので使わない
+    size = _size(master)
+    graph = "[0:v][1:v]ssim" if size == _size(preview) else f"[0:v]scale={size[0]}:{size[1]}:flags=bicubic[a];[a][1:v]ssim"
+    run = subprocess.run([ffmpeg(), "-hide_banner", "-nostdin", "-i", str(preview), "-i", str(master), "-lavfi", graph, "-f", "null", "-"],
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     found = re.findall(r"All:([\d.]+)", run.stderr)
     return float(found[-1]) if found else None
@@ -259,8 +290,8 @@ def check_export(timeline, video, master, expected, th):
     return result(name, status, "、".join(notes), problems)
 
 
-def _extract_stills(report, video, out):
-    """問題のコマを静止画で書き出す（検査ごとに最大 MAX_STILLS 枚）。"""
+def _extract_stills(report, video, out, first=0.0):
+    """問題のコマを静止画で書き出す（検査ごとに最大 MAX_STILLS 枚）。first は動画の先頭のショット時刻。"""
     if video is None:
         return
     for item in report["checks"]:
@@ -268,7 +299,7 @@ def _extract_stills(report, video, out):
             if not problem.get("t"):
                 continue
             target = out / f"{item['check']}_{index:02d}_{problem['t']:.2f}s.jpg"
-            run = subprocess.run([ffmpeg(), "-y", "-loglevel", "error", "-nostdin", "-ss", f"{problem['t']:.3f}", "-i", str(video),
+            run = subprocess.run([ffmpeg(), "-y", "-loglevel", "error", "-nostdin", "-ss", f"{max(0.0, problem['t'] - first):.3f}", "-i", str(video),
                                   "-frames:v", "1", "-q:v", "3", str(target)], capture_output=True)
             if run.returncode == 0 and target.is_file():
                 problem["still"] = target.name
@@ -301,14 +332,15 @@ def run(config_path, out=None):
         raise PipelineError("gate の設定に timeline がありません（mv dance render の run にある timeline.json を指定してください）")
     th = {**THRESHOLDS, **config.get("thresholds", {})}
     video, master = path_of("video"), path_of("master")
+    scoped = _scoped(timeline)
     checks = [check_lyric_time(timeline, load("measured_lines"), config.get("lyric_layer", "band"), th),
               check_confirmed(timeline, load("confirmed"), th),
-              check_faces(timeline, load("faces")),
-              check_ui(timeline),
+              check_faces(scoped, load("faces")),
+              check_ui(scoped),
               check_jitter(load("tracks"), th),
-              check_seams(timeline, load("poses"), th),
-              check_hook_overlap(timeline, th),
-              check_beats(timeline, load("beats"), th),
+              check_seams(scoped, load("poses"), th),
+              check_hook_overlap(scoped, th),
+              check_beats(scoped, load("beats"), th),
               check_export(timeline, video, master, config.get("expected_sha256"), th)]
     statuses = {c["status"] for c in checks}
     overall = ("fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses
@@ -316,7 +348,7 @@ def run(config_path, out=None):
     report = {"overall": overall, "timeline": str(path_of("timeline")), "thresholds": th, "checks": checks}
     out = Path(out) if out else base / "gate_report"
     out.mkdir(parents=True, exist_ok=True)
-    _extract_stills(report, video, out)
+    _extract_stills(report, video, out, _window(timeline)[0])
     (out / "gate_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "gate_report.md").write_text(_markdown(report), encoding="utf-8")
     return report, out

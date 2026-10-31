@@ -60,8 +60,10 @@ uv run mv gate check gate.json [--out DIR]
 | 揺れ | `tracks`（`{"名前": [[t, x, y], …]}`。画素） | 2 階差分の RMS 3 画素以下。3 点未満の要素は見ず、一部なら要確認、全部なら未実施 |
 | つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。骨格が前後に無ければ要確認 |
 | 字の重なり | timeline だけ | 後ろの字の同時表示 0.1 秒以下 |
-| 拍 | `beats`（`downbeats` か `beats` の配列） | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内 |
+| 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列） | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内 |
 | 書き出し | `video`・`master`（任意で `expected_sha256`） | コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
+
+一部の区間だけ描いた run（`mv dance render --start/--duration`）は、timeline の `interval` の中に出るものだけを見る。確認済みの時刻だけは曲全体で見る。
 
 結果は 合格 / 不合格 / 要確認 / 未実施。**未実施は「材料が無くて見ていない」で、合格ではない。** 全体（`overall`）は、不合格が 1 つでもあれば `fail`（終了コード 1）、未実施があれば `pass_with_skips`、要確認があれば `pass_with_warnings`、なければ `pass`。
 

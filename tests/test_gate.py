@@ -108,6 +108,22 @@ def test_partial_render_is_checked_against_its_interval(tmp_path):
     assert gate.check_export(timeline(), path, path, None, TH)["status"] == "fail"
 
 
+def test_ssim_of_a_video_with_itself_is_one_and_sizes_may_differ(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(1)
+    frames = [rng.integers(0, 255, (64, 64, 3), np.uint8) for _ in range(24)]
+    paths = {}
+    for name, size in (("a", (64, 64)), ("b", (32, 32))):
+        paths[name] = tmp_path / f"{name}.mp4"
+        writer = cv2.VideoWriter(str(paths[name]), cv2.VideoWriter_fourcc(*"mp4v"), 24, size)
+        for frame in frames:
+            writer.write(cv2.resize(frame, size))
+        writer.release()
+    assert gate._size(paths["a"]) == (64, 64) and gate._size(paths["b"]) == (32, 32)
+    assert gate._ssim(paths["a"], paths["a"]) == pytest.approx(1.0)
+    assert 0 < gate._ssim(paths["b"], paths["a"]) < 1
+
+
 def test_text_that_does_not_fit_fails_the_ui_check():
     moved = timeline()
     moved["lyrics"][0]["overflow"] = True
@@ -161,6 +177,35 @@ def test_events_must_land_on_a_downbeat_within_one_frame():
     assert gate.check_beats(timeline(), {"downbeats": [1.0, 3.03, 5.0]}, TH)["status"] == "pass"
     assert gate.check_beats(timeline(), {"downbeats": [1.0, 3.2, 5.0]}, TH)["status"] == "fail"
     assert gate.check_beats(timeline(), {"beats": [3.0]}, TH)["status"] == "pass"
+    assert gate.check_beats(timeline(), {"beats_s": [3.0]}, TH)["status"] == "pass"
+    assert gate.check_beats(timeline(), {"beats_s": [1.0]}, TH)["status"] == "fail"
+
+
+def test_scope_keeps_only_what_appears_in_the_rendered_interval():
+    partial = timeline(interval={"start": 0.0, "duration": 2.0, "frames": 48})
+    scoped = gate._scoped(partial)
+    assert [ln["text"] for ln in scoped["lyrics"]] == ["HOLD", "one"] and scoped["lyrics"][0]["end"] == 2.0
+    assert scoped["seams"] == [] and scoped["flashes"] == []
+    assert gate._scoped(timeline())["lyrics"] == timeline()["lyrics"]
+
+
+def test_a_lyric_outside_the_interval_does_not_fail_a_partial_render(tmp_path):
+    moved = timeline(interval={"start": 0.0, "duration": 2.0, "frames": 48})
+    moved["lyrics"][1]["box"] = [0.8, 0.5, 0.95, 0.6]     # 3 秒からの字が UI 枠に入る
+    assert gate.check_ui(moved)["status"] == "fail" and gate.check_ui(gate._scoped(moved))["status"] == "pass"
+
+
+def test_ui_frames_are_counted_inside_the_interval_only():
+    moved = timeline(interval={"start": 1.0, "duration": 1.0, "frames": 24})
+    moved["lyrics"][0]["box"] = [0.8, 0.5, 0.95, 0.6]
+    assert "24" in gate.check_ui(gate._scoped(moved))["summary"]
+
+
+def test_lyric_time_on_a_partial_render_keeps_the_pairing_of_the_whole_song():
+    partial = timeline(interval={"start": 3.0, "duration": 2.0, "frames": 48})
+    measured = [{"start": 99.0}, {"start": 3.1}]    # 区間の外の行のずれは見ない。2 行目は曲全体の 2 行目と対応する
+    check = gate.check_lyric_time(partial, measured, "band", TH)
+    assert check["status"] == "pass" and "1 行を照合" in check["summary"]
 
 
 def test_end_to_end_report_on_a_rendered_video(tmp_path):
