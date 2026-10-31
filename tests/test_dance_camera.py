@@ -118,6 +118,17 @@ def test_rotation_keeps_going_through_the_cut(tmp_path, fps, rotate, post):
     assert angle(2.5) == 0.0 and abs(angle(2.5 - 1e-4)) < 0.01  # post_s の終わりで 0（傾き 0）
 
 
+def test_a_short_post_lowers_the_peak_instead_of_turning_back(tmp_path):
+    seam = {"t": 2.0, "pre_s": 0.3, "post_s": 0.1, "zoom": 1.5, "rotate_deg": 2, "rotate_post_deg": 12}
+    cam, sp = camera_of(tmp_path, seams=[seam], cover_rotation=False)
+    assert any("頂点" in warning for warning in sp.warnings)
+    curve = cam.curves[0]
+    values = [curve.at(curve.peak_at * i / 100) for i in range(101)]
+    assert all(b >= a - 1e-9 for a, b in zip(values, values[1:])) and curve.peak < 12
+    before, after = cam.state(2.0).seam_rotate - cam.state(2.0 - 1 / 30).seam_rotate, cam.state(2.0 + 1 / 30).seam_rotate - cam.state(2.0).seam_rotate
+    assert before * after > 0 and abs(after - before) <= 0.1 * abs(before)
+
+
 def test_rotation_peaks_at_the_post_angle(tmp_path):
     cam, _ = camera_of(tmp_path, seams=[{"t": 2.0, "pre_s": 0.3, "post_s": 0.5, "zoom": 1.5, "rotate_deg": 6, "rotate_post_deg": 9}], cover_rotation=False)
     values = [cam.state(2.0 + i * 0.001).seam_rotate for i in range(500)]
