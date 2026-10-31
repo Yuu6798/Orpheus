@@ -3,7 +3,7 @@
     ctx = prepare(spec, scale=1.0)        # ステージ・字・人物の配置。描画サイズごとに 1 回
     img = frame(ctx, t)                   # uint8 (H, W, 3) RGB。同じ ctx・t なら同じバイト列
 
-重ね順は 背景ステージ → 後ろの字 → 人物 → フラッシュ → 帯の字。カメラはステージと人物に掛かり、字には掛からない。
+重ね順は 背景ステージ → behind の字 → 人物 → フラッシュ → front の字。カメラはステージと人物に掛かる。字は follow_camera の行だけカメラに乗る。
 カメラの式は camera.py。ブレは seams の窓の中だけで、カメラに乗る層ごとに変換をずらして平均する。
 合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
 """
@@ -42,6 +42,7 @@ class Context:
     analysis: list = field(default_factory=list)     # fit の解析の記録（clip ごと。fit を使わない clip は含まない）
     stills: dict = field(default_factory=dict)       # 静止画クリップの切り抜き（clip 番号 -> 色・アルファ）
     camera: object = None            # camera.Camera
+    text: dict = field(default_factory=dict)         # z -> Line の列（層を書いた順）
 
     @property
     def fps(self):
@@ -204,7 +205,9 @@ def prepare(spec, scale=1.0, out=None):
                for f in spec.data["flashes"]]
     records = [dancefit.record(path, *found) for path, found in analysis.items()]
     camera = Camera(spec.data["camera"], size, spec.data["output"]["fps"])
-    return Context(spec, size, stage, clips, place, lines, warnings, flashes, records, camera=camera)
+    layers = spec.data["lyrics"]["layers"]
+    text = {z: [line for layer in layers if layer["z"] == z for line in lines if line.layer == layer["name"]] for z in ("behind", "front")}
+    return Context(spec, size, stage, clips, place, lines, warnings, flashes, records, camera=camera, text=text)
 
 
 # ---- 1 フレーム ---------------------------------------------------------------
@@ -289,24 +292,45 @@ def _flash(out, flash, t):
     return out + (flash["linear"] - out) * strength
 
 
+def _following(ctx, line, t, dt, matrix, samples):
+    """カメラに乗る行の (前乗算の線形色, アルファ)。"""
+    color = np.zeros((ctx.size[1], ctx.size[0], 3), np.float32)
+    alpha = np.zeros((ctx.size[1], ctx.size[0]), np.float32)
+    dancelyrics.draw(color, line, t, dt, alpha)
+    matrices = [ctx.camera.matrix(item) for item in samples] or [matrix]
+    warped = [_warped(ctx, color, alpha, 0.0, 0.0, item) for item in matrices]
+    count = np.float32(len(warped))
+    return sum(item[0] for item in warped) / count, sum(item[1] for item in warped) / count
+
+
+def _text(ctx, out, z, t, dt, matrix, samples):
+    """z（behind / front）の層の字を、層を書いた順に描く。"""
+    for line in ctx.text[z]:
+        if not line.start <= t < line.end:
+            continue
+        if line.follow_camera:
+            color, alpha = _following(ctx, line, t, dt, matrix, samples)
+            out = color + out * (1.0 - alpha[..., None])
+        else:
+            dancelyrics.draw(out, line, t, dt)
+    return out
+
+
 def frame(ctx, t):
     """時刻 t の 1 フレームを uint8 (H, W, 3) RGB で返す。"""
     dt = 1.0 / ctx.fps
     state = ctx.camera.state(t)
     samples = ctx.camera.blur_states(t)
     out = _stage_view(ctx, t, state, samples)
-    for line in ctx.lines:
-        if line.layer == "back":
-            dancelyrics.draw(out, line, t, dt)
-    person = _performer(ctx, t, ctx.camera.matrix(state), samples)
+    matrix = ctx.camera.matrix(state)
+    out = _text(ctx, out, "behind", t, dt, matrix, samples)
+    person = _performer(ctx, t, matrix, samples)
     if person is not None:
         color, alpha = person
         out = color + out * (1.0 - alpha[..., None])
     for flash in ctx.flashes:
         out = _flash(out, flash, t)
-    for line in ctx.lines:
-        if line.layer == "band":
-            dancelyrics.draw(out, line, t, dt)
+    out = _text(ctx, out, "front", t, dt, matrix, samples)
     return to_srgb8(out)
 
 
@@ -358,6 +382,7 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "frames_fields": FRAME_FIELDS + (PLACEMENT_FIELDS if fitted else []),
         "frames": [_frame_row(ctx, timeline.frame_time(i, ctx.fps, start), fitted) for i in range(count)],
         "analysis": ctx.analysis,
+        "layers": [{k: layer[k] for k in ("name", "z", "exclusive", "sung", "follow_camera")} for layer in data["lyrics"]["layers"]],
         "camera_seams": [{k: seam[k] for k in ("t", "span_s", "pre_s", "post_s", "zoom", "rotate_deg", "rotate_post_deg", "pivot", "blur")}
                          for seam in data["camera"]["seams"]],
         "accents": data["camera"]["accents"],
@@ -365,4 +390,8 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "audio": None if audio is None else {"fit": audio["fit"], "end_s": audio["end_s"]},
         "finished": None,
     })
+    for row, line in zip(record["lyrics"], ctx.lines):
+        row.update(sung=line.sung, reveal=line.style["reveal"], exclusive=line.style["exclusive"],
+                   fade_in_s=max(line.style["fade_in_s"], line.style["enter"]["dur_s"] if line.style["enter"] else 0.0), fade_out_s=line.fall_s,
+                   words=[{"text": word["text"], "t": word["t"], "row": word["row"], "box": norm(word["box_px"])} for word in line.words])
     return record

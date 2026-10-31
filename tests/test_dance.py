@@ -172,9 +172,9 @@ def test_timeline_maps_shot_time_to_source_frames(tmp_path, shot):
 # ---- 字 ----------------------------------------------------------------------
 
 def layout_line(text, layer="back", words=(), **style):
-    data = {"font": None, "font_index": 0, "back": {**dancespec.LAYER_DEFAULTS["back"], **style},
-            "band": {**dancespec.LAYER_DEFAULTS["band"], **style}}
-    return lyrics.layout({"layer": layer, "text": text, "start": 1.0, "end": 2.0, "words": list(words)}, data, None, (1080, 1920))
+    item = {"layer": layer, "text": text, "start": 1.0, "end": 2.0, "sung": None,
+            "words": [{"color": None, "row": 0, **word} for word in words]}
+    return lyrics.layout(item, {**dancespec.LAYER_DEFAULTS[layer], **style}, {}, None, (1080, 1920))
 
 
 def test_long_text_shrinks_to_stay_inside_the_box():

@@ -24,6 +24,8 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 デモは動く夜のステージ（2 秒ループの動画。`parallax` 0.7）に、緑背景の棒人間のクリップ 3 本と静止画 1 枚をつなぐ。クリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶので、`fit` の効きを確かめられる。最後の静止画は blend 3 コマでつなぐ。音声は描画より短く、`fit: "pad"` と `end_s` で足す。カメラは小節頭のアクセントと揺れつきの打ち込みが 1 回。クリップは腕の振りの位相が違うので切れ目で姿勢が飛び、そこにフラッシュと、非対称の seams とブレ（回転は切れ目を越えて続く）が入る。
 
+歌詞は back が 3 row の互い違いの縦積み（reveal word・enter・exit・glow）、band が語ごとの色と行の上書き、title が sung false の層。
+
 `mv dance demo --schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 
 ## spec（dance-shot/0.2）
@@ -59,13 +61,27 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
   },
   "flashes": [{"t": 10.0, "strength": 0.6, "decay_s": 0.2, "color": [255, 255, 255], "mode": "lerp_linear"}],
   "lyrics": {
-    "font": "font.ttf", "font_index": 0,
+    "fonts": {"display": {"path": "fonts/display.ttf"}, "text": {"path": "fonts/text.ttc", "index": 0}},
+    "font": "text",
     "ui_regions": [{"name": "right", "box": [0.86, 0.45, 1.0, 0.88]}],
-    "back": {"box": [0.04, 0.18, 0.96, 0.44], "size_px": 180, "color": [255, 255, 255], "accent_color": [255, 90, 170], "opacity": 0.92},
-    "band": {"box": [0.04, 0.07, 0.96, 0.15], "size_px": 64, "stroke_px": 6, "stroke_color": [12, 10, 24]},
+    "layers": {
+      "back": {"font": "display", "box": [0.03, 0.2, 0.97, 0.62], "size_px": 380, "reveal": "word",
+               "rows": {"align": "center", "gap_em": 0.04},
+               "enter": {"scale_from": 1.3, "rise_px": 26, "dur_s": 0.14}, "exit": {"scale_to": 1.16, "dur_s": 0.3},
+               "glow": {"color": [255, 150, 70], "radius_px": 22, "strength": 0.8}},
+      "band": {"size_px": 118, "stroke_px": 8, "fade_in_s": 0.1},
+      "title": {"z": "front", "font": "display", "box": [0.06, 0.08, 0.94, 0.2], "size_px": 132, "sung": false}
+    },
     "lines": [
-      {"layer": "back", "text": "LIGHT", "start": 5.0, "end": 8.0, "words": [{"text": "LI", "t": 5.5}, {"text": "GHT", "t": 6.0}]},
-      {"layer": "band", "text": "上の帯の字", "start": 5.0, "end": 8.0}
+      {"layer": "back", "text": "ONE TWO THREE", "start": {"beat": 3, "offset_s": -0.04}, "end": {"beat": 7},
+       "words": [{"text": "ONE", "t": {"beat": 3, "offset_s": -0.04}, "row": 0},
+                 {"text": " TWO", "t": {"beat": 3.5, "offset_s": -0.04}, "row": 1},
+                 {"text": " THREE", "t": {"beat": 4, "offset_s": -0.04}, "row": 2}]},
+      {"layer": "band", "text": "うたのことば", "start": {"beat": 7, "offset_s": -0.1}, "end": {"beat": 10},
+       "words": [{"text": "うた", "t": {"beat": 7, "offset_s": -0.1}, "color": [205, 160, 255]}, {"text": "のことば", "accent": false}]},
+      {"layer": "band", "text": "こたえるこえ", "start": {"beat": 40, "offset_s": -0.1}, "end": {"beat": 44},
+       "style": {"color": [255, 222, 170], "glow": {"color": [255, 150, 60], "radius_px": 14, "strength": 0.55}}},
+      {"layer": "title", "text": "TITLE", "start": 28.0, "end": 30.0}
     ]
   }
 }
@@ -80,7 +96,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `clips[].transition_in`: `{"type": "cut"}`（既定）か `{"type": "blend", "frames": 3}`。blend は clip の start から frames コマの間、前のクリップの再生を続け（素材の終わりを越えたら最後のフレームを保つ）、両方をそれぞれの配置で置いて、前乗算の色とアルファを smoothstep で重ねる。前のクリップと隙間なく接していること。
 - `clips[].beat_exempt`: この切れ目は意図して拍から外している（`mv gate check` が対象外として数える）。
 - `stage`: 画像（png/jpg/webp）か動画。出力の縦横比に cover で中央に合わせる（余る側を切る。縮尺の計算は 1 回だけ）。動画は `source_start`（秒）から再生し、`loop`（既定 true）で折り返す。false なら最後のフレームを保つ。読み出しは人物と同じく前方向だけ。`parallax`（既定 1.0）はステージだけの視差（下の「カメラ」）。
-- ASCII 以外の歌詞には `lyrics.font` が要る（フォントファイルを spec の隣に置く。素材と同じく sha256 が記録される）。無ければ Pillow の既定の欧文フォントを使う。
+- `lyrics.fonts` = `{"名前": {"path": …, "index": 0}}`。`lyrics.font` は既定の書体名。`fonts` が無ければ `font` はパスで、`font_index` とあわせて `fonts["default"]` になる（0.1 の書き方）。ASCII 以外の歌詞には書体が要る（フォントファイルを spec の隣に置く。素材と同じく sha256 が記録される）。無ければ Pillow の既定の欧文フォントを使う。
 
 ### 拍と時刻の参照
 
@@ -121,7 +137,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 ## 描画モデル
 
-重ね順は **ステージ → 後ろの字（back）→ 人物 → フラッシュ → 帯の字（band）**。合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
+重ね順は **ステージ → behind の字 → 人物 → フラッシュ → front の字**。合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
 
 **緑抜き** — 透明度は色差（BT.709 の Cb・Cr）の距離で決める（明るさを見ないので、背景の濃淡に強い）。距離が `tolerance` 以下は透明、`tolerance + softness` 以上は不透明で、間はなだらかに変わる。`spill` はキー色の成分が他の成分を超える分を削る割合（緑かぶりの除去。緑の衣装には 1 未満を使う）。`choke_px` で縁を内側へ削り、`feather_px` でぼかす（どちらも元動画の画素）。
 
@@ -137,15 +153,28 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `cover_rotation`（0.2 の既定は true、0.1 は false）: 回転で画面の角に縁が出ないよう、zoom を cos|θ| + (長辺/短辺)·sin|θ| 以上にする（画面の中央のまわりの回転を前提にした式）。
 - `stage.parallax`: 式は fx の camera と同じ。zoom_p = z0·(zoom/z0)^p、center_p = c0 + (center − c0)·p、回転 × p（z0・c0 は最初のキー）。人物は p = 1。
 
-**縦の歌詞** — 字は画面に固定で、カメラに乗らない（時刻によらず箱が 1 つに決まり、UI 枠を確かめやすい）。
+**歌詞** — 字は既定で画面に固定で、カメラに乗らない（時刻によらず箱が 1 つに決まり、UI 枠を確かめやすい）。配置は行全体で 1 回だけ決め、時刻で動かさない。`enter`・`exit` の動きは配置の上に掛けるだけで、timeline の箱は動きの無い位置を指す。
 
-- `back` は人物の後ろの大きな字、`band` は上の帯の字。
-- 字は `size_px`（幅 1080 の画面での値）から、箱に収まるまで 5% ずつ縮め、箱の中央に置く。最小は幅 1080 で 8px（画面の幅に比例）で、それでも収まらない行は warnings に残し、`timeline.json` の `overflow` を true にする（`box_px` は画面内に切った値なので、欠けはこの印で分かる）。
-- 強調は**色だけ**（大きさも位置も変えない）。`words` の `t` が来たら語が `accent_color` に変わる。`t` が無ければ最初から、`accent: false` なら強調しない。`words` をつなげた文字列は `text` と一致させる。
-- `start` の最初のフレームから見え、`fade_in_s` / `fade_out_s` で出入りする（既定 0.04 / 0.08 秒）。
+- **層**: `lyrics.layers` = `{"名前": {…}}`。`back`（z: behind）と `band`（z: front）は既定値を持つ。他の層は `z` が必須で、`"behind"` は人物の後ろ、`"front"` はフラッシュの後に描く。残りの既定値は `band` と同じ。描く順は z ごとに書いた順（`back`・`band` を書かなければ先頭）。
+- **字の大きさ**: `size_px`（幅 1080 の画面での値）から、箱に収まるまで 5% ずつ縮める。最小は幅 1080 で 8px（画面の幅に比例）で、それでも収まらない行は warnings に残し、`timeline.json` の `overflow` を true にする（`box_px` は画面内に切った値なので、欠けはこの印で分かる）。
+- **層の設定**: `box`・`size_px`・`color`・`accent_color`・`opacity`・`stroke_px`・`stroke_color`・`fade_in_s`・`fade_out_s` に加えて:
+  - `font`: 書体名。
+  - `rows`: `{"align": "center"|"left"|"right"|"stagger", "gap_em": 0.05}`。stagger は row ごとに左・中央・右を繰り返す。
+  - `reveal`: `"line"`（0.1 と同じ。行の start から全語が見え、語の t で色が変わる）/ `"word"`（語は t まで見えない）。
+  - `enter`: `{"scale_from": 1.3, "rise_px": 26, "dur_s": 0.14}`。語の出現時刻から、語のインクの中心のまわりで動かす。
+  - `exit`: `{"scale_to": 1.16, "dur_s": 0.30}`。行の end の前 dur_s の間で、行のインクの中心のまわりに広げる。書けば `fade_out_s` の代わりになる。
+  - `glow`: `{"color": […], "radius_px": 16, "strength": 0.6}`。字の後ろに、ぼかした字を線形光で足す。
+  - `follow_camera`（既定 false）: true ならカメラ（とブレ）に乗る。
+  - `exclusive`（既定 true）: この層には同時に 1 行だけ。gate が重なりを検査する。
+  - `sung`（既定 true）: false の層の行は、歌詞の時刻の照合から外す（題字・クレジット）。
+- **行**: `style` で層の設定（上の全キー。`z` を除く）を行ごとに上書きできる。`sung` も行ごとに上書きできる。
+- **語**: `t`・`accent` に加えて `color`（この語の強調の色。`accent_color` の代わりで、t から効く。t が無ければ最初から）と `row`（行番号。既定 0）。行の `text` は語の text をつないだものと一致させる。row の頭の空白は、配置のときに詰める。
+- **rows の配置**: row ごとに 1 本の文字列として描く。全 row を同じ大きさにし、箱の幅と高さに収まる最大の大きさにする。語の境目は行全体を描いてから列で切る（字詰めを変えない）。
+- **強調は色だけ**（大きさも位置も変えない）。`words` の `t` が来たら語が `accent_color` に変わる。`accent: false` なら強調しない。
+- `start` の最初のフレームから見え、`fade_in_s` / `fade_out_s` で出入りする（既定 0.04 / 0.08 秒）。reveal word では語の出現時刻から `fade_in_s` を数える。
 - 縦画面の `ui_regions` の既定値は上・右・下の操作部品のおおよその範囲（目安）。字のインクが重なると warnings に残す（描画は止めない）。横画面の既定は空。
 
-**フラッシュ** — `t` から `strength × exp(−経過/decay_s)` だけ効く。帯の字はその上に載るので白飛びしない。
+**フラッシュ** — `t` から `strength × exp(−経過/decay_s)` だけ効く。front の字はその上に載るので白飛びしない。
 
 - `mode: "lerp_linear"`（既定。0.1 と同じ）: 線形光で色へ寄せる。
 - `mode: "add_display"`: 表示用の値に strength·exp(−経過/decay)·color を足す（線形光のままではなく、sRGB に符号化した値に足す）。
@@ -167,6 +196,8 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 **timeline.json**（`dance-timeline/0.2`。0.1 の spec からは `dance-timeline/0.1`）は、描いた区間（`interval`）、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、`mv gate check` に渡すためのもの。0.2 は次を足す:
 
 - `beats`: `{"beats": […], "downbeats": […]}`（spec にあれば）。
+- `layers`: `[{name, z, exclusive, sung, follow_camera}]`。
+- `lyrics[]`: `sung`・`reveal`・`exclusive`・`words`（`[{text, t, row, box}]`）。`fade_in_s`・`fade_out_s` は enter・exit を含めた出入りの長さ。
 - `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`。
 - `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt}]`（from・to は clip の番号）。
 - `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
@@ -190,6 +221,6 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 
 - 緑抜きは 1 色のクロマキーだけ。髪の細い毛や半透明の布は `tolerance`・`softness` で調整する。縁の質は素材次第で、合成素材では実写やアニメ調の動画の難しさは確かめていない。
 - 人物の明るさや色をステージの光に合わせる処理は無い（人物が浮いて見えることがある）。
-- 歌詞は 1 行ずつ（折り返しなし）で、横書きだけ。
+- 歌詞の折り返しは自動ではない（`row` で明示する）。横書きだけ。
 - 動画の読み出しは前方向だけで、戻るときは先頭から数え直す。本番の描画は順に読むので速いが、`stills` で後ろの時刻から描くと遅い。
 - 動画のフレームは OpenCV で復号する。色の範囲や行列の扱いはコーデックのタグに依存するので、実素材でキー色の値を確かめる。
