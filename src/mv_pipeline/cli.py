@@ -44,6 +44,7 @@ def parser():
     adapter.add_argument("--kind", choices=["alignment", "separation"], required=True)
     _fx_parser(commands)
     _dance_parser(commands)
+    _gate_parser(commands)
     return p
 
 
@@ -125,6 +126,21 @@ def _dance_parser(commands):
     accept.add_argument("--note")
 
 
+def _gate_parser(commands):
+    """書き出し前の機械的な検査と行・秒の確認表（docs/gate.md）。`project` 引数を持たず、project_lock も通らない。"""
+    gate = commands.add_parser("gate", help="pre-export mechanical checks and the lyric line table")
+    sub = gate.add_subparsers(dest="gate_command", required=True)
+    check = sub.add_parser("check", help="run the checks; exit code 1 when any check fails")
+    check.add_argument("config", type=Path)
+    check.add_argument("--out", type=Path, help="default: <config dir>/gate_report")
+    lines = sub.add_parser("lines", help="write the line/second table and lines_measured.json")
+    lines.add_argument("lines", type=Path, help=".lrc or .json")
+    lines.add_argument("out", type=Path)
+    lines.add_argument("--vocals", type=Path, help="vocal stem; measures each line start near the estimate")
+    lines.add_argument("--window", type=float, default=0.8)
+    lines.add_argument("--offset", type=float, default=0.0, help="seconds added to every estimate")
+
+
 def _require_fx():
     try:
         import cv2  # noqa: F401
@@ -179,6 +195,23 @@ def dance_command(args):
     raise PipelineError(f"Unsupported dance command: {command}")
 
 
+def gate_command(args):
+    """gate サブコマンドを実行して結果の辞書を返す。"""
+    if args.gate_command == "lines":
+        from .gate import lines
+        return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
+    from .gate import checks
+    report, out = checks.run(args.config, args.out)
+    args.failed = 1 if report["overall"] == "fail" else 0
+    return {"overall": report["overall"], "out": str(out),
+            "checks": [{k: c[k] for k in ("check", "status", "summary")} for c in report["checks"]]}
+
+
+def _run_gate(args):
+    code = _run_json(gate_command, args)
+    return code if code else getattr(args, "failed", 0)
+
+
 def _run_json(function, args):
     try:
         print(json.dumps(function(args), ensure_ascii=False, indent=2))
@@ -194,6 +227,8 @@ def main(argv=None):
         return _run_json(fx_command, args)
     if args.command == "dance":
         return _run_json(dance_command, args)
+    if args.command == "gate":
+        return _run_gate(args)
     root = args.project.resolve()
     try:
         with project_lock(root):
