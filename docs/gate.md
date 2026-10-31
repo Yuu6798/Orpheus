@@ -59,7 +59,7 @@ uv run mv gate check gate.json [--out DIR]
 |---|---|---|
 | 歌詞の時刻 | `measured_lines`（`mv gate lines` の出力。層 `lyric_layer`（複数なら `lyric_layers`）の、`sung` が false でない行と順に照合） | 字が歌の 0〜0.2 秒前に出る。推定のままの行は見ず、一部なら要確認、全部なら未実施。`confirmed` に一致する行の外れは「要確認（試聴で確定済み）」で不合格にしない（`confirmed_overrides_measured`。既定 true） |
 | 確認済みの時刻 | `confirmed`（`[{"text", "start"}]`） | 1 つも動いていない |
-| 字と顔 | `faces`（`[{"start", "end", "box", "role"}]`。box は正規化座標）か `"faces": "auto"` と `"spec"` | 前の字が主役の顔に重ならない（出入りの間は可。z が behind の層は人物に隠れるので見ない）。顔の時刻はコマに丸める。`auto` の結果は推定なので、重なりは不合格にせず要確認にする |
+| 字と顔 | `faces`（`[{"start", "end", "box", "role"}]`。box は正規化座標）か `"faces": "auto"` と `"spec"` | 前の字が主役の顔に重ならない（出入りの間は可。z が behind の層は人物に隠れるので見ない）。顔の時刻はコマに丸める。推定の顔（`auto` の結果）との重なりは不合格にせず要確認にする |
 | UI 枠 | timeline だけ | 0 コマ。箱に収まらない字（`overflow`）も不合格 |
 | 揺れ | `tracks`（`{"名前": [[t, x, y], …]}`。画素） | 2 階差分の RMS 3 画素以下。3 点未満の要素は見ず、一部なら要確認、全部なら未実施 |
 | つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。時刻はコマに丸めてから前後を決める。1 コマ以内に `camera.seams` があれば、その設定を文言に添える。骨格が前後に無ければ要確認 |

@@ -165,8 +165,7 @@ def check_faces(timeline, faces):
         return skip(name, "faces")
     fps = timeline["fps"]
     behind = _behind_layers(timeline)
-    guessed = any(face.get("estimated") for face in faces)
-    problems = []
+    problems, measured = [], 0
     for line in timeline["lyrics"]:
         if line["layer"] in behind:      # 人物の後ろの字は顔に隠れるので重なっても読みに関係しない
             continue
@@ -176,11 +175,13 @@ def check_faces(timeline, faces):
                 continue
             start, end = max(a, _on_frames(face["start"], fps)), min(b, _on_frames(face["end"], fps))
             if end > start and _intersects(line["box"], face["box"]):
+                measured += not face.get("estimated")
                 problems.append({"t": start, "text": line["text"], "detail": f"主役の顔{'（推定）' if face.get('estimated') else ''}に {end - start:.2f} 秒重なります"})
-    if not guessed:
-        return result(name, "fail" if problems else "pass", f"重なり {len(problems)} 件", problems)
-    # 推定の顔は実測ではないので、不合格にしない（AGENTS.md「推定を実測扱いしない」）
-    return result(name, "warn" if problems else "pass", f"推定の顔と {len(faces)} 区間を照合、重なり {len(problems)} 件", problems)
+    # 推定の顔との重なりは実測ではないので、不合格にしない（AGENTS.md「推定を実測扱いしない」）
+    summary = f"重なり {len(problems)} 件"
+    if any(face.get("estimated") for face in faces):
+        summary = f"推定の顔を含む {len(faces)} 区間を照合、{summary}（うち実測 {measured} 件）"
+    return result(name, "fail" if measured else "warn" if problems else "pass", summary, problems)
 
 
 def estimate_faces(spec_path, timeline):

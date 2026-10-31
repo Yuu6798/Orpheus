@@ -473,6 +473,12 @@ def test_estimated_faces_never_fail_and_say_so():
     assert check["status"] == "warn" and "推定" in check["summary"] and "推定" in check["problems"][0]["detail"]
 
 
+def test_a_measured_face_still_fails_next_to_estimated_ones():
+    measured = {"start": 0.0, "end": 6.0, "box": [0.4, 0.05, 0.6, 0.15]}
+    estimated = {"start": 0.0, "end": 6.0, "box": [0.0, 0.9, 0.1, 1.0], "estimated": True}
+    assert gate.check_faces(timeline(), [measured, estimated])["status"] == "fail"
+
+
 def test_face_times_are_rounded_to_frames():
     line = {"layer": "band", "text": "x", "start": 1.0, "end": 2.0, "fade_in_s": 0, "fade_out_s": 0, "box": [0.2, 0.07, 0.8, 0.12]}
     face = {"start": 2.0 - 0.01, "end": 2.5, "box": [0.4, 0.05, 0.6, 0.15]}      # 丸めると 2.0 秒。字は 2.0 秒で消える
