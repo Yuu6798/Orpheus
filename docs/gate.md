@@ -18,6 +18,8 @@ uv run mv gate lines 歌詞.lrc 出力フォルダ --vocals vocals.flac
 - 入力は LRC か JSON（`[{"start": 秒, "line" か "text" か "display": 歌詞}, …]`）。`--vocals` にボーカルの Stem か分離音源を渡すと、推定の前後 `--window` 秒（既定 0.8）で歌い出しの立ち上がりを探す。
 - 出力は `lines_table.csv`（試聴用。Excel で開ける UTF-8 BOM。確認の欄は空）と `lines_measured.json`（`mv gate check` に渡す）。
 - `method`: `vocals_onset` = 実測 / `not_found` = 窓の中に候補が無く推定のまま / `estimate` = ボーカル無し。`mv gate check` は `not_found` と `estimate` の行を実測として照合しない（`method` が無い行は実測として扱う）。
+- 行ごとの探索窓は、前後の行の推定時刻との中点で切る。前の行の結果より 0.08 秒以上後の候補だけを取る（短い行が続いても、同じ歌い出しを 2 行に当てない）。
+- `ambiguous`: 2 番目の候補との上がり幅の差が 1.5 dB 未満で、どちらの立ち上がりか決め切れない行。確認表の `曖昧` の欄に `要確認` と出る。
 
 **これは行頭の候補で、確定はユーザーの試聴。** 第 1 作の分離ボーカルで試した結果（2026-10-31）:
 
@@ -41,9 +43,11 @@ uv run mv gate check gate.json [--out DIR]
   "master": "master.mp4",
   "expected_sha256": "…",
   "measured_lines": "lines_measured.json",
-  "lyric_layer": "band",
+  "lyric_layers": ["band"],
   "confirmed": "confirmed.json",
+  "confirmed_overrides_measured": true,
   "faces": "faces.json",
+  "spec": "spec.json",
   "tracks": "tracks.json",
   "poses": "poses.json",
   "beats": "analysis.json",
@@ -53,17 +57,21 @@ uv run mv gate check gate.json [--out DIR]
 
 | 検査 | 要るもの | 合格の条件（仮） |
 |---|---|---|
-| 歌詞の時刻 | `measured_lines`（`mv gate lines` の出力。層 `lyric_layer` の行と順に照合） | 字が歌の 0〜0.2 秒前に出る。推定のままの行は見ず、一部なら要確認、全部なら未実施 |
+| 歌詞の時刻 | `measured_lines`（`mv gate lines` の出力。層 `lyric_layer`（複数なら `lyric_layers`）の、`sung` が false でない行と順に照合） | 字が歌の 0〜0.2 秒前に出る。推定のままの行は見ず、一部なら要確認、全部なら未実施。`confirmed` に一致する行の外れは「要確認（試聴で確定済み）」で不合格にしない（`confirmed_overrides_measured`。既定 true） |
 | 確認済みの時刻 | `confirmed`（`[{"text", "start"}]`） | 1 つも動いていない |
-| 字と顔 | `faces`（`[{"start", "end", "box", "role"}]`。box は正規化座標） | 帯の字が主役の顔に重ならない（出入りの間は可。後ろの字は人物に隠れるので見ない） |
+| 字と顔 | `faces`（`[{"start", "end", "box", "role"}]`。box は正規化座標）か `"faces": "auto"` と `"spec"` | 前の字が主役の顔に重ならない（出入りの間は可。z が behind の層は人物に隠れるので見ない）。顔の時刻はコマに丸める。推定の顔（`auto` の結果）との重なりは不合格にせず要確認にする |
 | UI 枠 | timeline だけ | 0 コマ。箱に収まらない字（`overflow`）も不合格 |
 | 揺れ | `tracks`（`{"名前": [[t, x, y], …]}`。画素） | 2 階差分の RMS 3 画素以下。3 点未満の要素は見ず、一部なら要確認、全部なら未実施 |
-| つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。骨格が前後に無ければ要確認 |
-| 字の重なり | timeline だけ | 後ろの字の同時表示 0.1 秒以下 |
-| 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列） | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内 |
+| つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。時刻はコマに丸めてから前後を決める。1 コマ以内に `camera.seams` があれば、その設定を文言に添える。骨格が前後に無ければ要確認 |
+| 字の重なり | timeline だけ | `exclusive` な層ごとに同時表示 0.1 秒以下（`exclusive` の無い 0.1 の timeline は back だけ） |
+| 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列）。無ければ timeline の `beats` | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内。`beat_exempt` の切れ目・フラッシュは「対象外（意図）」として数えるが、不合格にしない。blend の切れ目は blend の開始時刻を見る |
 | 書き出し | `video`・`master`（任意で `expected_sha256`） | 全部のコマを復号できる、コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
 
 一部の区間だけ描いた run（`mv dance render --start/--duration`）は、timeline の `interval` の中に出るものだけを見る。確認済みの時刻だけは曲全体で見る。
+
+`timeline` は `dance-timeline/0.1` と `0.2` の両方を読む（`src/mv_pipeline/dance/dance_timeline.schema.json` で検証し、知らない欄は無視する。形が違えばエラーで止まる）。独自のレンダラで仕上げた場合も、この形式で timeline を書けば検査できる。
+
+**顔の推定（`"faces": "auto"`）** — `"spec"` に dance の spec のパスを書くと、dance の api から 2 コマごとに人物のアルファを取り、頭の帯から顔の箱を推定する。頭の帯は、fit の体の高さ（無ければその時刻のアルファの高さ）× 寄りの倍率の、上端から 12%。報告には「推定」と書く。
 
 結果は 合格 / 不合格 / 要確認 / 未実施。**未実施は「材料が無くて見ていない」で、合格ではない。** 全体（`overall`）は、不合格が 1 つでもあれば `fail`（終了コード 1）、未実施があれば `pass_with_skips`、要確認があれば `pass_with_warnings`、なければ `pass`。
 
@@ -71,5 +79,5 @@ uv run mv gate check gate.json [--out DIR]
 
 ## 限界
 
-- 顔の位置・揺れの位置の列・骨格は別途用意する（推定の道具は持っていない）。無ければその検査は未実施になる。
-- 入力の `timeline.json` は `mv dance render` の出力。MV や Shorts の実制作レンダラの出力は読まない。
+- 揺れの位置の列・骨格は別途用意する（推定の道具は持っていない）。無ければその検査は未実施になる。顔は `"faces": "auto"` で粗く推定できるが、正面を向いた 1 人の全身を前提にした頭の帯で、顔の検出ではない。
+- 入力の `timeline.json` は `mv dance render` の出力か、同じ形式で書いたもの。

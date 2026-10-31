@@ -413,7 +413,7 @@ def test_timeline_02_records_clips_seams_analysis_and_frames(shot):
     assert record["schema_version"] == "dance-timeline/0.2" and record["finished"] is None
     assert record["audio"] == {"fit": "pad", "end_s": 2.75}
     assert [c["kind"] for c in record["clips"]] == ["video", "video", "video", "image"]
-    assert record["seam_info"][-1] == {"t": 2.5, "from": 2, "to": 3, "kind": "blend", "beat_exempt": False}
+    assert record["seam_info"][-1] == {"t": 2.5, "from": 2, "to": 3, "kind": "blend", "beat_exempt": True}
     assert record["seams"] == [item["t"] for item in record["seam_info"]]
     assert len(record["analysis"]) == 4 and all((root / "runs" / item["file"]).is_file() for item in record["analysis"])
     fields = record["frames_fields"]

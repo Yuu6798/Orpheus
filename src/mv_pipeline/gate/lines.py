@@ -5,14 +5,17 @@
 入力は LRC か JSON（[{"start": 秒, "line" か "text" か "display": 歌詞}, …]）。空の行（終わりの印）は飛ばす。
 出力:
     lines_table.csv       試聴で確かめる表（Excel で開ける UTF-8 BOM）。確認の欄は空のまま渡す
-    lines_measured.json   品質ゲートの measured_lines に渡す [{"text", "start", "estimate", "method"}]
+    lines_measured.json   品質ゲートの measured_lines に渡す [{"text", "start", "estimate", "method", "ambiguous"}]
 
 method: vocals_onset = ボーカルの立ち上がりから実測 / estimate = ボーカル無し（推定のまま）/
         not_found = 窓の中に立ち上がりが無く推定のまま。
+ambiguous: 2 番目の候補との上がり幅の差が小さく、どちらの立ち上がりか決め切れない行。
+行ごとの探索窓は前後の行の推定時刻との中点で切り、前の行の結果より後の候補だけを取る（短い行が続いても同じ歌い出しを 2 行に当てない）。
 これは行頭の候補で、**確定はユーザーの試聴**。同じ音が続く行や語の途中で歌が切れない行は誤ることがある。
 """
 import csv
 import json
+import math
 import re
 from pathlib import Path
 
@@ -27,6 +30,9 @@ GAP = 2               # 立ち上がりの点の前後で飛ばすコマ数
 MIN_RISE_DB = 8.0     # 谷から山へこれだけ上がる点を歌い出しの候補にする（実曲の行間の谷は -20dB 前後で、無音にはならない）
 LOUD_DB = -12.0       # 上がった先がこの音量以上（95% 点基準）
 NEAR_PENALTY_DB = 6.0 # 窓の端の候補を、推定に近い候補よりこれだけ不利に数える
+AFTER_PREVIOUS_S = 0.08  # 前の行の結果からこれだけ後の候補だけを取る
+AMBIGUOUS_DB = 1.5    # 2 番目の候補との上がり幅の差がこれ未満なら ambiguous
+SEPARATE_S = 0.12     # これ以上離れた点を別の候補として数える
 
 
 def read_lines(path):
@@ -63,30 +69,33 @@ def envelope(path):
     return db - np.percentile(db, 95)
 
 
-def find_onset(db, estimate, window):
-    """推定の前後 window 秒で、谷から山への上がり幅が最も大きい点の (時刻, 上がり幅 dB)。候補が無ければ None。
+def find_onset(db, estimate, window, low=None, high=None):
+    """推定の前後 window 秒で、谷から山への上がり幅が最も大きい点の (時刻, 上がり幅 dB, 曖昧か)。候補が無ければ None。
 
+    low・high は探索の窓をさらに切る時刻（前後の行の中点・前の行の結果）。
     語の途中の小さな谷でも候補は出るので、上がり幅で比べ、推定から離れるほど少し不利にする。
     上がり切る途中の点を返さないよう、選んだ点から上がり始めの方へ戻す（谷の平均から MIN_RISE_DB の半分を超えた最初の点）。
     """
-    first = max(SPAN + GAP, int((estimate - window) / HOP_S))
-    last = min(len(db) - SPAN - GAP - 1, int((estimate + window) / HOP_S))
-    best = None
+    start = estimate - window if low is None else max(estimate - window, low)
+    stop = estimate + window if high is None else min(estimate + window, high)
+    first = max(SPAN + GAP, int(math.ceil(start / HOP_S - 1e-9)))
+    last = min(len(db) - SPAN - GAP - 1, int(stop / HOP_S))
+    candidates = []
     for i in range(first, last + 1):
         before = db[i - SPAN - GAP:i - GAP].mean()
         after = db[i + GAP:i + SPAN + GAP].mean()
         rise = after - before
         if rise < MIN_RISE_DB or after < LOUD_DB:
             continue
-        score = rise - NEAR_PENALTY_DB * abs(i * HOP_S - estimate) / window
-        if best is None or score > best[0]:
-            best = (score, i, before, rise)
-    if best is None:
+        candidates.append((rise - NEAR_PENALTY_DB * abs(i * HOP_S - estimate) / window, i, before, rise))
+    if not candidates:
         return None
-    _, i, before, rise = best
+    _, i, before, rise = max(candidates, key=lambda item: item[0])
+    apart = [item[3] for item in candidates if abs(item[1] - i) * HOP_S >= SEPARATE_S]
+    ambiguous = bool(apart and rise - max(apart) < AMBIGUOUS_DB)
     while i > first and db[i - 1] > before + MIN_RISE_DB / 2:
         i -= 1
-    return i * HOP_S, float(rise)
+    return i * HOP_S, float(rise), ambiguous
 
 
 def stamp(seconds):
@@ -96,14 +105,21 @@ def stamp(seconds):
 
 def build(lines, vocals, window, offset):
     db = envelope(vocals) if vocals else None
-    rows = []
-    for number, line in enumerate(lines, 1):
-        estimate = line["start"] + offset
-        onset = find_onset(db, estimate, window) if db is not None else None
+    rows, found = [], None
+    estimates = [line["start"] + offset for line in lines]
+    for number, (line, estimate) in enumerate(zip(lines, estimates), 1):
+        low = None if number == 1 else (estimates[number - 2] + estimate) / 2
+        high = None if number == len(lines) else (estimate + estimates[number]) / 2
+        if found is not None:
+            low = max(found + AFTER_PREVIOUS_S, -math.inf if low is None else low)
+        onset = find_onset(db, estimate, window, low, high) if db is not None else None
         method = "estimate" if db is None else "vocals_onset" if onset is not None else "not_found"
-        start, rise = onset if onset is not None else (estimate, None)
+        start, rise, ambiguous = onset if onset is not None else (estimate, None, False)
+        if onset is not None:
+            found = start
         rows.append({"number": number, "text": line["text"], "estimate": round(estimate, 2), "start": round(start, 2),
-                     "delta": round(start - estimate, 2), "rise_db": None if rise is None else round(rise, 1), "method": method})
+                     "delta": round(start - estimate, 2), "rise_db": None if rise is None else round(rise, 1), "method": method,
+                     "ambiguous": ambiguous})
     return rows
 
 
@@ -112,10 +128,11 @@ def write(rows, out):
     out.mkdir(parents=True, exist_ok=True)
     with (out / "lines_table.csv").open("w", encoding="utf-8-sig", newline="") as stream:
         table = csv.writer(stream)
-        table.writerow(["行", "歌詞", "時刻", "秒", "推定との差", "上がり幅dB", "方法", "確認（OK / 直す秒）", "メモ"])
+        table.writerow(["行", "歌詞", "時刻", "秒", "推定との差", "上がり幅dB", "方法", "曖昧", "確認（OK / 直す秒）", "メモ"])
         for row in rows:
-            table.writerow([row["number"], row["text"], stamp(row["start"]), row["start"], row["delta"], row["rise_db"], row["method"], "", ""])
-    measured = [{"text": r["text"], "start": r["start"], "estimate": r["estimate"], "method": r["method"]} for r in rows]
+            table.writerow([row["number"], row["text"], stamp(row["start"]), row["start"], row["delta"], row["rise_db"], row["method"],
+                            "要確認" if row["ambiguous"] else "", "", ""])
+    measured = [{"text": r["text"], "start": r["start"], "estimate": r["estimate"], "method": r["method"], "ambiguous": r["ambiguous"]} for r in rows]
     (out / "lines_measured.json").write_text(json.dumps(measured, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
@@ -125,4 +142,5 @@ def make_table(lines_path, out, vocals=None, window=0.8, offset=0.0):
     write(rows, out)
     counts = {m: sum(r["method"] == m for r in rows) for m in ("vocals_onset", "not_found", "estimate")}
     moved = [abs(r["delta"]) for r in rows if r["method"] == "vocals_onset"]
-    return {"lines": len(rows), **counts, "median_abs_delta": round(float(np.median(moved)), 3) if moved else None, "out": str(out)}
+    return {"lines": len(rows), **counts, "ambiguous": sum(r["ambiguous"] for r in rows),
+            "median_abs_delta": round(float(np.median(moved)), 3) if moved else None, "out": str(out)}
