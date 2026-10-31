@@ -69,24 +69,33 @@ class RotateCurve:
         return self.sign * self.peak * (1.0 - float(timeline.ease("in_out", u)))
 
 
+def _cubic(step, rise, dt, at):
+    """切れ目からの 3 次式の係数 (m, c2, c3)。dt 秒後に step、at 秒後に rise で傾き 0。"""
+    return tuple(float(v) for v in np.linalg.solve([[dt, dt * dt, dt ** 3], [at, at * at, at ** 3], [1.0, 2.0 * at, 3.0 * at * at]],
+                                                   [step, rise, 0.0]))
+
+
 def rotate_curve(seam, fps):
     """rotate_post_deg の曲線。切れ目の前の 1 コマの変化量と、後の 1 コマの変化量が同じになるように解く。
 
-    前の 1 コマの変化量 D が rotate_post_deg − rotate_deg より大きいと、1 コマ目で頂点を越えるので頂点を D まで上げる
-    （切れ目で回転を止めないことを優先する。`raised` で分かる）。戻り値は (RotateCurve, raised)。"""
+    切れ目で回転を止めず、向きも変えないことを頂点の角度より優先する。前の 1 コマの変化量 D が rotate_post_deg − rotate_deg より
+    大きいと 1 コマ目で頂点を越えるので頂点を上げ、post_s が短くて頂点まで届かないと頂点を下げる（`adjusted` で分かる）。
+    戻り値は (RotateCurve, adjusted)。"""
     dt = 1.0 / fps
     start, peak = abs(seam["rotate_deg"]), abs(seam["rotate_post_deg"])
     step = start * (1.0 - (1.0 - min(1.0, dt / seam["pre_s"])) ** 3)
     rise = max(peak - start, step)
-    raised = rise > peak - start
     at = dt / (1.0 - math.sqrt(max(0.0, 1.0 - step / rise)))   # 等加速度で減速して止まる時刻
     at = max(dt, min(at, PEAK_LIMIT * seam["post_s"]))
     if at <= dt:
         m, c2, c3 = 2.0 * rise / dt, -rise / (dt * dt), 0.0
     else:
-        m, c2, c3 = (float(v) for v in np.linalg.solve(
-            [[dt, dt * dt, dt ** 3], [at, at * at, at ** 3], [1.0, 2.0 * at, 3.0 * at * at]], [step, rise, 0.0]))
-    return RotateCurve(math.copysign(1.0, seam["rotate_deg"]), start, m, c2, c3, at, start + rise, seam["post_s"]), raised
+        m, c2, c3 = _cubic(step, rise, dt, at)
+        if m < 0:      # 急ぎすぎると切れ目の直後に逆へ回る。切れ目の直後の傾きが 0 になる高さまで頂点を下げる
+            with_more = _cubic(step, rise + 1.0, dt, at)[0]
+            rise += m / (m - with_more)
+            m, c2, c3 = _cubic(step, rise, dt, at)
+    return RotateCurve(math.copysign(1.0, seam["rotate_deg"]), start, m, c2, c3, at, start + rise, seam["post_s"]), abs(start + rise - peak) > 1e-9
 
 
 def seam_lift(seam, curve, t):
