@@ -155,11 +155,26 @@ def test_center_pivot_gives_the_01_matrix(tmp_path):
     expected = dancecamera.camera_matrix(1.2 * 1.3, [0.4, 0.6], 8.0, SIZE)
     assert (cam.matrix(state) == expected).all()
     # 別の掛け方（基本 → seams）でも同じ変換になる
-    shaken = dancecamera.State(state.zoom, state.center, state.rotate, (1e-9, 0.0), state.seam_zoom, state.seam_rotate, state.pivot)
+    shaken = dancecamera.State(state.zoom, state.center, state.rotate, (1e-9, 0.0), state.seams)
     assert cam.matrix(shaken) == pytest.approx(expected, abs=1e-6)
 
 
-@pytest.mark.parametrize("rotate", [3.0, 9.0, 15.0, -12.0])
+def test_overlapping_seams_turn_around_their_own_pivots(tmp_path):
+    seams = [{"t": 2.0, "pre_s": 0.3, "post_s": 0.5, "zoom": 1.5, "rotate_deg": 6, "pivot": [0.25, 0.75]},
+             {"t": 2.1, "pre_s": 0.3, "post_s": 0.5, "zoom": 1.2, "rotate_deg": 4, "pivot": [0.75, 0.25]}]
+    cam, _ = camera_of(tmp_path, seams=seams, cover_rotation=False)
+    both, first_only = cam.state(2.1), cam.state(2.1)
+    first_only.seams = first_only.seams[:1]
+    start = lambda at: dancecamera.seam_lift(cam.seams[1], None, at)  # noqa: E731
+    assert start(1.8) == (1.0, 0.0)
+    matrix = np.vstack([cam.matrix(both), [0, 0, 1]])
+    before = np.vstack([cam.matrix(first_only), [0, 0, 1]])
+    second = matrix @ np.linalg.inv(before)                     # 2 つ目の seams の分だけを取り出す
+    point = np.array([0.75 * 180 - 0.5, 0.25 * 320 - 0.5, 1.0])
+    assert second @ point == pytest.approx(point)               # 2 つ目は自分の pivot のまわりで効く
+
+
+@pytest.mark.parametrize("rotate", [3.0, 9.0, 15.0, -12.0, 120.0, 200.0])
 def test_cover_rotation_leaves_no_edge(tmp_path, rotate):
     cam, _ = camera_of(tmp_path, keys=[{"t": 0, "rotate_deg": rotate}])
     matrix = np.vstack([cam.matrix(cam.state(1.0)), [0, 0, 1]])
@@ -171,7 +186,7 @@ def test_cover_rotation_leaves_no_edge(tmp_path, rotate):
 
 def test_cover_rotation_only_raises_the_zoom_when_it_is_needed(tmp_path):
     cam, _ = camera_of(tmp_path, keys=[{"t": 0, "zoom": 2.0, "rotate_deg": 3.0}])
-    assert cam.view(cam.state(1.0))[4] == 1.0
+    assert cam.view(cam.state(1.0)).boost == 1.0
 
 
 def test_01_specs_have_no_cover_rotation_and_02_specs_do(tmp_path):
@@ -246,9 +261,9 @@ def test_parallax_uses_the_fx_formula(tmp_path):
     cam, _ = camera_of(tmp_path, keys=keys, cover_rotation=False)
     path = fxcamera.CameraPath({"keys": keys, "parallax_px": 0, "parallax_dir": [1, 0]}, 4.0, SIZE)
     for p in (0.0, 0.4, 1.3):
-        zoom, center, *_ = cam.view(cam.state(2.0), p)
+        view = cam.view(cam.state(2.0), p)
         z, x, y, _, _ = path.plane_view(2.0, p)
-        assert zoom == pytest.approx(z) and center == pytest.approx([x, y])
+        assert view.zoom == pytest.approx(z) and view.center == pytest.approx([x, y])
 
 
 def test_parallax_applies_to_the_stage_only(scene):

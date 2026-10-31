@@ -186,9 +186,8 @@ def _guides(image, ctx, t, mode):
     if performer["fit"] and performer["fit"]["ground"] != "none":
         y = int(round(performer["placement"]["anchor"][1] * height))
         cv2.line(out, (0, y), (width - 1, y), (60, 255, 90), thick)
-    state = ctx.camera.state(t)
-    if state.seam_zoom != 1.0 or state.seam_rotate != 0.0:
-        center = (int(round(state.pivot[0] * width)), int(round(state.pivot[1] * height)))
+    for pivot in ctx.camera.state(t).pivots:
+        center = (int(round(pivot[0] * width)), int(round(pivot[1] * height)))
         cv2.drawMarker(out, center, (255, 230, 60), cv2.MARKER_CROSS, max(12, width // 30), thick)
     return out
 

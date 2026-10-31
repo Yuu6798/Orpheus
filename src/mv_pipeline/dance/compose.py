@@ -314,11 +314,11 @@ def _frame_row(ctx, t, fitted):
     """timeline の frames の 1 行。hooks に関わらず spec だけから決まる値。"""
     shown = ctx.clips.mapping(t)
     state = ctx.camera.state(t)
-    zoom, center, rotate, moved, seam_zoom, seam_rotate = ctx.camera.view(state)
+    view = ctx.camera.view(state)
     last = shown[-1] if shown else None
     row = [round(t, 5), None if last is None else last[0], None if last is None else last[1],
-           None if len(shown) < 2 else round(last[2], 5), round(zoom * seam_zoom, 6), round(center[0], 6), round(center[1], 6),
-           round(rotate + seam_rotate, 5), round(moved[0], 3), round(moved[1], 3), len(ctx.camera.blur_states(t))]
+           None if len(shown) < 2 else round(last[2], 5), round(view.total_zoom, 6), round(view.center[0], 6), round(view.center[1], 6),
+           round(view.total_rotate, 5), round(view.shake[0], 3), round(view.shake[1], 3), len(ctx.camera.blur_states(t))]
     if fitted:
         matrix = placement_matrix(ctx.place[last[0]], last[1]) if last else None
         row += [round(v, 4) for r in matrix for v in r] if matrix else [None] * len(PLACEMENT_FIELDS)

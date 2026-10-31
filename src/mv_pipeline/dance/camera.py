@@ -114,21 +114,50 @@ def shutter_s(blur, dt, fps):
 
 
 def cover_zoom(rotate_deg, size):
-    """回転しても画面の角に縁が出ない最小の zoom = cos|θ| + (長辺/短辺)·sin|θ|。"""
-    angle = abs(math.radians(rotate_deg))
-    return math.cos(angle) + max(size) / min(size) * math.sin(angle)
+    """回転しても画面の角に縁が出ない最小の zoom = |cos θ| + (長辺/短辺)·|sin θ|（90 度を超える回転でも足りるように、成分の絶対値を取る）。"""
+    angle = math.radians(rotate_deg)
+    return abs(math.cos(angle)) + max(size) / min(size) * abs(math.sin(angle))
 
 
 @dataclass
 class State:
-    """時刻 t のカメラ。zoom・rotate は seams を含まない基本の値。seam_zoom・seam_rotate・pivot が seams の分。"""
+    """時刻 t のカメラ。zoom・rotate は seams を含まない基本の値。seams は窓の中の [(倍率, 回転, pivot)]（重なれば書いた順）。"""
     zoom: float
     center: list
     rotate: float
     shake: tuple
-    seam_zoom: float
-    seam_rotate: float
-    pivot: tuple
+    seams: tuple = ()
+
+    @property
+    def seam_zoom(self):
+        return math.prod(part[0] for part in self.seams)
+
+    @property
+    def seam_rotate(self):
+        return sum(part[1] for part in self.seams)
+
+    @property
+    def pivots(self):
+        return [part[2] for part in self.seams]
+
+
+@dataclass
+class View:
+    """ある視差の層から見たカメラ。boost は cover_rotation が足す倍率（画面の中央のまわり）。"""
+    zoom: float
+    center: list
+    rotate: float
+    shake: tuple
+    seams: tuple
+    boost: float
+
+    @property
+    def total_zoom(self):
+        return self.zoom * math.prod(part[0] for part in self.seams) * self.boost
+
+    @property
+    def total_rotate(self):
+        return self.rotate + sum(part[1] for part in self.seams)
 
 
 class Camera:
@@ -151,41 +180,46 @@ class Camera:
             zoom *= 1.0 + (accent["zoom"] - 1.0) * envelope(dt, accent["attack_s"], accent["decay_s"])
             dx, dy = shake(dt, accent, self.pixel)
             sx, sy = sx + dx, sy + dy
-        seam_zoom, seam_rotate, pivot = 1.0, 0.0, SCREEN_CENTER
+        seams = []
         for seam, curve in zip(self.seams, self.curves):
             z, r = seam_lift(seam, curve, t)
             if z != 1.0 or r != 0.0:
-                seam_zoom, seam_rotate, pivot = seam_zoom * z, seam_rotate + r, tuple(seam["pivot"])
-        return State(zoom, keyed["center"], keyed["rotate_deg"], (sx, sy), seam_zoom, seam_rotate, pivot)
+                seams.append((z, r, tuple(seam["pivot"])))
+        return State(zoom, keyed["center"], keyed["rotate_deg"], (sx, sy), tuple(seams))
 
     def view(self, state, parallax=1.0):
-        """視差 parallax の層の (zoom, center, rotate, 揺れ, seam_zoom, seam_rotate)。cover_rotation もここで掛ける。"""
+        """視差 parallax の層から見たカメラ（View）。cover_rotation もここで掛ける。"""
         if parallax == 1.0:
-            zoom, center, rotate, moved = state.zoom, state.center, state.rotate, state.shake
-            seam_zoom, seam_rotate = state.seam_zoom, state.seam_rotate
+            view = View(state.zoom, state.center, state.rotate, state.shake, state.seams, 1.0)
         else:
-            zoom = self.z0 * (state.zoom / self.z0) ** parallax
-            center = [c0 + (c - c0) * parallax for c, c0 in zip(state.center, self.c0)]
-            rotate, moved = state.rotate * parallax, (state.shake[0] * parallax, state.shake[1] * parallax)
-            seam_zoom, seam_rotate = state.seam_zoom ** parallax, state.seam_rotate * parallax
+            view = View(self.z0 * (state.zoom / self.z0) ** parallax, [c0 + (c - c0) * parallax for c, c0 in zip(state.center, self.c0)],
+                        state.rotate * parallax, (state.shake[0] * parallax, state.shake[1] * parallax),
+                        tuple((z ** parallax, r * parallax, pivot) for z, r, pivot in state.seams), 1.0)
         if self.cover:
-            need = cover_zoom(rotate + seam_rotate, self.size)
-            if zoom * seam_zoom < need:
-                seam_zoom = need / zoom
-        return zoom, center, rotate, moved, seam_zoom, seam_rotate
+            need = cover_zoom(view.total_rotate, self.size)
+            if view.total_zoom < need:
+                view.boost = need / view.total_zoom
+        return view
+
+    def _around(self, zoom, rotate, pivot):
+        """pivot の点を動かさずに zoom・回転する 3×3 行列。"""
+        # camera_matrix は center を画面の中央へ運ぶので、pivot の点が pivot に留まるように戻す
+        matrix = camera_matrix(zoom, pivot, rotate, self.size)
+        matrix[0, 2] += (pivot[0] - 0.5) * self.size[0]
+        matrix[1, 2] += (pivot[1] - 0.5) * self.size[1]
+        return np.vstack([matrix, [0.0, 0.0, 1.0]])
 
     def matrix(self, state, parallax=1.0):
-        zoom, center, rotate, moved, seam_zoom, seam_rotate = self.view(state, parallax)
-        if moved == (0.0, 0.0) and tuple(state.pivot) == SCREEN_CENTER:
-            return camera_matrix(zoom * seam_zoom, center, rotate + seam_rotate, self.size)
-        base = np.vstack([camera_matrix(zoom, center, rotate, self.size), [0.0, 0.0, 1.0]])
-        base[:2, 2] += moved
-        pivot = (state.pivot[0], state.pivot[1])
-        around = camera_matrix(seam_zoom, pivot, seam_rotate, self.size)
-        # camera_matrix は center を画面の中央へ運ぶので、pivot の点が pivot に留まるように戻す
-        around[0, 2] += (pivot[0] - 0.5) * self.size[0]
-        around[1, 2] += (pivot[1] - 0.5) * self.size[1]
-        return (np.vstack([around, [0.0, 0.0, 1.0]]) @ base)[:2]
+        view = self.view(state, parallax)
+        if view.shake == (0.0, 0.0) and all(part[2] == SCREEN_CENTER for part in view.seams):
+            return camera_matrix(view.total_zoom, view.center, view.total_rotate, self.size)
+        full = np.vstack([camera_matrix(view.zoom, view.center, view.rotate, self.size), [0.0, 0.0, 1.0]])
+        full[:2, 2] += view.shake
+        for zoom, rotate, pivot in view.seams:      # 重なる seams はそれぞれの pivot のまわりで順に掛ける
+            full = self._around(zoom, rotate, pivot) @ full
+        if view.boost != 1.0:
+            full = self._around(view.boost, 0.0, SCREEN_CENTER) @ full
+        return full[:2]
 
     def blur_states(self, t):
         """時刻 t のブレのサンプルの State の列。ブレの窓の外なら空。"""
