@@ -1,8 +1,10 @@
 """合成デモ: プログラムで描いたステージ・緑背景の人物（棒人間）・クリック音と spec.json を作る。実作品の素材は使わない。
 
-    mv dance demo DIR → stage.png / clip_a.mp4 / clip_b.mp4 / audio.wav / spec.json
+    mv dance demo DIR → stage.png / clip_a〜c.mp4 / end.png / audio.wav / spec.json
 
-clip_a と clip_b は腕の振りの位相が違うので、切れ目で姿勢が飛ぶ。そこに camera.seams の動きが入る。
+クリップは腕の振りの位相が違うので、切れ目で姿勢が飛ぶ。そこに camera.seams の動きが入る。
+0.2 のデモのクリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶ（fit の確認用）。
+`--schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 """
 import json
 import math
@@ -14,10 +16,11 @@ import numpy as np
 from PIL import Image
 
 from ..fx import render as fxrender
-from . import SCHEMA_VERSION
+from . import SCHEMA_V01, SCHEMA_VERSION
 
 GREEN = (0, 255, 0)
 BPM = 120.0
+JUMP_S = 0.3
 
 
 def _stage(width, height):
@@ -58,6 +61,33 @@ def _write_clip(path, width, height, duration, fps, phase):
     fxrender.write_video(path, frames, (width, height), fps, 12, n)
 
 
+def _figure(width, height, t, phase, shape):
+    """緑の背景に棒人間を描く（0.2 のデモ用）。shape は縮尺・左右の位置・足元の高さ。足元はゆっくり流れ、途中で 1 回跳ぶ。"""
+    image = np.full((height, width, 3), GREEN, np.uint8)
+    swing = math.sin(2 * math.pi * BPM / 60 / 2 * t + phase)
+    scale, side_x = shape["scale"], shape["x"]
+    foot_y = shape["foot"] + shape["drift"] * t
+    if shape["jump"] is not None and abs(t - shape["jump"]) < JUMP_S / 2:
+        foot_y -= 0.05 * math.cos(math.pi * (t - shape["jump"]) / JUMP_S)
+    tall = 0.7 * height * scale
+    point = lambda x, y: (int(round(width * side_x + x * tall)), int(round(height * foot_y - y * tall)))  # noqa: E731
+    thick = max(3, width // 40)
+    skin, cloth = (235, 210, 200), (120, 60, 200)
+    neck, hip = point(0, 0.76), point(0, 0.42)
+    cv2.line(image, neck, hip, cloth, thick * 2, cv2.LINE_AA)
+    for side in (-1, 1):
+        cv2.line(image, neck, point(side * 0.3, 0.68 + 0.14 * side * swing), skin, thick, cv2.LINE_AA)
+        cv2.line(image, hip, point(side * 0.16, 0.0), cloth, thick, cv2.LINE_AA)
+    cv2.circle(image, point(0, 0.88), int(0.11 * tall), skin, -1, cv2.LINE_AA)
+    return image
+
+
+def _write_figure(path, width, height, duration, fps, phase, shape):
+    n = int(round(duration * fps))
+    frames = (_figure(width, height, i / fps, phase, shape) for i in range(n))
+    fxrender.write_video(path, frames, (width, height), fps, 12, n)
+
+
 def _audio(seconds, rate=48000):
     """拍ごとのクリック音（16bit モノラル）。"""
     samples = np.zeros(int(seconds * rate), np.float32)
@@ -70,10 +100,10 @@ def _audio(seconds, rate=48000):
     return (np.clip(samples, -1, 1) * 32767).astype(np.int16)
 
 
-def _spec(width, height, duration, fps):
+def _spec_v01(width, height, duration, fps):
     half = duration / 2
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": SCHEMA_V01,
         "output": {"width": width, "height": height, "fps": fps, "crf": 18},
         "duration_s": duration,
         "audio": {"path": "audio.wav"},
@@ -97,19 +127,81 @@ def _spec(width, height, duration, fps):
     }
 
 
-def create(directory, width=540, height=960, duration=6.0, fps=24):
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(_stage(width, height)).save(directory / "stage.png")
-    half = duration / 2
-    clip_w, clip_h = 2 * (width // 3), 2 * (height // 3)   # 素材は出力より小さい。人物の縮尺を確かめるため
-    _write_clip(directory / "clip_a.mp4", clip_w, clip_h, half, fps, 0.0)
-    _write_clip(directory / "clip_b.mp4", clip_w, clip_h, half, fps, math.pi)
-    with wave.open(str(directory / "audio.wav"), "wb") as stream:
+def _cuts(duration):
+    """クリップの切れ目の拍の番号 (1 本目の終わり, 2 本目の終わり, 3 本目の終わり)。どれも拍の上で、最後の静止画は 1 拍。"""
+    count = int(round(duration * BPM / 60))
+    second = min(round(2 * count / 3), count - 2)
+    return min(round(count / 3), second - 1), second, count - 1
+
+
+def _spec(width, height, duration, fps):
+    first, second, third = _cuts(duration)
+    half = {"beat": second}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "seed": 0,
+        "output": {"width": width, "height": height, "fps": fps, "crf": 18},
+        "duration_s": duration,
+        "beats": {"bpm": BPM, "offset_s": 0.0, "beats_per_bar": 4, "count": int(duration * BPM / 60) + 8},
+        "audio": {"path": "audio.wav", "fit": "pad", "end_s": duration - 0.25, "fade_in_s": 0.0, "fade_out_s": 0.06},
+        "stage": {"path": "stage.png"},
+        "performer": {
+            "clips": [{"path": "clip_a.mp4", "start": 0.0, "end": {"beat": first}, "source_start": -0.04},
+                      {"path": "clip_b.mp4", "start": {"beat": first}, "end": {"beat": second}},
+                      {"path": "clip_c.mp4", "start": {"beat": second}, "end": {"beat": third}, "placement": {"flip_x": True}},
+                      {"path": "end.png", "start": {"beat": third}, "end": duration, "transition_in": {"type": "blend", "frames": 3}}],
+            "key": {"color": list(GREEN)},
+            "placement": {"anchor": [0.5, 0.92]},
+            "fit": {"mode": "body", "body_height": 0.62, "x": "median", "ground": "lock", "ground_window_s": 0.7, "ground_smooth_s": 0.3},
+        },
+        "camera": {"keys": [{"t": 0.0, "zoom": 1.0}, {"t": duration, "zoom": 1.08, "center": [0.5, 0.55], "ease": "in_out"}],
+                   "seams": [{"t": half, "span_s": 0.4, "zoom": 1.3, "rotate_deg": 8}]},
+        "flashes": [{"t": half, "strength": 0.6, "decay_s": 0.2}],
+        "lyrics": {"lines": [
+            {"layer": "back", "text": "HOLD", "start": {"beat": 1, "offset_s": -0.04}, "end": {"beat": second}},
+            {"layer": "back", "text": "LIGHT", "start": half, "end": {"beat": third},
+             "words": [{"text": "LI", "t": half}, {"text": "GHT", "t": {"beat": second, "offset_s": 0.25}}]},
+            {"layer": "band", "text": "demo band line one", "start": {"beat": 1, "offset_s": -0.1}, "end": {"beat": second}},
+            {"layer": "band", "text": "demo band line two", "start": half, "end": {"beat": third}},
+        ]},
+    }
+
+
+def _write_wav(path, samples):
+    with wave.open(str(path), "wb") as stream:
         stream.setnchannels(1)
         stream.setsampwidth(2)
         stream.setframerate(48000)
-        stream.writeframes(_audio(duration).tobytes())
-    spec_path = directory / "spec.json"
-    spec_path.write_text(json.dumps(_spec(width, height, duration, fps), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        stream.writeframes(samples.tobytes())
+
+
+def _write_spec(directory, spec):
+    path = directory / "spec.json"
+    path.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def create(directory, width=540, height=960, duration=6.0, fps=24, schema="0.2"):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(_stage(width, height)).save(directory / "stage.png")
+    clip_w, clip_h = 2 * (width // 3), 2 * (height // 3)   # 素材は出力より小さい。人物の縮尺を確かめるため
+    if schema == "0.1":
+        half = duration / 2
+        _write_clip(directory / "clip_a.mp4", clip_w, clip_h, half, fps, 0.0)
+        _write_clip(directory / "clip_b.mp4", clip_w, clip_h, half, fps, math.pi)
+        _write_wav(directory / "audio.wav", _audio(duration))
+        spec_path = _write_spec(directory, _spec_v01(width, height, duration, fps))
+        return {"spec": str(spec_path), "size": [width, height], "duration_s": duration, "fps": fps}
+    first, second, third = (cut * 60 / BPM for cut in _cuts(duration))
+    jump = lambda length: length / 2 if length > 2 * JUMP_S else None  # noqa: E731
+    shapes = [{"scale": 0.8, "x": 0.42, "foot": 0.86, "drift": 0.012, "jump": jump(first)},
+              {"scale": 1.15, "x": 0.56, "foot": 0.93, "drift": -0.012, "jump": jump(second - first)},
+              {"scale": 1.0, "x": 0.5, "foot": 0.9, "drift": 0.0, "jump": None}]
+    lengths = [first, second - first, third - second]
+    for name, shape, length, phase in zip(("clip_a", "clip_b", "clip_c"), shapes, lengths, (0.0, math.pi, math.pi / 2)):
+        _write_figure(directory / f"{name}.mp4", clip_w, clip_h, length + 0.5, fps, phase, shape)
+    Image.fromarray(_figure(clip_w, clip_h, 0.0, 0.0, shapes[2])).save(directory / "end.png")
+    _write_wav(directory / "audio.wav", _audio(duration - 0.5))      # 音声は描画より短い。fit: pad で足す
+    spec_path = _write_spec(directory, _spec(width, height, duration, fps))
     return {"spec": str(spec_path), "size": [width, height], "duration_s": duration, "fps": fps}

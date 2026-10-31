@@ -80,6 +80,12 @@ def inspect(path):
     return info
 
 
+def media_seconds(path):
+    """ファイルの尺（秒）。ffmpeg の情報の出力から読む。読めなければ None。"""
+    found = re.search(r"Duration: (\d+):(\d+):([\d.]+)", _ffmpeg(["-i", str(path)]).stderr)
+    return int(found[1]) * 3600 + int(found[2]) * 60 + float(found[3]) if found else None
+
+
 def decode(path, stream):
     """stream ('v' | 'a') の最初のストリームを全復号する。{"ok", "frames", "seconds", "error"}。"""
     result = _ffmpeg(["-v", "error", "-xerror", "-progress", "pipe:1", "-nostats", "-i", str(path),

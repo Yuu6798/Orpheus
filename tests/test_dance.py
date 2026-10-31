@@ -18,7 +18,7 @@ KEY = {"color": [0.0, 255.0, 0.0], "tolerance": 0.22, "softness": 0.12, "spill":
 
 
 def raw_spec(**changes):
-    raw = {"schema_version": dance.SCHEMA_VERSION, "output": {"width": 180, "height": 320, "fps": 12}, "duration_s": 2.0,
+    raw = {"schema_version": dance.SCHEMA_V01, "output": {"width": 180, "height": 320, "fps": 12}, "duration_s": 2.0,
            "stage": {"path": "stage.png"}, "performer": {"clips": [{"path": "a.mp4", "start": 0, "end": 2}]}}
     raw.update(changes)
     return raw
@@ -32,7 +32,7 @@ def parse(tmp_path, **changes):
 def shot(tmp_path_factory):
     """デモ素材（180x320・2 秒・12fps）と、その 1 回目の dance render の結果。"""
     root = tmp_path_factory.mktemp("dance")
-    code, _, err = run_cli("dance", "demo", root, "--width", "180", "--height", "320", "--duration", "2", "--fps", "12")
+    code, _, err = run_cli("dance", "demo", root, "--width", "180", "--height", "320", "--duration", "2", "--fps", "12", "--schema", "0.1")
     assert code == 0, err
     code, result, err = run_cli("dance", "render", root / "spec.json", "--out", root / "runs")
     assert code == 0, err
@@ -396,7 +396,7 @@ def test_importing_dance_does_not_load_cv2():
 
 
 def test_demo_uses_ascii_text_so_it_needs_no_font_file(tmp_path):
-    spec = demo._spec(180, 320, 2.0, 12)
+    spec = demo._spec_v01(180, 320, 2.0, 12)
     assert all(line["text"].isascii() for line in spec["lyrics"]["lines"])
     assert dancespec.parse_spec(spec, tmp_path).data["duration_s"] == 2.0
 
