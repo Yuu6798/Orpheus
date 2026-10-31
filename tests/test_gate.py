@@ -186,13 +186,31 @@ def test_scope_keeps_only_what_appears_in_the_rendered_interval():
     scoped = gate._scoped(partial)
     assert [ln["text"] for ln in scoped["lyrics"]] == ["HOLD", "one"] and scoped["lyrics"][0]["end"] == 2.0
     assert scoped["seams"] == [] and scoped["flashes"] == []
-    assert gate._scoped(timeline())["lyrics"] == timeline()["lyrics"]
+    whole = gate._scoped(timeline())["lyrics"]
+    assert [(ln["start"], ln["end"]) for ln in whole] == [(ln["start"], ln["end"]) for ln in timeline()["lyrics"]]
 
 
 def test_a_lyric_outside_the_interval_does_not_fail_a_partial_render(tmp_path):
     moved = timeline(interval={"start": 0.0, "duration": 2.0, "frames": 48})
     moved["lyrics"][1]["box"] = [0.8, 0.5, 0.95, 0.6]     # 3 秒からの字が UI 枠に入る
     assert gate.check_ui(moved)["status"] == "fail" and gate.check_ui(gate._scoped(moved))["status"] == "pass"
+
+
+def test_face_check_keeps_the_original_fade_when_the_interval_cuts_a_lyric():
+    """字が出ている途中で区間が切れても、切れ目に出入りがあることにしない。"""
+    line = {"layer": "band", "text": "x", "start": 0.0, "end": 5.0, "fade_in_s": 0.5, "fade_out_s": 0.5, "box": [0.2, 0.07, 0.8, 0.12]}
+    partial = timeline(lyrics=[line], interval={"start": 2.0, "duration": 0.4, "frames": 10})
+    face = {"start": 0.0, "end": 5.0, "box": [0.4, 0.05, 0.6, 0.15]}
+    assert gate.check_faces(gate._scoped(partial), [face])["status"] == "fail"
+
+
+def test_jitter_only_looks_at_samples_inside_the_interval():
+    still = [[i / 24, 100.0, 200.0] for i in range(48, 72)]
+    shaky = [[i / 24, 100.0 + (9 if i % 2 else -9), 200.0] for i in range(24)]
+    tracks = {"flame": shaky + still}
+    assert gate.check_jitter(tracks, TH)["status"] == "fail"
+    assert gate.check_jitter(tracks, TH, (2.0, 3.0))["status"] == "pass"
+    assert gate.check_jitter(tracks, TH, (5.0, 6.0))["status"] == "skip"
 
 
 def test_ui_frames_are_counted_inside_the_interval_only():

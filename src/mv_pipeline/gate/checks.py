@@ -22,14 +22,13 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
 warn があれば pass_with_warnings、なければ pass。
 しきい値は最初の 1 作で確かめて直す前提の仮の値。好みの判断はしない。終了コードは fail のとき 1。
 """
-import hashlib
 import json
 import math
 import re
 import subprocess
 from pathlib import Path
 
-from ..io import PipelineError
+from ..io import PipelineError, sha256
 from ..media import ffmpeg
 
 THRESHOLDS = {
@@ -66,7 +65,8 @@ def _window(timeline):
 def _scoped(timeline):
     """描いた区間に出るものだけを残した timeline。区間をまたぐ字の時間は区間に切る。"""
     first, last = _window(timeline)
-    lyrics = [{**ln, "start": max(ln["start"], first), "end": min(ln["end"], last)}
+    lyrics = [{**ln, "start": max(ln["start"], first), "end": min(ln["end"], last),
+               "stable": [max(_stable(ln)[0], first), min(_stable(ln)[1], last)]}
               for ln in timeline["lyrics"] if ln["start"] < last and ln["end"] > first]
     inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
     return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", []))}
@@ -77,7 +77,10 @@ def _intersects(a, b):
 
 
 def _stable(line):
-    """字が動いていない時間 [開始, 終了)。「字が動く途中の一瞬は可」のため、出入りの間は除く。"""
+    """字が動いていない時間 [開始, 終了)。「字が動く途中の一瞬は可」のため、出入りの間は除く。
+    区間に切った行は、元の時刻から求めた値を使う（切った時刻から求めると区間の端に出入りがあることになる）。"""
+    if "stable" in line:
+        return tuple(line["stable"])
     return line["start"] + line.get("fade_in_s", 0), line["end"] - line.get("fade_out_s", 0)
 
 
@@ -154,10 +157,12 @@ def check_ui(timeline):
     return result(name, "fail" if problems else "pass", f"UI 枠に入るコマ {frames}", problems)
 
 
-def check_jitter(tracks, th):
+def check_jitter(tracks, th, window=None):
     name = "揺れ"
     if tracks is None:
         return skip(name, "tracks")
+    if window:
+        tracks = {label: [p for p in points if window[0] <= p[0] < window[1]] for label, points in tracks.items()}
     problems, short = [], []
     for label, points in tracks.items():
         if len(points) < 3:      # 2 階差分が取れない要素は、揺れていないとは言えない
@@ -276,7 +281,7 @@ def check_export(timeline, video, master, expected, th):
         problems.append({"t": 0, "text": "", "detail": f"尺 {seconds} 秒（期待 {interval['duration']} 秒）"})
     notes = [f"コマ {frames}", "音声あり" if audio else "音声なし"]
     if master is not None:
-        digest = hashlib.sha256(Path(master).read_bytes()).hexdigest()
+        digest = sha256(master)
         notes.append(f"元データ SHA-256 {digest[:12]}…")
         if expected and digest.lower() != expected.lower():
             problems.append({"t": 0, "text": "", "detail": "元データの SHA-256 が控えと違います"})
@@ -337,7 +342,7 @@ def run(config_path, out=None):
               check_confirmed(timeline, load("confirmed"), th),
               check_faces(scoped, load("faces")),
               check_ui(scoped),
-              check_jitter(load("tracks"), th),
+              check_jitter(load("tracks"), th, _window(timeline)),
               check_seams(scoped, load("poses"), th),
               check_hook_overlap(scoped, th),
               check_beats(scoped, load("beats"), th),
