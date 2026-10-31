@@ -357,9 +357,9 @@ def _validate_seams(seams, fps, warnings):
             raise PipelineError(f"dance spec: seams（{seam['t']:g} 秒）の rotate_post_deg は rotate_deg と同じ符号で、絶対値が rotate_deg 以上にしてください")
         if seam["post_s"] * fps < 3:
             raise PipelineError(f"dance spec: seams（{seam['t']:g} 秒）の rotate_post_deg には 3 コマ以上の post_s が要ります")
-        curve, raised = dancecamera.rotate_curve(seam, fps)
-        if raised:
-            warnings.append(f"camera: seams（{seam['t']:g} 秒）の回転が切れ目で止まらないよう、頂点を {curve.sign * curve.peak:.2f} 度に上げました")
+        curve, adjusted = dancecamera.rotate_curve(seam, fps)
+        if adjusted:
+            warnings.append(f"camera: seams（{seam['t']:g} 秒）の回転が切れ目で止まったり逆に回ったりしないよう、頂点を {curve.sign * curve.peak:.2f} 度にしました")
 
 
 def _validate_semantics(data):

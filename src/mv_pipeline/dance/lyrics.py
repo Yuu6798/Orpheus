@@ -114,13 +114,19 @@ def _font(fonts, name, resolve, pixels):
     return ImageFont.load_default(pixels)
 
 
+def _block_height(font, rows, stroke, pitch):
+    """baseline を pitch ずつ下げて積んだ全 row のインクの高さ（row ごとの上下の出っ張りの違いも含む）。"""
+    inks = [font.getbbox(text, anchor="ls", stroke_width=stroke) for text in rows]
+    return max(number * pitch + ink[3] for number, ink in enumerate(inks)) - min(number * pitch + ink[1] for number, ink in enumerate(inks))
+
+
 def _fit(fonts, name, resolve, rows, pixels, box_w, box_h, stroke, minimum, gap_em):
     """全 row が箱に収まる最大のフォント（size_px から 5% ずつ縮める）。minimum まで縮めても収まらなければ minimum のフォントを返す。"""
     while True:
         font = _font(fonts, name, resolve, pixels)
         sizes = [font.getbbox(text, stroke_width=stroke) for text in rows]
         tall = max(y1 - y0 for _, y0, _, y1 in sizes)
-        block = len(rows) * tall + (len(rows) - 1) * gap_em * pixels
+        block = sizes[0][3] - sizes[0][1] if len(rows) == 1 else _block_height(font, rows, stroke, tall + gap_em * pixels)
         if (all(x1 - x0 <= box_w for x0, _, x1, _ in sizes) and block <= box_h) or pixels <= minimum:
             return font, tall, pixels
         pixels *= 0.95
@@ -202,7 +208,7 @@ def layout(item, style, fonts, resolve, size):
                               box[3] - box[1], stroke, MIN_FONT_PX * scale, gap_em)   # 最小も画面に比例させる（--scale の下見で、本番と同じ行が収まるように）
     accent = color_to_linear(style["accent_color"])
     pitch = tall + gap_em * pixels
-    block = len(grouped) * tall + (len(grouped) - 1) * gap_em * pixels
+    block = len(grouped) * tall + (len(grouped) - 1) * gap_em * pixels     # 仮の位置。最後にインクの範囲で箱の中央へ合わせ直す
     runs, rows = [], []
     for number, (text, members) in enumerate(grouped):
         row, ink = _row_runs(font, text, members, stroke, item, style, accent)
