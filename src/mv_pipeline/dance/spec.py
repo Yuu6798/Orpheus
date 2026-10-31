@@ -14,6 +14,7 @@ from pathlib import Path
 
 import jsonschema
 
+from ..fx import spec as fxspec
 from ..fx.spec import canonical_json  # noqa: F401  キャッシュ key の正規形は fx と同じ
 from ..io import PipelineError, read_json, safe_path, sha256
 from . import SCHEMA_V01, SCHEMA_VERSION
@@ -44,7 +45,13 @@ AUDIO_FADE_OUT_S = 0.25
 
 
 def schema(version=SCHEMA_VERSION):
-    return json.loads(_SCHEMAS[version].read_text(encoding="utf-8"))
+    """JSON Schema。0.2 の look は fx と同じ定義を使う。"""
+    data = json.loads(_SCHEMAS[version].read_text(encoding="utf-8"))
+    if version == SCHEMA_VERSION:
+        look = fxspec.look_schema()
+        data["properties"]["look"] = look["look"]
+        data["$defs"].update(look["defs"])
+    return data
 
 
 @dataclass(frozen=True)
@@ -292,6 +299,7 @@ def _normalize(raw, base_dir):
             "cover_rotation": bool(camera.get("cover_rotation", not legacy)),
             **_ext(camera),
         },
+        "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"]),
         "flashes": [{"t": time(f["t"], "flashes の t"), "strength": float(f.get("strength", 0.6)), "decay_s": float(f.get("decay_s", 0.2)),
                      "color": _vec(f.get("color", [255, 255, 255])), "mode": f.get("mode", "lerp_linear"),
                      "beat_exempt": bool(f.get("beat_exempt", False)), **_ext(f)} for f in raw.get("flashes", [])],
@@ -365,6 +373,7 @@ def _validate_semantics(data):
     _validate_seams(data["camera"]["seams"], out["fps"], warnings)
     _validate_clips(data["performer"]["clips"], duration, warnings)
     _validate_audio(data["audio"], warnings, duration)
+    warnings += fxspec.look_warnings(data["look"])
     lyrics = data["lyrics"]
     layers = {layer["name"]: layer for layer in lyrics["layers"]}
     if lyrics["font"] is not None and lyrics["font"] not in lyrics["fonts"]:

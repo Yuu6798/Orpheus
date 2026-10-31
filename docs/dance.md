@@ -8,6 +8,14 @@
 - **採点しない**: `technical_pass` は構造検査、`accept` は人間の判定。絵の良し悪しや時刻の合否は `mv dance` では判定しない（書き出し前の機械的な検査は `mv gate check` で行う。run の `timeline.json` を読む。`docs/gate.md`）。
 - 動作確認は**プログラムで描いた合成素材のみ**。実素材（緑抜きの質・字の見え方・動画のコーデック）での挙動は、素材のある環境で実測すること。
 
+## 流れ
+
+1. 下書き: `mv dance render`
+2. 検査: `mv gate check`
+3. 仕上げ: `--hooks finish.py` で同じ run 形式に描き直す。または外部レンダラが timeline を書く（下の「仕上げの受け渡し口」）。
+4. 同じ検査をもう一度。仕上げても時刻と構造は変わらない。
+5. 人が採用を決める: `mv dance accept`
+
 ## 準備
 
 fx と同じく opencv が要る（`uv sync --locked --extra fx`）。Windows でスマート アプリ コントロールがオンの PC は `docs/dependencies.md` の 2026-10-30 節。
@@ -24,7 +32,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 デモは動く夜のステージ（2 秒ループの動画。`parallax` 0.7）に、緑背景の棒人間のクリップ 3 本と静止画 1 枚をつなぐ。クリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶので、`fit` の効きを確かめられる。最後の静止画は blend 3 コマでつなぐ。音声は描画より短く、`fit: "pad"` と `end_s` で足す。カメラは小節頭のアクセントと揺れつきの打ち込みが 1 回。クリップは腕の振りの位相が違うので切れ目で姿勢が飛び、そこにフラッシュと、非対称の seams とブレ（回転は切れ目を越えて続く）が入る。
 
-歌詞は back が 3 row の互い違いの縦積み（reveal word・enter・exit・glow）、band が語ごとの色と行の上書き、title が sung false の層。
+歌詞は back が 3 row の互い違いの縦積み（reveal word・enter・exit・glow）、band が語ごとの色と行の上書き、title が sung false の層。look は vignette と grain。
 
 `mv dance demo --schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 
@@ -60,6 +68,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
     "cover_rotation": true
   },
   "flashes": [{"t": 10.0, "strength": 0.6, "decay_s": 0.2, "color": [255, 255, 255], "mode": "lerp_linear"}],
+  "look": {"vignette": {"amount": 0.3}, "grain": {"sigma": 1.5}},
   "lyrics": {
     "fonts": {"display": {"path": "fonts/display.ttf"}, "text": {"path": "fonts/text.ttc", "index": 0}},
     "font": "text",
@@ -137,7 +146,9 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 ## 描画モデル
 
-重ね順は **ステージ → behind の字 → 人物 → フラッシュ → front の字**。合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
+重ね順は **ステージ → behind の字 → 人物 → フラッシュ → front の字 → look**。合成は線形光の float32 で行い、最後に 1 回だけ sRGB の uint8 へ戻す。
+
+**look** — fx と同じスキーマ・同じ関数（`fx.look.prepare`・`fx.look.apply`）で、全部の層と hooks の `final` の後に掛ける（`docs/fx.md` の look）。無ければ従来の経路を通る。
 
 **緑抜き** — 透明度は色差（BT.709 の Cb・Cr）の距離で決める（明るさを見ないので、背景の濃淡に強い）。距離が `tolerance` 以下は透明、`tolerance + softness` 以上は不透明で、間はなだらかに変わる。`spill` はキー色の成分が他の成分を超える分を削る割合（緑かぶりの除去。緑の衣装には 1 未満を使う）。`choke_px` で縁を内側へ削り、`feather_px` でぼかす（どちらも元動画の画素）。
 
@@ -181,6 +192,72 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - **同じ値でも `lerp_linear` は暗部で強く見える**（線形光の補間は暗部の持ち上がりが表示空間で足す方式の 2〜3 倍になる。計算値）。旧来の実制作レンダラと同じ見え方が欲しければ `add_display` を使う。
 - `beat_exempt`: 意図して拍から外している（`mv gate check` が対象外として数える）。
 
+## 仕上げの受け渡し口
+
+下書きの質感はエージェントがここから足す。仕上げても時刻と構造は変わらないので、同じ `mv gate check` を通せる。
+
+### 層の公開 API（`mv_pipeline/dance/api.py`。0.x の間は互換を保つ）
+
+```python
+from mv_pipeline.dance import api
+ctx = api.prepare("spec.json", scale=1.0, hooks=None)   # Spec も可
+L = api.layers(ctx, t)              # FrameLayers（hooks を掛ける前の層）
+img = api.compose(ctx, L, t)        # uint8 RGB。api.frame(ctx, t) と同じバイト列
+rng = api.rng(ctx, "名前")           # spec の seed と名前から決まる乱数
+api.close(ctx)
+```
+
+FrameLayers の中身はすべて float32・線形・出力の大きさで、色は前乗算。合成の順は stage → behind → performer → flashes → front → look → uint8。
+
+| 欄 | 内容 |
+|---|---|
+| `stage` | カメラ・視差・ブレを掛けた後のステージ。書き換えない |
+| `behind` / `front` | `[(層名, 色, アルファ)]`。その時刻に見えている層だけ。全画面の色とアルファは展開したときに作る |
+| `performer` | `(色, アルファ)`。人物のいない時刻は None |
+| `performer_info` | `clip`・`source_frame`・`placement`（元→画面、カメラの前の 2×3）・`camera`（2×3）・`blend`（重み） |
+| `flashes` | `[(強さ, 色, mode)]`。色は `lerp_linear` なら線形、`add_display` なら表示用の値 0..1 |
+| `camera` | `zoom`・`center`・`rotate`・`shake`・`seams`・`matrix` |
+| `t`・`frame_index` | 時刻とコマ番号 |
+
+### hooks
+
+`mv dance render spec.json --hooks finish.py`（`stills` も可）。spec からは読み込まない。明示したときだけ Python を実行する。関数はどれも任意で、入力を書き換えず、新しい配列を返す。
+
+| 関数 | 掛かる位置 |
+|---|---|
+| `prepare(ctx)` | 描画の最初に 1 回（テクスチャの準備など） |
+| `stage(img, t, ctx, L)` | stage の後 |
+| `behind(img, t, ctx, L)` | 後ろの字の後、人物の前（人物の後ろの光・影・反射など） |
+| `performer(color, alpha, t, ctx, L) -> (color, alpha)` | 人物そのもの（輪郭の光・色合わせなど） |
+| `front(img, t, ctx, L)` | 人物とフラッシュの後、前の字の前 |
+| `final(img, t, ctx, L)` | 前の字の後、look の前 |
+
+```python
+# finish.py の例: 人物の後ろに足元の影を足す
+import cv2
+import numpy as np
+
+
+def behind(img, t, ctx, L):
+    if L.performer is None:
+        return img
+    shadow = cv2.GaussianBlur(L.performer[1], (0, 0), 24)
+    return img * (1.0 - 0.5 * shadow[..., None])
+```
+
+- **決定論**: hooks は入力・t・定数だけの関数にする。ファイル書き込みとネットワークは禁止。乱数は `api.rng` から取る。
+- hooks ファイルの sha256 を run のキャッシュ key と manifest（`hooks: {path, sha256}`）に入れる。hooks が別のファイルを読むときは、その内容はキャッシュ key に入らない。
+- timeline は spec だけから作る。hooks では時刻と構造が変わらない。timeline に `finished: {hooks: {path, sha256}}` を残す。
+- hooks で例外が出たら run を失敗にし、render.log にトレースバックを残す。
+
+### 層の静止画
+
+`mv dance stills spec.json --times … --layers` は、時刻ごとに 1 列で「完成・stage・人物のアルファ・後ろの字・前の字」を並べる。
+
+### 外部レンダラの約束
+
+`src/mv_pipeline/dance/dance_timeline.schema.json` が `timeline.json` の形（0.1 と 0.2）。独自のレンダラで仕上げる場合も、この形式で timeline を書けば `mv gate check` で検査できる。知らない欄は無視する。
+
 ## run
 
 ```
@@ -205,16 +282,16 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 - `camera_seams`: seams の設定（pre_s・post_s・zoom・rotate・pivot・blur）。`accents`: 解決した時刻と設定。
 - `flash_info`: `[{t, strength, decay_s, mode, beat_exempt}]`。
 - `audio`: `{fit, end_s}`。
-- `finished`: 仕上げの記録か null。
+- `finished`: 仕上げの記録 `{hooks: {path, sha256}}` か null。
 
 ## コマンド
 
 | コマンド | 内容 |
 |---|---|
 | `mv dance demo DIR [--width 540 --height 960 --duration 6 --fps 24] [--schema 0.2\|0.1]` | 合成素材と spec.json を作る |
-| `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet]` | dance.mp4 と timeline.json を run として出す。約 5% ごとに stderr へ進み具合（コマ数・経過時間・残りの見込み）を出す（`--quiet` で消す） |
+| `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks FILE]` | dance.mp4 と timeline.json を run として出す。約 5% ごとに stderr へ進み具合（コマ数・経過時間・残りの見込み）を出す（`--quiet` で消す） |
 | `mv dance plan SPEC` | 解決した時刻の一覧（clips・つなぎ・accents・seams・フラッシュ・歌詞）を表で出す。判定はしない |
-| `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線、seams の pivot を重ねる。`--guides all` は全行の箱 |
+| `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]] [--layers] [--hooks FILE]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線、seams の pivot を重ねる。`--guides all` は全行の箱 |
 | `mv dance accept RUN_DIR --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を追記する |
 
 ## 限界

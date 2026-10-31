@@ -186,7 +186,7 @@ def _normalize(raw):
         },
         "layers": None if layers is None else _normalize_layers(layers),
         "lights": [_normalize_light(light) for light in raw.get("lights", [])],
-        "look": None if raw.get("look") is None else _normalize_look(raw["look"]),
+        "look": None if raw.get("look") is None else normalize_look(raw["look"]),
     }
     data.update(_ext(raw))
     return data
@@ -244,8 +244,14 @@ def _grade_key(key):
             "con": _f(key.get("con", 0.0)), **_ext(key)}
 
 
-def _normalize_look(look):
-    """既定値は実制作レンダラと同じ（周辺減光 0.38 / 0.55 / 1.6 / 0.55、粒状感 σ2.0・2px・6 枚・seed 7、ブレンド 1.2 秒）。"""
+def look_schema():
+    """look の JSON Schema。{"look": プロパティの定義, "defs": その $defs}。dance も同じスキーマを使う。"""
+    data = schema()
+    return {"look": data["properties"]["look"], "defs": {k: v for k, v in data["$defs"].items() if k.startswith("look_")}}
+
+
+def normalize_look(look):
+    """look を正規化する（dance も使う公開関数）。既定値は実制作レンダラと同じ（周辺減光 0.38 / 0.55 / 1.6 / 0.55、粒状感 σ2.0・2px・6 枚・seed 7、ブレンド 1.2 秒）。"""
     grade, vignette, grain = look.get("grade"), look.get("vignette"), look.get("grain")
     return {
         "grade": None if grade is None else {
@@ -265,6 +271,25 @@ def _increasing(keys, label):
     times = [k["t"] for k in keys]
     if any(b <= a for a, b in zip(times, times[1:])):
         raise PipelineError(f"fx spec: {label} の t は厳密な昇順にしてください: {times}")
+
+
+def look_warnings(look):
+    """正規化済みの look の検証と warnings（dance も使う公開関数）。"""
+    warnings = []
+    if look is None:
+        return warnings
+    if look["grade"] is None and look["vignette"] is None and look["grain"] is None:
+        warnings.append(f"{LOOK_WARNING_PREFIX}: grade / vignette / grain のどれも指定がないため、色・減光・粒の調整は何も変わりません"
+                        f"（ただし look の経路を通るので、float の sRGB 符号化と切り捨てになり、look なしより最大 1 段階暗い画素があります）")
+    if look["grade"] is not None:
+        keys = look["grade"]["keys"]
+        _increasing(keys, "look.grade.keys")
+        blend = look["grade"]["blend_s"]
+        short = [(a["t"], b["t"]) for a, b in zip(keys, keys[1:]) if b["t"] - a["t"] < blend]
+        if short:
+            warnings.append(f"{LOOK_WARNING_PREFIX}.grade: キーの間隔が blend_s（{blend:g} 秒）より短い区間 {short} があり、"
+                            f"区間の頭で色が段差になります（blend_s を縮めるか、キーの間隔を空けてください）")
+    return warnings
 
 
 def _validate_semantics(data):
@@ -298,17 +323,5 @@ def _validate_semantics(data):
             warnings.append(f"light {light['id']!r}: depth を指定していますが assets.depth がないため無視します")
     if data["camera"]["parallax_px"] > 0 and not data["assets"]["depth"]:
         warnings.append("camera.parallax_px > 0 ですが assets.depth がないため深度視差は無効です")
-    look = data["look"]
-    if look is not None:
-        if look["grade"] is None and look["vignette"] is None and look["grain"] is None:
-            warnings.append(f"{LOOK_WARNING_PREFIX}: grade / vignette / grain のどれも指定がないため、色・減光・粒の調整は何も変わりません"
-                            f"（ただし look の経路を通るので、float の sRGB 符号化と切り捨てになり、look なしより最大 1 段階暗い画素があります）")
-        if look["grade"] is not None:
-            keys = look["grade"]["keys"]
-            _increasing(keys, "look.grade.keys")
-            blend = look["grade"]["blend_s"]
-            short = [(a["t"], b["t"]) for a, b in zip(keys, keys[1:]) if b["t"] - a["t"] < blend]
-            if short:
-                warnings.append(f"{LOOK_WARNING_PREFIX}.grade: キーの間隔が blend_s（{blend:g} 秒）より短い区間 {short} があり、"
-                                f"区間の頭で色が段差になります（blend_s を縮めるか、キーの間隔を空けてください）")
+    warnings += look_warnings(data["look"])
     return warnings

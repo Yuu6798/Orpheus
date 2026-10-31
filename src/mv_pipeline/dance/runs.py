@@ -19,6 +19,7 @@ from ..io import PipelineError, atomic_json, sha256
 from ..runner import project_lock
 from . import SCHEMA_VERSION, VARIANT, VERSION, fingerprint
 from . import spec as dancespec
+from .hooks import Hooks
 
 
 def default_out(sp):
@@ -80,8 +81,18 @@ def _meter(say, total):
     return report
 
 
-def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=False, progress=None, quiet=False):
-    """spec から dance.mp4 を描き、run として記録する。同じ入力で成功済みなら再利用する。"""
+def _hooks_record(hooks):
+    """hooks の {path, sha256}。ファイルが無ければ原因つきで止める（キャッシュの判定の前に読むので、Python はまだ実行しない）。"""
+    if hooks is None:
+        return None
+    path = Path(hooks)
+    if not path.is_file():
+        raise PipelineError(f"hooks のファイルが見つかりません: {hooks}")
+    return {"path": str(hooks), "sha256": sha256(path)}
+
+
+def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=False, progress=None, quiet=False, hooks=None):
+    """spec から dance.mp4 を描き、run として記録する。同じ入力で成功済みなら再利用する。hooks は仕上げの hooks ファイル（hooks.py）。"""
     from ..fx import render as fxrender
     from . import compose
 
@@ -93,8 +104,9 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
     assets = describe_assets(sp)
     libraries = fxrender.library_versions()
     fps = sp.data["output"]["fps"]
+    finish = _hooks_record(hooks)
     key = _key("dance-render", sp, assets, {"start": start, "duration": duration, "frames": n_frames, "size": list(size),
-                                            "scale": float(scale), "libraries": libraries})
+                                            "scale": float(scale), "libraries": libraries, "hooks": finish and finish["sha256"]})
     out = (Path(out) if out else default_out(sp)).resolve()
     with project_lock(out):
         fxruns.close_orphans(out)
@@ -115,10 +127,10 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
                                        "fingerprint": fingerprint()},
                 libraries=libraries, interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
                 output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
-                variants={}, grid=None, warnings=[])
+                variants={}, grid=None, warnings=[], hooks=finish)
             run.save()
             run.log(f"render start key={key} start={start:g} duration={duration:g} frames={n_frames} size={size[0]}x{size[1]}")
-            ctx = compose.prepare(sp, scale, out)
+            ctx = compose.prepare(sp, scale, out, None if hooks is None else Hooks(hooks))
             run.manifest["warnings"] = list(ctx.warnings)
             run.manifest["analysis"] = [{"path": item["file"], "sha256": item["sha256"]} for item in ctx.analysis]
             for warning in ctx.warnings:
@@ -192,10 +204,34 @@ def _guides(image, ctx, t, mode):
     return out
 
 
-def stills(spec_path, times, out=None, scale=1.0, guides=None, columns=4):
+def _flat(layers, size):
+    """字の層を重ねた、黒い背景の uint8 の画。"""
+    import numpy as np
+
+    from ..fx.color import to_srgb8
+    out = np.zeros((size[1], size[0], 3), np.float32)
+    for _, color, alpha in layers:
+        out = color + out * (1.0 - alpha[..., None])
+    return to_srgb8(out)
+
+
+def _layer_cells(ctx, t):
+    """1 時刻の列「完成・stage・人物のアルファ・後ろの字・前の字」。"""
+    import numpy as np
+
+    from ..fx.color import to_srgb8
+    from . import compose
+    L = compose.layers(ctx, t)
+    alpha = np.zeros((ctx.size[1], ctx.size[0]), np.float32) if L.performer is None else L.performer[1]
+    mask = np.repeat((np.clip(alpha, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)[..., None], 3, axis=2)
+    return [compose.compose_layers(ctx, L, t), to_srgb8(L.stage), mask, _flat(L.behind, ctx.size), _flat(L.front, ctx.size)]
+
+
+def stills(spec_path, times, out=None, scale=1.0, guides=None, columns=4, layers=False, hooks=None):
     """指定時刻のフレームを並べたシートを <out>/stills-<key8>.png に書く。
 
-    guides: None = 描かない / "visible" = UI 枠とその時刻に見えている行の箱 / "all" = 全行の箱。"""
+    guides: None = 描かない / "visible" = UI 枠とその時刻に見えている行の箱 / "all" = 全行の箱。
+    layers: True なら時刻ごとに 1 列で「完成・stage・人物のアルファ・後ろの字・前の字」を並べる。"""
     import numpy as np
 
     from ..fx import compare
@@ -212,13 +248,18 @@ def stills(spec_path, times, out=None, scale=1.0, guides=None, columns=4):
         raise PipelineError(f"時刻がショットの長さ 0〜{sp.data['duration_s']:g} 秒の外です: {bad}")
     size = compose.scaled_size(sp, scale)
     assets = describe_assets(sp)
-    key = _key("dance-stills", sp, assets, {"times": times, "size": list(size), "scale": float(scale), "guides": guides,
-                                            "libraries": fxrender.library_versions()})
+    finish = _hooks_record(hooks)
+    key = _key("dance-stills", sp, assets, {"times": times, "size": list(size), "scale": float(scale), "guides": guides, "layers": layers,
+                                            "hooks": finish and finish["sha256"], "libraries": fxrender.library_versions()})
     out = (Path(out) if out else default_out(sp)).resolve()
-    ctx = compose.prepare(sp, scale, out)
+    ctx = compose.prepare(sp, scale, out, None if hooks is None else Hooks(hooks))
     try:
-        cells = [compose.frame(ctx, t) for t in times]
-        if guides:
+        if layers:
+            columns = 5
+            cells = [cell for t in times for cell in _layer_cells(ctx, t)]
+        else:
+            cells = [compose.frame(ctx, t) for t in times]
+        if guides and not layers:
             cells = [_guides(cell, ctx, t, guides) for cell, t in zip(cells, times)]
     finally:
         ctx.close()

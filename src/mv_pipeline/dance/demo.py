@@ -173,6 +173,7 @@ def _spec(width, height, duration, fps):
                        "blur": {"samples": 8, "shutter_frames": 1.0, "peak_shutter_frames": 1.6}}],
             "cover_rotation": True},
         "flashes": [{"t": half, "strength": 0.22, "decay_s": 0.08, "mode": "add_display"}],
+        "look": {"vignette": {"amount": 0.3}, "grain": {"sigma": 1.5}},
         "lyrics": {
             "layers": {
                 "back": {"box": [0.04, 0.12, 0.84, 0.46], "size_px": 300, "reveal": "word", "rows": {"align": "stagger", "gap_em": 0.04},

@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dance-timeline",
+  "description": "mv dance render が run に残す timeline.json の形。独自のレンダラで仕上げる場合も、この形式で書けば mv gate で検査できる。知らない欄は無視する。schema_version が無ければ dance-timeline/0.1 として読む。",
+  "type": "object",
+  "required": ["fps", "duration_s", "lyrics", "ui_regions"],
+  "properties": {
+    "schema_version": {"enum": ["dance-timeline/0.1", "dance-timeline/0.2"]},
+    "size": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "duration_s": {"type": "number", "exclusiveMinimum": 0},
+    "interval": {
+      "type": "object",
+      "required": ["start", "duration", "frames"],
+      "properties": {
+        "start": {"type": "number", "minimum": 0},
+        "duration": {"type": "number", "exclusiveMinimum": 0},
+        "frames": {"type": "integer", "minimum": 1}
+      }
+    },
+    "lyrics": {"type": "array", "items": {"$ref": "#/$defs/lyric"}},
+    "clips": {"type": "array", "items": {"$ref": "#/$defs/clip"}},
+    "seams": {"type": "array", "items": {"type": "number"}},
+    "flashes": {"type": "array", "items": {"type": "number"}},
+    "ui_regions": {
+      "type": "array",
+      "items": {"type": "object", "required": ["name", "box"], "properties": {"name": {"type": "string"}, "box": {"$ref": "#/$defs/box"}}}
+    },
+    "beats": {
+      "type": ["object", "null"],
+      "required": ["beats", "downbeats"],
+      "properties": {"beats": {"$ref": "#/$defs/times"}, "downbeats": {"$ref": "#/$defs/times"}}
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "z", "exclusive", "sung", "follow_camera"],
+        "properties": {
+          "name": {"type": "string"}, "z": {"enum": ["behind", "front"]}, "exclusive": {"type": "boolean"},
+          "sung": {"type": "boolean"}, "follow_camera": {"type": "boolean"}
+        }
+      }
+    },
+    "seam_info": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["t", "from", "to", "kind", "beat_exempt"],
+        "properties": {
+          "t": {"type": "number"}, "from": {"type": "integer"}, "to": {"type": "integer"},
+          "kind": {"enum": ["cut", "blend"]}, "beat_exempt": {"type": "boolean"}
+        }
+      }
+    },
+    "camera_seams": {"type": "array", "items": {"type": "object", "required": ["t"], "properties": {"t": {"type": "number"}}}},
+    "accents": {"type": "array", "items": {"type": "object", "required": ["times"], "properties": {"times": {"$ref": "#/$defs/times"}}}},
+    "flash_info": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["t", "strength", "decay_s", "mode", "beat_exempt"],
+        "properties": {
+          "t": {"type": "number"}, "strength": {"type": "number"}, "decay_s": {"type": "number"},
+          "mode": {"enum": ["lerp_linear", "add_display"]}, "beat_exempt": {"type": "boolean"}
+        }
+      }
+    },
+    "frames_fields": {"type": "array", "items": {"type": "string"}},
+    "frames": {"type": "array", "items": {"type": "array"}},
+    "analysis": {
+      "type": "array",
+      "items": {"type": "object", "required": ["path", "sha256", "p90_height", "median_cx", "ground", "file"]}
+    },
+    "audio": {
+      "type": ["object", "null"],
+      "required": ["fit", "end_s"],
+      "properties": {"fit": {"enum": ["strict", "pad"]}, "end_s": {"type": ["number", "null"]}}
+    },
+    "finished": {
+      "type": ["object", "null"],
+      "properties": {
+        "hooks": {"type": "object", "required": ["path", "sha256"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string"}}}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["schema_version"], "properties": {"schema_version": {"const": "dance-timeline/0.2"}}},
+      "then": {"required": ["size", "interval", "clips", "seams", "flashes", "layers", "seam_info", "frames_fields", "frames"]}
+    }
+  ],
+  "$defs": {
+    "box": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 4, "maxItems": 4},
+    "times": {"type": "array", "items": {"type": "number"}},
+    "lyric": {
+      "type": "object",
+      "required": ["layer", "text", "start", "end", "box"],
+      "properties": {
+        "layer": {"type": "string"},
+        "text": {"type": "string"},
+        "start": {"type": "number"},
+        "end": {"type": "number"},
+        "fade_in_s": {"type": "number", "minimum": 0},
+        "fade_out_s": {"type": "number", "minimum": 0},
+        "box": {"$ref": "#/$defs/box"},
+        "overflow": {"type": "boolean"},
+        "sung": {"type": "boolean"},
+        "reveal": {"enum": ["line", "word"]},
+        "exclusive": {"type": "boolean"},
+        "words": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text", "row", "box"],
+            "properties": {"text": {"type": "string"}, "t": {"type": ["number", "null"]}, "row": {"type": "integer"}, "box": {"$ref": "#/$defs/box"}}
+          }
+        }
+      }
+    },
+    "clip": {
+      "type": "object",
+      "required": ["path", "start", "end"],
+      "properties": {
+        "path": {"type": "string"},
+        "start": {"type": "number"},
+        "end": {"type": "number"},
+        "kind": {"enum": ["video", "image"]},
+        "transition_in": {"type": "object"},
+        "beat_exempt": {"type": "boolean"}
+      }
+    }
+  }
+}
