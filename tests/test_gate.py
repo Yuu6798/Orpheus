@@ -173,6 +173,25 @@ def test_hooks_may_not_overlap_for_long():
     assert gate.check_hook_overlap(overlapping, TH)["status"] == "pass"
 
 
+def test_overlap_uses_the_earlier_end_and_every_pair():
+    hooks = timeline()
+    hooks["lyrics"][0].update(start=0.0, end=5.0)
+    hooks["lyrics"][1].update(start=1.0, end=1.08)
+    assert gate.check_hook_overlap(hooks, TH)["status"] == "pass"
+    hooks["lyrics"].append({**hooks["lyrics"][1], "text": "LATE", "start": 2.0, "end": 4.0})
+    check = gate.check_hook_overlap(hooks, TH)    # 隣り合わない 1 行目と 3 行目の重なりも見る
+    assert check["status"] == "fail" and "HOLD / LATE" in check["problems"][0]["text"]
+
+
+def test_a_decoding_failure_fails_the_export_check_even_with_the_right_frame_count(tmp_path, monkeypatch):
+    path = tmp_path / "v.mp4"
+    path.write_bytes(b"x")
+    monkeypatch.setattr(gate, "decode", lambda *args: {"ok": False, "frames": 144, "seconds": 6.0, "error": "bad nal"})
+    monkeypatch.setattr(gate, "_info", lambda *args: (6.0, True))
+    check = gate.check_export(timeline(), path, None, None, TH)
+    assert check["status"] == "fail" and "bad nal" in check["problems"][0]["detail"]
+
+
 def test_events_must_land_on_a_downbeat_within_one_frame():
     assert gate.check_beats(timeline(), {"downbeats": [1.0, 3.03, 5.0]}, TH)["status"] == "pass"
     assert gate.check_beats(timeline(), {"downbeats": [1.0, 3.2, 5.0]}, TH)["status"] == "fail"

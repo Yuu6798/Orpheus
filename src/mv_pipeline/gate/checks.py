@@ -22,12 +22,14 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
 warn があれば pass_with_warnings、なければ pass。
 しきい値は最初の 1 作で確かめて直す前提の仮の値。好みの判断はしない。終了コードは fail のとき 1。
 """
+import itertools
 import json
 import math
 import re
 import subprocess
 from pathlib import Path
 
+from ..fx.probe import decode
 from ..io import PipelineError, sha256
 from ..media import ffmpeg
 
@@ -214,8 +216,8 @@ def check_hook_overlap(timeline, th):
     name = "字の重なり"
     hooks = sorted((ln for ln in timeline["lyrics"] if ln["layer"] == "back"), key=lambda ln: ln["start"])
     problems = []
-    for left, right in zip(hooks, hooks[1:]):
-        shared = left["end"] - right["start"]
+    for left, right in itertools.combinations(hooks, 2):
+        shared = min(left["end"], right["end"]) - right["start"]
         if shared > th["hook_overlap_s"] + EPS:
             problems.append({"t": right["start"], "text": f"{left['text']} / {right['text']}", "detail": f"{shared:.3f} 秒同時に見えます"})
     return result(name, "fail" if problems else "pass", f"入れ替わり {max(0, len(hooks) - 1)} 回、超過 {len(problems)}", problems)
@@ -239,14 +241,13 @@ def check_beats(timeline, analysis, th):
     return result(name, "fail" if problems else "pass", f"{len(events)} 件を{kind}と照合、ずれ {len(problems)}", problems)
 
 
-def _probe(path):
-    """(フレーム数, 映像の尺, 音声があるか)。ffmpeg だけで数える。"""
-    run = subprocess.run([ffmpeg(), "-hide_banner", "-nostdin", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
+def _info(path):
+    """(映像の尺, 音声があるか)。ffmpeg の情報の出力から読む。"""
+    run = subprocess.run([ffmpeg(), "-hide_banner", "-nostdin", "-i", str(path)],
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-    frames = re.findall(r"frame=\s*(\d+)", run.stderr)
     duration = re.search(r"Duration: (\d+):(\d+):([\d.]+)", run.stderr)
     seconds = int(duration[1]) * 3600 + int(duration[2]) * 60 + float(duration[3]) if duration else None
-    return int(frames[-1]) if frames else 0, seconds, "Audio:" in run.stderr
+    return seconds, "Audio:" in run.stderr
 
 
 def _size(path):
@@ -273,8 +274,12 @@ def check_export(timeline, video, master, expected, th):
         return skip(name, "video")
     interval = timeline.get("interval") or {"duration": timeline["duration_s"], "frames": int(round(timeline["duration_s"] * timeline["fps"]))}
     want = interval["frames"]
-    frames, seconds, audio = _probe(video)
+    decoded = decode(video, "v")
+    frames = decoded["frames"]
+    seconds, audio = _info(video)
     problems = []
+    if not decoded["ok"]:
+        problems.append({"t": 0, "text": "", "detail": f"復号に失敗します: {decoded['error']}"})
     if frames != want:
         problems.append({"t": 0, "text": "", "detail": f"コマ数 {frames}（期待 {want}）"})
     if seconds is None or abs(seconds - interval["duration"]) > 2.0 / timeline["fps"] + 0.03:

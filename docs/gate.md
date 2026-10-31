@@ -61,7 +61,7 @@ uv run mv gate check gate.json [--out DIR]
 | つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。骨格が前後に無ければ要確認 |
 | 字の重なり | timeline だけ | 後ろの字の同時表示 0.1 秒以下 |
 | 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列） | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内 |
-| 書き出し | `video`・`master`（任意で `expected_sha256`） | コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
+| 書き出し | `video`・`master`（任意で `expected_sha256`） | 全部のコマを復号できる、コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
 
 一部の区間だけ描いた run（`mv dance render --start/--duration`）は、timeline の `interval` の中に出るものだけを見る。確認済みの時刻だけは曲全体で見る。
 
