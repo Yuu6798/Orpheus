@@ -131,9 +131,10 @@ def _placement(spec, clip, source, size, analysis=None):
         scale = fit["body_height"] * height / analysis["p90_height"]
     scale *= clip["placement"]["scale"]
     new = (max(2, int(round(source.width * scale))), max(2, int(round(source.height * scale))))
-    x = place["anchor"][0] * width - place["pivot"][0] * new[0]
-    y = place["anchor"][1] * height - place["pivot"][1] * new[1]
     flip = place["flip_x"] != clip["placement"]["flip_x"]
+    pivot_x = 1.0 - place["pivot"][0] if flip else place["pivot"][0]    # 反転しても元動画の同じ点を anchor に合わせる
+    x = place["anchor"][0] * width - pivot_x * new[0]
+    y = place["anchor"][1] * height - place["pivot"][1] * new[1]
     xs = ys = None
     if analysis is not None:
         sx, sy = new[0] / source.width, new[1] / source.height
