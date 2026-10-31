@@ -43,6 +43,7 @@ def parser():
     adapter.add_argument("config", type=Path)
     adapter.add_argument("--kind", choices=["alignment", "separation"], required=True)
     _fx_parser(commands)
+    _dance_parser(commands)
     return p
 
 
@@ -94,6 +95,36 @@ def _fx_parser(commands):
     accept.add_argument("--note")
 
 
+def _dance_parser(commands):
+    """実験的なダンス合成（docs/dance.md）。fx と同じく `project` 引数を持たず、project_lock も通らない。"""
+    dance = commands.add_parser("dance", help="experimental dance compositor: keyed performer on a stage with vertical lyrics")
+    sub = dance.add_subparsers(dest="dance_command", required=True)
+    demo = sub.add_parser("demo", help="write synthetic demo assets and a spec")
+    demo.add_argument("dir", type=Path)
+    demo.add_argument("--width", type=int, default=540)
+    demo.add_argument("--height", type=int, default=960)
+    demo.add_argument("--duration", type=float, default=6.0)
+    demo.add_argument("--fps", type=int, default=24)
+    render = sub.add_parser("render", help="render dance.mp4 and timeline.json as a run")
+    render.add_argument("spec", type=Path)
+    render.add_argument("--start", type=float, default=0.0)
+    render.add_argument("--duration", type=float)
+    render.add_argument("--out", type=Path, help="default: <spec dir>/dance_runs")
+    render.add_argument("--scale", type=float, default=1.0)
+    render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    stills = sub.add_parser("stills", help="still sheet of the given times")
+    stills.add_argument("spec", type=Path)
+    stills.add_argument("--times", type=float, nargs="+", required=True)
+    stills.add_argument("--out", type=Path)
+    stills.add_argument("--scale", type=float, default=1.0)
+    stills.add_argument("--guides", action="store_true", help="draw the UI regions and the lyric boxes")
+    accept = sub.add_parser("accept", help="append a human decision to acceptance.jsonl")
+    accept.add_argument("run_dir", type=Path)
+    accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
+    accept.add_argument("--by", required=True)
+    accept.add_argument("--note")
+
+
 def _require_fx():
     try:
         import cv2  # noqa: F401
@@ -129,9 +160,28 @@ def fx_command(args):
     raise PipelineError(f"Unsupported fx command: {command}")
 
 
-def _run_fx(args):
+def dance_command(args):
+    """dance サブコマンドを実行して結果の辞書を返す。import はここで遅延させる。"""
+    command = args.dance_command
+    if command == "accept":
+        from .dance import VARIANT
+        from .fx import runs as fxruns
+        return fxruns.accept(args.run_dir, VARIANT, args.decision, args.by, args.note)
+    _require_fx()
+    if command == "demo":
+        from .dance import demo
+        return demo.create(args.dir, args.width, args.height, args.duration, args.fps)
+    from .dance import runs
+    if command == "render":
+        return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress)
+    if command == "stills":
+        return runs.stills(args.spec, args.times, args.out, args.scale, args.guides)
+    raise PipelineError(f"Unsupported dance command: {command}")
+
+
+def _run_json(function, args):
     try:
-        print(json.dumps(fx_command(args), ensure_ascii=False, indent=2))
+        print(json.dumps(function(args), ensure_ascii=False, indent=2))
         return 0
     except (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error) as error:
         print(f"Error: {error}", file=sys.stderr)
@@ -141,7 +191,9 @@ def _run_fx(args):
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.command == "fx":
-        return _run_fx(args)
+        return _run_json(fx_command, args)
+    if args.command == "dance":
+        return _run_json(dance_command, args)
     root = args.project.resolve()
     try:
         with project_lock(root):

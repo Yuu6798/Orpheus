@@ -67,6 +67,12 @@ jobs:
           uv run --no-sync mv fx render "$RUNNER_TEMP/fxdemo/spec.json" --out "$RUNNER_TEMP/fxruns" > "$RUNNER_TEMP/fx-render.json"
           cat "$RUNNER_TEMP/fx-render.json"
           uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); assert r['status'] == 'succeeded' and r['technical_pass'] is True and r['grid'], r" "$RUNNER_TEMP/fx-render.json"
+      - name: dance smoke (demo -> render -> technical_pass)
+        run: |
+          uv run --no-sync mv dance demo "$RUNNER_TEMP/dancedemo" --width 180 --height 320 --duration 2
+          uv run --no-sync mv dance render "$RUNNER_TEMP/dancedemo/spec.json" --out "$RUNNER_TEMP/danceruns" > "$RUNNER_TEMP/dance-render.json"
+          cat "$RUNNER_TEMP/dance-render.json"
+          uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); assert r['status'] == 'succeeded' and r['technical_pass'] is True, r" "$RUNNER_TEMP/dance-render.json"
 
   node:
     # README が宣言する Node.js 22 以上の下端のみ検証する (Remotion は保守凍結)。
