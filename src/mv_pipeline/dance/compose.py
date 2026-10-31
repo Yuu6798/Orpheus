@@ -182,7 +182,7 @@ def frame(ctx, t):
 
 
 def timeline_record(ctx):
-    """run に残す timeline.json の中身。外部の検査道具はこれを読む（描画の入力ではない）。"""
+    """run に残す timeline.json の中身。`mv gate check` はこれを読む（描画の入力ではない）。"""
     data, (width, height) = ctx.spec.data, ctx.size
     norm = lambda b: [round(b[0] / width, 5), round(b[1] / height, 5), round(b[2] / width, 5), round(b[3] / height, 5)]  # noqa: E731
     return {

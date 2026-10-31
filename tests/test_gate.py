@@ -1,0 +1,205 @@
+import json
+import wave
+
+import numpy as np
+import pytest
+from fx_synth import run_cli
+
+from mv_pipeline.gate import checks as gate
+from mv_pipeline.gate import lines as lines_table
+
+TH = gate.THRESHOLDS
+
+
+def timeline(**changes):
+    base = {"fps": 24, "duration_s": 6.0, "size": [1080, 1920], "seams": [3.0], "flashes": [3.0],
+            "ui_regions": [{"name": "right", "box": [0.86, 0.45, 1.0, 0.88]}],
+            "lyrics": [{"layer": "back", "text": "HOLD", "start": 0.5, "end": 2.9, "fade_in_s": 0.04, "fade_out_s": 0.08, "box": [0.2, 0.2, 0.8, 0.3]},
+                       {"layer": "back", "text": "LIGHT", "start": 3.0, "end": 5.8, "fade_in_s": 0.04, "fade_out_s": 0.08, "box": [0.2, 0.2, 0.8, 0.3]},
+                       {"layer": "band", "text": "one", "start": 0.5, "end": 2.9, "fade_in_s": 0.04, "fade_out_s": 0.08, "box": [0.2, 0.07, 0.8, 0.12]},
+                       {"layer": "band", "text": "two", "start": 3.0, "end": 5.8, "fade_in_s": 0.04, "fade_out_s": 0.08, "box": [0.2, 0.07, 0.8, 0.12]}]}
+    return {**base, **changes}
+
+
+@pytest.mark.parametrize("sung, status", [(0.6, "pass"), (0.5, "pass"), (0.7, "pass"), (0.45, "fail"), (0.8, "fail"), (2.0, "fail")])
+def test_lyric_must_lead_the_singing_by_zero_to_point_two_seconds(sung, status):
+    measured = [{"start": sung}, {"start": 3.1}]
+    assert gate.check_lyric_time(timeline(), measured, "band", TH)["status"] == status
+
+
+def test_lyric_time_fails_on_a_line_count_mismatch_and_warns_on_unmeasured_lines():
+    assert gate.check_lyric_time(timeline(), [{"start": 0.6}], "band", TH)["status"] == "fail"
+    measured = [{"start": 0.6, "method": "not_found"}, {"start": 3.1}]
+    assert gate.check_lyric_time(timeline(), measured, "band", TH)["status"] == "warn"
+
+
+def test_missing_material_is_a_skip_and_never_a_pass():
+    assert gate.check_lyric_time(timeline(), None, "band", TH)["status"] == "skip"
+    assert gate.check_faces(timeline(), None)["status"] == "skip"
+    assert gate.check_jitter(None, TH)["status"] == "skip"
+    assert gate.check_seams(timeline(), None, TH)["status"] == "skip"
+    assert gate.check_beats(timeline(), None, TH)["status"] == "skip"
+    assert gate.check_export(timeline(), None, None, None, TH)["status"] == "skip"
+
+
+def test_confirmed_time_must_not_move():
+    assert gate.check_confirmed(timeline(), [{"text": "two", "start": 3.0}], TH)["status"] == "pass"
+    assert gate.check_confirmed(timeline(), [{"text": "two", "start": 3.1}], TH)["status"] == "fail"
+    assert gate.check_confirmed(timeline(), [{"text": "gone", "start": 3.0}], TH)["status"] == "fail"
+
+
+def test_band_over_the_main_face_fails_but_the_back_layer_and_others_do_not():
+    face = {"start": 0.0, "end": 6.0, "box": [0.4, 0.05, 0.6, 0.15], "role": "main"}
+    assert gate.check_faces(timeline(), [face])["status"] == "fail"
+    assert len(gate.check_faces(timeline(), [face])["problems"]) == 2
+    assert gate.check_faces(timeline(), [{**face, "role": "other"}])["status"] == "pass"
+    assert gate.check_faces(timeline(), [{**face, "box": [0.4, 0.2, 0.6, 0.3]}])["status"] == "pass"   # back は人物の後ろ
+
+
+def test_overlap_only_during_the_fade_is_allowed():
+    face = {"start": 2.85, "end": 2.95, "box": [0.4, 0.05, 0.6, 0.15]}
+    assert gate.check_faces(timeline(), [face])["status"] == "pass"
+
+
+def test_text_in_a_ui_region_fails_with_a_frame_count():
+    moved = timeline()
+    moved["lyrics"][0]["box"] = [0.8, 0.5, 0.95, 0.6]
+    check = gate.check_ui(moved)
+    assert check["status"] == "fail" and "58" in check["summary"]
+    assert gate.check_ui(timeline())["status"] == "pass"
+
+
+def test_jitter_catches_shake_but_not_smooth_motion():
+    smooth = [[i / 24, 100 + 5.0 * i, 200.0] for i in range(48)]
+    shaky = [[i / 24, 100 + 5.0 * i + (6 if i % 2 else -6), 200.0] for i in range(48)]
+    assert gate.check_jitter({"flame": smooth}, TH)["status"] == "pass"
+    assert gate.check_jitter({"flame": shaky}, TH)["status"] == "fail"
+
+
+def test_big_pose_jump_at_a_seam_is_a_proposal():
+    poses = [{"t": 3.0 - 1 / 24, "points": [[0.5, 0.5]]}, {"t": 3.0, "points": [[0.6, 0.5]]}]
+    assert gate.check_seams(timeline(), poses, TH)["status"] == "warn"
+    still = [{"t": 3.0 - 1 / 24, "points": [[0.5, 0.5]]}, {"t": 3.0, "points": [[0.51, 0.5]]}]
+    assert gate.check_seams(timeline(), still, TH)["status"] == "pass"
+    assert gate.check_seams(timeline(seams=[]), None, TH)["status"] == "pass"
+
+
+def test_hooks_may_not_overlap_for_long():
+    overlapping = timeline()
+    overlapping["lyrics"][0]["end"] = 3.2
+    assert gate.check_hook_overlap(overlapping, TH)["status"] == "fail"
+    overlapping["lyrics"][0]["end"] = 3.05
+    assert gate.check_hook_overlap(overlapping, TH)["status"] == "pass"
+
+
+def test_events_must_land_on_a_downbeat_within_one_frame():
+    assert gate.check_beats(timeline(), {"downbeats": [1.0, 3.03, 5.0]}, TH)["status"] == "pass"
+    assert gate.check_beats(timeline(), {"downbeats": [1.0, 3.2, 5.0]}, TH)["status"] == "fail"
+    assert gate.check_beats(timeline(), {"beats": [3.0]}, TH)["status"] == "pass"
+
+
+def test_end_to_end_report_on_a_rendered_video(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    path = tmp_path / "v.mp4"
+    frames = [np.full((64, 64, 3), (i * 3) % 255, np.uint8) for i in range(24)]
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 24, (64, 64))
+    for frame in frames:
+        writer.write(frame)
+    writer.release()
+    (tmp_path / "timeline.json").write_text(json.dumps(timeline(duration_s=1.0)), encoding="utf-8")
+    (tmp_path / "measured.json").write_text(json.dumps([{"start": 3.0}, {"start": 3.1}]), encoding="utf-8")
+    (tmp_path / "gate.json").write_text(json.dumps({"timeline": "timeline.json", "video": "v.mp4", "master": "v.mp4", "measured_lines": "measured.json"}), encoding="utf-8")
+    report, out = gate.run(tmp_path / "gate.json")
+    by_name = {c["check"]: c for c in report["checks"]}
+    assert report["overall"] == "fail" and by_name["歌詞の時刻"]["status"] == "fail" and by_name["書き出し"]["status"] == "pass"
+    assert (out / "gate_report.json").is_file() and "品質ゲート" in (out / "gate_report.md").read_text(encoding="utf-8")
+    assert by_name["歌詞の時刻"]["problems"][0].get("still")
+    assert len(report["checks"]) == 9
+
+
+def _vocals(path, onsets, rate=16000, seconds=6.0):
+    samples = np.zeros(int(seconds * rate), np.float32)
+    for onset in onsets:
+        start, end = int(onset * rate), int((onset + 0.6) * rate)
+        samples[start:end] = 0.3 * np.sin(2 * np.pi * 440 * np.arange(end - start) / rate)
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(rate)
+        stream.writeframes((samples * 32767).astype(np.int16).tobytes())
+
+
+def test_lrc_is_parsed_and_the_end_marker_skipped(tmp_path):
+    path = tmp_path / "a.lrc"
+    path.write_text("[00:01.50]一行目\n[01:02.25]二行目\n[01:10.00]\n", encoding="utf-8")
+    assert lines_table.read_lines(path) == [{"text": "一行目", "start": 1.5}, {"text": "二行目", "start": 62.25}]
+
+
+def test_onset_is_found_near_the_estimate(tmp_path):
+    pytest.importorskip("soundfile")
+    path = tmp_path / "v.wav"
+    _vocals(path, [1.0, 3.0])
+    rows = lines_table.build([{"text": "a", "start": 1.3}, {"text": "b", "start": 2.7}], path, 0.8, 0.0)
+    assert [r["method"] for r in rows] == ["vocals_onset", "vocals_onset"]
+    assert rows[0]["start"] == pytest.approx(1.0, abs=0.04) and rows[1]["start"] == pytest.approx(3.0, abs=0.04)
+
+
+def test_onset_is_found_at_a_shallow_dip_without_silence(tmp_path):
+    """実曲の行間は無音にならない（残響で -20dB 前後の谷）。谷からの立ち上がりで見つける。"""
+    pytest.importorskip("soundfile")
+    rate = 16000
+    samples = 0.3 * np.sin(2 * np.pi * 440 * np.arange(4 * rate) / rate)
+    samples[int(1.8 * rate):int(2.0 * rate)] *= 0.1      # -20dB の谷
+    path = tmp_path / "v.wav"
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(rate)
+        stream.writeframes((samples * 32767).astype(np.int16).tobytes())
+    rows = lines_table.build([{"text": "a", "start": 2.2}], path, 0.6, 0.0)
+    assert rows[0]["method"] == "vocals_onset" and rows[0]["start"] == pytest.approx(2.0, abs=0.05) and rows[0]["rise_db"] > 8
+
+
+def test_no_onset_in_the_window_keeps_the_estimate_and_says_so(tmp_path):
+    pytest.importorskip("soundfile")
+    path = tmp_path / "v.wav"
+    _vocals(path, [1.0])
+    rows = lines_table.build([{"text": "a", "start": 4.0}], path, 0.5, 0.0)
+    assert rows[0]["method"] == "not_found" and rows[0]["start"] == 4.0
+
+
+def test_without_vocals_the_table_is_marked_as_an_estimate(tmp_path):
+    rows = lines_table.build([{"text": "a", "start": 1.0}], None, 0.8, 0.5)
+    assert rows[0]["method"] == "estimate" and rows[0]["start"] == 1.5
+    lines_table.write(rows, tmp_path)
+    assert json.loads((tmp_path / "lines_measured.json").read_text(encoding="utf-8"))[0]["method"] == "estimate"
+    assert "確認" in (tmp_path / "lines_table.csv").read_text(encoding="utf-8-sig")
+
+
+def test_cli_check_fails_with_exit_code_1_and_reports_the_summary(tmp_path):
+    (tmp_path / "timeline.json").write_text(json.dumps(timeline()), encoding="utf-8")
+    (tmp_path / "measured.json").write_text(json.dumps([{"start": 3.0}, {"start": 3.1}]), encoding="utf-8")
+    (tmp_path / "gate.json").write_text(json.dumps({"timeline": "timeline.json", "measured_lines": "measured.json"}), encoding="utf-8")
+    code, result, _ = run_cli("gate", "check", tmp_path / "gate.json")
+    assert code == 1 and result["overall"] == "fail" and len(result["checks"]) == 9
+
+
+def test_cli_check_with_nothing_wrong_is_pass_with_skips_not_pass(tmp_path):
+    (tmp_path / "timeline.json").write_text(json.dumps(timeline()), encoding="utf-8")
+    (tmp_path / "gate.json").write_text(json.dumps({"timeline": "timeline.json"}), encoding="utf-8")
+    code, result, _ = run_cli("gate", "check", tmp_path / "gate.json")
+    assert code == 0 and result["overall"] == "pass_with_skips"
+
+
+def test_cli_check_without_a_timeline_is_an_error(tmp_path):
+    (tmp_path / "gate.json").write_text("{}", encoding="utf-8")
+    code, _, err = run_cli("gate", "check", tmp_path / "gate.json")
+    assert code == 1 and "timeline" in err
+
+
+def test_cli_lines_writes_the_table(tmp_path):
+    path = tmp_path / "a.lrc"
+    path.write_text("[00:01.50]line\n", encoding="utf-8")
+    code, result, err = run_cli("gate", "lines", path, tmp_path / "out")
+    assert code == 0, err
+    assert result["estimate"] == 1 and (tmp_path / "out" / "lines_table.csv").is_file()

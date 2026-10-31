@@ -5,7 +5,7 @@
 - 決定論: 同じ spec・素材・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
 - **実験的**: 設定スキーマ `dance-shot/0.1` は `contracts/` の外（`src/mv_pipeline/dance/`）にある。`contracts/` への昇格はユーザー承認が要る。
 - **汎用の部品だけ**: 作品固有の値はコードに持たず、spec に書く。作品ごとの spec・素材・出力は Git に入れない。
-- **採点しない**: `technical_pass` は構造検査、`accept` は人間の判定。絵の良し悪しや時刻の合否は判定しない（書き出し前の検査はリポジトリの外の道具で行い、run の `timeline.json` を読ませる）。
+- **採点しない**: `technical_pass` は構造検査、`accept` は人間の判定。絵の良し悪しや時刻の合否は `mv dance` では判定しない（書き出し前の機械的な検査は `mv gate check` で行う。run の `timeline.json` を読む。`docs/gate.md`）。
 - 動作確認は**プログラムで描いた合成素材のみ**。実素材（緑抜きの質・字の見え方・動画のコーデック）での挙動は、素材のある環境で実測すること。
 
 ## 準備
@@ -96,7 +96,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と同じ（`docs/fx.md` の「run と再現性」）。キャッシュ key は正規化 spec・全素材の sha256・エンジン指紋（dance と fx の全ファイル）・区間・出力寸法・ライブラリ版から作る。
 
-**timeline.json**（`dance-timeline/0.1`）は、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、外部の検査道具に渡すためのもの。
+**timeline.json**（`dance-timeline/0.1`）は、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、`mv gate check` に渡すためのもの。
 
 ## コマンド
 

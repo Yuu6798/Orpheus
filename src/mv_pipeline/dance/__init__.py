@@ -16,7 +16,7 @@
   - runs: run の記録・キャッシュ・静止画シート。書き出しと構造検査は fx の部品を使う。
   - demo: 合成素材と spec.json。
 
-run には timeline.json（字の出入りと箱、カットの切れ目、フラッシュ、UI 枠）を残す。外部の検査道具はこれを読めばよい。
+run には timeline.json（字の出入りと箱、カットの切れ目、フラッシュ、UI 枠）を残す。`mv gate check` はこれを読む。
 """
 import hashlib
 from pathlib import Path
