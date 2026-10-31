@@ -81,9 +81,8 @@ def _scoped(timeline):
                "stable": [max(_stable(ln)[0], first), min(_stable(ln)[1], last)]}
               for ln in timeline["lyrics"] if ln["start"] < last and ln["end"] > first]
     inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
-    within = lambda items: [item for item in items if first <= item["t"] < last]  # noqa: E731
-    return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", [])),
-            "seam_info": within(timeline.get("seam_info", [])), "flash_info": within(timeline.get("flash_info", []))}
+    within = {key: [item for item in timeline[key] if first <= item["t"] < last] for key in ("seam_info", "flash_info") if key in timeline}
+    return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", [])), **within}
 
 
 def _intersects(a, b):

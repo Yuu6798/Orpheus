@@ -430,6 +430,13 @@ def test_scope_filters_the_02_events():
     assert scoped["seam_info"] == [] and scoped["flash_info"] == []
 
 
+def test_scope_keeps_the_events_of_a_01_timeline():
+    """0.1 の timeline には seam_info が無い。空の欄を足すと拍の検査が何も見なくなる。"""
+    scoped = gate._scoped(timeline())
+    assert "seam_info" not in scoped and "flash_info" not in scoped
+    assert gate.check_beats(scoped, {"beats": [1.0]}, TH)["status"] == "fail"
+
+
 def test_a_seam_side_is_decided_on_frames_not_on_rounded_seconds():
     """4 桁に丸めた時刻は切れ目の少し前や後に落ちる。コマに丸めれば正しい側になる。"""
     fps = 29.97
