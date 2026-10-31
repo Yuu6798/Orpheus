@@ -96,7 +96,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と同じ（`docs/fx.md` の「run と再現性」）。キャッシュ key は正規化 spec・全素材の sha256・エンジン指紋（dance と fx の全ファイル）・区間・出力寸法・ライブラリ版から作る。
 
-**timeline.json**（`dance-timeline/0.1`）は、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、`mv gate check` に渡すためのもの。
+**timeline.json**（`dance-timeline/0.1`）は、描いた区間（`interval`）、字の出入りと実際の箱（`box_px`・正規化した `box`）、clip の区間、切れ目（`seams`）、フラッシュの時刻、`ui_regions` の記録。描画の入力ではなく、`mv gate check` に渡すためのもの。
 
 ## コマンド
 

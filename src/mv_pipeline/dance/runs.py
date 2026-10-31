@@ -89,7 +89,7 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
             run.manifest["warnings"] = list(ctx.warnings)
             for warning in ctx.warnings:
                 run.log(f"warning: {warning}")
-            atomic_json(run.dir / "timeline.json", compose.timeline_record(ctx))
+            atomic_json(run.dir / "timeline.json", compose.timeline_record(ctx, start, duration, n_frames))
             audio = _audio(ctx, start, n_frames)
             if audio and not audio["path"].is_file():
                 raise PipelineError(f"音声が見つかりません: {sp.data['audio']['path']}")

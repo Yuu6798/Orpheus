@@ -17,7 +17,7 @@ uv run mv gate lines 歌詞.lrc 出力フォルダ --vocals vocals.flac
 
 - 入力は LRC か JSON（`[{"start": 秒, "line" か "text" か "display": 歌詞}, …]`）。`--vocals` にボーカルの Stem か分離音源を渡すと、推定の前後 `--window` 秒（既定 0.8）で歌い出しの立ち上がりを探す。
 - 出力は `lines_table.csv`（試聴用。Excel で開ける UTF-8 BOM。確認の欄は空）と `lines_measured.json`（`mv gate check` に渡す）。
-- `method`: `vocals_onset` = 実測 / `not_found` = 窓の中に候補が無く推定のまま / `estimate` = ボーカル無し。
+- `method`: `vocals_onset` = 実測 / `not_found` = 窓の中に候補が無く推定のまま / `estimate` = ボーカル無し。`mv gate check` は `not_found` と `estimate` の行を実測として照合しない（`method` が無い行は実測として扱う）。
 
 **これは行頭の候補で、確定はユーザーの試聴。** 第 1 作の分離ボーカルで試した結果（2026-10-31）:
 
@@ -53,17 +53,17 @@ uv run mv gate check gate.json [--out DIR]
 
 | 検査 | 要るもの | 合格の条件（仮） |
 |---|---|---|
-| 歌詞の時刻 | `measured_lines`（`mv gate lines` の出力。層 `lyric_layer` の行と順に照合） | 字が歌の 0〜0.2 秒前に出る |
+| 歌詞の時刻 | `measured_lines`（`mv gate lines` の出力。層 `lyric_layer` の行と順に照合） | 字が歌の 0〜0.2 秒前に出る。推定のままの行は見ず、一部なら要確認、全部なら未実施 |
 | 確認済みの時刻 | `confirmed`（`[{"text", "start"}]`） | 1 つも動いていない |
 | 字と顔 | `faces`（`[{"start", "end", "box", "role"}]`。box は正規化座標） | 帯の字が主役の顔に重ならない（出入りの間は可。後ろの字は人物に隠れるので見ない） |
 | UI 枠 | timeline だけ | 0 コマ |
 | 揺れ | `tracks`（`{"名前": [[t, x, y], …]}`。画素） | 2 階差分の RMS 3 画素以下 |
-| つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案） |
+| つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。骨格が前後に無ければ要確認 |
 | 字の重なり | timeline だけ | 後ろの字の同時表示 0.1 秒以下 |
 | 拍 | `beats`（`downbeats` か `beats` の配列） | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内 |
-| 書き出し | `video`・`master`（任意で `expected_sha256`） | コマ数・尺が揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
+| 書き出し | `video`・`master`（任意で `expected_sha256`） | コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
 
-結果は 合格 / 不合格 / 要確認 / 未実施。**未実施は「材料が無くて見ていない」で、合格ではない。** 全体（`overall`）は、不合格が 1 つでもあれば `fail`（終了コード 1）、未実施があれば `pass_with_skips`、なければ `pass`。
+結果は 合格 / 不合格 / 要確認 / 未実施。**未実施は「材料が無くて見ていない」で、合格ではない。** 全体（`overall`）は、不合格が 1 つでもあれば `fail`（終了コード 1）、未実施があれば `pass_with_skips`、要確認があれば `pass_with_warnings`、なければ `pass`。
 
 出力先は既定で `gate.json` の隣の `gate_report/`: `gate_report.md`・`gate_report.json`・問題のコマの静止画（検査ごとに最大 12 枚）。stdout は短い JSON。
 

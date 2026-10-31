@@ -18,7 +18,8 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
-全体は fail が 1 つでもあれば fail、skip があれば pass_with_skips（一覧に何を見ていないかが残る）、なければ pass。
+全体は fail が 1 つでもあれば fail、skip があれば pass_with_skips（一覧に何を見ていないかが残る）、
+warn があれば pass_with_warnings、なければ pass。
 しきい値は最初の 1 作で確かめて直す前提の仮の値。好みの判断はしない。終了コードは fail のとき 1。
 """
 import hashlib
@@ -42,6 +43,7 @@ THRESHOLDS = {
     "ssim": 0.98,
 }
 MAX_STILLS = 12
+UNMEASURED = ("not_found", "estimate")   # 推定のままの行。実測として照合しない（method が無い行は実測として扱う）
 
 
 def result(name, status, summary, problems=()):
@@ -68,15 +70,18 @@ def check_lyric_time(timeline, measured, layer, th):
     lines = [ln for ln in timeline["lyrics"] if ln["layer"] == layer]
     if len(lines) != len(measured):
         return result(name, "fail", f"行数が合いません（字 {len(lines)} 行 / 実測 {len(measured)} 行）")
+    pairs = [(line, sung) for line, sung in zip(lines, measured) if sung.get("method") not in UNMEASURED]
+    if not pairs:
+        return skip(name, "実測した行（どの行も推定のまま）")
     problems = []
-    for line, sung in zip(lines, measured):
+    for line, sung in pairs:
         lead = sung["start"] - line["start"]   # 正 = 字が歌より先に出る
         if not th["lead_min_s"] <= lead <= th["lead_max_s"]:
             problems.append({"t": line["start"], "text": line["text"], "detail": f"字が歌の {lead:+.3f} 秒前（許容 {th['lead_min_s']}〜{th['lead_max_s']}）"})
-    unverified = sum(1 for sung in measured if sung.get("method") == "not_found")
-    summary = f"{len(lines)} 行を照合、外れ {len(problems)} 行"
+    unverified = len(lines) - len(pairs)
+    summary = f"{len(pairs)} 行を照合、外れ {len(problems)} 行"
     if unverified:
-        summary += f"（うち実測できなかった行 {unverified}）"
+        summary += f"（実測できず見ていない行 {unverified}）"
     return result(name, "fail" if problems else "warn" if unverified else "pass", summary, problems)
 
 
@@ -146,10 +151,6 @@ def check_jitter(tracks, th):
     return result(name, "fail" if problems else "pass", f"{len(tracks)} 要素を確認、超過 {len(problems)}", problems)
 
 
-def _nearest(poses, t):
-    return min(poses, key=lambda p: abs(p["t"] - t))
-
-
 def check_seams(timeline, poses, th):
     name = "つなぎ目"
     seams = timeline.get("seams", [])
@@ -157,11 +158,15 @@ def check_seams(timeline, poses, th):
         return result(name, "pass", "切れ目がありません")
     if poses is None:
         return skip(name, "poses")
-    dt = 1.0 / timeline["fps"]
+    reach = 2.0 / timeline["fps"]
     problems = []
     for seam in seams:
-        before, after = _nearest(poses, seam - dt), _nearest(poses, seam)
-        pairs = list(zip(before["points"], after["points"]))
+        before = [p for p in poses if seam - reach <= p["t"] < seam]
+        after = [p for p in poses if seam <= p["t"] <= seam + reach]
+        if not before or not after:      # 同じ骨格どうしを比べると差が 0 で合格に見えるので、両側に無ければ見ていない扱い
+            problems.append({"t": seam, "text": "", "detail": "切れ目の前後 2 コマ以内に骨格がなく、姿勢の差を見ていません"})
+            continue
+        pairs = list(zip(max(before, key=lambda p: p["t"])["points"], min(after, key=lambda p: p["t"])["points"]))
         move = sum(math.dist(a, b) for a, b in pairs) / max(1, len(pairs))
         if move > th["seam_pose"]:
             problems.append({"t": seam, "text": "", "detail": f"姿勢の差 {move:.3f}。切るコマを変えるか camera.seams を入れてください"})
@@ -219,13 +224,14 @@ def check_export(timeline, video, master, expected, th):
     name = "書き出し"
     if video is None:
         return skip(name, "video")
-    want = int(round(timeline["duration_s"] * timeline["fps"]))
+    interval = timeline.get("interval") or {"duration": timeline["duration_s"], "frames": int(round(timeline["duration_s"] * timeline["fps"]))}
+    want = interval["frames"]
     frames, seconds, audio = _probe(video)
     problems = []
     if frames != want:
         problems.append({"t": 0, "text": "", "detail": f"コマ数 {frames}（期待 {want}）"})
-    if seconds is None or abs(seconds - timeline["duration_s"]) > 2.0 / timeline["fps"] + 0.03:
-        problems.append({"t": 0, "text": "", "detail": f"尺 {seconds} 秒（期待 {timeline['duration_s']} 秒）"})
+    if seconds is None or abs(seconds - interval["duration"]) > 2.0 / timeline["fps"] + 0.03:
+        problems.append({"t": 0, "text": "", "detail": f"尺 {seconds} 秒（期待 {interval['duration']} 秒）"})
     notes = [f"コマ {frames}", "音声あり" if audio else "音声なし"]
     if master is not None:
         digest = hashlib.sha256(Path(master).read_bytes()).hexdigest()
@@ -294,7 +300,8 @@ def run(config_path, out=None):
               check_beats(timeline, load("beats"), th),
               check_export(timeline, video, master, config.get("expected_sha256"), th)]
     statuses = {c["status"] for c in checks}
-    overall = "fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses else "pass"
+    overall = ("fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses
+               else "pass_with_warnings" if "warn" in statuses else "pass")
     report = {"overall": overall, "timeline": str(path_of("timeline")), "thresholds": th, "checks": checks}
     out = Path(out) if out else base / "gate_report"
     out.mkdir(parents=True, exist_ok=True)

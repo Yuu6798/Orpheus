@@ -181,13 +181,15 @@ def frame(ctx, t):
     return to_srgb8(out)
 
 
-def timeline_record(ctx):
+def timeline_record(ctx, start=0.0, duration=None, frames=None):
     """run に残す timeline.json の中身。`mv gate check` はこれを読む（描画の入力ではない）。"""
     data, (width, height) = ctx.spec.data, ctx.size
     norm = lambda b: [round(b[0] / width, 5), round(b[1] / height, 5), round(b[2] / width, 5), round(b[3] / height, 5)]  # noqa: E731
     return {
         "schema_version": "dance-timeline/0.1",
         "size": [width, height], "fps": ctx.fps, "duration_s": ctx.duration,
+        "interval": {"start": start, "duration": ctx.duration - start if duration is None else duration,
+                     "frames": timeline.frame_count(ctx.duration - start, ctx.fps) if frames is None else frames},
         "lyrics": [{"layer": line.layer, "text": line.text, "start": line.start, "end": line.end,
                     "fade_in_s": line.style["fade_in_s"], "fade_out_s": line.style["fade_out_s"],
                     "box_px": line.box_px, "box": norm(line.box_px), "overflow": line.overflow} for line in ctx.lines],

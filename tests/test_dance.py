@@ -328,9 +328,18 @@ def test_timeline_records_what_an_external_checker_needs(shot):
     record = read_json(root / "runs" / result["run_id"] / "timeline.json")
     assert record["schema_version"] == "dance-timeline/0.1" and record["size"] == [180, 320] and record["seams"] == [1.0]
     assert record["flashes"] == [1.0] and len(record["clips"]) == 2 and len(record["ui_regions"]) == 3
+    assert record["interval"] == {"start": 0.0, "duration": 2.0, "frames": 24}
     assert [line["layer"] for line in record["lyrics"]] == ["back", "back", "band", "band"]
     first = record["lyrics"][0]
     assert first["text"] == "HOLD" and first["start"] == 0.5 and all(0 <= v <= 1 for v in first["box"])
+
+
+def test_partial_render_records_its_interval_in_the_timeline(tmp_path, shot):
+    root, _ = shot
+    code, result, err = run_cli("dance", "render", root / "spec.json", "--start", "0.5", "--duration", "1", "--out", tmp_path / "runs")
+    assert code == 0, err
+    record = read_json(tmp_path / "runs" / result["run_id"] / "timeline.json")
+    assert record["interval"] == {"start": 0.5, "duration": 1.0, "frames": 12} and record["duration_s"] == 2.0
 
 
 def test_second_render_is_reused_and_a_changed_asset_is_not(tmp_path, shot):

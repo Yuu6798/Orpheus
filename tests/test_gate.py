@@ -33,6 +33,26 @@ def test_lyric_time_fails_on_a_line_count_mismatch_and_warns_on_unmeasured_lines
     assert gate.check_lyric_time(timeline(), measured, "band", TH)["status"] == "warn"
 
 
+def test_estimates_are_never_treated_as_measurements():
+    estimates = [{"start": 0.6, "method": "estimate"}, {"start": 3.1, "method": "estimate"}]
+    assert gate.check_lyric_time(timeline(), estimates, "band", TH)["status"] == "skip"
+    partly = [{"start": 0.6, "method": "vocals_onset"}, {"start": 9.0, "method": "estimate"}]
+    check = gate.check_lyric_time(timeline(), partly, "band", TH)
+    assert check["status"] == "warn" and "1 行を照合" in check["summary"]
+
+
+@pytest.mark.parametrize("statuses, overall", [(["pass"], "pass"), (["pass", "warn"], "pass_with_warnings"),
+                                               (["warn", "skip"], "pass_with_skips"), (["skip", "fail"], "fail")])
+def test_overall_never_hides_a_warning(tmp_path, monkeypatch, statuses, overall):
+    (tmp_path / "timeline.json").write_text(json.dumps(timeline()), encoding="utf-8")
+    (tmp_path / "gate.json").write_text(json.dumps({"timeline": "timeline.json"}), encoding="utf-8")
+    fixed = iter(statuses + ["pass"] * 9)
+    for name in ("check_lyric_time", "check_confirmed", "check_faces", "check_ui", "check_jitter",
+                 "check_seams", "check_hook_overlap", "check_beats", "check_export"):
+        monkeypatch.setattr(gate, name, lambda *args: gate.result("x", next(fixed), "s"))
+    assert gate.run(tmp_path / "gate.json")[0]["overall"] == overall
+
+
 def test_missing_material_is_a_skip_and_never_a_pass():
     assert gate.check_lyric_time(timeline(), None, "band", TH)["status"] == "skip"
     assert gate.check_faces(timeline(), None)["status"] == "skip"
@@ -69,6 +89,18 @@ def test_text_in_a_ui_region_fails_with_a_frame_count():
     assert gate.check_ui(timeline())["status"] == "pass"
 
 
+def test_partial_render_is_checked_against_its_interval(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    path = tmp_path / "v.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 24, (64, 64))
+    for i in range(48):
+        writer.write(np.full((64, 64, 3), i, np.uint8))
+    writer.release()
+    partial = timeline(interval={"start": 1.0, "duration": 2.0, "frames": 48})
+    assert gate.check_export(partial, path, path, None, TH)["status"] == "pass"
+    assert gate.check_export(timeline(), path, path, None, TH)["status"] == "fail"
+
+
 def test_jitter_catches_shake_but_not_smooth_motion():
     smooth = [[i / 24, 100 + 5.0 * i, 200.0] for i in range(48)]
     shaky = [[i / 24, 100 + 5.0 * i + (6 if i % 2 else -6), 200.0] for i in range(48)]
@@ -82,6 +114,13 @@ def test_big_pose_jump_at_a_seam_is_a_proposal():
     still = [{"t": 3.0 - 1 / 24, "points": [[0.5, 0.5]]}, {"t": 3.0, "points": [[0.51, 0.5]]}]
     assert gate.check_seams(timeline(), still, TH)["status"] == "pass"
     assert gate.check_seams(timeline(seams=[]), None, TH)["status"] == "pass"
+
+
+@pytest.mark.parametrize("times", [[0.0], [3.0], [2.9], [2.0, 3.0], [2.9, 4.0]])
+def test_poses_must_exist_on_both_sides_of_the_seam(times):
+    poses = [{"t": t, "points": [[0.5, 0.5]]} for t in times]
+    check = gate.check_seams(timeline(), poses, TH)
+    assert check["status"] == "warn" and "見ていません" in check["problems"][0]["detail"]
 
 
 def test_hooks_may_not_overlap_for_long():
