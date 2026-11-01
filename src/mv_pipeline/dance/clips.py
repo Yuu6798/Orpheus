@@ -2,8 +2,13 @@
 
 読み出しは前方向だけに進め、戻るときは開き直して先頭から数える。コーデックのシークは環境によって隣のフレームを
 返すことがあり、それだと同じ t で違う絵になるため（決定論を優先。静止画シートは遅いが本番の描画は順に読むので速い）。
+
+OpenCV は色のタグを見ず、いつも BT.601 の行列で RGB に直す（BT.709 の緑 (30, 220, 60) が (44, 248, 64) になり、飽和した色は
+255 で切れるので後から戻せない）。そこでタグが bt709 の動画は ffmpeg に行列を指定して読む。タグの無い動画は行列を見分けられない
+ので OpenCV のまま BT.601 として読む（compose.prepare が warnings に残す）。
 """
 import math
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +16,52 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from .. import media
+from ..fx import probe
 from ..io import PipelineError
+
+KNOWN_MATRICES = ("bt709", "smpte170m", "bt470bg")   # 正しく読める行列。bt709 以外の 2 つは BT.601 と同じ行列
+
+
+def _matrix(path):
+    """動画のタグの色の行列（bt709 など）。タグが無い・読めないときは None。"""
+    try:
+        matrix = probe.inspect(path)["video"]["matrix"]
+    except PipelineError:
+        return None
+    return None if matrix == "unknown" else matrix
+
+
+class _Bt709Capture:
+    """タグが bt709 の動画を ffmpeg で先頭から順に読む。cv2.VideoCapture と同じ grab・read・release を持つ。"""
+
+    def __init__(self, path, width, height):
+        self.shape = (height, width, 3)
+        # 可変フレームレートでも OpenCV と同じ枚数になるよう、コマを足し引きしない（rawvideo の既定は固定レート）
+        self.process = subprocess.Popen(
+            [media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(path), "-map", "0:v:0",
+             "-fps_mode", "passthrough", "-vf", "scale=in_color_matrix=bt709:flags=bicubic+accurate_rnd+full_chroma_int",
+             "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def isOpened(self):
+        return True     # 開けなければ最初の読み出しが空になり、Source が止める
+
+    def _next(self):
+        size = self.shape[0] * self.shape[1] * 3
+        data = self.process.stdout.read(size)
+        return data if len(data) == size else None
+
+    def grab(self):
+        return self._next() is not None
+
+    def read(self):
+        data = self._next()
+        return (False, None) if data is None else (True, np.frombuffer(data, np.uint8).reshape(self.shape))
+
+    def release(self):
+        self.process.kill()
+        self.process.stdout.close()
+        self.process.wait()
 
 
 class Source:
@@ -21,6 +71,7 @@ class Source:
         self.path = Path(path)
         if not self.path.is_file():
             raise PipelineError(f"人物動画が見つかりません: {self.path.name}")
+        self.matrix = None
         self._open()
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -28,9 +79,13 @@ class Source:
         if not self.fps or self.fps != self.fps or self.width <= 0 or self.height <= 0:
             raise PipelineError(f"人物動画を読めません（fps か寸法が取れない）: {self.path.name}")
         self.last_index, self.last, self.end_index = -1, None, None
+        self.matrix = _matrix(self.path)
+        if self.matrix == "bt709":
+            self.cap.release()
+            self._open()
 
     def _open(self):
-        self.cap = cv2.VideoCapture(str(self.path))
+        self.cap = _Bt709Capture(self.path, self.width, self.height) if self.matrix == "bt709" else cv2.VideoCapture(str(self.path))
         self.next_index = 0
         if not self.cap.isOpened():
             raise PipelineError(f"人物動画を開けません: {self.path.name}")
