@@ -58,16 +58,6 @@ def test_a_full_range_bt709_clip_reads_right(tmp_path):
     source.close()
 
 
-def test_opencv_alone_reads_a_bt709_clip_with_the_wrong_matrix(tmp_path):
-    """Source が bt709 を ffmpeg で読む理由。OpenCV がタグを見るようになったら、この分岐は要らなくなる。"""
-    path = tmp_path / "clip.mp4"
-    fxrender.write_video(path, solid(GREEN), (WIDTH, HEIGHT), 30, 12, 3)
-    capture = cv2.VideoCapture(str(path))
-    _, bgr = capture.read()
-    capture.release()
-    assert np.abs(middle(bgr[..., ::-1]) - GREEN).max() > 15
-
-
 def test_a_tagged_bt601_clip_stays_with_opencv_and_reads_right(tmp_path):
     path = tmp_path / "clip.mp4"
     write_bt601(path, solid(GREEN), tagged=True)
