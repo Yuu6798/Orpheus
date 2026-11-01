@@ -24,7 +24,7 @@ from ..fx.spec import canonical_json
 from ..io import PipelineError, atomic_json, read_json, sha256
 from . import key as dancekey
 
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
 FOOT_PIXELS = 3     # 足元とみなす行に要るアルファ 0.5 超の画素数
 
 

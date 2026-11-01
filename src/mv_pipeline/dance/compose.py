@@ -25,7 +25,7 @@ from . import fit as dancefit
 from . import key as dancekey
 from . import lyrics as dancelyrics
 from .camera import Camera, camera_matrix, is_identity
-from .clips import Source, Timeline
+from .clips import KNOWN_MATRICES, Source, Timeline
 
 FRAME_FIELDS = ["t", "clip", "source_frame", "blend", "zoom", "cx", "cy", "rotate", "shake_x", "shake_y", "blur"]
 PLACEMENT_FIELDS = ["p_a", "p_b", "p_tx", "p_c", "p_d", "p_ty"]
@@ -202,6 +202,10 @@ def prepare(spec, scale=1.0, out=None, hooks=None):
         stage.close()
         raise
     warnings = list(spec.warnings) + text_warnings
+    for source in (*clips.sources.values(), stage.source):
+        if isinstance(source, Source) and source.matrix not in KNOWN_MATRICES:
+            warnings.append(f"{source.path.name}: 色の行列のタグ（{source.matrix or 'なし'}）から行列を決められないので BT.601 として読みます。"
+                            "BT.709 で作った動画なら色がずれます")
     sizes = {(s.width, s.height) for s in clips.sources.values()}
     if len(sizes) > 1 and not analysis:
         warnings.append(f"performer: 人物動画の寸法がそろっていません {sorted(sizes)}（切れ目で人物の大きさが変わることがあります）")
