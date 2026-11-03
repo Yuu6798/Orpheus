@@ -13,7 +13,7 @@ dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio
 analysis = ["librosa==0.11.0", "numba==0.63.1", "llvmlite==0.46.0"]
 fx = ["opencv-python-headless==5.0.0.93"]
 # 自作の 3D モデリングツール（tools/model3d。Orpheus とはファイルと記録で接続する外部ツール。docs/model3d.md）
-model3d = ["orpheus-model3d"]
+model3d = ["orpheus-model3d==0.1.0"]
 
 [dependency-groups]
 dev = ["pytest==9.1.1"]

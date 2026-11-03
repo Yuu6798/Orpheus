@@ -71,6 +71,9 @@ def structure(rig, semantic_map=None, required_bone_roles=None, tolerance=1e-3):
             if group not in by_name:
                 unknown_group += 1
             for vi, w in pairs:
+                if isinstance(vi, bool) or not isinstance(vi, (int, float)) or not math.isfinite(vi) or vi != int(vi):
+                    bad_index += 1          # 小数や非有限の頂点番号は、丸めて通さない
+                    continue
                 vi = int(vi)
                 if vi < 0 or vi >= count:
                     bad_index += 1
@@ -88,7 +91,7 @@ def structure(rig, semantic_map=None, required_bone_roles=None, tolerance=1e-3):
                               "unnormalized_vertices": int(off.sum()), "negative": negative, "non_finite": non_finite,
                               "bad_index": bad_index, "unknown_groups": unknown_group, "tolerance": tolerance})
         if bad_index:
-            failures.append(f"ウェイトが無い頂点を指しています（{bad_index} 件）")
+            failures.append(f"ウェイトが無い頂点か整数でない頂点番号を指しています（{bad_index} 件）")
         if non_finite:
             failures.append(f"ウェイトに非有限の値があります（{non_finite} 件）")
         if negative:

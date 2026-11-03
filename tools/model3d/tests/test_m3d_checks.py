@@ -31,6 +31,20 @@ def test_structure_finds_cycles_missing_parents_bad_matrices_and_weights():
     assert "根の骨がありません" in text
 
 
+def test_structure_rejects_fractional_or_negative_weight_indices():
+    """小数の頂点番号を丸めて通さない（-0.5 → 0 で合格にしない）。契約でも整数 0 以上に限る。"""
+    from model3d import contracts
+    rig = {"schema_version": "model3d-rig/0.1", "bones": [{"name": "root", "parent": None}],
+           "weights": {"vertex_count": 1, "groups": {"root": [[-0.5, 1.0]]}}}
+    with pytest.raises(ToolError, match="rig"):
+        contracts.validate("rig", rig)
+    report = checks.structure(rig)
+    assert not report["pass"] and "整数でない頂点番号" in " ".join(report["failures"])
+    rig["weights"]["groups"]["root"] = [[0.0, 1.0]]      # 1.0 のような整数値は通る
+    contracts.validate("rig", rig)
+    assert checks.structure(rig)["pass"]
+
+
 def test_structure_required_roles_need_a_semantic_map():
     rig = demo.rig_json(1)
     report = checks.structure(rig, None, ["hips"])
