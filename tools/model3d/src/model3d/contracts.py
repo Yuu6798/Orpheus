@@ -20,6 +20,7 @@ FILES = {
     "rig": "rig.schema.json",
     "preset": "preset.schema.json",
     "handoff": "handoff.schema.json",
+    "initial-model": "initial_model.schema.json",
 }
 
 KINDS = tuple(FILES)

@@ -42,6 +42,7 @@ uv run mv verify projects/demo
 
 設定画や既存モデルから、部位・骨の対応（役割名）、加工レシピの実行、形状と動作の検査、書き出しをレシピと記録で進める道具。`tools/model3d/` にあり、Orpheus とは出力ファイルと制作記録だけで接続します（`mv_pipeline` とは互いに import しません）。
 `uv sync --locked --extra analysis --extra fx --extra model3d` の後、`uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json` で合成素材の一気通貫（押し出し → 結合 → 貫通の補正 → 検査 → OBJ）を通します。
+設定画（RGBA 1 枚）から初期モデルを作る工程（前処理・別プロセスの生成器・検査・記録）もあり、`recipe_generate.json` で代役の生成器を使った流れを通せます（本物の生成器は別の仮想環境。`tools/model3d/backends/README.md`）。
 Blender・生成器・リギングは別プロセスで呼ぶ接続口だけがあり、この環境では未検証です。詳細と限界は [docs/model3d.md](docs/model3d.md)。
 
 ## 現在の範囲

@@ -9,7 +9,7 @@
 import math
 from pathlib import Path
 
-from . import contracts, semantic
+from . import contracts, generate, semantic
 from .io import atomic_json
 from .mesh import Mesh
 
@@ -115,8 +115,30 @@ def recipe_json(clearance):
     }
 
 
-def create(directory, clearance=0.004):
-    """合成素材・preset・対応表・リグ・recipe を directory に書く。"""
+def recipe_generate_json(resolution):
+    return {
+        "schema_version": "model3d-recipe/0.1", "name": "demo-initial-model",
+        "description": "合成の設定画 1 枚から、代役の生成器で初期モデルを作り、検査して書き出す（status は needs_review）",
+        "scope": "synthetic sheet and a stand-in backend; not a generator",
+        "inputs": {"sheet": {"path": "inputs/sheet_front.png", "kind": "image"}},
+        "steps": [
+            {"id": "prepare", "operation": "generate.prepare_reference", "inputs": {"image": "$inputs.sheet"},
+             "parameters": {"foreground_ratio": 0.85}, "outputs": {"prepared": "sheet_prepared.png", "metadata": "prepare.json"},
+             "notes": "前処理だけ。生成器に渡す PNG と条件を人が見られる"},
+            {"id": "generate", "operation": "generate.initial_model", "inputs": {"image": "$inputs.sheet"},
+             "parameters": {"backend": "generator.json", "foreground_ratio": 0.85, "resolution": resolution, "density_threshold": 25.0},
+             "outputs": {"mesh": "initial_model.json", "record": "initial_model_record.json", "prepared": "prepared.png"},
+             "notes": "生成が終わっただけでは採用しない（常に needs_review）。本物の生成器は backends/README.md",
+             "evidence": [{"source": "record", "ref": "2026-11-03 設定画から初期モデルを生成する機能の検証（単一視点・TripoSR・CPU）", "state": "observed"}]},
+            {"id": "inspect", "operation": "generate.inspect_initial_model", "inputs": {"mesh": "$steps.generate.mesh"},
+             "outputs": {"report": "inspect.json"}},
+            {"id": "export", "operation": "mesh.export_obj", "inputs": {"mesh": "$steps.generate.mesh"}, "outputs": {"obj": "initial_model.obj"}},
+        ],
+    }
+
+
+def create(directory, clearance=0.004, resolution=64):
+    """合成素材・preset・対応表・リグ・recipe と、設定画からの生成の recipe を directory に書く。"""
     root = Path(directory).resolve()
     inputs = root / "inputs"
     inputs.mkdir(parents=True, exist_ok=True)
@@ -134,8 +156,12 @@ def create(directory, clearance=0.004):
     atomic_json(root / "semantic_map.json", semantic_map)
     recipe = contracts.validate("recipe", recipe_json(clearance))
     atomic_json(root / "recipe.json", recipe)
-    return {"dir": str(root), "recipe": str(root / "recipe.json"), "preset": str(root / "preset.json"),
-            "semantic_map": str(root / "semantic_map.json"),
+    generate.save_rgba(generate.synthetic_sheet(), inputs / "sheet_front.png")
+    atomic_json(root / "generator.json", generate.standin_config())
+    atomic_json(root / "recipe_generate.json", contracts.validate("recipe", recipe_generate_json(resolution)))
+    return {"dir": str(root), "recipe": str(root / "recipe.json"), "recipe_generate": str(root / "recipe_generate.json"),
+            "preset": str(root / "preset.json"), "semantic_map": str(root / "semantic_map.json"),
             "sash": {"vertices": sash.vertex_count, "faces": sash.face_count},
             "expected": {"inside_before": len(INSIDE_ROWS) * (2 * len(SASH_COLUMNS) - 1), "inside_after": 0,
-                         "welded_vertices": sash.vertex_count - SASH_ROWS}}
+                         "welded_vertices": sash.vertex_count - SASH_ROWS,
+                         "generate_status": "needs_review", "generate_candidates": ["generate"]}}

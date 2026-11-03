@@ -7,7 +7,7 @@ import pytest
 
 from m3d_helpers import box
 from model3d.io import ToolError
-from model3d.mesh import Mesh, check_profile, extrude_profile, read_obj, transform, weld, write_obj
+from model3d.mesh import Mesh, canonical_signature, check_profile, extrude_profile, read_obj, transform, weld, write_obj
 
 FIXTURE = Path(__file__).parent / "data" / "jscad" / "cases.json"
 
@@ -122,6 +122,22 @@ def test_weld_is_transitive_and_respects_selection_center_and_uv():
     assert report["merged_groups"] == 1 and partial.vertex_count == 4
     _, none = weld(mesh, 0.4)                              # 距離 0.5 > 0.4
     assert none["merged_groups"] == 0
+
+
+def test_weld_remaps_vertex_colors(tmp_path):
+    """結合した頂点の色は平均（first なら先頭）になり、長さは新しい頂点数に合う。書き出しても色が残る。"""
+    vertices = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1.0000001, 0, 0], [1, 1, 0]]
+    colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0], [1, 1, 1]]
+    mesh = Mesh(vertices, [[0, 1, 2], [3, 4, 2]], extra={"x_vertex_colors": colors, "x_scale_calibrated": False})
+    welded, report = weld(mesh, 1e-3)
+    assert report["merged_groups"] == 1 and welded.vertex_count == 4
+    assert len(welded.extra["x_vertex_colors"]) == 4 and welded.extra["x_scale_calibrated"] is False
+    assert np.allclose(welded.extra["x_vertex_colors"][1], [0, 0.5, 0])       # 頂点 1 と 3 の平均
+    first, _ = weld(mesh, 1e-3, center="first")
+    assert np.allclose(first.extra["x_vertex_colors"][1], [0, 1, 0])
+    write_obj(welded, tmp_path / "welded.obj")
+    assert np.allclose(read_obj(tmp_path / "welded.obj").extra["x_vertex_colors"], welded.extra["x_vertex_colors"])
+    assert canonical_signature(welded)["colors"]
 
 
 def test_weld_removes_duplicate_and_contained_faces():

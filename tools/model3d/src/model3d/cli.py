@@ -18,6 +18,7 @@ def parser():
     demo = commands.add_parser("demo", help="write synthetic inputs, preset, semantic map and a recipe")
     demo.add_argument("dir", type=Path)
     demo.add_argument("--clearance", type=float, default=0.004)
+    demo.add_argument("--resolution", type=int, default=64, help="grid resolution passed to the stand-in generator")
 
     run = commands.add_parser("run", help="execute a recipe and write a run record")
     run.add_argument("recipe", type=Path)
@@ -93,6 +94,20 @@ def parser():
     convert.add_argument("dst", type=Path)
     info = obj_sub.add_parser("info")
     info.add_argument("file", type=Path)
+    compare = obj_sub.add_parser("compare", help="same geometry up to vertex/face enumeration order?")
+    compare.add_argument("left", type=Path)
+    compare.add_argument("right", type=Path)
+    compare.add_argument("--no-colors", action="store_true")
+
+    gen = commands.add_parser("generate", help="initial model from a setting sheet: prepare the image or inspect a generated mesh")
+    gen_sub = gen.add_subparsers(dest="generate_command", required=True)
+    prep = gen_sub.add_parser("prepare", help="write the prepared RGB PNG and the preparation metadata")
+    prep.add_argument("image", type=Path)
+    prep.add_argument("out", type=Path)
+    prep.add_argument("--foreground-ratio", type=float, default=0.85)
+    inspect = gen_sub.add_parser("inspect", help="geometry and structure checks of an initial model (OBJ or JSON)")
+    inspect.add_argument("mesh", type=Path)
+    inspect.add_argument("--out", type=Path)
 
     hand = commands.add_parser("handoff", help="write a handoff record (run, recipe and artifact sha256) for Orpheus")
     hand.add_argument("run_dir", type=Path)
@@ -108,6 +123,9 @@ def parser():
     summary = rea_sub.add_parser("summary", help="from a rea-real-3d-tools-experiment/0.1 summary")
     summary.add_argument("file", type=Path)
     summary.add_argument("out", type=Path)
+    pyc = rea_sub.add_parser("pyc", help="from a parsePythonPyc evidence-summary.json (REA 6.8)")
+    pyc.add_argument("file", type=Path)
+    pyc.add_argument("out", type=Path)
 
     blender = commands.add_parser("blender", help="run Blender in the background (unverified on this machine)")
     blender_sub = blender.add_subparsers(dest="blender_command", required=True)
@@ -146,7 +164,7 @@ def _pairs(values, label):
 def command(args):
     if args.command == "demo":
         from . import demo
-        return demo.create(args.dir, args.clearance)
+        return demo.create(args.dir, args.clearance, args.resolution)
     if args.command == "run":
         from . import executor
         result = executor.run_recipe(args.recipe, args.out, args.force, args.preset, _pairs(args.tool, "--tool"),
@@ -219,19 +237,31 @@ def command(args):
         args.failed = 0 if report.get("pass") else 1
         return report
     if args.command == "mesh":
-        from .mesh import Mesh
+        from .mesh import Mesh, compare_geometry
+        if args.mesh_command == "compare":
+            return compare_geometry(Mesh.load(args.left), Mesh.load(args.right), colors=not args.no_colors)
         mesh = Mesh.load(args.src if args.mesh_command == "convert" else args.file)
         if args.mesh_command == "convert":
             mesh.save(args.dst)
             return {"out": str(args.dst.resolve()), **mesh.summary()}
         return {**mesh.summary(), "units": mesh.units, "axes": mesh.axes, "parts": {k: len(v) for k, v in mesh.parts.items()},
                 "edges": mesh.edge_report(), "area": mesh.area(), "signed_volume": mesh.signed_volume()}
+    if args.command == "generate":
+        from . import generate
+        from .mesh import Mesh
+        if args.generate_command == "prepare":
+            return generate.prepare_file(args.image, args.out, args.foreground_ratio)
+        report = {"check": "initial_model", **generate.inspect_mesh(Mesh.load(args.mesh))}
+        if args.out:
+            atomic_json(args.out, report)
+        return report
     if args.command == "handoff":
         from . import handoff
         return handoff.write(args.run_dir, args.artifact, args.out, args.notes)
     if args.command == "rea":
         from .rea_bridge import evidence
-        data = evidence.from_analysis_report(args.file) if args.rea_command == "report" else evidence.from_summary(args.file)
+        reader = {"report": evidence.from_analysis_report, "summary": evidence.from_summary, "pyc": evidence.from_pyc_evidence}[args.rea_command]
+        data = reader(args.file)
         atomic_json(args.out, data)
         count = len(data.get("evidence", [])) or sum(len(t["evidence"]) for t in data.get("tools", {}).values())
         return {"out": str(args.out.resolve()), "evidence": count, "limitations": len(data.get("limitations", []))}

@@ -6,6 +6,7 @@
   （面の向きだけを反転する方法では面と体積が合わない、という再構成の実行結果 2026-11-03 を踏まえる）。
 どちらも独自実装で、原本ツールとの一致は主張しない。
 """
+import hashlib
 import math
 from pathlib import Path
 
@@ -192,7 +193,28 @@ class Mesh:
                 else:
                     nonmanifold += 1
         return {"closed": boundary == 0 and nonmanifold == 0 and bool(self.faces), "boundary_edges": boundary,
-                "nonmanifold_edges": nonmanifold, "edges": len(seen)}
+                "nonmanifold_edges": nonmanifold, "edges": len(seen),
+                "consistent_winding": bool(self.faces) and all(count == 1 for count in directed.values())}
+
+    def components(self):
+        """面でつながった頂点のまとまりの数（面に使われていない頂点は数えない）。"""
+        parent = {}
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for face in self.faces:
+            for i in face:
+                parent.setdefault(i, i)
+            first = face[0]
+            for i in face[1:]:
+                a, b = find(first), find(i)
+                if a != b:
+                    parent[b] = a
+        return len({find(i) for i in parent})
 
     def topology_hash(self):
         """頂点構成（頂点数と面の頂点番号）だけのハッシュ。頂点番号で領域を指すときは、この値に結び付ける。"""
@@ -205,6 +227,39 @@ class Mesh:
         lo, hi = self.bounds()
         return {"vertices": self.vertex_count, "faces": self.face_count, "bounds": {"min": lo, "max": hi},
                 "topology_sha256": self.topology_hash(), "geometry_sha256": self.geometry_hash()}
+
+
+# ---- 列挙順に依らない指紋 ------------------------------------------------------------------
+
+def canonical_signature(mesh, colors=True):
+    """頂点番号と面の列挙順だけが違うメッシュが同じ指紋になるように正規化した sha256。
+
+    座標（頂点色 x_vertex_colors があれば座標と色の組）で頂点を並べ替え、三角形は巡回の最小の並びにして辞書順に並べる
+    （向きは保つ）。丸め・許容差・位置合わせは使わない。座標と色が同じ頂点は 1 つに寄せて数え、座標だけ同じ頂点
+    （継ぎ目で分かれた、色の違う頂点）は別のまま残す。座標が重なる頂点があれば duplicate_positions に残す。
+    """
+    tris, _ = mesh.triangles()
+    positions = mesh.vertices
+    palette = mesh.extra.get("x_vertex_colors") if colors else None
+    colored = bool(isinstance(palette, list) and len(palette) == len(positions) and len(positions))
+    keyed = np.hstack([positions, np.asarray(palette, dtype=np.float64).reshape(-1, 3)]) if colored else positions
+    unique, inverse = np.unique(keyed, axis=0, return_inverse=True) if len(keyed) else (keyed, np.zeros(0, dtype=np.int64))
+    inverse = np.asarray(inverse).reshape(-1)
+    duplicates = bool(len(np.unique(positions, axis=0)) != len(positions)) if len(positions) else False
+    faces = inverse[tris] if len(tris) else np.zeros((0, 3), dtype=np.int64)
+    rotated = [min((tuple(row), (row[1], row[2], row[0]), (row[2], row[0], row[1]))) for row in faces.tolist()]
+    rotated.sort()
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(unique, dtype="<f8").tobytes())   # 色付きなら座標と色の組
+    digest.update(np.asarray(rotated, dtype="<i8").tobytes())
+    return {"sha256": digest.hexdigest(), "vertices": int(len(unique)), "triangles": int(len(rotated)),
+            "duplicate_positions": duplicates, "colors": colored}
+
+
+def compare_geometry(a, b, colors=True):
+    """2 つのメッシュが、頂点番号と面の列挙順の違いを除いて同じか。"""
+    left, right = canonical_signature(a, colors), canonical_signature(b, colors)
+    return {"same": left["sha256"] == right["sha256"], "left": left, "right": right}
 
 
 # ---- 多角形の三角形化 ------------------------------------------------------------------
@@ -290,7 +345,7 @@ def triangulate_polygon(points):
 
 def read_obj(path):
     """OBJ を読む（v / vt / f / o / g）。頂点ごとの uv は、各頂点が 1 つの vt にだけ対応するときに持つ。"""
-    vertices, uvs, faces, face_uvs, parts = [], [], [], [], {}
+    vertices, uvs, faces, face_uvs, parts, colors = [], [], [], [], {}, []
     group, units, axes = None, "m", None
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     for number, raw in enumerate(text.splitlines(), 1):
@@ -307,6 +362,7 @@ def read_obj(path):
         try:
             if head == "v" and len(rest) >= 3:
                 vertices.append([float(rest[0]), float(rest[1]), float(rest[2])])
+                colors.append([float(rest[3]), float(rest[4]), float(rest[5])] if len(rest) >= 6 else None)
             elif head == "vt" and len(rest) >= 2:
                 uvs.append([float(rest[0]), float(rest[1])])
             elif head in ("o", "g"):
@@ -343,7 +399,10 @@ def read_obj(path):
                 break
         if consistent and len(per_vertex) == len(vertices):
             uv = [uvs[per_vertex[i]] for i in range(len(vertices))]
-    return Mesh(vertices, faces, uv, name=Path(path).stem, units=units, axes=axes, parts=parts)
+    extra = {}
+    if vertices and all(c is not None for c in colors):   # 頂点色（0..1 の RGB。trimesh などの書き方）
+        extra["x_vertex_colors"] = colors
+    return Mesh(vertices, faces, uv, name=Path(path).stem, units=units, axes=axes, parts=parts, extra=extra)
 
 
 def write_obj(mesh, path):
@@ -356,7 +415,12 @@ def write_obj(mesh, path):
     lines = [f"# {SCHEMA} units={mesh.units} up={mesh.axes.get('up')} forward={mesh.axes.get('forward')}"]
     if mesh.name:
         lines.append(f"o {mesh.name}")
-    lines.extend(f"v {x!r} {y!r} {z!r}" for x, y, z in mesh.vertices.tolist())   # repr: 往復で値が変わらない最短表記
+    colors = mesh.extra.get("x_vertex_colors")
+    if isinstance(colors, list) and len(colors) == mesh.vertex_count:
+        lines.extend(f"v {x!r} {y!r} {z!r} {float(c[0])!r} {float(c[1])!r} {float(c[2])!r}"
+                     for (x, y, z), c in zip(mesh.vertices.tolist(), colors))
+    else:
+        lines.extend(f"v {x!r} {y!r} {z!r}" for x, y, z in mesh.vertices.tolist())   # repr: 往復で値が変わらない最短表記
     if mesh.uv is not None:
         lines.extend(f"vt {u!r} {v!r}" for u, v in mesh.uv.tolist())
     current = object()
@@ -481,7 +545,7 @@ class _Union:
 def weld(mesh, distance, selection=None, center="mean"):
     """距離 distance 以内の頂点（selection があればその中だけ）を結合した写しと、結果の数。
 
-    結合した頂点の位置と uv は平均（center="mean"）か、番号が最小の頂点のもの（center="first"）。
+    結合した頂点の位置・uv・頂点色（x_vertex_colors）は平均（center="mean"）か、番号が最小の頂点のもの（center="first"）。
     面は番号を付け替え、連続する同じ頂点を畳み、頂点が 3 つ未満になった面と、同じ頂点集合の面・他の面の
     頂点集合に含まれる面を除く（結合に関わった面と、それと頂点を共有する面だけを見る。元から重なっていた面は見ない）。
     結合は推移的（A-B と B-C が近ければ A-B-C が 1 つになる）。
@@ -510,11 +574,15 @@ def weld(mesh, distance, selection=None, center="mean"):
             representative[i] = root
     vertices = mesh.vertices.copy()
     uv = None if mesh.uv is None else mesh.uv.copy()
+    palette = mesh.extra.get("x_vertex_colors")
+    colors = np.asarray(palette, dtype=np.float64).reshape(-1, 3).copy() if isinstance(palette, list) and len(palette) == n and n else None
     if center == "mean":
         for root, members in groups.items():
             vertices[root] = mesh.vertices[members].mean(axis=0)
             if uv is not None:
                 uv[root] = mesh.uv[members].mean(axis=0)
+            if colors is not None:
+                colors[root] = colors[members].mean(axis=0)   # 頂点色も uv と同じ規則（first なら番号が最小の頂点の色）
     keep = [i for i in range(n) if representative[i] == i]
     new_index = {old: new for new, old in enumerate(keep)}
     remap = {i: new_index[representative[i]] for i in range(n)}
@@ -549,8 +617,11 @@ def weld(mesh, distance, selection=None, center="mean"):
     face_index = {old: new for new, old in enumerate(final_old)}
     parts = {name: sorted(face_index[k] for k in indices if k in face_index) for name, indices in mesh.parts.items()}
     selection_out = None if mesh.selection is None else sorted({remap[i] for i in mesh.selection})
+    extra = dict(mesh.extra)
+    if colors is not None:
+        extra["x_vertex_colors"] = [[float(c) for c in row] for row in colors[keep].tolist()]
     out = Mesh(vertices[keep], final_faces, None if uv is None else uv[keep], mesh.name, mesh.units, mesh.axes,
-               parts, selection_out, mesh.extra)
+               parts, selection_out, extra)
     report = {"distance": float(distance), "center": center, "selected": len(chosen), "merged_groups": len(groups),
               "vertices_before": n, "vertices_after": out.vertex_count, "faces_before": mesh.face_count,
               "faces_after": out.face_count, "faces_removed_degenerate": degenerate, "faces_removed_contained": len(contained)}

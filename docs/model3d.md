@@ -6,6 +6,7 @@ Orpheus（`mv dance` など）とは**出力ファイルと制作記録（RunRec
 
 - **決定論**: 同じ入力・設定・コード版なら同じ出力。LLM もネットワークも使わない。
 - **採点しない**: 検査は構造と数値（`pass`）。見た目の採否は人の判定（`model3d accept`）で、RunRecord の `adopted` に別に残る。
+- **検査は開発原則の例外**: AGENTS.md の「生成物の開発中は検査を足さない」に対し、このツールは `mv gate` と同じ例外（2026-11-03 ユーザー承認）。設計が実装単位に `validation` を含み §10 で検査を求めるため。単独の検査（`generate inspect`・`mesh compare`・`check`）も構造と数値の報告だけで、採否は決めない。
 - **固有の値を持たない**: 部品番号（`part_3`）や特定サービスの骨名（`mixamorig:Hips`）は preset で役割（`garment.sash.front`・`hips`）に
   対応付け、共通処理は役割だけを参照する。実キャラの preset・素材・動画・重み・鍵は Git に入れない。
 - **推定を実測扱いしない**: 入力の sha256 が宣言と違えば実行しない。役割の対応表が無い・未確認、観測不足は `unresolved` に残して
@@ -45,6 +46,15 @@ Mixamo 風の骨名のリグ。レシピは **押し出し → 結合（継ぎ�
 → 構造の検査 → OBJ 書き出し** の 9 工程で、`status` は `succeeded`。素材はすべてプログラムで作った合成物で、実キャラの素材は使わない。
 `projects/` は `.gitignore` 済み。
 
+```sh
+uv run model3d run projects/model3d-demo/recipe_generate.json   # 合成の設定画 → 前処理 → 代役の生成器 → 検査 → 記録（status は needs_review）
+```
+
+`recipe_generate.json` は、合成の設定画 1 枚（頭の円・胴の四角・帯の横帯）を前処理し、**生成器の代役**（`backends/standin_initial_model.py`。
+前景の輪郭の箱を書くだけで生成ではない）を別プロセスで呼び、検査と記録（`model3d-initial-model/0.1`）を書いて OBJ に出す。
+生成の工程は常に `needs_review` なので run の `status` も `needs_review`（`candidates` は `["generate"]`）。本物の生成器は下の
+「設定画から初期モデルを生成する」。
+
 合成素材の検査が通ることは、実素材で同じ処理が成立することを保証しない。実素材では、まず対応表の確認（`semantic confirm`）と
 入力のハッシュの宣言から始める。
 
@@ -62,6 +72,7 @@ Mixamo 風の骨名のリグ。レシピは **押し出し → 結合（継ぎ�
 | rig `model3d-rig/0.1` | 骨（名前・親・head/tail・レスト行列）と頂点ウェイト（骨ごとの [頂点番号, 重み]） |
 | preset `model3d-preset/0.1` | キャラごとの対応表と値（`tools/model3d/presets/README.md`） |
 | handoff `model3d-handoff/0.1` | Orpheus へ渡す成果物 1 つの控え（run・レシピ・成果物の sha256） |
+| initial model `model3d-initial-model/0.1` | 設定画から生成した初期モデルの記録: 入力のハッシュ、前処理の条件、生成器の素性（版・重みの sha256・ライセンス・実行ファイルの sha256）、パラメーター、生成物のハッシュ、幾何と構造の検査。review は常に needs_review |
 
 未知の鍵は拒否し、`x_` で始まる鍵はどの階層でも許す（記録には残る）。
 
@@ -128,6 +139,9 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `check.structure` | rig → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`） |
 | `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ（mesh と collider の単位か軸の約束が違えば止まる。`directions` は 1 本以上の有限で長さ 0 でない向き。奇数本を勧める） |
 | `check.continuity` | track → report | コマごとの点の列で前のコマからの移動が `max_jump` 以下 |
+| `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
+| `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
+| `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
 | `external.run` | 任意 → 任意 | 設定 JSON の argv で別プロセスを呼ぶ（`{入力名}`・`{出力名}`・`{work}`）。版・ライセンス・重み・実行ファイルの sha256 を記録。シェルは使わない。再利用しない |
 | `blender.run_script` | 任意 → 任意 | `blender --background [blend] --python script -- args…`。再利用しない。**未検証** |
 
@@ -139,6 +153,41 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 内外の判定は、複数方向の光線と面の交わりの回数の奇偶の多数決で決める。最も近い面の向きで決める方法（Shrinkwrap の Outside など）は、
 口の開いた筒やふさいだ口のふちで読み違えた（2026-11-02 の記録）。辺や頂点を共有する三角形を同じ距離で通る交点は 1 回と数える。
 口の開いた衝突相手は拒否する。補正は位置だけを直し、速度には入れない。
+
+## 設定画から初期モデルを生成する
+
+設定画（RGBA 1 枚）から初期モデルを作る工程。2026-11-03 の検証（ユーザーの環境、CPU。Drive の検証記録と再現 zip）で、固定した
+公開 TripoSR（MIT）のネットワークと重みを使い、**前処理・ジョブの入出力・密度場からメッシュへの処理の再構成・元の実装との比較・
+記録を自作**した構成に実行上の裏付けが得られた。前処理は実設定画 1 件と合成 6 件で原本の関数と画素単位で一致し、形状は元の抽出と
+座標・向き付き三角形・RGBA が許容差 0 で一致した（記録の値）。この repo に入れたのはその自作の部分で、ニューラルネットと重みは入れない。
+合成 6 件の記録（sha256）は `tools/model3d/tests/data/prepare_reference_cases.json` に取り込み、移植した前処理をテストで照合している。
+
+```
+設定画 (RGBA) → generate.prepare_reference（自作）→ 生成器（別プロセス。backends/）→ OBJ → generate.initial_model が検査して記録
+```
+
+- **入力**: RGBA の設定画 1 枚、`foreground_ratio`、生成器の設定（`backend`: `tool`・`version`・`argv`・`outputs.obj`、任意で
+  `license`・`weights`・`kind`）、`density_threshold`（既定 25.0）、`resolution`（既定 128）、`seed`。
+- **出力**: 頂点色付きの mesh（JSON）と OBJ（生成器が書けば GLB も）、入力と前処理済み PNG の sha256、前処理の条件、幾何と構造の検査、
+  生成器の素性（版・重みの sha256・ライセンス・実行ファイルの sha256・argv・終了コード・秒）、`model3d-initial-model/0.1` の記録。
+- **採用の条件**: 生成が終わっただけでは採用しない。工程は常に `needs_review` で、正面・側面・背面を人が見てから、分離・形状修正・
+  リトポロジーへ渡す（`model3d accept` は run 全体の判定）。
+- **座標**: 生成器の正規化した空間のまま（実寸は未校正。`checks.scale_calibrated` が false）。preset の身長に合わせる換算は
+  `mesh.transform` で別工程として行う。
+- **生成器は別プロセスの交換可能な部品**: まず TripoSR（単一視点）で動く入口を保つ。多視点の生成器（Hunyuan3D-2mv は Tencent の
+  community license なので任意の追加）も同じ設定・検査の契約（`kind: multi_view`）で足す。InstantMesh の既定カメラ（6 視点・仰角 ±）に
+  直交三面図をそのまま差し替えられるとは判定しない。
+- **環境**: TripoSR の環境（Python 3.12・torch CPU・trimesh・torchmcubes MPL-2.0・重み約 1.68 GB）は別の仮想環境に作る。手順と固定した
+  版・sha256 は `tools/model3d/backends/README.md`。この環境（CI）では代役の生成器だけが動き、本物の生成器は**未検証**。
+
+```sh
+uv run model3d generate prepare 設定画.png prepared.png            # 前処理だけ（人が見る）
+uv run model3d generate inspect initial_model.obj --out report.json  # 生成物の検査だけ
+uv run model3d mesh compare a.obj b.obj                            # 頂点番号と面の列挙順の違いを除いて同じか
+```
+
+実証したのは正面 1 枚で、背面・側面は入力から拘束していない。記録の生成物は顔・指・衣装の模様が粗く、連結成分が複数で閉じていない
+（記録の値）。リグ・ウェイト・表情・衣装物理は無い。
 
 ## 検査と判断基準（設計 §10 のうち実装したもの）
 
@@ -162,8 +211,10 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
   **設定の argv はローカルで実行するプログラム**なので、recipe が参照する設定は自分で中身を確かめたものだけを使う（シェルは通さず、
   実行ファイルは存在する絶対パスに限る）。Hunyuan3D-2mv・TRELLIS.2・SkinTokens などの候補は、この接続口で別プロセスとして呼ぶ想定。
   本体はこのリポジトリに入れない。timeout で止めたときも、そこまでの出力は `external.log` に残る。
-- **REA**（`model3d rea report analysis_report.json out.json` / `model3d rea summary summary.json out.json`）: REA 6.4.0
-  （commit `a56f7bb6…`）の解析報告と実験の集計を、工程の `evidence`（observed / inferred / unknown / unavailable）に写す。
+- **REA**（`model3d rea report analysis_report.json out.json` / `model3d rea summary summary.json out.json` /
+  `model3d rea pyc evidence-summary.json out.json`）: REA 6.4.0（commit `a56f7bb6…`）の解析報告と実験の集計、6.8 系の
+  parsePythonPyc の根拠（TripoSR の 8 ファイル・84 code object の記号と位置）を、工程の `evidence`（observed / inferred / unknown /
+  unavailable）に写す。pyc の根拠は、REA が確かめた記号（rea）と人が原本を読んだ契約（oss）を分けて写す。
   coverage が unknown のグラフは unknown のまま。集計に比較の結果（`final_all_pass` か `passed`/`total`）が無いツールの比較は
   unknown にし、観測にしない。REA は JS/TS の静的解析で、3D 専用の provider は無い。
 - 2026-11-03 の再構成の実験一式（Blockbench の原本・再構成コード・REA の生出力）は**リポジトリに入れない**。Blockbench 由来の部分が
@@ -184,6 +235,8 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
   `parts.blend`・元の GLB/FBX・部品データは不足している（設計 §2）。
 - **Blender・生成器・リギングの実行は未検証**（この環境に本体が無い）。接続口の形だけがある。
 - **別メッシュへの転送（CorrespondenceMap の処理）・揺れのベイクと再開・30 秒の動作検査・GLB 書き出しは未実装**。
+- 設定画からの生成は、この環境では代役の生成器（輪郭の箱）だけで通した。本物の生成器（TripoSR）はユーザーの環境の記録が根拠で、
+  ここでは未検証。多視点の生成器は未接続。
 - 貫通の補正は凸の衝突相手で確かめた。凹んだ相手では 1 回の補正で出ないことがあり、`residual_inside` に残る。
 - 結合の候補は格子で絞るが、大きなメッシュ（数十万頂点）での速さは未測定。内外の判定と貫通の補正は 点 × 三角形 の総当たり
   （帯と大腿のような部品どうしを想定）で、全身どうしの検査には空間分割（BVH など）が要る（未実装）。

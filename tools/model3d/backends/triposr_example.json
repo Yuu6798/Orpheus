@@ -1,0 +1,11 @@
+{
+  "tool": "triposr",
+  "version": "107cefdc244c39106fa830359024f6a2f1c78871",
+  "kind": "single_view",
+  "license": "MIT (TripoSR code and public weights); torchmcubes MPL-2.0",
+  "weights": {"revision": "5b521936b01fbe1890f6f9baed0254ab6351c04a", "sha256": "429e2c6b22a0923967459de24d67f05962b235f79cde6b032aa7ed2ffcd970ee"},
+  "argv": ["/ABS/PATH/triposr_env/bin/python", "/ABS/PATH/Orpheus/tools/model3d/backends/triposr_initial_model.py",
+           "{prepared}", "{out_dir}", "--source", "/ABS/PATH/TripoSR-107cefdc244c39106fa830359024f6a2f1c78871",
+           "--weights", "/ABS/PATH/triposr_weights", "--resolution", "{resolution}", "--threshold", "{threshold}", "--seed", "{seed}"],
+  "outputs": {"obj": "initial_model.obj", "glb": "initial_model.glb", "result": "result.json"}
+}
