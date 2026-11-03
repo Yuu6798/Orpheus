@@ -14,3 +14,4 @@ build/
 *.egg-info/
 .ruff_cache/
 fx_runs/
+model3d_runs/

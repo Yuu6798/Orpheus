@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-handoff/0.1",
+  "title": "model3d handoff",
+  "description": "Orpheus へ渡す成果物 1 つの控え。run・レシピ・成果物の sha256 を持ち、mv dance の manifest（素材の sha256）と照合できる。",
+  "type": "object",
+  "required": ["schema_version", "created_at", "run_id", "run_dir", "run_status", "recipe", "artifact", "environment"],
+  "properties": {
+    "schema_version": {"const": "model3d-handoff/0.1"},
+    "created_at": {"type": "string"},
+    "run_id": {"type": "string"},
+    "run_dir": {"type": "string"},
+    "run_status": {"enum": ["succeeded", "needs_review", "failed", "running"]},
+    "recipe": {
+      "type": "object",
+      "required": ["name", "sha256"],
+      "properties": {"name": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["step", "name", "path", "sha256", "bytes"],
+      "properties": {
+        "step": {"type": "string"},
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "environment": {"type": "object"},
+    "adopted": {"type": ["object", "null"]},
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false
+}

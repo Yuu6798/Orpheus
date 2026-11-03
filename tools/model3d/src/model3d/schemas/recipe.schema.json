@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-recipe/0.1",
+  "title": "RecipeGraph",
+  "description": "工程、依存順、前提条件、入力、パラメーター、作用する座標系、出力、適用可能範囲。入力の参照は $inputs.<名前>、前の工程の出力は $steps.<id>.<出力名>。",
+  "type": "object",
+  "required": ["schema_version", "name", "inputs", "steps"],
+  "properties": {
+    "schema_version": {"const": "model3d-recipe/0.1"},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "preset": {"type": "string", "minLength": 1},
+    "semantic_map": {"type": "string", "minLength": 1},
+    "adopted_from": {"type": "string"},
+    "scope": {"type": "string"},
+    "inputs": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "kind": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "operation", "outputs"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "operation": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"},
+          "inputs": {
+            "type": "object",
+            "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+            "additionalProperties": {"type": "string", "pattern": "^\\$(inputs\\.[A-Za-z_][A-Za-z0-9_]*|steps\\.[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*)$"}
+          },
+          "parameters": {"type": "object"},
+          "outputs": {
+            "type": "object",
+            "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+            "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"}
+          },
+          "depends_on": {"type": "array", "items": {"type": "string"}},
+          "preconditions": {"type": "array", "items": {"type": "string"}},
+          "space": {"enum": ["local", "world", "rest", "pose"]},
+          "applies_to": {"type": "array", "items": {"type": "string"}},
+          "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+          "notes": {"type": "string"}
+        },
+        "patternProperties": {"^x_": {}},
+        "additionalProperties": false
+      }
+    }
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["source", "ref", "state"],
+      "properties": {
+        "source": {"enum": ["rea", "oss", "artifact", "recipe", "record", "user"]},
+        "ref": {"type": "string", "minLength": 1},
+        "state": {"enum": ["observed", "inferred", "unknown", "unavailable"]},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-rig/0.1",
+  "title": "model3d rig",
+  "description": "骨（名前・親・レスト行列）と頂点ウェイト（骨ごとの [頂点番号, 重み] の列）の交換形式。構造検査の入力。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "bones"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "model3d-rig/0.1"
+    },
+    "name": {
+      "type": "string"
+    },
+    "bones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "parent"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "tail": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "rest_matrix": {
+            "$ref": "#/$defs/matrix4"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "weights": {
+      "type": "object",
+      "required": [
+        "vertex_count",
+        "groups"
+      ],
+      "properties": {
+        "vertex_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "groups": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "patternProperties": {
+    "^x_": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

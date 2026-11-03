@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orpheus-model3d"
+version = "0.1.0"
+description = "Self-made 3D modeling tool: recipes, semantic parts, checks and run records (connected to Orpheus by files)"
+requires-python = ">=3.11,<3.14"
+# 直接依存は exact pin（ルートの pyproject と同じ版）。Blender・生成器・リギングは別プロセスで、ここには入れない。
+dependencies = ["jsonschema==4.26.0", "numpy==2.3.5"]
+
+[project.scripts]
+model3d = "model3d.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/model3d"]

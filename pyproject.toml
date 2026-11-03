@@ -12,6 +12,8 @@ dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio
 [project.optional-dependencies]
 analysis = ["librosa==0.11.0", "numba==0.63.1", "llvmlite==0.46.0"]
 fx = ["opencv-python-headless==5.0.0.93"]
+# 自作の 3D モデリングツール（tools/model3d。Orpheus とはファイルと記録で接続する外部ツール。docs/model3d.md）
+model3d = ["orpheus-model3d"]
 
 [dependency-groups]
 dev = ["pytest==9.1.1"]
@@ -24,9 +26,14 @@ mv = "mv_pipeline.cli:main"
 packages = ["src/mv_pipeline"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# tools/model3d のテストは model3d extra が無いと skip される（conftest の importorskip）。CI は --extra model3d で同期する。
+testpaths = ["tests", "tools/model3d/tests"]
 
 [tool.uv]
 # uv < 0.13.4 は emSign ECC Root CA - G3 を含む CA bundle を同梱する (GHSA-hq85-5cpj-mr62)。
 # 古い uv で lock や sync を回さないよう、ローカル実行でも強制する。
 required-version = ">=0.13.5"
+
+[tool.uv.sources]
+# tools/model3d はパス依存（editable）。workspace member にすると `uv sync --extra analysis …` が member にも extra を求めて止まる。
+orpheus-model3d = { path = "tools/model3d", editable = true }

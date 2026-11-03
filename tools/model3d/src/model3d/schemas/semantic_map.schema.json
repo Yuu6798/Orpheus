@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-semantic-map/0.1",
+  "title": "SemanticMap",
+  "description": "部位・骨・面領域の意味名（役割）、左右、骨の親子とレスト行列、対応の根拠、確認状態。共通処理は役割名だけを参照する。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "asset_id",
+    "parts",
+    "bones",
+    "regions",
+    "unmapped",
+    "required_missing"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "model3d-semantic-map/0.1"
+    },
+    "asset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preset": {
+      "$ref": "#/$defs/fileref"
+    },
+    "parts": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/part"
+      }
+    },
+    "bones": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/bone"
+      }
+    },
+    "regions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/region"
+      }
+    },
+    "unmapped": {
+      "type": "object",
+      "required": [
+        "parts",
+        "bones"
+      ],
+      "properties": {
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "required_missing": {
+      "type": "object",
+      "properties": {
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "patternProperties": {
+    "^x_": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "fileref": {
+      "type": "object",
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "basis": {
+      "enum": [
+        "preset",
+        "user",
+        "inferred"
+      ]
+    },
+    "state": {
+      "enum": [
+        "confirmed",
+        "unconfirmed",
+        "rejected"
+      ]
+    },
+    "side": {
+      "enum": [
+        "L",
+        "R",
+        "C"
+      ]
+    },
+    "part": {
+      "type": "object",
+      "required": [
+        "role",
+        "side",
+        "basis",
+        "state"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "side": {
+          "$ref": "#/$defs/side"
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "bone": {
+      "type": "object",
+      "required": [
+        "role",
+        "side",
+        "basis",
+        "state"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "side": {
+          "$ref": "#/$defs/side"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rest_matrix": {
+          "$ref": "#/$defs/matrix4"
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "region": {
+      "type": "object",
+      "required": [
+        "role",
+        "part",
+        "faces",
+        "basis",
+        "state"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "part": {
+          "type": "string"
+        },
+        "faces": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "topology_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "basis": {
+          "$ref": "#/$defs/basis"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

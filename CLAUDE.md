@@ -8,13 +8,14 @@ Claude Code 固有の運用だけをここに置く（詳細は docs/ へ）。
 ## Commands（リポジトリルートで実行。uv は 0.13.5 以上）
 
 ```sh
-uv sync --locked --extra analysis --extra fx && pnpm install --frozen-lockfile   # fx の E2E は --extra fx 必須
-uv run pytest                  # 約 50 秒。fx のテストは --extra fx で同期した環境でだけ走る（無いと cv2 を使うテストは黙って skip される）
+uv sync --locked --extra analysis --extra fx --extra model3d && pnpm install --frozen-lockfile   # fx の E2E は --extra fx 必須。model3d のテストは --extra model3d 必須
+uv run pytest                  # 約 50 秒。fx / model3d のテストは各 extra で同期した環境でだけ走る（無いと黙って skip される）
 pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv verify projects/demo
 uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md。--extra fx が前提）
 uv run mv dance demo projects/dancedemo && uv run mv dance render projects/dancedemo/spec.json   # ダンス合成（実験的。docs/dance.md。--extra fx が前提）
 uv run mv gate lines 歌詞.lrc 出力 --vocals vocals.flac; uv run mv gate check gate.json   # 行・秒の確認表と書き出し前の検査（実験的。docs/gate.md）
+uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json   # 自作 3D ツール（tools/model3d。外部ツール・実験的。docs/model3d.md。--extra model3d が前提）
 ```
 
 Windows でスマート アプリ コントロールがオンの PC は、uv が入れる署名なしの Python が止められる。.venv を新しく作るときだけ、AppData の外に置いた署名つき Python を `--python` で渡す（手順は docs/dependencies.md の 2026-10-30 節）。できた .venv では上の uv のコマンドがそのまま動く（pnpm は未確認）。

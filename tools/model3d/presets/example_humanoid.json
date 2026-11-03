@@ -1,0 +1,47 @@
+{
+  "schema_version": "model3d-preset/0.1",
+  "name": "example_humanoid",
+  "description": "合成素材のデモ用。実キャラの preset は Git の外に置く。",
+  "body": {
+    "height": 1.6,
+    "units": "m"
+  },
+  "parts": {
+    "garment_sash_front": "garment.sash.front",
+    "leg_upper_l_collider": "collider.leg.upper.L",
+    "sleeve_l": "garment.sleeve.L"
+  },
+  "bones": {
+    "mixamorig:Hips": "hips",
+    "mixamorig:Spine": "spine",
+    "mixamorig:Head": "head",
+    "mixamorig:LeftArm": "arm.upper.L",
+    "mixamorig:RightArm": "arm.upper.R",
+    "mixamorig:LeftUpLeg": "leg.upper.L",
+    "mixamorig:RightUpLeg": "leg.upper.R",
+    "mixamorig:LeftLeg": "leg.lower.L",
+    "mixamorig:LeftFoot": "foot.L"
+  },
+  "parameters": {
+    "garment.sash.front": {
+      "clearance": 0.004,
+      "falloff": 0.007,
+      "units": "m"
+    }
+  },
+  "required_roles": {
+    "parts": [
+      "garment.sash.front",
+      "collider.leg.upper.L"
+    ],
+    "bones": [
+      "hips",
+      "spine",
+      "head",
+      "arm.upper.L",
+      "arm.upper.R",
+      "leg.upper.L",
+      "leg.upper.R"
+    ]
+  }
+}

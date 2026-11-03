@@ -1,0 +1,316 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "rea-3d-observation/0.1",
+  "title": "Observation3D",
+  "description": "観測対象・取得方法・フレーム・座標系・値・出典。回収した事実（facts）と、推定候補（RecipeGraph 側）と未解決事項を分ける。既存 REA の JS グラフ型との互換は主張しない。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "observation_id",
+    "created_at",
+    "source_refs",
+    "subject",
+    "coordinate",
+    "facts",
+    "evidence",
+    "coverage",
+    "limitations",
+    "unknowns"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "rea-3d-observation/0.1"
+    },
+    "observation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "version": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "subject": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "asset",
+            "scene",
+            "object",
+            "mesh",
+            "bone",
+            "region"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "topology_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "coordinate": {
+      "type": "object",
+      "required": [
+        "units",
+        "space"
+      ],
+      "properties": {
+        "units": {
+          "enum": [
+            "m",
+            "cm",
+            "mm"
+          ]
+        },
+        "axes": {
+          "$ref": "#/$defs/axes"
+        },
+        "space": {
+          "enum": [
+            "local",
+            "world",
+            "rest",
+            "pose"
+          ]
+        },
+        "transform": {
+          "$ref": "#/$defs/matrix4"
+        },
+        "frame": {
+          "type": "number"
+        },
+        "subframe": {
+          "type": "number"
+        },
+        "time_base": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "value",
+          "type",
+          "evidence_ref"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {},
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "units": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "method",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "pointer": {
+                "type": "string"
+              },
+              "data_path": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "method": {
+            "type": "object",
+            "required": [
+              "name",
+              "version"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "state": {
+            "enum": [
+              "observed",
+              "inferred",
+              "unknown",
+              "unavailable"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "items",
+        "unmeasured"
+      ],
+      "properties": {
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unmeasured": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "patternProperties": {
+    "^x_": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "axes": {
+      "type": "object",
+      "properties": {
+        "up": {
+          "enum": [
+            "+X",
+            "-X",
+            "+Y",
+            "-Y",
+            "+Z",
+            "-Z"
+          ]
+        },
+        "forward": {
+          "enum": [
+            "+X",
+            "-X",
+            "+Y",
+            "-Y",
+            "+Z",
+            "-Z"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}
