@@ -131,6 +131,30 @@ def test_weld_rejects_bad_distance(distance):
         weld(box(), distance)
 
 
+def test_concave_faces_are_triangulated_inside_the_face():
+    """扇形では凹んだ面の外に三角形がはみ出す（指摘の 8 角形で面積 11）。耳切りと対角線の選択で正しい面積になる。"""
+    from model3d.mesh import triangulate_polygon
+    notch = [[0, 0, 0], [3, 0, 0], [3, 3, 0], [2, 3, 0], [2, 1, 0], [1, 1, 0], [1, 3, 0], [0, 3, 0]]
+    mesh = Mesh(notch, [list(range(8))])
+    assert abs(mesh.area() - 7.0) < 1e-12
+    tris, owner = mesh.triangles()
+    assert len(tris) == 6 and owner.tolist() == [0] * 6
+    assert np.allclose(mesh.triangle_normals(), [[0, 0, 1]] * 6)        # 向きは面の巻き方のまま
+    dart = Mesh([[0, 0, 0], [2, 1, 0], [4, 0, 0], [2, 3, 0]], [[0, 1, 2, 3]])   # 頂点 1 が凹んだ四角形
+    assert abs(dart.area() - 4.0) < 1e-12 and sorted(map(sorted, dart.triangles()[0].tolist())) == [[0, 1, 3], [1, 2, 3]]
+    dart_other = Mesh([[2, 1, 0], [4, 0, 0], [2, 3, 0], [0, 0, 0]], [[0, 1, 2, 3]])   # 凹んだ頂点が 0 なら扇形のまま
+    assert abs(dart_other.area() - 4.0) < 1e-12
+    # 凹みの上の点は、はみ出した偽の面に当たらない（実際の境界までの距離になる）
+    from model3d import collide
+    _, distance, _ = collide.closest_points([[1.5, 2.0, 0.5]], mesh)
+    assert abs(distance[0] - math.sqrt(0.5 ** 2 + 0.5 ** 2)) < 1e-12
+    convex = Mesh([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [-0.5, 0.5, 0]], [[0, 1, 2, 3, 4]])
+    assert triangulate_polygon(convex.vertices) == [(0, 1, 2), (0, 2, 3), (0, 3, 4)]   # 凸な面は扇形のまま
+    tilted = Mesh((np.asarray(notch) @ np.array([[0.6, 0, 0.8], [0, 1, 0], [-0.8, 0, 0.6]]).T + [1, 2, 3]).tolist(), [list(range(8))])
+    assert abs(tilted.area() - 7.0) < 1e-9                                            # 傾いた面でも投影して分ける
+    assert len(triangulate_polygon([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]])) == 2   # 退化した面は扇形
+
+
 def test_mesh_validation_and_hashes():
     with pytest.raises(ToolError, match="無い頂点"):
         Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 5]])

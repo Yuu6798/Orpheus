@@ -109,12 +109,35 @@ class Mesh:
     # ---- 幾何 ----------------------------------------------------------------
 
     def triangles(self):
-        """扇形に三角形化した (T,3) の頂点番号と、各三角形が属する面の番号 (T,)。"""
+        """三角形化した (T,3) の頂点番号と、各三角形が属する面の番号 (T,)。面の向き（巻き方）は保つ。
+
+        三角形はそのまま、四角形は凹んだ頂点を通る対角線で、5 角形以上は面の平面に投影して耳切りで分ける
+        （扇形は凸な面にしか正しくない。凹んだ面では面積・体積と衝突面がずれる）。退化した面だけ扇形に戻す。
+        """
+        quads = [k for k, face in enumerate(self.faces) if len(face) == 4]
+        other_diagonal = {}
+        if quads:
+            corners = self.vertices[np.asarray([self.faces[k] for k in quads], dtype=np.int64)]      # (Q,4,3)
+            normal = np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1])           # 対角線の外積 ∝ 面の法線
+            edges = np.roll(corners, -1, axis=1) - corners
+            turn = np.einsum("qij,qj->qi", np.cross(edges, np.roll(edges, -1, axis=1)), normal)      # 頂点 i+1 の曲がり
+            flagged = (turn[:, 0] < 0) | (turn[:, 2] < 0)   # 頂点 1 か 3 が凹 → 対角線 0-2 は面の外。1-3 で分ける
+            other_diagonal = dict(zip(quads, flagged.tolist()))
         tris, owner = [], []
         for k, face in enumerate(self.faces):
-            for j in range(1, len(face) - 1):
-                tris.append((face[0], face[j], face[j + 1]))
+            if len(face) == 3:
+                tris.append(tuple(face))
                 owner.append(k)
+            elif len(face) == 4:
+                if other_diagonal.get(k):
+                    tris.extend([(face[1], face[2], face[3]), (face[1], face[3], face[0])])
+                else:
+                    tris.extend([(face[0], face[1], face[2]), (face[0], face[2], face[3])])
+                owner.extend([k, k])
+            else:
+                for i, j, m in triangulate_polygon(self.vertices[face]):
+                    tris.append((face[i], face[j], face[m]))
+                    owner.append(k)
         if not tris:
             return np.zeros((0, 3), dtype=np.int64), np.zeros((0,), dtype=np.int64)
         return np.asarray(tris, dtype=np.int64), np.asarray(owner, dtype=np.int64)
@@ -182,6 +205,85 @@ class Mesh:
         lo, hi = self.bounds()
         return {"vertices": self.vertex_count, "faces": self.face_count, "bounds": {"min": lo, "max": hi},
                 "topology_sha256": self.topology_hash(), "geometry_sha256": self.geometry_hash()}
+
+
+# ---- 多角形の三角形化 ------------------------------------------------------------------
+
+def _cross2(a, b):
+    """2D ベクトルの列どうしの外積の z 成分（numpy 2 は 2D の np.cross を非推奨にした）。"""
+    return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+
+
+def _project_polygon(points):
+    """面の法線（Newell 法）に投影した 2D 座標 (n,2)。向きは元の面の巻き方と同じ（反時計回り）。退化していれば None。"""
+    normal = np.cross(points, np.roll(points, -1, axis=0)).sum(axis=0)
+    length = np.linalg.norm(normal)
+    if not np.isfinite(length) or length < 1e-18:
+        return None
+    normal = normal / length
+    helper = np.array([1.0, 0.0, 0.0]) if abs(normal[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(normal, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(normal, u)
+    flat = (points - points[0]) @ np.stack([u, v]).T
+    if _cross2(flat, np.roll(flat, -1, axis=0)).sum() < 0:   # 投影の向きが逆なら軸を反転して反時計回りにする
+        flat[:, 1] *= -1.0
+    return flat
+
+
+def _fan(indices):
+    return [(indices[0], indices[j], indices[j + 1]) for j in range(1, len(indices) - 1)]
+
+
+def triangulate_polygon(points):
+    """多角形（面の頂点の 3D 座標の列）を、面の中にある三角形に分ける。返すのは面の中での番号の組の列。
+
+    凸な面は扇形（JSCAD の照合と同じ分割）、凹んだ面は耳切り（ear clipping）。耳が見つからない退化した面は扇形に戻す。
+    """
+    points = np.asarray(points, dtype=np.float64)
+    n = len(points)
+    if n < 3:
+        return []
+    if n == 3:
+        return [(0, 1, 2)]
+    flat = _project_polygon(points)
+    if flat is None:
+        return _fan(list(range(n)))
+    scale = float(np.abs(flat).max()) or 1.0
+    eps = 1e-12 * scale * scale
+    edges = np.roll(flat, -1, axis=0) - flat
+    turns = _cross2(edges, np.roll(edges, -1, axis=0))   # 頂点 i+1 の曲がり（反時計回りなら正）
+    if (turns >= -eps).all():
+        return _fan(list(range(n)))
+
+    def convex(a, b, c):
+        return (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) > eps
+
+    def contains(a, b, c, p):   # 三角形 abc（反時計回り）の中か辺の上に p があるか
+        return ((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= -eps and
+                (c[0] - b[0]) * (p[1] - b[1]) - (c[1] - b[1]) * (p[0] - b[0]) >= -eps and
+                (a[0] - c[0]) * (p[1] - c[1]) - (a[1] - c[1]) * (p[0] - c[0]) >= -eps)
+
+    remaining = list(range(n))
+    result = []
+    while len(remaining) > 3:
+        found = False
+        for k in range(len(remaining)):
+            i0, i1, i2 = remaining[k - 1], remaining[k], remaining[(k + 1) % len(remaining)]
+            a, b, c = flat[i0], flat[i1], flat[i2]
+            if not convex(a, b, c):
+                continue
+            if any(contains(a, b, c, flat[j]) for j in remaining if j not in (i0, i1, i2)):
+                continue
+            result.append((i0, i1, i2))
+            del remaining[k]
+            found = True
+            break
+        if not found:   # 自己交差などで耳が無い: 残りは扇形
+            result.extend(_fan(remaining))
+            return result
+    result.append(tuple(remaining))
+    return result
 
 
 # ---- OBJ ------------------------------------------------------------------------
