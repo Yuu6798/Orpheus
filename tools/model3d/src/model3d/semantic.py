@@ -4,8 +4,9 @@
 骨名（`mixamorig:LeftUpLeg` など）は preset で役割に対応付ける。対応の根拠（preset / user / inferred）と確認状態
 （confirmed / unconfirmed / rejected）を持ち、確実でない対応は利用者が直す。
 
-部位分けの無いメッシュ（生成器の出力など）は、面領域（regions）で役割を面に結び付ける。面番号はそのメッシュ版でだけ
-意味を持つので、面領域は頂点構成のハッシュ（topology_sha256）に結び付け、構成の違うメッシュには当てない（古い対応）。
+部位分けの無いメッシュ（生成器の出力など）は、面領域（regions）で役割を面に結び付ける。面番号はその部品のそのメッシュ版で
+だけ意味を持つので、面領域は部品の名前（part。メッシュの name）と頂点構成のハッシュ（topology_sha256）の両方に結び付ける。
+名前の違うメッシュ（頂点構成が同じ左右の部品など）には当てず、構成の違うメッシュには古い対応として当てない。
 構成を変えた工程の後は、その工程が書いた正確な面の対応で付け替える。近い面を探して付け替えることはしない。
 """
 import re
@@ -179,10 +180,10 @@ def face_list(mesh, faces):
     return sorted(chosen)
 
 
-def add_region(semantic_map, key, role, mesh, faces, by, part=None, basis="user", note=None, replace=False, selection=None):
-    """面領域を足す。面番号はこのメッシュの頂点構成（topology_sha256）に結び付け、状態は unconfirmed（確認は confirm）。
+def add_region(semantic_map, key, role, mesh, faces, by, basis="user", note=None, replace=False, selection=None):
+    """面領域を足す。面番号はこのメッシュの名前（part）と頂点構成（topology_sha256）に結び付け、状態は unconfirmed（確認は confirm）。
 
-    part は面番号が指すメッシュ（部品）の ID で、既定はメッシュの名前。selection は面の選び方の記録（履歴に残す）。
+    名前の無いメッシュは部品を区別できないので受け付けない。selection は面の選び方の記録（履歴に残す）。
     """
     if not isinstance(key, str) or not REGION_KEY.match(key):
         raise ToolError(f"面領域の key は英数字と _ . - だけにしてください: {key!r}")
@@ -192,8 +193,11 @@ def add_region(semantic_map, key, role, mesh, faces, by, part=None, basis="user"
         raise ToolError(f"basis は user か inferred です: {basis!r}")
     if key in semantic_map["regions"] and not replace:
         raise ToolError(f"面領域 {key} は既にあります（置き換えるときは replace）")
+    if not mesh.name:
+        raise ToolError("面領域を作るメッシュに名前（name）がありません。部品は名前で区別するので、JSON なら name を付けてください"
+                        "（OBJ はファイル名か、model3d が書いた見出しの名前になる）")
     chosen = face_list(mesh, faces)
-    entry = {"role": role, "part": part or mesh.name or "mesh", "faces": chosen, "topology_sha256": mesh.topology_hash(),
+    entry = {"role": role, "part": mesh.name, "faces": chosen, "topology_sha256": mesh.topology_hash(),
              "basis": basis, "state": "unconfirmed"}
     if note:
         entry["note"] = note
@@ -209,13 +213,15 @@ def add_region(semantic_map, key, role, mesh, faces, by, part=None, basis="user"
 
 
 def region_status(semantic_map, mesh):
-    """各面領域をこのメッシュ版に当てられるか。bound（同じ頂点構成で面番号が範囲内）・stale（頂点構成が違う＝古い対応）・
-    invalid（頂点構成の記録が無いか、面が 0 か範囲外）。"""
+    """各面領域をこのメッシュ版に当てられるか。bound（同じ部品・同じ頂点構成で面番号が範囲内）・other（別の部品の面領域）・
+    stale（同じ部品で頂点構成が違う＝古い対応）・invalid（頂点構成の記録が無いか、面が 0 か範囲外）。"""
     topology = mesh.topology_hash()
-    rows, groups = {}, {"bound": [], "stale": [], "invalid": []}
+    rows, groups = {}, {"bound": [], "other": [], "stale": [], "invalid": []}
     for key, entry in sorted(semantic_map["regions"].items()):
         recorded = entry.get("topology_sha256")
-        if not recorded:
+        if entry["part"] != mesh.name:
+            status, reason = "other", f"別の部品 {entry['part']} の面領域です（このメッシュは {mesh.name}）"
+        elif not recorded:
             status, reason = "invalid", "頂点構成（topology_sha256）が記録されていません"
         elif recorded != topology:
             status, reason = "stale", f"別の頂点構成 {recorded[:12]}… に結び付いています"
@@ -232,14 +238,18 @@ def region_status(semantic_map, mesh):
 def select(semantic_map, role, mesh):
     """役割 role に当たる、このメッシュの面と頂点（工程の select が使う）。
 
-    使うのは、このメッシュの頂点構成に結び付いた面領域と、対応表の部品（parts）のうち role に当てた部品 ID と同じ名前の
-    メッシュの面集合（mesh.parts。結合などでメッシュと一緒に付け替わる）。rejected の対応は使わない。当たる面が無ければ止める。
-    頂点構成の違う面領域しか無いときは古い対応として止め、加工対象を推測しない。
+    使うのは、このメッシュの名前（part）と頂点構成に結び付いた面領域と、対応表の部品（parts）のうち role に当てた部品 ID と
+    同じ名前のメッシュの面集合（mesh.parts。結合などでメッシュと一緒に付け替わる）。rejected の対応は使わない。当たる面が無ければ
+    止める。別の部品の面領域は、頂点構成が同じでも当てない。同じ部品で頂点構成の違う面領域しか無いときは古い対応として止め、
+    加工対象を推測しない。
     """
     topology = mesh.topology_hash()
-    faces, sources, stale = set(), [], []
+    faces, sources, stale, other = set(), [], [], []
     for key, entry in sorted(semantic_map["regions"].items()):
         if entry["role"] != role or entry["state"] == "rejected":
+            continue
+        if entry["part"] != mesh.name:
+            other.append(key)
             continue
         if entry.get("topology_sha256") != topology:
             stale.append(key)
@@ -257,12 +267,16 @@ def select(semantic_map, role, mesh):
         if stale:
             raise ToolError(f"役割 {role} の面領域（{', '.join(stale)}）は別の頂点構成のメッシュに結び付いています（古い対応）。"
                             "頂点構成を変えた工程の面の対応で付け替える（model3d semantic remap）か、このメッシュで作り直してください")
+        if other:
+            parts = sorted({semantic_map["regions"][key]["part"] for key in other})
+            raise ToolError(f"役割 {role} の面領域（{', '.join(other)}）は別の部品（{', '.join(parts)}）のもので、"
+                            f"このメッシュ（{mesh.name}）には当てません。工程の入力が正しい部品か確かめてください")
         raise ToolError(f"役割 {role} に当たる面がこのメッシュにありません（このメッシュ版の面領域も、対応表の部品と同じ名前の面集合も無い）")
     if not faces:
         raise ToolError(f"役割 {role} の面が 0 です")
     chosen = sorted(faces)
     return {"role": role, "topology_sha256": topology, "faces": chosen, "vertices": face_vertices(mesh, chosen),
-            "sources": sources, "ignored_stale": stale}
+            "sources": sources, "ignored_stale": stale, "ignored_other_part": other}
 
 
 def remap_regions(semantic_map, mapping, by):

@@ -68,7 +68,7 @@ uv run model3d run projects/model3d-demo/recipe_generate.json   # 合成の設�
 | 契約（`schema_version`） | 中身 |
 |---|---|
 | AssetManifest `model3d-asset-manifest/0.1` | 入力の参照と sha256・大きさ・種類、部品 ID、メッシュの頂点構成のハッシュ（`topology_sha256`）と形のハッシュ、単位、軸、変換行列、資産の版 |
-| SemanticMap `model3d-semantic-map/0.1` | 部品 → 役割、骨 → 役割（親・レスト行列）、面領域 → 役割（面番号を頂点構成のハッシュに結び付ける。構成の違うメッシュには当てない）、根拠（preset / user / inferred）、確認状態（confirmed / unconfirmed / rejected）、未対応と必須の欠落、履歴 |
+| SemanticMap `model3d-semantic-map/0.1` | 部品 → 役割、骨 → 役割（親・レスト行列）、面領域 → 役割（面番号を部品の名前と頂点構成のハッシュに結び付ける。別の部品や構成の違うメッシュには当てない）、根拠（preset / user / inferred）、確認状態（confirmed / unconfirmed / rejected）、未対応と必須の欠落、履歴 |
 | CorrespondenceMap `model3d-correspondence/0.1` | 転送元と転送先の版と頂点構成、対応点（面と重心座標）、距離と曖昧さ、未対応の役割。空間的に近いだけの対応は作らない（形式だけ。転送の処理は未実装） |
 | RecipeGraph `model3d-recipe/0.1` | 入力（パスと任意の sha256）、工程（操作・入力の参照・パラメーター・出力・依存・前提・座標系・適用する役割・面領域の選択 `select`・根拠） |
 | Observation3D `rea-3d-observation/0.1` | 観測対象、取得方法、座標系、事実（facts）、出自（evidence: observed / inferred / unknown / unavailable）、範囲（coverage）、限界と未解決。推定値は facts に混ぜない |
@@ -111,10 +111,13 @@ uv run model3d semantic remap semantic_map.json weld/vertex_mapping.json semanti
   メッシュの面集合（`--mesh-part`。OBJ の `g`）、重心が入る軸に沿った箱（`--box`。ほかの選び方と併用すると、その中で箱に入る面だけ）。
   選び方とメッシュの sha256 は `history` に残る。成分の一覧には面・頂点の数、面積、bounds、面積で重みを付けた重心、閉じているか、
   頂点色の平均が入る（役割を人が決める材料で、役割の推定ではない）。
-- 面領域は追加したメッシュの頂点構成（`topology_sha256`）に結び付き、状態は `unconfirmed`。`--basis` は人が選んだら `user`、
+- 面領域は、追加したメッシュの名前（`part`。model3d-mesh の `name`。OBJ は model3d が書いた見出しの名前か、無ければファイル名）と
+  頂点構成（`topology_sha256`）の両方に結び付き、状態は `unconfirmed`。名前の無いメッシュには作れない。`--basis` は人が選んだら `user`、
   成分の大きさなどから選んだ候補なら `inferred`。人が `preview` の OBJ を見てから `confirm` する。色・形・骨からの自動の部位分割はしない。
-- 頂点構成の違うメッシュには当てない（古い対応。`check` が `stale` と報告し、`select` の工程は止まる）。位置だけを変える工程
-  （`mesh.transform`・`collision.push_out`）の後はそのまま当たる。結合のように構成を変えた後は、その工程の mapping の正確な面の対応
+- 名前の違うメッシュには、頂点構成が同じでも当てない（左右に写した袖など。`check` は `other` と報告し、`select` の工程は止まる）。
+  同じ形の部品は別の名前にする（同じ名前で同じ頂点構成の別のメッシュは区別できない）。
+- 同じ部品で頂点構成の違うメッシュには当てない（古い対応。`check` が `stale` と報告し、`select` の工程は止まる）。位置だけを変える工程
+  （`mesh.transform`・`collision.push_out`。名前も引き継ぐ）の後はそのまま当たる。結合のように構成を変えた後は、その工程の mapping の正確な面の対応
   （`face_old_to_new`）で `remap` する（元の対応表は残し、別のファイルに書く）。面が消えた領域は `unconfirmed` に戻す。
   近い面を探して付け替えることはしない。
 
@@ -142,9 +145,9 @@ uv run model3d semantic remap semantic_map.json weld/vertex_mapping.json semanti
   `applies_to` と `role:` で使用する役割が未確認なら `unresolved` に残して `needs_review` とし、その工程は成功キャッシュから再利用しない。
   使用しない役割の未確認状態は警告だけに残す。
   **`applies_to` は役割の存在・確認状態の宣言であり、メッシュの部分選択ではない。**
-- 選択 `select`: `{"<入力名>": "<役割>"}`。実行器は対応表から、その入力メッシュの頂点構成に結び付いた面領域と、対応表の部品 ID と
-  同じ名前の面集合（`mesh.parts`）を選んで操作に渡し、記録の `observations` に選んだ面・頂点の数と出どころを残す。古い対応（構成の違う
-  面領域しか無い）や当たる面の無い役割では工程を止め、メッシュ全体へ黙って当てない。`select` の役割は使用する役割に数え、未確認なら
+- 選択 `select`: `{"<入力名>": "<役割>"}`。実行器は対応表から、その入力メッシュの名前と頂点構成に結び付いた面領域と、対応表の部品 ID と
+  同じ名前の面集合（`mesh.parts`）を選んで操作に渡し、記録の `observations` に選んだ面・頂点の数と出どころを残す。別の部品の面領域しか
+  無い、古い対応（構成の違う面領域しか無い）、当たる面の無い役割では工程を止め、メッシュ全体へ黙って当てない。`select` の役割は使用する役割に数え、未確認なら
   `needs_review`。受け付けるのは `mesh.weld`・`collision.push_out`・`check.penetration`・`mesh.extract_region` で、ほかの操作に書くか、
   recipe に `semantic_map` が無いと実行前に止まる。パラメーターの `selection` / `use_selection` と同時には使えない。
   1 つのレシピの中で構成を変える工程（結合）の後に `select` するには、役割を面集合（`mesh.parts`）として持たせる（結合が一緒に付け替える）。
@@ -173,7 +176,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `mesh.weld` | mesh [, rig] → mesh [, mapping, rig] | `distance` 以内の頂点を結合（`selection` か工程の `select`・`center: mean|first`）。退化面と包含面を除く（結合に関わった面と隣接面のみ）。mapping は旧→新頂点番号、旧→新面番号（`face_old_to_new`。消えた面は -1）と双方の topology。rig は入出力を対で指定し、同じ mean / first 規則でウェイトを移す |
 | `mesh.transform` | mesh → mesh | `to_units`（m / cm / mm の換算）→ `to_axes`（`{"up", "forward"}` の約束の換算）→ `scale` → `rotate_z_deg` → `translate` |
 | `mesh.extract_region` | mesh → mesh [, mapping] | 工程の `select` で選んだ役割の面だけのメッシュ（使わない頂点は落とす。uv・頂点色・単位・軸は引き継ぐ）。mapping は新→旧の頂点・面番号と双方の topology。観測に連結成分の数と閉じているか |
-| `mesh.export_obj` | mesh → obj | v / vt / f / g。見出しの行に units と軸を書き、`mesh.import` で戻す。数値は往復で変わらない表記 |
+| `mesh.export_obj` | mesh → obj | v / vt / f / g。見出しの行に units・軸・名前を書き、`mesh.import` で戻す（名前は面領域が部品を区別するのに使う）。数値は往復で変わらない表記 |
 | `collision.push_out` | mesh, collider → mesh, deltas, report | 閉じた collider の中の頂点（`selection` か工程の `select` の面の頂点だけにできる）を最も近い面の外へ `clearance` だけ離す（`clearance` は mesh の単位。mesh と collider の単位か軸の約束が違えば止まる）。外でも余裕より近い点は離す（`pad_outside`）。`deltas` は頂点ごとの移動量 |
 | `check.structure` | rig [, mesh] → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`）。mesh があれば頂点数・topology も必須照合。使用する未確認の骨対応は needs_review |
 | `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ（工程の `select` があればその面の頂点だけを調べ、数を `checked` に残す。mesh と collider の単位か軸の約束が違えば止まる。`directions` は 1 本以上の有限で長さ 0 でない向き。奇数本を勧める） |
@@ -283,7 +286,8 @@ Blender での30秒描画、最終品質の全編出力、汎用 `blender.run_sc
   `dance-recipe` は確認済みの配置と CLI 契約に対応し、任意の作品へ自動適応するものではない。素材・preset 自体は Git に入れない。
 - **汎用 Blender 観測・生成器・別メッシュへのリギングは未検証**。既存 worker の再実行とは区別する。
 - **別メッシュへの転送（CorrespondenceMap の処理）・揺れのベイクと再開・30 秒の動作検査・GLB 書き出しは未実装**。
-- 面領域は頂点構成に結び付けて持ち、工程の `select` で対象の面だけを加工できるが、**部位の自動分割（髪・顔・衣装を分ける処理）は無い**。
+- 面領域は部品の名前と頂点構成に結び付けて持ち、工程の `select` で対象の面だけを加工できるが、**部位の自動分割（髪・顔・衣装を分ける処理）は無い**。
+  部品の区別は名前だけで、同じ名前・同じ頂点構成の別のメッシュ（取り違えたファイルなど）は見分けられない。
   面は連結成分・面番号・面集合・箱で人が選び、確認も人が行う。融合した部位を分けるのは形状修正の工程（Blender の手作業と `model3d edit`）。
   構成を変えた後の付け替えは、結合の正確な面の対応だけに対応する（リトポロジーなど対応の無い変更では、面領域を作り直す）。
 - 設定画からの生成は、この環境では代役の生成器（輪郭の箱）だけで通した。本物の生成器（TripoSR）はユーザーの環境の記録が根拠で、

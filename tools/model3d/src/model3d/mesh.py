@@ -10,6 +10,7 @@ import copy
 import hashlib
 import math
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 import numpy as np
 
@@ -413,16 +414,21 @@ def triangulate_polygon(points):
 # ---- OBJ ------------------------------------------------------------------------
 
 def read_obj(path):
-    """OBJ を読む（v / vt / f / o / g）。頂点ごとの uv は、各頂点が 1 つの vt にだけ対応するときに持つ。"""
+    """OBJ を読む（v / vt / f / o / g）。頂点ごとの uv は、各頂点が 1 つの vt にだけ対応するときに持つ。
+
+    名前は write_obj が見出しに書いた name、無ければファイル名（面領域は名前で部品を区別するので、往復で変えない）。
+    """
     vertices, uvs, faces, face_uvs, parts, colors = [], [], [], [], {}, []
-    group, units, axes = None, "m", None
+    group, units, axes, name = None, "m", None, None
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     for number, raw in enumerate(text.splitlines(), 1):
-        if raw.startswith(f"# {SCHEMA} "):   # write_obj が書く見出し: units と軸を戻す
+        if raw.startswith(f"# {SCHEMA} "):   # write_obj が書く見出し: units・軸・名前を戻す
             fields = dict(token.split("=", 1) for token in raw.split()[2:] if "=" in token)
             units = fields.get("units", units)
             if fields.get("up") and fields.get("forward"):
                 axes = {"up": fields["up"], "forward": fields["forward"]}
+            if fields.get("name"):
+                name = unquote(fields["name"])
             continue
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -471,7 +477,7 @@ def read_obj(path):
     extra = {}
     if vertices and all(c is not None for c in colors):   # 頂点色（0..1 の RGB。trimesh などの書き方）
         extra["x_vertex_colors"] = colors
-    return Mesh(vertices, faces, uv, name=Path(path).stem, units=units, axes=axes, parts=parts, extra=extra)
+    return Mesh(vertices, faces, uv, name=name or Path(path).stem, units=units, axes=axes, parts=parts, extra=extra)
 
 
 def write_obj(mesh, path):
@@ -481,7 +487,8 @@ def write_obj(mesh, path):
     for name in sorted(mesh.parts):
         for k in mesh.parts[name]:
             owner.setdefault(k, name)
-    lines = [f"# {SCHEMA} units={mesh.units} up={mesh.axes.get('up')} forward={mesh.axes.get('forward')}"]
+    lines = [f"# {SCHEMA} units={mesh.units} up={mesh.axes.get('up')} forward={mesh.axes.get('forward')}"
+             + (f" name={quote(mesh.name, safe='')}" if mesh.name else "")]
     if mesh.name:
         lines.append(f"o {mesh.name}")
     colors = mesh.extra.get("x_vertex_colors")

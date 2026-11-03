@@ -83,7 +83,7 @@ def parser():
     components.add_argument("mesh", type=Path)
     components.add_argument("--out", type=Path, help="also write the report as JSON")
     components.add_argument("--obj", type=Path, help="write the mesh as OBJ with one group per component (to look at in Blender)")
-    region = sem_sub.add_parser("add-region", help="bind faces of this mesh version to a part role (state unconfirmed)")
+    region = sem_sub.add_parser("add-region", help="bind faces of this mesh (its name and topology) to a part role (state unconfirmed)")
     region.add_argument("semantic_map", type=Path)
     region.add_argument("mesh", type=Path)
     region.add_argument("--key", required=True, help="region id (letters, digits, _ . -)")
@@ -94,11 +94,10 @@ def parser():
     region.add_argument("--mesh-part", action="append", default=[], help="a face set of the mesh (mesh parts / OBJ group)")
     region.add_argument("--box", type=float, nargs=6, metavar=("X0", "Y0", "Z0", "X1", "Y1", "Z1"),
                         help="keep only faces whose centre lies in this axis-aligned box (mesh units)")
-    region.add_argument("--part", help="part id the face numbers refer to (default: the mesh name)")
     region.add_argument("--basis", choices=["user", "inferred"], default="user")
     region.add_argument("--note")
     region.add_argument("--replace", action="store_true")
-    status = sem_sub.add_parser("check", help="which regions bind to this mesh version (bound / stale / invalid)")
+    status = sem_sub.add_parser("check", help="which regions bind to this mesh version (bound / other part / stale / invalid)")
     status.add_argument("semantic_map", type=Path)
     status.add_argument("mesh", type=Path)
     remap = sem_sub.add_parser("remap", help="rebind regions through an exact face mapping (the mapping output of mesh.weld)")
@@ -239,7 +238,8 @@ def _regions(args, semantic):
     data = contracts.load("semantic-map", args.semantic_map)
     if args.semantic_command == "check":
         report = semantic.region_status(data, mesh)
-        report["pass"] = bool(report["regions"]) and not report["stale"] and not report["invalid"]
+        # 別の部品の面領域（other）は、このメッシュの不合格に数えない。この部品の面領域が 1 つ以上当たり、古い対応が無いこと
+        report["pass"] = bool(report["bound"]) and not report["stale"] and not report["invalid"]
         args.failed = 0 if report["pass"] else 1
         return report
     if args.semantic_command == "preview":
@@ -256,7 +256,8 @@ def _regions(args, semantic):
         return {"out": _labelled(mesh, parts, args.out),
                 "regions": {key: {"role": data["regions"][key]["role"], "state": data["regions"][key]["state"],
                                   "faces": len(data["regions"][key]["faces"])} for key in status["bound"]},
-                "unassigned_faces": len(rest), "overlapping_faces": overlapping, "stale": status["stale"], "invalid": status["invalid"]}
+                "unassigned_faces": len(rest), "overlapping_faces": overlapping, "other": status["other"], "stale": status["stale"],
+                "invalid": status["invalid"]}
     chosen, selection = set(), {}
     if args.component:
         groups = face_components(mesh)
@@ -289,7 +290,7 @@ def _regions(args, semantic):
     if not selection:
         raise ToolError("面の選び方を 1 つ以上指定してください（--component / --faces / --mesh-part / --box）")
     selection["mesh"] = {"path": str(args.mesh.resolve()), "sha256": sha256(args.mesh)}
-    entry = semantic.add_region(data, args.key, args.role, mesh, sorted(chosen), args.by, args.part, args.basis, args.note,
+    entry = semantic.add_region(data, args.key, args.role, mesh, sorted(chosen), args.by, args.basis, args.note,
                                 args.replace, selection)
     contracts.validate("semantic-map", data)
     atomic_json(args.semantic_map, data)

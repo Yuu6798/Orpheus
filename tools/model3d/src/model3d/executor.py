@@ -11,8 +11,8 @@
   前の生成物がハッシュまで揃っているときだけ。ファイルがあるだけでは再利用しない。別プロセスを呼ぶ操作
   （external.run・blender.run_script）は設定が参照する実行ファイルや素材を知らないので、毎回実行する（索引にも載せない）。
 - 入力の sha256 が recipe の宣言と違えば実行しない。未確認の役割・観測不足は unresolved に残し、成功扱いにしない。
-- 工程の select（{"<入力名>": "<役割>"}）は、対応表でその入力メッシュの頂点構成に結び付いた面領域（か同じ名前の面集合）を
-  選んで操作に渡す。古い対応（頂点構成の違う面領域）や当たる面の無い役割では工程を止め、メッシュ全体へ黙って当てない。
+- 工程の select（{"<入力名>": "<役割>"}）は、対応表でその入力メッシュの名前と頂点構成に結び付いた面領域（か同じ名前の面集合）を
+  選んで操作に渡す。別の部品の面領域・古い対応（頂点構成の違う面領域）・当たる面の無い役割では工程を止め、メッシュ全体へ黙って当てない。
 """
 import platform
 import shutil
@@ -274,7 +274,8 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                                   for name, role in sorted(step.get("select", {}).items())}
                     chosen_notes = [{"kind": "selection", "input": name, "role": chosen["role"], "faces": len(chosen["faces"]),
                                      "vertices": len(chosen["vertices"]), "topology_sha256": chosen["topology_sha256"],
-                                     "sources": chosen["sources"], "ignored_stale": chosen["ignored_stale"]}
+                                     "sources": chosen["sources"], "ignored_stale": chosen["ignored_stale"],
+                                     "ignored_other_part": chosen["ignored_other_part"]}
                                     for name, chosen in selections.items()]
                     # 使用する役割だけを候補扱いにする。無関係な未確認の対応は run の警告に留める。
                     # 同じ役割が applies_to と role: の両方に出ても、未解決事項は一度だけ記録する。

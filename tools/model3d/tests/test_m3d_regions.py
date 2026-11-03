@@ -9,7 +9,7 @@ import pytest
 from m3d_helpers import box, run_cli
 from model3d import contracts, demo, executor, recipe, semantic
 from model3d.io import ToolError, atomic_json, read_json
-from model3d.mesh import Mesh, describe_faces, face_components, submesh, weld
+from model3d.mesh import Mesh, describe_faces, face_components, submesh, transform, weld
 
 
 def two_quads(name="pair"):
@@ -97,10 +97,33 @@ def test_region_status_separates_bound_stale_and_invalid():
     mapping["regions"]["old"] = {"role": "hair.front", "part": "pair", "faces": [0], "topology_sha256": "0" * 64,
                                  "basis": "user", "state": "confirmed"}
     mapping["regions"]["loose"] = {"role": "hair.back", "part": "pair", "faces": [0], "basis": "user", "state": "unconfirmed"}
+    mapping["regions"]["twin"] = {"role": "hair.side.L", "part": "pair_r", "faces": [0], "topology_sha256": mesh.topology_hash(),
+                                  "basis": "user", "state": "confirmed"}
     contracts.validate("semantic-map", mapping)
     status = semantic.region_status(mapping, mesh)
-    assert (status["bound"], status["stale"], status["invalid"]) == (["sash"], ["old"], ["loose"])
+    assert (status["bound"], status["other"], status["stale"], status["invalid"]) == (["sash"], ["twin"], ["old"], ["loose"])
     assert status["regions"]["old"]["status"] == "stale" and "reason" in status["regions"]["old"]
+
+
+def test_regions_do_not_cross_parts_that_share_a_topology(tmp_path):
+    left = two_quads("sleeve_l")
+    right = Mesh(left.vertices * [-1.0, 1.0, 1.0], left.faces, name="sleeve_r")   # 左右に写した別の部品。頂点構成は同じ
+    assert left.topology_hash() == right.topology_hash()
+    mapping = semantic.build("asset", demo.preset_json())
+    semantic.add_region(mapping, "cuff_l", "garment.sleeve.L", left, [0], "tester")
+    assert semantic.select(mapping, "garment.sleeve.L", left)["faces"] == [0]
+    with pytest.raises(ToolError, match="別の部品"):
+        semantic.select(mapping, "garment.sleeve.L", right)
+    assert semantic.region_status(mapping, right)["other"] == ["cuff_l"]
+    # 位置だけを変えた同じ部品（名前を引き継ぐ）と、model3d が書いた OBJ の往復（ファイル名は違う）には当たる
+    assert semantic.select(mapping, "garment.sleeve.L", transform(left, translate=[0.1, 0.0, 0.0]))["faces"] == [0]
+    left.save(tmp_path / "exported.obj")
+    assert semantic.select(mapping, "garment.sleeve.L", Mesh.load(tmp_path / "exported.obj"))["faces"] == [0]
+    spaced = Mesh(left.vertices, left.faces, name="袖 L=1")
+    spaced.save(tmp_path / "spaced.obj")
+    assert Mesh.load(tmp_path / "spaced.obj").name == "袖 L=1"   # 見出しの name は空白・= を含んでも戻る
+    with pytest.raises(ToolError, match="名前"):
+        semantic.add_region(mapping, "unnamed", "garment.sleeve.R", Mesh(left.vertices, left.faces), [0], "tester")
 
 
 def test_remap_follows_the_exact_weld_mapping_and_reopens_regions_that_lost_faces():
@@ -205,12 +228,23 @@ def test_select_refuses_a_stale_region_instead_of_touching_the_whole_mesh(region
     assert result["steps"]["push"]["artifacts"] == {}
 
 
+def test_select_refuses_a_region_of_another_part_with_the_same_topology(regions):
+    root, write = regions
+    twin = two_quads()
+    Mesh(twin.vertices + [0.0, 0.2, 0.0], twin.faces, name="twin").save(root / "inputs" / "twin.json")
+    step = dict(PUSH, inputs={"mesh": "$inputs.twin", "collider": "$inputs.box"})
+    result = executor.run_recipe(write([step], inputs={"box": {"path": "inputs/box.json"}, "pair": {"path": "inputs/pair.json"},
+                                                       "twin": {"path": "inputs/twin.json"}}), root / "runs")
+    assert result["status"] == "failed" and "別の部品" in result["error"]
+    assert result["steps"]["push"]["artifacts"] == {}
+
+
 def test_select_is_checked_before_anything_runs(regions):
     root, write = regions
-    transform = {"id": "move", "operation": "mesh.transform", "inputs": {"mesh": "$inputs.pair"},
+    move = {"id": "move", "operation": "mesh.transform", "inputs": {"mesh": "$inputs.pair"},
                  "select": {"mesh": "garment.sash.front"}, "parameters": {"scale": 2.0}, "outputs": {"mesh": "moved.json"}}
     with pytest.raises(ToolError, match="select（面領域の選択）に対応していません"):
-        executor.run_recipe(write([transform]), root / "runs")
+        executor.run_recipe(write([move]), root / "runs")
     with pytest.raises(ToolError, match="工程の入力にありません"):
         executor.run_recipe(write([dict(PUSH, select={"other": "garment.sash.front"})]), root / "runs")
     data = json.loads(write([PUSH]).read_text(encoding="utf-8"))
