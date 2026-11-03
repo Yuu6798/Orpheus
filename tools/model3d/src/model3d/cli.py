@@ -20,6 +20,17 @@ def parser():
     demo.add_argument("--clearance", type=float, default=0.004)
     demo.add_argument("--resolution", type=int, default=64, help="grid resolution passed to the stand-in generator")
 
+    dance = commands.add_parser("dance-recipe", help="connect a private recovered dance worker bundle to RecipeGraph")
+    dance.add_argument("dir", type=Path)
+    dance.add_argument("--bundle", type=Path, required=True)
+    dance.add_argument("--preset", type=Path, required=True)
+    dance.add_argument("--face-config", type=Path, required=True)
+    dance.add_argument("--python", type=Path, required=True, help="isolated legacy worker Python; venv symlink is preserved")
+    dance.add_argument("--blender", type=Path, required=True)
+    dance.add_argument("--frames", default="1:147:3")
+    dance.add_argument("--profile", default="preview")
+    dance.add_argument("--threads", type=int, default=4)
+
     run = commands.add_parser("run", help="execute a recipe and write a run record")
     run.add_argument("recipe", type=Path)
     run.add_argument("--out", type=Path, help="default: <recipe dir>/model3d_runs")
@@ -166,6 +177,10 @@ def command(args):
     if args.command == "demo":
         from . import demo
         return demo.create(args.dir, args.clearance, args.resolution)
+    if args.command == "dance-recipe":
+        from . import dance_recipe
+        return dance_recipe.build(args.dir, args.bundle, args.preset, args.face_config, args.python, args.blender,
+                                  args.frames, args.profile, args.threads)
     if args.command == "run":
         from . import executor
         result = executor.run_recipe(args.recipe, args.out, args.force, args.preset, _pairs(args.tool, "--tool"),

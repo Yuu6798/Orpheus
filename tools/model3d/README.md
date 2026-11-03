@@ -11,7 +11,9 @@ uv run model3d run projects/model3d-demo/recipe.json
 ```
 
 - `src/model3d/`: core（mesh / collide / semantic / manifest / recipe / executor / checks）、`ops/`（登録済みの操作）、
-  `adapters/`（別プロセス）、`blender_adapter/`（Blender。この環境では未検証）、`rea_bridge/`（REA の根拠と Observation3D）、
+  `adapters/`（別プロセス）、`blender_adapter/`（汎用 Blender 起動・観測）、`rea_bridge/`（REA の根拠と Observation3D）、
   `schemas/`（データ契約）。
+- `dance_recipe.py`: 非公開の既存制作 worker を5工程の RecipeGraph に接続。`model3d dance-recipe --help` と
+  [接続手順](../../docs/model3d-dance.md)を参照。完成済みモデルを再構築入力には使わず、投影の目視確認を `needs_review` に残す。
 - `presets/`: 合成素材のデモ用の preset だけ。実キャラの preset は Git に入れない。
 - `tests/`: `uv run pytest`（ルートの testpaths に含まれる。extra が無いと skip される）。
