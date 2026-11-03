@@ -43,9 +43,9 @@ def gray(size=64, value=128.0):
     return np.full((size, size, 3), value)
 
 
-def project(mesh, reference=None, faces=None, mask=None, view=FRONT, **options):
+def project(mesh, reference=None, faces=None, mask=None, view=FRONT, base=None, **options):
     matrix, offset, _ = texture.alignment(*IDENTITY)
-    return texture.project_reference(mesh, gray(), halves() if reference is None else reference, view, matrix, offset,
+    return texture.project_reference(mesh, gray() if base is None else base, halves() if reference is None else reference, view, matrix, offset,
                                      faces=faces, mask=mask, **{"expand": 0.0, **options})
 
 
@@ -155,6 +155,24 @@ def test_expand_paints_one_more_ring_around_the_uv_island():
     assert np.allclose(tight[30, 15], 128) and np.allclose(wide[30, 15], [220, 30, 30])   # 島のすぐ外も写る
 
 
+def test_expand_pads_thin_triangles_by_the_requested_distance():
+    # 重心からの拡大では、この細い三角形の横の辺は 0.03 画素しか外へ出ず、隣の行が塗られなかった
+    index, x, y, bary = texture.rasterize([[[16, 16], [48, 16], [16, 17]]], 64, 64, expand=1.0)
+    assert set(range(16, 48)) <= set(x[y == 15].tolist())    # 辺から 0.5 画素の行は全部
+    assert not (y == 14).any() and x.max() == 48              # 1.5 画素先の行も、鋭い角の 1 画素より先も塗らない
+    assert np.allclose(bary.sum(axis=1), 1.0)
+
+
+def test_projection_keeps_the_texture_alpha():
+    base = np.concatenate([gray(), np.zeros((64, 64, 1))], axis=2)
+    base[:32, :, 3] = 255   # 上半分だけ不透明
+    new, _, report = project(mesh_of(quad()), base=base)
+    assert new.shape == (64, 64, 4) and np.array_equal(new[..., 3], base[..., 3]) and report["painted_texels"] > 0
+    assert np.allclose(new[20, 10, :3], [220, 30, 30])
+    untouched, _, report = project(mesh_of(quad(flip=True)), base=base)   # 1 画素も塗らなくても透明な所はそのまま
+    assert report["painted_texels"] == 0 and np.array_equal(untouched, base)
+
+
 def test_stretched_uv_triangles_are_skipped():
     # 手前の小さな板の uv がテクスチャ全体に広がっている（継ぎ目の頂点を結合したときのような三角形）
     smeared = quad(y=-0.2, x0=0.4, x1=0.45, z0=0.4, z1=0.45)
@@ -258,6 +276,17 @@ def test_recipe_paints_only_the_selected_region_and_reuses_identical_runs(worksp
     assert sha256(forced["steps"]["paint"]["artifacts"]["texture"]) == sha256(paint["artifacts"]["texture"])
     report = read_json(paint["artifacts"]["report"])
     assert report["alignment"]["max_residual_px"] < 1e-9 and json.dumps(report)
+
+
+def test_recipe_writes_an_rgba_atlas_back_with_the_same_alpha(workspace):
+    rgba = np.concatenate([gray(), np.full((64, 64, 1), 255.0)], axis=2)
+    rgba[40:, :, 3] = 0   # 下の帯は透明
+    Image.fromarray(rgba.astype(np.uint8)).save(workspace / "inputs" / "base.png")
+    paint = executor.run_recipe(workspace / "recipe.json", workspace / "runs")["steps"]["paint"]
+    with Image.open(paint["artifacts"]["texture"]) as im:
+        assert im.mode == "RGBA"
+        written = np.asarray(im, dtype=float)
+    assert np.array_equal(written[..., 3], rgba[..., 3]) and np.allclose(written[20, 50, :3], [30, 30, 220])
 
 
 def test_recipe_marks_an_empty_projection_for_review(workspace):

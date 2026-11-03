@@ -61,7 +61,7 @@ def project_reference(inputs, parameters, outputs, context):
         raise ToolError("alignment に {\"model\": [[x, y], …], \"reference\": [[x, y], …]} を書いてください（目印は推定しない）")
     matrix, offset, fitted = texture.alignment(marks.get("model"), marks.get("reference"), marks.get("kind", "similarity"))
     chosen = selected(context, "mesh", parameters, "texture.project_reference")
-    base, reference = texture.load_image(inputs["texture"]), texture.load_image(inputs["reference"], alpha=True)
+    base, reference = texture.load_texture(inputs["texture"]), texture.load_image(inputs["reference"], alpha=True)
     mask = texture.load_mask(inputs["mask"]) if "mask" in inputs else None
     new, weights, report = texture.project_reference(
         mesh, base, reference, view, matrix, offset, faces=chosen["faces"] if chosen else None, mask=mask,

@@ -80,39 +80,48 @@ def _weights(points, origin, inverse):
     return np.concatenate([1.0 - local.sum(axis=2, keepdims=True), local], axis=2)
 
 
+def _edge_distance_squared(points, tri):
+    """点 (T,K,2) から三角形 (T,3,2) の 3 辺（線分）までの距離の 2 乗のうち、いちばん小さい値 (T,K)。"""
+    best = None
+    for i in range(3):
+        a, b = tri[:, i][:, None, :], tri[:, (i + 1) % 3][:, None, :]
+        ab = b - a
+        t = np.clip(((points - a) * ab).sum(axis=2) / np.maximum((ab ** 2).sum(axis=2), 1e-30), 0.0, 1.0)
+        d = ((points - a - t[..., None] * ab) ** 2).sum(axis=2)
+        best = d if best is None else np.minimum(best, d)
+    return best
+
+
 def rasterize(triangles, width, height, expand=0.0):
     """三角形 (T,3,2)（画素の座標）が覆う画素。画素の中心が三角形の中（辺の上を含む）にあれば覆うと数える。
 
     返り値は 三角形の番号 (K,)、画素の x・y (K,)、重心座標 (K,3)。退化した三角形と画像の外は飛ばす。
-    expand は三角形を外側へ広げる画素数（UV の継ぎ目で色が欠けないため）で、重心座標は元の三角形で求める（端では少し外挿）。
+    expand は三角形から画素の中心までの距離の上限（画素。UV の継ぎ目で色が欠けないよう、島の縁の外も塗る）。細い三角形も
+    同じ幅だけ広がり、鋭い角は expand より先へ伸びない。外の画素の重心座標は三角形の平面を延ばした値（負の成分を持つ）。
     """
     tri = np.asarray(triangles, dtype=np.float64).reshape(-1, 3, 2)
     empty = (np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros((0, 3)))
     if not len(tri):
         return empty
-    shape = tri
-    if expand:
-        center = tri.mean(axis=1, keepdims=True)
-        reach = np.maximum(np.linalg.norm(tri - center, axis=2).min(axis=1), 0.5)
-        shape = center + (tri - center) * (1.0 + expand / reach)[:, None, None]
-    lo = np.maximum(np.floor(shape.min(axis=1) - 0.5).astype(np.int64), 0)
-    hi = np.minimum(np.ceil(shape.max(axis=1) - 0.5).astype(np.int64), [width - 1, height - 1])
-    origin_s, inverse_s, ok_s = _inverse(shape)
-    origin_o, inverse_o, ok_o = _inverse(tri)
-    usable = ok_s & ok_o & (hi >= lo).all(axis=1) & np.isfinite(tri).all(axis=(1, 2))
+    lo = np.maximum(np.floor(tri.min(axis=1) - 0.5 - expand).astype(np.int64), 0)
+    hi = np.minimum(np.ceil(tri.max(axis=1) - 0.5 + expand).astype(np.int64), [width - 1, height - 1])
+    origin, inverse, ok = _inverse(tri)
+    usable = ok & (hi >= lo).all(axis=1) & np.isfinite(tri).all(axis=(1, 2))
     extent = (hi - lo + 1).max(axis=1)
     parts = []
 
     def emit(ids, pixels):
         within = (pixels <= hi[ids][:, None, :]).all(axis=2)
         centres = pixels + 0.5
-        shaped = _weights(centres, origin_s[ids], inverse_s[ids])
-        inside = within & (shaped.min(axis=2) >= -1e-9)
+        weights = _weights(centres, origin[ids], inverse[ids])
+        inside = weights.min(axis=2) >= -1e-9
+        if expand:
+            inside |= _edge_distance_squared(centres, tri[ids]) <= expand * expand
+        inside &= within
         if not inside.any():
             return
         which, slot = np.nonzero(inside)
-        bary = (_weights(centres, origin_o[ids], inverse_o[ids]) if expand else shaped)[which, slot]
-        parts.append((ids[which], pixels[which, slot, 0], pixels[which, slot, 1], bary))
+        parts.append((ids[which], pixels[which, slot, 0], pixels[which, slot, 1], weights[which, slot]))
 
     done = ~usable
     for size in BUCKETS:
@@ -172,6 +181,16 @@ def load_image(path, alpha=False):
         raise ToolError(f"画像を読めません: {path}（{error}）") from error
 
 
+def load_texture(path):
+    """テクスチャを float で読む。アルファのある画像は (H,W,4) のまま（写しても透明な所を変えないため）、ほかは (H,W,3)。"""
+    try:
+        with Image.open(path) as im:
+            keep = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+            return np.asarray(im.convert("RGBA" if keep else "RGB"), dtype=np.float64)
+    except OSError as error:
+        raise ToolError(f"画像を読めません: {path}（{error}）") from error
+
+
 def load_mask(path):
     """重みの画像を float の (H,W) で読む（灰色に直す。0〜255）。"""
     try:
@@ -182,7 +201,7 @@ def load_mask(path):
 
 
 def save_image(path, array):
-    """(H,W,3) は RGB、(H,W) は灰色の PNG として書く（0〜255 に丸める）。"""
+    """(H,W,3) は RGB、(H,W,4) は RGBA、(H,W) は灰色の PNG として書く（0〜255 に丸める）。"""
     Image.fromarray(np.clip(np.rint(array), 0, 255).astype(np.uint8)).save(path)
 
 
@@ -390,7 +409,7 @@ def aligned_overlay(mesh, texture, reference, view, matrix, offset, mask=None, o
 
 def project_reference(mesh, texture, reference, view, matrix, offset, faces=None, mask=None, min_facing=0.2,
                       facing_ramp=0.3, depth_tolerance=0.002, expand=1.0, max_stretch=8.0):
-    """参照画像をテクスチャへ写した新しいテクスチャ (H,W,3)、画素ごとの重み (H,W)、報告。
+    """参照画像をテクスチャへ写した新しいテクスチャ（texture と同じ (H,W,3) か (H,W,4)。アルファは変えない）、画素ごとの重み (H,W)、報告。
 
     faces（面の番号）があれば、その面の上の画素だけを塗る（見え隠れはメッシュ全体で判定する）。matrix・offset は
     `alignment` の 参照画像 → 視点 の変換。reference は RGB か RGBA（アルファも重みに掛ける）、mask は参照画像と同じ大きさの
@@ -423,9 +442,13 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
               "skipped_stretched_triangles": int(stretched.sum()), "tile_copies": int(len(copies)), "fragments": int(len(index))}
     new = texture[..., :3].copy()
     weights = np.zeros((tex_h, tex_w))
+
+    def with_alpha(rgb):   # 色だけを塗り、アルファ（透明な所）はそのまま戻す
+        return np.concatenate([rgb, texture[..., 3:4]], axis=2) if texture.shape[2] == 4 else rgb
+
     if not len(index):
         report.update(painted_texels=0, full_weight_texels=0, visible_fragments=0)
-        return new, weights, report
+        return with_alpha(new), weights, report
     corner_ids = candidates[index]
     surface = np.einsum("kj,kjc->kc", bary, mesh.vertices[corner_ids])
     normal = np.einsum("kj,kjc->kc", bary, vertex_normals(mesh, triangles)[corner_ids])
@@ -464,4 +487,4 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     report.update(painted_texels=int(keep.sum()), full_weight_texels=int((alpha[keep] > 0.99).sum()),
                   visible_fragments=int(visible.sum()), facing_fragments=int((facing > 0).sum()),
                   inside_reference_fragments=int((~outside).sum()))
-    return new, weights, report
+    return with_alpha(new), weights, report
