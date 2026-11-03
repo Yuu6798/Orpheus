@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from ..io import ToolError
 
 OPERATIONS = {}
-MODULES = ("mesh_ops", "collision_ops", "check_ops", "external_ops", "blender_ops", "generate_ops")
+MODULES = ("mesh_ops", "collision_ops", "check_ops", "external_ops", "blender_ops", "generate_ops", "texture_ops")
 
 
 @dataclass
