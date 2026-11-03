@@ -162,6 +162,39 @@ def test_preconditions_and_roles_are_enforced(workspace, tmp_path):
     assert result["status"] == "failed" and "閉じていません" in result["error"]
 
 
+def test_preset_or_semantic_map_changes_invalidate_reuse(workspace):
+    """check.structure は preset（必須の骨）と対応表を読む。どちらかが変われば key が変わり、古い報告を再利用しない。"""
+    root, write = workspace
+    from model3d import demo, semantic
+    preset = demo.preset_json()
+    atomic_json(root / "preset.json", preset)
+    rig = demo.rig_json(demo.sash_mesh().vertex_count)   # ウェイトの頂点番号は帯の頂点数が前提
+    atomic_json(root / "inputs" / "rig.json", rig)
+    semantic_map = semantic.build("asset", preset, bones=[{"name": b["name"], "parent": b["parent"]} for b in rig["bones"]],
+                                  preset_path=root / "preset.json")
+    atomic_json(root / "semantic_map.json", semantic_map)
+    check = {"id": "structure", "operation": "check.structure", "inputs": {"rig": "$inputs.rig"},
+             "parameters": {"required_bone_roles": "preset"}, "outputs": {"report": "structure.json"}}
+    data = read_json(write([check], preset="preset.json", semantic_map="semantic_map.json"))
+    data["inputs"]["rig"] = {"path": "inputs/rig.json"}
+    atomic_json(root / "recipe.json", data)
+    first = executor.run_recipe(root / "recipe.json", root / "runs")
+    assert first["status"] == "succeeded"
+    preset["required_roles"]["bones"].append("toe.L")          # リグに無い骨を必須にする
+    atomic_json(root / "preset.json", preset)
+    second = executor.run_recipe(root / "recipe.json", root / "runs")
+    assert second["steps"]["structure"]["reused_from"] is None and second["status"] == "needs_review"
+    assert "toe.L" in second["steps"]["structure"]["unresolved"][0]
+    preset["required_roles"]["bones"].remove("toe.L")
+    atomic_json(root / "preset.json", preset)
+    third = executor.run_recipe(root / "recipe.json", root / "runs")
+    assert third["steps"]["structure"]["reused_from"] == first["run_id"]
+    semantic.confirm(semantic_map, "bones", "mixamorig:Hips", "rejected", "tester")
+    atomic_json(root / "semantic_map.json", semantic_map)
+    fourth = executor.run_recipe(root / "recipe.json", root / "runs")
+    assert fourth["steps"]["structure"]["reused_from"] is None and fourth["status"] == "needs_review"
+
+
 def test_missing_declared_output_fails_the_step(workspace):
     root, write = workspace
     step = dict(PUSH, outputs={"mesh": "fixed.json", "extra": "never.json"})

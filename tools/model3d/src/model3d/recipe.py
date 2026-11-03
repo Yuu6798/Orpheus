@@ -78,10 +78,14 @@ def order_steps(recipe):
     return ordered
 
 
-def step_key(step, input_hashes, fingerprint, library_versions):
-    """工程の再利用 key。操作名・パラメーター・入力のハッシュ・コードの指紋・ライブラリ版から作る。"""
+def step_key(step, input_hashes, fingerprint, library_versions, context_hashes=None):
+    """工程の再利用 key。操作名・パラメーター・入力のハッシュ・コードの指紋・ライブラリ版・文脈（preset と対応表の sha256）から作る。
+
+    文脈は全工程の key に入れる（check.structure のように preset や対応表を読む操作が、変更後に古い報告を再利用しないため）。
+    設定ファイルや実行ファイルを隠れた入力に持つ操作（external.run・blender.run_script）は key に関わらず再利用しない。
+    """
     payload = {"operation": step["operation"], "parameters": step.get("parameters", {}),
                "inputs": dict(sorted(input_hashes.items())), "outputs": dict(sorted(step.get("outputs", {}).items())),
-               "fingerprint": fingerprint, "libraries": library_versions,
+               "fingerprint": fingerprint, "libraries": library_versions, "context": dict(sorted((context_hashes or {}).items())),
                "applies_to": sorted(step.get("applies_to", [])), "preconditions": list(step.get("preconditions", []))}
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()

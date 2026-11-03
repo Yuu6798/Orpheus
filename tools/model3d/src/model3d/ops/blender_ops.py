@@ -5,7 +5,8 @@ from ..io import ToolError, resolve_path
 from . import StepResult, register
 
 
-@register("blender.run_script", summary="blender --background [blend] --python script -- args… を呼ぶ。{入力名}・{出力名}・{work} を置き換える")
+@register("blender.run_script", cacheable=False,
+          summary="blender --background [blend] --python script -- args… を呼ぶ。{入力名}・{出力名}・{work} を置き換える。再利用しない（毎回実行）")
 def blender_run_script(inputs, parameters, outputs, context):
     blender = parameters.get("blender") or context.tools.get("blender")
     if not blender:

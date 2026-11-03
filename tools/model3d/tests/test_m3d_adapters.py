@@ -51,6 +51,11 @@ def test_external_run_operation_through_the_executor(tmp_path):
     assert result["status"] == "succeeded"
     assert Path(result["steps"]["gen"]["artifacts"]["mesh"]).read_text() == "sheet generated"
     assert result["steps"]["gen"]["observations"][0]["tool"] == "gen"
+    # 設定が参照する実行ファイルや素材（隠れた入力）を知らないので、同じ入力でも再利用しない
+    again = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert again["steps"]["gen"]["reused_from"] is None and again["status"] == "succeeded"
+    from model3d.io import read_json
+    assert read_json(tmp_path / "runs" / "index.json")["steps"] == {}
 
 
 def test_blender_argv_order_and_validation(tmp_path):
@@ -124,6 +129,20 @@ def test_rea_evidence_from_a_summary_and_an_analysis_report(tmp_path):
     assert result["tools"]["blockbench"]["evidence"][0]["state"] == "unknown"       # coverage unknown はそのまま
     assert result["tools"]["jscad"]["evidence"][-1]["state"] == "observed"          # 比較は合格
     assert result["rea"]["commit"] == REA_COMMIT and result["limitations"]
+    # 比較の結果が無い（metadata だけ）・不合格・passed/total が整数でない → 観測にしない
+    summary["blockbench"] = {"source_commit": "e" * 40}
+    summary["jscad"] = {"source_commit": "f" * 40, "passed": 3, "total": 4}
+    summary["rea"]["other"] = {"files": 1, "nodes": 1, "relations": 0, "unknowns": 0, "coverage": "complete", "queries": []}
+    summary["other"] = {"source_commit": "a" * 40, "passed": "11", "total": "11"}
+    atomic_json(tmp_path / "summary.json", summary)
+    result = evidence.from_summary(tmp_path / "summary.json")
+    last = {tool: info["evidence"][-1] for tool, info in result["tools"].items()}
+    assert last["blockbench"]["state"] == "unknown" and "not supplied" in last["blockbench"]["note"]
+    assert last["jscad"]["state"] == "unavailable" and "failed" in last["jscad"]["note"]
+    assert last["other"]["state"] == "unknown"
+    assert evidence.comparison_verdict({"final_all_pass": False}) is False
+    assert evidence.comparison_verdict({"passed": 0, "total": 0}) is None
+    assert evidence.comparison_verdict({"passed": True, "total": True}) is None
     report = {"tool": "jscad", "repository": "jscad/OpenJSCAD.org", "commit": "f" * 40, "rea": {"version": "6.4.0", "commit": REA_COMMIT},
               "files": [{"path": "a.js", "sha256": "1" * 64, "bytes": 10, "coverage": {"status": "complete"}, "limitations": ["x"]},
                         {"path": "b.js", "sha256": "2" * 64, "bytes": 10, "coverage": {"status": "partial"}, "limitations": []}],

@@ -66,14 +66,29 @@ def from_summary(path):
         for query in info.get("queries", []):
             evidence.append({"source": "rea", "ref": f"{tool}@{commit}:{query['target']}", "state": state_of(query.get("status")),
                              "note": f"status {query.get('status')}"})
-        comparison = summary.get(tool, {})
-        if comparison:
-            passed = comparison.get("final_all_pass", comparison.get("passed") == comparison.get("total"))
+        verdict = comparison_verdict(summary.get(tool, {}))
+        if verdict is None:   # 比較の結果が無い（metadata だけ）ときは観測にしない
+            evidence.append({"source": "artifact", "ref": f"{tool}@{commit} reconstruction comparison", "state": "unknown",
+                             "note": "comparison results not supplied (no final_all_pass or passed/total counters)"})
+        else:
             evidence.append({"source": "artifact", "ref": f"{tool}@{commit} reconstruction comparison",
-                             "state": "observed" if passed else "unavailable",
-                             "note": "original artifacts and recipes compared with an independent reconstruction"})
+                             "state": "observed" if verdict else "unavailable",
+                             "note": "original artifacts and recipes compared with an independent reconstruction"
+                                     + ("" if verdict else "; comparison failed")})
         result["tools"][tool] = {"commit": commit, "evidence": _validated(evidence)}
     return result
+
+
+def comparison_verdict(comparison):
+    """集計の比較結果。final_all_pass（真偽）か passed/total（整数）が明示されているときだけ True/False、無ければ None。"""
+    verdict = comparison.get("final_all_pass")
+    if isinstance(verdict, bool):
+        return verdict
+    passed, total = comparison.get("passed"), comparison.get("total")
+    counters = all(isinstance(v, int) and not isinstance(v, bool) for v in (passed, total))
+    if counters and total > 0:
+        return passed == total
+    return None
 
 
 def _validated(evidence):

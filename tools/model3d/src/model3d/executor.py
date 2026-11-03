@@ -7,8 +7,9 @@
 
 - 工程の状態は pending / running / succeeded / needs_review / failed。検査に通らない工程は needs_review（候補）として残し、
   失敗した工程でレシピを止める（後ろの工程は pending のまま）。
-- 再利用は、工程の key（操作・パラメーター・入力のハッシュ・コードの指紋・ライブラリ版）が一致し、前の生成物が
-  ハッシュまで揃っているときだけ。ファイルがあるだけでは再利用しない。
+- 再利用は、工程の key（操作・パラメーター・入力のハッシュ・コードの指紋・ライブラリ版・preset と対応表の sha256）が一致し、
+  前の生成物がハッシュまで揃っているときだけ。ファイルがあるだけでは再利用しない。別プロセスを呼ぶ操作
+  （external.run・blender.run_script）は設定が参照する実行ファイルや素材を知らないので、毎回実行する（索引にも載せない）。
 - 入力の sha256 が recipe の宣言と違えば実行しない。未確認の役割・観測不足は unresolved に残し、成功扱いにしない。
 """
 import platform
@@ -190,6 +191,8 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
     recipe_sha = sha256(recipe_path)
     code_fingerprint = fingerprint()
     libraries = library_versions()
+    context_hashes = {"preset": sha256(preset_file) if preset_file is not None else None,
+                      "semantic_map": sha256(semantic_file) if semantic_file is not None else None}
     with directory_lock(out):
         close_orphans(out)
         index = load_index(out)
@@ -236,8 +239,9 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                             step_inputs[name] = produced[parsed[2]]
                     hashes = {name: sha256(path) for name, path in step_inputs.items()}
                     entry["inputs"] = hashes
-                    key = recipes.step_key(step, hashes, code_fingerprint, libraries)
+                    key = recipes.step_key(step, hashes, code_fingerprint, libraries, context_hashes)
                     entry["key"] = key
+                    cacheable = ops.get(step["operation"]).cacheable
                     unresolved = []
                     for role in step.get("applies_to", []):
                         if semantic_map is None:
@@ -251,7 +255,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     step_dir = run.dir / step["id"]
                     step_dir.mkdir(parents=True, exist_ok=True)
                     outputs = {name: step_dir / file for name, file in step.get("outputs", {}).items()}
-                    previous = None if force else reusable(out, index, key)
+                    previous = None if (force or not cacheable) else reusable(out, index, key)
                     if previous is not None:
                         for name, item in previous["artifacts"].items():
                             shutil.copyfile(safe_path(out, item["path"]), outputs[name])
@@ -277,7 +281,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     entry["unresolved"] = unresolved
                     if entry["status"] == "running":
                         entry["status"] = "needs_review" if unresolved else "succeeded"
-                    if entry["status"] == "succeeded":
+                    if entry["status"] == "succeeded" and cacheable:
                         index["steps"][key] = {"run_id": run.run_id, "step": step["id"],
                                                "artifacts": {name: {**item, "path": f"{run.run_id}/{item['path']}"}
                                                              for name, item in entry["artifacts"].items()},

@@ -23,11 +23,12 @@ class Operation:
     outputs: tuple
     summary: str
     inputs: tuple = ()
+    cacheable: bool = True   # False: 隠れた入力（実行ファイル・設定が参照する素材）を知らないので毎回実行する
 
 
-def register(name, *, outputs=(), inputs=(), summary=""):
+def register(name, *, outputs=(), inputs=(), summary="", cacheable=True):
     def wrap(function):
-        OPERATIONS[name] = Operation(name, function, tuple(outputs), summary, tuple(inputs))
+        OPERATIONS[name] = Operation(name, function, tuple(outputs), summary, tuple(inputs), cacheable)
         return function
     return wrap
 
@@ -47,8 +48,8 @@ def get(name):
 
 def describe():
     load_all()
-    return [{"operation": op.name, "inputs": list(op.inputs), "outputs": list(op.outputs), "summary": op.summary}
-            for op in sorted(OPERATIONS.values(), key=lambda o: o.name)]
+    return [{"operation": op.name, "inputs": list(op.inputs), "outputs": list(op.outputs), "summary": op.summary,
+             "cacheable": op.cacheable} for op in sorted(OPERATIONS.values(), key=lambda o: o.name)]
 
 
 def require(inputs, names, operation):

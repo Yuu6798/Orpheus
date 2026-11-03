@@ -4,7 +4,8 @@ from ..io import ToolError, read_json, resolve_path
 from . import StepResult, register
 
 
-@register("external.run", summary="設定 JSON の argv で別プロセスを呼ぶ。{入力名}・{出力名}・{work} を置き換える。版・ライセンス・重みを記録する")
+@register("external.run", cacheable=False,
+          summary="設定 JSON の argv で別プロセスを呼ぶ。{入力名}・{出力名}・{work} を置き換える。版・ライセンス・重みを記録する。再利用しない（毎回実行）")
 def external_run(inputs, parameters, outputs, context):
     config = parameters.get("config")
     if isinstance(config, str):

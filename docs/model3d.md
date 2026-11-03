@@ -103,8 +103,9 @@ uv run model3d semantic confirm semantic_map.json --kind parts --key part_1 --st
 - 工程の状態は `pending / running / succeeded / needs_review / failed`。検査に通らない工程は `needs_review`（`strict: true` なら `failed`、
   `report_only: true` なら測るだけ）。失敗した工程でレシピは止まり、後ろは `pending` のまま。run の状態は、失敗が 1 つでもあれば `failed`、
   `needs_review` があれば `needs_review`、全部通れば `succeeded`。`needs_review` の工程は `candidates` に残り、再利用の索引には載らない。
-- 再利用: 工程の key（操作・パラメーター・入力の sha256・コードの指紋・numpy の版）が一致し、前の成功した生成物が sha256 まで揃っているときだけ
-  写して `reused_from` に残す。ファイルがあるだけでは再利用しない。`--force` で全部やり直す。
+- 再利用: 工程の key（操作・パラメーター・入力の sha256・コードの指紋・numpy の版・preset と対応表の sha256）が一致し、前の成功した生成物が
+  sha256 まで揃っているときだけ写して `reused_from` に残す。ファイルがあるだけでは再利用しない。`--force` で全部やり直す。
+  `external.run` と `blender.run_script` は設定が参照する実行ファイルや素材（隠れた入力）を知らないので、再利用せず毎回実行する。
 - 記録: `<out>/<run_id>/run_record.json`・`run.log`・`recipe.json`（写し）・`<工程 id>/<出力>`。`<out>/index.json` が再利用の索引。
   実行中に止まった run は次にロックしたとき `failed` に直す。
 - 人の記録: `model3d accept RUN --decision accepted|rejected|hold --by NAME`（採否）、`model3d edit RUN --by NAME --what … --minutes N`（手修正の内容・回数・時間）。
@@ -126,8 +127,8 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `check.structure` | rig → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`） |
 | `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ |
 | `check.continuity` | track → report | コマごとの点の列で前のコマからの移動が `max_jump` 以下 |
-| `external.run` | 任意 → 任意 | 設定 JSON の argv で別プロセスを呼ぶ（`{入力名}`・`{出力名}`・`{work}`）。版・ライセンス・重み・実行ファイルの sha256 を記録。シェルは使わない |
-| `blender.run_script` | 任意 → 任意 | `blender --background [blend] --python script -- args…`。**未検証** |
+| `external.run` | 任意 → 任意 | 設定 JSON の argv で別プロセスを呼ぶ（`{入力名}`・`{出力名}`・`{work}`）。版・ライセンス・重み・実行ファイルの sha256 を記録。シェルは使わない。再利用しない |
+| `blender.run_script` | 任意 → 任意 | `blender --background [blend] --python script -- args…`。再利用しない。**未検証** |
 
 押し出しと結合は独自実装で、原本ツールとの一致は主張しない。押し出しは、2026-11-03 の再構成の実験で無変更の JSCAD が作った合成部品 6 件と、
 三角形の数・頂点集合・bounds・面積・体積（許容差 1e-12）で一致した（`tools/model3d/tests/data/jscad/`。不正な steps の拒否も同じ）。
@@ -159,7 +160,8 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
   Hunyuan3D-2mv・TRELLIS.2・SkinTokens などの候補は、この接続口で別プロセスとして呼ぶ想定。本体はこのリポジトリに入れない。
 - **REA**（`model3d rea report analysis_report.json out.json` / `model3d rea summary summary.json out.json`）: REA 6.4.0
   （commit `a56f7bb6…`）の解析報告と実験の集計を、工程の `evidence`（observed / inferred / unknown / unavailable）に写す。
-  coverage が unknown のグラフは unknown のまま。REA は JS/TS の静的解析で、3D 専用の provider は無い。
+  coverage が unknown のグラフは unknown のまま。集計に比較の結果（`final_all_pass` か `passed`/`total`）が無いツールの比較は
+  unknown にし、観測にしない。REA は JS/TS の静的解析で、3D 専用の provider は無い。
 - 2026-11-03 の再構成の実験一式（Blockbench の原本・再構成コード・REA の生出力）は**リポジトリに入れない**。Blockbench 由来の部分が
   GPL-3.0-or-later で、このリポジトリの LICENSE は未決のため（STATUS の DECIDE-1）。JSCAD（MIT）の原本出力の合成部品だけをテストに取り込んだ。
 
