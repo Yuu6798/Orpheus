@@ -2,6 +2,7 @@
 
 - 内外は**複数方向の光線と面の交わりの回数の奇偶**で決める（多数決）。最も近い面の向きで決める方法
   （Blender の Shrinkwrap の Outside など）は、口の開いた筒やふさいだ口のふちで読み違えた（2026-11-02 の記録）。
+  辺や頂点を共有する三角形を同じ距離で通る交点は 1 回と数える（四角形の対角線をちょうど通る光線で奇偶が反転しないため）。
 - 補正は、中の点を最も近い面の上へ出し、面の外向き法線の方向に余裕（clearance）だけ離す。外にあっても余裕より
   近い点は、面から点へ向かう方向に余裕まで離す（pad_outside）。
 - 速さに入れない: ここは位置だけを直す。押し出し量を速度に混ぜると弾んで裏返る（同じ記録）。
@@ -29,9 +30,10 @@ def _chunks(count, per_item):
 
 
 def ray_hits(origins, direction, tri, eps=1e-12):
-    """各点から direction へ飛ばした光線が三角形と交わる回数（Möller–Trumbore）。"""
+    """各点から direction へ飛ばした光線が三角形と交わる回数（Möller–Trumbore）。同じ距離の交点は 1 回と数える。"""
     origins = np.asarray(origins, dtype=np.float64).reshape(-1, 3)
     d = np.asarray(direction, dtype=np.float64)
+    tolerance = 1e-9 * max(1.0, float(np.abs(tri).max()), float(np.abs(origins).max()) if len(origins) else 1.0)
     v0, e1, e2 = tri[:, 0], tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
     h = np.cross(d[None, :], e2)                      # (T,3)
     a = np.einsum("ij,ij->i", e1, h)                  # (T,)
@@ -45,7 +47,12 @@ def ray_hits(origins, direction, tri, eps=1e-12):
         v = f[None, :] * np.einsum("ptj,j->pt", q, d)
         t = f[None, :] * np.einsum("ptj,tj->pt", q, e2)
         hit = (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > eps) & ~parallel[None, :]
-        counts[start:end] = hit.sum(axis=1)
+        distances = np.where(hit, t, np.inf)
+        distances.sort(axis=1)
+        finite = np.isfinite(distances)
+        with np.errstate(invalid="ignore"):   # 当たらない列は inf で、inf - inf の警告は無視してよい
+            distinct = finite[:, 1:] & (np.diff(distances, axis=1) > tolerance)   # 辺・頂点を共有する三角形の重複を畳む
+        counts[start:end] = finite[:, 0].astype(np.int64) + distinct.sum(axis=1)
     return counts
 
 

@@ -194,3 +194,7 @@ def test_transform_order_scale_rotate_translate():
         transform(mesh, scale=0)
     with pytest.raises(ToolError, match="rotate_z_deg"):
         transform(mesh, rotate_z_deg=float("inf"))
+    mm = transform(Mesh([[1000, 0, 0], [0, 1000, 0], [0, 0, 1000]], [[0, 1, 2]], units="mm"), translate=[1, 0, 0], to_units="m")
+    assert mm.units == "m" and np.allclose(mm.vertices[0], [2, 0, 0])    # 換算（×0.001）の後に m で平行移動
+    with pytest.raises(ToolError, match="to_units"):
+        transform(mesh, to_units="inch")

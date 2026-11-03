@@ -275,10 +275,18 @@ def write_obj(mesh, path):
 
 # ---- 変形 --------------------------------------------------------------------------
 
-def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0):
-    """拡大縮小 → Z 軸まわりの回転 → 平行移動の順に当てた写し。"""
+UNIT_FACTORS = {"m": 1.0, "cm": 0.01, "mm": 0.001}
+
+
+def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None):
+    """単位の換算（to_units）→ 拡大縮小 → Z 軸まわりの回転 → 平行移動の順に当てた写し。translate は換算後の単位。"""
     out = mesh.copy()
     points = out.vertices
+    if to_units is not None:
+        if to_units not in UNIT_FACTORS:
+            raise ToolError(f"to_units は m / cm / mm から選んでください: {to_units!r}")
+        points = points * (UNIT_FACTORS[mesh.units] / UNIT_FACTORS[to_units])
+        out.units = to_units
     if scale is not None:
         factor = np.asarray(scale, dtype=np.float64)
         if factor.ndim == 0:

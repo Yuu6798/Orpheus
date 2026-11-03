@@ -13,6 +13,19 @@ def test_inside_by_ray_parity_on_a_cube():
     assert collide.inside(points, cube).tolist() == [True, True, False, False, False, True]
 
 
+def test_shared_edges_and_vertices_are_counted_once():
+    """四角形の対角線や頂点をちょうど通る光線でも、交点を 1 回と数えて中と判定する。"""
+    cube = box(2.0)
+    axis = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    assert collide.inside([[0, 0, 0]], cube, directions=axis).tolist() == [True]
+    assert collide.ray_hits([[0, 0, 0]], [1.0, 0.0, 0.0], cube.triangle_points()).tolist() == [1]
+    corner = [[1, 1, 1], [-1, 1, 1], [1, -1, -1]]
+    assert collide.inside([[0, 0, 0], [0.5, 0.5, 0.5]], cube, directions=corner).tolist() == [True, True]
+    assert collide.inside([[3, 0, 0], [0, 0, 1.5]], cube, directions=axis).tolist() == [False, False]
+    moved, report = collide.push_out([[0, 0, 0]], cube, 0.01, directions=axis)
+    assert report["inside"] == 1 and report["moved"] == 1 and collide.inside(moved, cube).tolist() == [False]
+
+
 def test_inside_does_not_depend_on_face_orientation():
     cube = box(2.0)
     flipped = Mesh(cube.vertices, [list(reversed(f)) for f in cube.faces])

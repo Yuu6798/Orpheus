@@ -65,6 +65,21 @@ def test_penetration_reports_inside_vertices_and_depth():
     assert clean["pass"] and clean["inside"] == 0
 
 
+def test_penetration_and_push_out_reject_different_units(tmp_path):
+    from model3d.ops import collision_ops
+    cm_strip = Mesh([[50, 0, 0], [60, 0, 0], [50, 10, 0]], [[0, 1, 2]], units="cm")
+    with pytest.raises(ToolError, match="単位が違います"):
+        checks.penetration(cm_strip, box(2.0))
+    cm_strip.save(tmp_path / "strip.json")
+    box(2.0).save(tmp_path / "box.json")
+    with pytest.raises(ToolError, match="単位が違います"):
+        collision_ops.push_out({"mesh": tmp_path / "strip.json", "collider": tmp_path / "box.json"}, {"clearance": 0.01}, {}, None)
+    from model3d.mesh import transform
+    in_m = transform(cm_strip, to_units="m")
+    assert in_m.units == "m" and abs(in_m.vertices[0][0] - 0.5) < 1e-12
+    assert checks.penetration(in_m, box(2.0))["inside"] == 3
+
+
 def test_continuity_flags_jumps_and_skips_without_frames():
     track = {"frames": [[0.0, [[0, 0, 0], [1, 0, 0]]], [0.1, [[0, 0, 0.01], [1, 0, 0]]], [0.2, [[0, 0, 0.5], [1, 0, 0]]]]}
     report = checks.continuity(track, 0.1)

@@ -121,11 +121,11 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `mesh.import` | file → mesh | JSON か OBJ を読んで `model3d-mesh/0.1` で書く |
 | `mesh.extrude_profile` | profile（`{"points": [[x, y], …]}`）→ mesh | 厳密に凸で反時計回りの断面を `height` だけ押し出す。`twist_deg` か `twist_rad`、`steps`、`offset`。高さが負なら先に断面の有向辺を反転する。ねじり 0 なら 1 段 |
 | `mesh.weld` | mesh → mesh | `distance` 以内の頂点を結合（`selection`・`center: mean|first`）。退化した面と、他の面に含まれる面を除く（結合に関わった面とその隣だけを見る。元から重なっていた面は触らない） |
-| `mesh.transform` | mesh → mesh | `scale` → `rotate_z_deg` → `translate` |
+| `mesh.transform` | mesh → mesh | `to_units`（m / cm / mm の換算）→ `scale` → `rotate_z_deg` → `translate` |
 | `mesh.export_obj` | mesh → obj | v / vt / f / g。見出しの行に units と軸を書き、`mesh.import` で戻す。数値は往復で変わらない表記 |
-| `collision.push_out` | mesh, collider → mesh, deltas, report | 閉じた collider の中の頂点を最も近い面の外へ `clearance` だけ離す。外でも余裕より近い点は離す（`pad_outside`）。`deltas` は頂点ごとの移動量 |
+| `collision.push_out` | mesh, collider → mesh, deltas, report | 閉じた collider の中の頂点を最も近い面の外へ `clearance` だけ離す（`clearance` は mesh の単位。mesh と collider の単位が違えば止まる）。外でも余裕より近い点は離す（`pad_outside`）。`deltas` は頂点ごとの移動量 |
 | `check.structure` | rig → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`） |
-| `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ |
+| `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ（mesh と collider の単位が違えば止まる） |
 | `check.continuity` | track → report | コマごとの点の列で前のコマからの移動が `max_jump` 以下 |
 | `external.run` | 任意 → 任意 | 設定 JSON の argv で別プロセスを呼ぶ（`{入力名}`・`{出力名}`・`{work}`）。版・ライセンス・重み・実行ファイルの sha256 を記録。シェルは使わない。再利用しない |
 | `blender.run_script` | 任意 → 任意 | `blender --background [blend] --python script -- args…`。再利用しない。**未検証** |
@@ -136,7 +136,8 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 ものだが、ここは推移的に結合する（A-B と B-C が近ければ 3 つが 1 つになる）。
 
 内外の判定は、複数方向の光線と面の交わりの回数の奇偶の多数決で決める。最も近い面の向きで決める方法（Shrinkwrap の Outside など）は、
-口の開いた筒やふさいだ口のふちで読み違えた（2026-11-02 の記録）。口の開いた衝突相手は拒否する。補正は位置だけを直し、速度には入れない。
+口の開いた筒やふさいだ口のふちで読み違えた（2026-11-02 の記録）。辺や頂点を共有する三角形を同じ距離で通る交点は 1 回と数える。
+口の開いた衝突相手は拒否する。補正は位置だけを直し、速度には入れない。
 
 ## 検査と判断基準（設計 §10 のうち実装したもの）
 
