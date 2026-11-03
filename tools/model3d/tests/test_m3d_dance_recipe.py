@@ -58,6 +58,18 @@ def test_rebuild_requires_all_stages_and_preserves_outputs(stage_setup, monkeypa
         dance.run_stage("rebuild", config, inventory, work, {})
 
 
+def test_workers_run_in_utf8_mode(stage_setup, monkeypatch):
+    config, inventory, root, work, source = stage_setup
+    seen = {}
+    def fake(argv, **kwargs):
+        seen.update(kwargs["env"])
+        rebuild_outputs(argv)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(dance.subprocess, "run", fake)
+    dance.run_stage("rebuild", config, inventory, work, {})
+    assert seen["PYTHONUTF8"] == "1" and seen["PYTHONUNBUFFERED"] == "1"
+
+
 @pytest.mark.parametrize("defect", ["missing", "failed_stage", "mutated", "nonzero"])
 def test_rebuild_refuses_missing_partial_mutated_and_failed_results(stage_setup, monkeypatch, defect):
     config, inventory, root, work, source = stage_setup
@@ -355,6 +367,30 @@ def test_public_cli_recipe_runs_all_five_external_stages_without_placeholder_col
     assert record["inputs"]["inventory"]["sha256"] == dance.digest(recipe_dir / "input_inventory.json")
     assert all(s["reused_from"] is None for s in record["steps"])
     assert dance.read(Path(result["run_dir"]).parent / "index.json")["steps"] == {}
+
+
+def test_bundle_declares_the_video_tools_its_workers_call():
+    assert dance.video_tools({}) == ["ffmpeg", "ffprobe"]
+    assert dance.video_tools({"video_tools": ["ffmpeg"]}) == ["ffmpeg"]
+    for bad in (["ffprobe"], ["ffmpeg", "ffmpeg"], ["ffmpeg", "mencoder"], "ffmpeg"):
+        with pytest.raises(ValueError, match="video_tools"):
+            dance.video_tools({"video_tools": bad})
+
+
+def test_only_the_declared_video_tools_are_required(tmp_path, monkeypatch):
+    root, preset, face, python, blender = fake_bundle(tmp_path, monkeypatch)
+    for probe in (root / "bin").glob("ffprobe*"):
+        probe.unlink()
+    with pytest.raises(ValueError, match="ffprobe"):
+        dance.runtime_versions(python, blender)
+    assert "ffprobe" not in dance.runtime_versions(python, blender, ["ffmpeg"])
+    setting = dance.read(preset)
+    setting["video_tools"] = ["ffmpeg"]
+    dump(preset, setting)
+    result = dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
+    assert dance.read(tmp_path / "recipe/connector.json")["video_tools"] == ["ffmpeg"]
+    assert "ffmpeg" in dance.read(result["inventory"])["runtime"]
+    assert "ffprobe" not in dance.read(result["inventory"])["runtime"]
 
 
 def test_noncanonical_private_layout_is_rejected(tmp_path, monkeypatch):

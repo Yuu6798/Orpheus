@@ -54,14 +54,27 @@ def absolute_executable(path):
     return path
 
 
-def runtime_versions(python, blender):
+VIDEO_TOOLS = ("ffmpeg", "ffprobe")
+
+
+def video_tools(setting):
+    # The bundle preset declares the encoder tools its workers call. Bundles that
+    # declare nothing call both, so both stay required for them.
+    tools = setting.get("video_tools", list(VIDEO_TOOLS))
+    if (not isinstance(tools, list) or "ffmpeg" not in tools or len(set(tools)) != len(tools)
+            or any(tool not in VIDEO_TOOLS for tool in tools)):
+        raise ValueError(f"video_tools must list ffmpeg and optionally ffprobe: {tools!r}")
+    return tools
+
+
+def runtime_versions(python, blender, tools=VIDEO_TOOLS):
     code = ("import json,platform,importlib.metadata as m; "
             "print(json.dumps({'python':platform.python_version(),'packages':"
             "{n:m.version(n) for n in ['numpy','scipy','Pillow','opencv-python-headless']}}))")
     py = subprocess.run([str(python), "-c", code], capture_output=True, text=True, check=True, timeout=60)
     bl = subprocess.run([str(blender), "--version"], capture_output=True, text=True, check=True, timeout=60)
     result = {**json.loads(py.stdout), "blender": bl.stdout.strip()}
-    for tool in ("ffmpeg", "ffprobe"):
+    for tool in tools:
         executable = shutil.which(tool)
         if not executable:
             raise ValueError(f"Required encoder tool missing: {tool}")
@@ -109,6 +122,7 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
     keys = (root / setting["light_keys"]).resolve(strict=True)
     animation = read(keys)
     selected = validate_frames(frames, int(animation["frames"]))
+    tools = video_tools(setting)
     if profile not in setting["render_profiles"]:
         raise ValueError(f"Unknown render profile: {profile}")
     files = {preset, face_config, keys, source / "manifest.json", Path(__file__).resolve(), python, blender}
@@ -125,9 +139,9 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
             files.add((root / path).resolve(strict=True))
     inventory = {"schema": "model3d-dance-inputs/0.1", "files": [
         {"path": str(p), "sha256": digest(p), "bytes": p.stat().st_size} for p in sorted(files)],
-        "runtime": runtime_versions(python, blender), "starts_from_completed_character": False}
+        "runtime": runtime_versions(python, blender, tools), "starts_from_completed_character": False}
     config = {"schema": "model3d-dance-connector/0.1", "bundle": str(root), "preset": str(preset),
-              "face_config": str(face_config), "python": str(python), "blender": str(blender),
+              "face_config": str(face_config), "python": str(python), "blender": str(blender), "video_tools": tools,
               "frames": frames, "selected_frames": selected, "profile": profile, "threads": threads,
               "source_fps": animation["fps"], "source_frames": animation["frames"]}
     out.mkdir(parents=True, exist_ok=True)
@@ -188,7 +202,7 @@ def run_stage(stage, config, inventory, work, inputs):
     job = work / "job"
     job.mkdir()  # Never consume stale worker output, including after a failed run.
     check_inventory(inventory)
-    runtime = runtime_versions(config["python"], config["blender"])
+    runtime = runtime_versions(config["python"], config["blender"], config.get("video_tools", list(VIDEO_TOOLS)))
     if runtime != inventory["runtime"]:
         raise ValueError("Worker runtime versions changed since recipe preparation")
     input_hashes = {name: digest(path) for name, path in inputs.items()}
@@ -201,8 +215,10 @@ def run_stage(stage, config, inventory, work, inputs):
         argv = [str(v) for v in argv]
         commands.append(argv)
         with (work / "worker.log").open("a", encoding="utf-8") as log:
+            # Workers read JSON and text without naming an encoding; UTF-8 mode keeps
+            # Windows from decoding them with the ANSI code page.
             completed = subprocess.run(argv, cwd=root, stdout=log, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                                       stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"})
         if completed.returncode:
             raise RuntimeError(f"Worker exited {completed.returncode}; see {work / 'worker.log'}")
 

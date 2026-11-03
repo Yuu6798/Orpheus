@@ -31,6 +31,11 @@ worker 用 Python は model3d と別環境にする。確認に使う worker の
 numpy 1.26.4、scipy 1.17.1、Pillow 10.1.0、opencv-python-headless 4.11.0.86。
 Blender 4.5.15 LTS、ffmpeg と ffprobe も必要。生成器や有料 API は呼ばない。
 
+worker が呼ぶ動画ツールは、worker 一式の preset の `video_tools` で宣言できる（既定は `["ffmpeg", "ffprobe"]`）。
+ffprobe を呼ばない worker なら `["ffmpeg"]` とし、接続は宣言したツールだけが PATH にあることを確かめて版を記録する。
+worker の Python は UTF-8 モード（`PYTHONUTF8=1`）で動かす。encoding を指定しない JSON・テキストの読み込みが、
+Windows で ANSI のコードページにならないようにするため。
+
 作成先には空のディレクトリを指定する。`connector.json`、`input_inventory.json`、`recipe.json` ができる。
 入力一覧は worker、元資産、再利用する補正データ、設定画、preset、実行ファイルをハッシュ付きで記録する。
 実行前後に一致を確認し、Python のパッケージ版・Blender 版・動画ツールの版も記録する。
@@ -87,3 +92,19 @@ CLI → RecipeGraph → 5つの別プロセスを実行する回帰テストを�
 既存の `mv demo → render → verify` は、この環境の Node `os.networkInterfaces()` が
 `uv_interface_addresses` エラーになるため render で停止し、verify は未実行。
 今回の Blender 描画とは別系統であり、既存 Remotion 経路のローカル検証成功とは扱わない。
+
+## Windows の PC での実行確認（2026-11-03）
+
+Windows 11 Home（スマート アプリ コントロールはオン）・Blender 4.5.15 LTS（Windows 版）・CPU で、同じ worker 一式を実素材で通した。
+worker の Python は model3d と同じ環境（numpy 2.3.5・scipy 1.18.1・Pillow 13.0.0・opencv-python-headless 5.0.0.93。上の固定版とは違う）、
+ffmpeg は imageio-ffmpeg の 7.1。ffprobe は無い。
+
+- 詰まった所: ffprobe が無く、接続の準備で止まった。worker 側はコマ数を ffmpeg で数え、連番のシンボリックリンクを作れなければ
+  照合済みのコピーにする版に直し（非公開の一式。Git に入れない）、preset に `video_tools: ["ffmpeg"]` を宣言した。
+- 5 工程を約 7.2 分で実行した（再構築の 12 工程は計約 143 秒）。目元投影と run 全体は `needs_review`、ほかは `succeeded`。
+  動画は 49 コマ・10 fps・4.9 秒・無音で、ffmpeg で復号したコマ数も 49。
+- 再構築したモデルを、採用済みの r6 の完成モデル（上と同じ比較基準）と比べた。メッシュ 27 個の頂点・面・UV・意味属性、
+  6 コマの変形後の全頂点（162 件）、132 骨・147 コマの姿勢行列とレスト行列がすべて一致した（差 0）。
+- 前回の Linux のプレビュー 49 枚と、今回の PNG を比べた。全画素一致は 0 枚で、画素の 46〜68% に差がある。ただし 255 段階で
+  2 を超える差は 9〜25%、8 を超える差は 1% 未満、64 を超える差は 1 枚あたり数画素で、並べた画像と 8 倍の差分では形や配置の違いは
+  見えなかった。描画の陰影の細かな差で、Linux のソフトウェア描画との違いによると推定する（原因は特定していない）。
