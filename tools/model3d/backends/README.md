@@ -21,6 +21,7 @@ Linux・Python 3.12・gcc/g++。GPU も有料 API も要らない。重みは別
 モデルのロードに進まず終了コード **2** で止まる。自作したファイルや出力は source の外に置く。
 
 ```sh
+git clone https://github.com/VAST-AI-Research/TripoSR /path/TripoSR && git -C /path/TripoSR checkout --detach 107cefdc244c39106fa830359024f6a2f1c78871   # --source に渡す clean checkout
 python3.12 -m venv /path/triposr_env
 /path/triposr_env/bin/python -m pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
 /path/triposr_env/bin/python -m pip install numpy==1.26.4 Pillow==10.1.0 trimesh==4.0.5 omegaconf==2.3.0 transformers==4.35.0 huggingface-hub==0.17.3 einops==0.7.0 safetensors==0.8.0
