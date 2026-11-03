@@ -269,7 +269,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                                 raise ToolError(f"applies_to の役割 {role} が対応表にありません（未対応か rejected）")
                     for text in step.get("preconditions", []):
                         _precondition(text, step, step_inputs, semantic_map)
-                    # select: 入力メッシュの頂点構成に結び付いた面領域だけを渡す。古い対応・当たる面の無い役割は止める。
+                    # select: 入力メッシュの名前と頂点構成に結び付いた面領域だけを渡す。別の部品・古い対応・当たる面の無い役割は止める。
                     selections = {name: semantic.select(semantic_map, role, Mesh.load(step_inputs[name]))
                                   for name, role in sorted(step.get("select", {}).items())}
                     chosen_notes = [{"kind": "selection", "input": name, "role": chosen["role"], "faces": len(chosen["faces"]),

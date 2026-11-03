@@ -126,10 +126,14 @@ def test_regions_do_not_cross_parts_that_share_a_topology(tmp_path):
         semantic.add_region(mapping, "unnamed", "garment.sleeve.R", Mesh(left.vertices, left.faces), [0], "tester")
 
 
+def three_triangles(name="tri", offset=(0.0, 0.0, 0.0)):
+    """面 0 は大きな三角形、面 1 は距離 1e-6 の結合で潰れる小さな三角形、面 2 は残る三角形。"""
+    points = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [2, 0, 0], [2, 1e-7, 0], [2, 0, 1e-7], [3, 0, 0], [3, 1, 0], [4, 0, 0]]
+    return Mesh([[p[i] + offset[i] for i in range(3)] for p in points], [[0, 1, 2], [3, 4, 5], [6, 8, 7]], name=name)
+
+
 def test_remap_follows_the_exact_weld_mapping_and_reopens_regions_that_lost_faces():
-    # 面 0 は大きな三角形、面 1 は結合で潰れる小さな三角形、面 2 は残る三角形
-    mesh = Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0], [2, 0, 0], [2, 1e-7, 0], [2, 0, 1e-7], [3, 0, 0], [3, 1, 0], [4, 0, 0]],
-                [[0, 1, 2], [3, 4, 5], [6, 8, 7]], name="tri")
+    mesh = three_triangles()
     mapping = semantic.build("asset", demo.preset_json())
     semantic.add_region(mapping, "keep", "garment.sash.front", mesh, [0, 2], "tester")
     semantic.add_region(mapping, "lose", "garment.sash.back", mesh, [1, 2], "tester")
@@ -140,6 +144,7 @@ def test_remap_follows_the_exact_weld_mapping_and_reopens_regions_that_lost_face
     welded, report = weld(mesh, 1e-6)
     table = report["vertex_mapping"]
     assert table["face_old_to_new"] == [0, -1, 1] and welded.face_count == 2
+    assert table["source_name"] == table["target_name"] == "tri"
     with pytest.raises(ToolError, match="古い対応"):
         semantic.select(mapping, "garment.sash.front", welded)
     result = semantic.remap_regions(mapping, table, "tester")
@@ -152,9 +157,27 @@ def test_remap_follows_the_exact_weld_mapping_and_reopens_regions_that_lost_face
     assert mapping["history"][-1]["action"] == "remap"
     for broken, message in [({**table, "face_old_to_new": None}, "面の対応"),
                             ({**table, "face_old_to_new": [0, 0, 1]}, "1 対 1"),
-                            ({**table, "face_old_to_new": [0, True, 1]}, "整数")]:
+                            ({**table, "face_old_to_new": [0, True, 1]}, "整数"),
+                            ({**table, "source_name": None}, "部品の名前")]:
         with pytest.raises(ToolError, match=message):
             semantic.remap_regions(mapping, broken, "tester")
+
+
+def test_remap_leaves_regions_of_another_part_with_the_same_topology():
+    left, right = three_triangles("tail_l"), three_triangles("tail_r", offset=(0.0, 10.0, 0.0))
+    assert left.topology_hash() == right.topology_hash()
+    mapping = semantic.build("asset", demo.preset_json())
+    semantic.add_region(mapping, "front", "garment.sash.front", left, [1, 2], "tester")
+    semantic.add_region(mapping, "back", "garment.sash.back", right, [1, 2], "tester")
+    for key in ("front", "back"):
+        semantic.confirm(mapping, "regions", key, "confirmed", "tester")
+    welded, report = weld(left, 1e-6)   # 左だけを結合した。右のメッシュは変わっていない
+    result = semantic.remap_regions(mapping, report["vertex_mapping"], "tester")
+    assert result["remapped"] == {"front": {"faces": 1, "lost": 1, "state": "unconfirmed"}} and result["untouched"] == ["back"]
+    assert mapping["regions"]["back"] == {"role": "garment.sash.back", "part": "tail_r", "faces": [1, 2],
+                                          "topology_sha256": right.topology_hash(), "basis": "user", "state": "confirmed"}
+    assert semantic.select(mapping, "garment.sash.back", right)["faces"] == [1, 2]
+    assert semantic.select(mapping, "garment.sash.front", welded)["faces"] == [1]
 
 
 @pytest.fixture

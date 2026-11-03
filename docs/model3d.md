@@ -101,7 +101,7 @@ uv run model3d semantic confirm semantic_map.json --kind parts --key part_1 --st
 ```sh
 uv run model3d semantic components mesh.obj --out components.json --obj components.obj   # 連結成分の一覧と、成分ごとの g を付けた OBJ
 uv run model3d semantic add-region semantic_map.json mesh.obj --key body --role body --component 0 --basis inferred --by NAME
-uv run model3d semantic check semantic_map.json mesh.obj                     # このメッシュ版に当たるか（bound / stale / invalid）
+uv run model3d semantic check semantic_map.json mesh.obj                     # このメッシュ版に当たるか（bound / other / stale / invalid）
 uv run model3d semantic preview semantic_map.json mesh.obj preview.obj       # 面領域ごとの g と ~unassigned を付けた OBJ
 uv run model3d semantic confirm semantic_map.json --kind regions --key body --state confirmed --by NAME
 uv run model3d semantic remap semantic_map.json weld/vertex_mapping.json semantic_map_welded.json --by NAME
@@ -118,7 +118,8 @@ uv run model3d semantic remap semantic_map.json weld/vertex_mapping.json semanti
   同じ形の部品は別の名前にする（同じ名前で同じ頂点構成の別のメッシュは区別できない）。
 - 同じ部品で頂点構成の違うメッシュには当てない（古い対応。`check` が `stale` と報告し、`select` の工程は止まる）。位置だけを変える工程
   （`mesh.transform`・`collision.push_out`。名前も引き継ぐ）の後はそのまま当たる。結合のように構成を変えた後は、その工程の mapping の正確な面の対応
-  （`face_old_to_new`）で `remap` する（元の対応表は残し、別のファイルに書く）。面が消えた領域は `unconfirmed` に戻す。
+  （`face_old_to_new`）で `remap` する（元の対応表は残し、別のファイルに書く）。付け替えるのは対応の source と同じ部品（`source_name`）・
+  同じ頂点構成の面領域だけで、頂点構成が同じ別の部品の面領域は変えない。面が消えた領域は `unconfirmed` に戻す。
   近い面を探して付け替えることはしない。
 
 ## レシピと実行
@@ -173,7 +174,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 |---|---|---|
 | `mesh.import` | file → mesh | JSON か OBJ を読んで `model3d-mesh/0.1` で書く |
 | `mesh.extrude_profile` | profile（`{"points": [[x, y], …]}`）→ mesh | 厳密に凸で反時計回りの断面を `height` だけ押し出す。`twist_deg` か `twist_rad`、`steps`、`offset`。高さが負なら先に断面の有向辺を反転する。ねじり 0 なら 1 段 |
-| `mesh.weld` | mesh [, rig] → mesh [, mapping, rig] | `distance` 以内の頂点を結合（`selection` か工程の `select`・`center: mean|first`）。退化面と包含面を除く（結合に関わった面と隣接面のみ）。mapping は旧→新頂点番号、旧→新面番号（`face_old_to_new`。消えた面は -1）と双方の topology。rig は入出力を対で指定し、同じ mean / first 規則でウェイトを移す |
+| `mesh.weld` | mesh [, rig] → mesh [, mapping, rig] | `distance` 以内の頂点を結合（`selection` か工程の `select`・`center: mean|first`）。退化面と包含面を除く（結合に関わった面と隣接面のみ）。mapping は旧→新頂点番号、旧→新面番号（`face_old_to_new`。消えた面は -1）、双方の topology と部品の名前（`source_name`・`target_name`）。rig は入出力を対で指定し、同じ mean / first 規則でウェイトを移す |
 | `mesh.transform` | mesh → mesh | `to_units`（m / cm / mm の換算）→ `to_axes`（`{"up", "forward"}` の約束の換算）→ `scale` → `rotate_z_deg` → `translate` |
 | `mesh.extract_region` | mesh → mesh [, mapping] | 工程の `select` で選んだ役割の面だけのメッシュ（使わない頂点は落とす。uv・頂点色・単位・軸は引き継ぐ）。mapping は新→旧の頂点・面番号と双方の topology。観測に連結成分の数と閉じているか |
 | `mesh.export_obj` | mesh → obj | v / vt / f / g。見出しの行に units・軸・名前を書き、`mesh.import` で戻す（名前は面領域が部品を区別するのに使う）。数値は往復で変わらない表記 |

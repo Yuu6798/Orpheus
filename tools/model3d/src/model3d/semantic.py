@@ -280,21 +280,26 @@ def select(semantic_map, role, mesh):
 
 
 def remap_regions(semantic_map, mapping, by):
-    """頂点構成を変えた工程の正確な面の対応（mesh.weld の mapping の face_old_to_new。消えた面は -1）で、source の頂点構成に
-    結び付いた面領域を target へ付け替える。面が消えた領域は unconfirmed に戻す（rejected は rejected のまま）。"""
+    """頂点構成を変えた工程の正確な面の対応（mesh.weld の mapping の face_old_to_new。消えた面は -1）で、source の部品
+    （source_name）と頂点構成に結び付いた面領域だけを target へ付け替える。頂点構成が同じでも別の部品の面領域は変えない。
+    面が消えた領域は unconfirmed に戻す（rejected は rejected のまま）。"""
     source, target = mapping.get("source_topology_sha256"), mapping.get("target_topology_sha256")
     table = mapping.get("face_old_to_new")
+    part, renamed = mapping.get("source_name"), mapping.get("target_name")
     if not isinstance(source, str) or not isinstance(target, str) or not isinstance(table, list):
         raise ToolError("面の対応（source_topology_sha256・target_topology_sha256・face_old_to_new）がありません。"
                         "mesh.weld の mapping を渡してください")
+    if not isinstance(part, str) or not part or not isinstance(renamed, str) or not renamed:
+        raise ToolError("面の対応に部品の名前（source_name・target_name）がありません。名前のあるメッシュを mesh.weld で"
+                        "結合し直した mapping を渡してください（別の部品の面領域まで付け替えないため）")
     if any(isinstance(k, bool) or not isinstance(k, int) or k < -1 for k in table):
         raise ToolError("face_old_to_new は整数（消えた面は -1）の列にしてください")
     kept = [k for k in table if k >= 0]
     if len(set(kept)) != len(kept):
         raise ToolError("face_old_to_new が 2 つの面を同じ面へ写しています（正確な 1 対 1 の対応ではありません）")
-    report = {"source_topology_sha256": source, "target_topology_sha256": target, "remapped": {}, "untouched": []}
+    report = {"source_name": part, "source_topology_sha256": source, "target_topology_sha256": target, "remapped": {}, "untouched": []}
     for key, entry in sorted(semantic_map["regions"].items()):
-        if entry.get("topology_sha256") != source:
+        if entry["part"] != part or entry.get("topology_sha256") != source:
             report["untouched"].append(key)
             continue
         if any(k >= len(table) for k in entry["faces"]):
@@ -302,10 +307,11 @@ def remap_regions(semantic_map, mapping, by):
         lost = sum(1 for k in entry["faces"] if table[k] < 0)
         entry["faces"] = sorted(table[k] for k in entry["faces"] if table[k] >= 0)
         entry["topology_sha256"] = target
+        entry["part"] = renamed   # mesh.weld は名前を引き継ぐので、ふつうは同じ名前のまま
         if lost and entry["state"] == "confirmed":
             entry["state"] = "unconfirmed"
         report["remapped"][key] = {"faces": len(entry["faces"]), "lost": lost, "state": entry["state"]}
         semantic_map.setdefault("history", []).append(
-            {"at": now(), "by": by, "kind": "regions", "key": key, "action": "remap", "from": source, "to": target,
+            {"at": now(), "by": by, "kind": "regions", "key": key, "action": "remap", "part": part, "from": source, "to": target,
              "faces": len(entry["faces"]), "lost": lost, "state": entry["state"]})
     return report

@@ -220,7 +220,8 @@ def _regions(args, semantic):
         data = contracts.load("semantic-map", args.semantic_map)
         report = semantic.remap_regions(data, read_json(args.mapping), args.by)
         if not report["remapped"]:
-            raise ToolError("対応の source の頂点構成に結び付いた面領域がありません（別のメッシュ版の対応を渡していないか確かめてください）")
+            raise ToolError(f"対応の source（部品 {report['source_name']} と、その頂点構成）に結び付いた面領域がありません"
+                            "（別の部品か別のメッシュ版の対応を渡していないか確かめてください）")
         contracts.validate("semantic-map", data)
         atomic_json(args.out, data)
         return {"out": str(args.out.resolve()), **report}

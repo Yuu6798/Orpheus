@@ -701,7 +701,8 @@ def weld(mesh, distance, selection=None, center="mean"):
     vertex_mapping = {"source_vertex_count": n, "target_vertex_count": out.vertex_count,
                       "source_topology_sha256": mesh.topology_hash(), "target_topology_sha256": out.topology_hash(),
                       "old_to_new": [remap[i] for i in range(n)], "center": center,
-                      "face_old_to_new": [face_index.get(k, -1) for k in range(mesh.face_count)]}   # 消えた面は -1。面領域の付け替えに使う
+                      "face_old_to_new": [face_index.get(k, -1) for k in range(mesh.face_count)],   # 消えた面は -1。面領域の付け替えに使う
+                      "source_name": mesh.name, "target_name": out.name}   # 面領域の付け替えをこの部品だけに限る
     report = {"distance": float(distance), "center": center, "selected": len(chosen), "merged_groups": len(groups),
               "vertices_before": n, "vertices_after": out.vertex_count, "faces_before": mesh.face_count,
               "faces_after": out.face_count, "faces_removed_degenerate": degenerate, "faces_removed_contained": len(contained),
