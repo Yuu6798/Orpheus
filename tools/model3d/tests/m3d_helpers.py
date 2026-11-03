@@ -38,6 +38,21 @@ def stand_in_executable(directory, name, source):
     return wrapper
 
 
+def symlinks_available(directory):
+    """この環境でシンボリックリンクを作れるか。Windows は権限か開発者モードが無いと作れない（WinError 1314）。"""
+    target, link = Path(directory) / "symlink-probe-target", Path(directory) / "symlink-probe"
+    target.write_bytes(b"")
+    try:
+        link.symlink_to(target)
+    except OSError:
+        return False
+    else:
+        link.unlink()
+        return True
+    finally:
+        target.unlink()
+
+
 def box(size=1.0, center=(0.0, 0.0, 0.0)):
     """閉じた立方体（外向きの面）。"""
     half = size / 2.0

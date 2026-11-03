@@ -49,7 +49,7 @@ Windows 11 Home（スマート アプリ コントロールはオン）・署名
 | 確認 | 実測 | 範囲 |
 |---|---|---|
 | Python テスト（変更前） | 783 passed / 2 failed / 1 skipped | 失敗の 2 件は Blender の代役をシバン付きのスクリプトとして直接起動するテストで、Windows では起動できない（WinError 193）。skip は POSIX 専用のプロセスグループの検査 |
-| Python テスト（変更後） | 816 passed / 3 failed / 1 skipped（面領域の 12 件を含む） | Blender の代役は Windows では python を呼ぶ `.cmd` にした（本物の Blender の起動ではない）。失敗の 3 件は PR #25 で入った dance-recipe のテストで、シンボリックリンクを作る権限（WinError 1314）、連番がシンボリックリンクであること、シバン付きの代役（WinError 193）を前提にしている。面領域の変更とは別の原因で、PR #25 の記録では Linux で通っている。skip は上と同じ |
+| Python テスト（変更後） | 819 passed / 1 skipped（面領域の 12 件を含む） | Blender の代役は Windows では python を呼ぶ `.cmd` にした（本物の Blender の起動ではない）。PR #25 で入った dance-recipe のテスト 3 件も、シンボリックリンクを作る権限（WinError 1314）とシバン付きの代役（WinError 193）を前提にしていて Windows では落ちていたので、代役を同じ方法にし、リンクを作れない環境では照合済みのコピーを確かめるようにした。skip は上と同じ |
 | 合成デモ・設定画の代役レシピ | 9 工程 succeeded（結合 42→35 頂点、貫通 15→0）／ needs_review（8 頂点・12 三角形の閉じた箱） | Linux の記録と同じ値。代役の生成器で、画像条件付きの推論ではない |
 | 本物の TripoSR | 未実施 | 生成器の手順は Linux 前提（gcc/g++ で torchmcubes の C++ 拡張をビルド、Python 3.12）。この PC には WSL もコンパイラも無く、Python は 3.13 だけ。スマート アプリ コントロールは評判の無い未署名の DLL を止めるので、その場でビルドした拡張は読み込めない見込み（推定・未試行） |
 
