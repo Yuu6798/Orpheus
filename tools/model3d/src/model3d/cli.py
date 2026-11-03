@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import VERSION, contracts
-from .io import ToolError, atomic_json, read_json
+from .io import ToolError, atomic_json, read_json, sha256
 
 INPUT_KINDS = ("mesh", "image", "blend", "glb", "fbx", "obj", "json", "recipe", "other")
 
@@ -63,7 +63,7 @@ def parser():
     manifest.add_argument("--part", action="append", default=[], help="part id")
     manifest.add_argument("--notes")
 
-    sem = commands.add_parser("semantic", help="build or confirm a SemanticMap from a preset")
+    sem = commands.add_parser("semantic", help="build or confirm a SemanticMap, and bind face regions of a mesh version to roles")
     sem_sub = sem.add_subparsers(dest="semantic_command", required=True)
     build = sem_sub.add_parser("build", help="map part ids and bone names to roles with a preset")
     build.add_argument("preset", type=Path)
@@ -79,6 +79,37 @@ def parser():
     confirm.add_argument("--state", choices=["confirmed", "rejected", "unconfirmed"], required=True)
     confirm.add_argument("--by", required=True)
     confirm.add_argument("--note")
+    components = sem_sub.add_parser("components", help="list the face-connected components of a mesh (material for regions)")
+    components.add_argument("mesh", type=Path)
+    components.add_argument("--out", type=Path, help="also write the report as JSON")
+    components.add_argument("--obj", type=Path, help="write the mesh as OBJ with one group per component (to look at in Blender)")
+    region = sem_sub.add_parser("add-region", help="bind faces of this mesh version to a part role (state unconfirmed)")
+    region.add_argument("semantic_map", type=Path)
+    region.add_argument("mesh", type=Path)
+    region.add_argument("--key", required=True, help="region id (letters, digits, _ . -)")
+    region.add_argument("--role", required=True)
+    region.add_argument("--by", required=True)
+    region.add_argument("--component", type=int, nargs="+", default=[], help="component numbers from `semantic components`")
+    region.add_argument("--faces", type=Path, help="JSON list of face indices, or {\"faces\": [...]}")
+    region.add_argument("--mesh-part", action="append", default=[], help="a face set of the mesh (mesh parts / OBJ group)")
+    region.add_argument("--box", type=float, nargs=6, metavar=("X0", "Y0", "Z0", "X1", "Y1", "Z1"),
+                        help="keep only faces whose centre lies in this axis-aligned box (mesh units)")
+    region.add_argument("--part", help="part id the face numbers refer to (default: the mesh name)")
+    region.add_argument("--basis", choices=["user", "inferred"], default="user")
+    region.add_argument("--note")
+    region.add_argument("--replace", action="store_true")
+    status = sem_sub.add_parser("check", help="which regions bind to this mesh version (bound / stale / invalid)")
+    status.add_argument("semantic_map", type=Path)
+    status.add_argument("mesh", type=Path)
+    remap = sem_sub.add_parser("remap", help="rebind regions through an exact face mapping (the mapping output of mesh.weld)")
+    remap.add_argument("semantic_map", type=Path)
+    remap.add_argument("mapping", type=Path)
+    remap.add_argument("out", type=Path)
+    remap.add_argument("--by", required=True)
+    preview = sem_sub.add_parser("preview", help="write the mesh as OBJ with one group per region bound to it (to look at in Blender)")
+    preview.add_argument("semantic_map", type=Path)
+    preview.add_argument("mesh", type=Path)
+    preview.add_argument("out", type=Path)
 
     validate = commands.add_parser("validate", help="validate a file against one of the data contracts")
     validate.add_argument("kind", choices=list(contracts.KINDS))
@@ -173,6 +204,99 @@ def _pairs(values, label):
     return result
 
 
+def _labelled(mesh, parts, path):
+    """面集合を付け替えた写しを書く（OBJ なら面集合ごとの g。Blender で部位ごとに分けて見られる）。"""
+    copy = mesh.copy()
+    copy.parts = parts
+    copy.save(path)
+    return str(Path(path).resolve())
+
+
+def _regions(args, semantic):
+    """面領域（役割 → このメッシュ版の面）のコマンド: components / add-region / check / remap / preview。"""
+    import numpy as np
+
+    from .mesh import Mesh, describe_faces, face_centers, face_components
+    if args.semantic_command == "remap":
+        data = contracts.load("semantic-map", args.semantic_map)
+        report = semantic.remap_regions(data, read_json(args.mapping), args.by)
+        if not report["remapped"]:
+            raise ToolError("対応の source の頂点構成に結び付いた面領域がありません（別のメッシュ版の対応を渡していないか確かめてください）")
+        contracts.validate("semantic-map", data)
+        atomic_json(args.out, data)
+        return {"out": str(args.out.resolve()), **report}
+    mesh = Mesh.load(args.mesh)
+    if args.semantic_command == "components":
+        groups = face_components(mesh)
+        report = {"mesh": str(args.mesh.resolve()), "topology_sha256": mesh.topology_hash(), "vertices": mesh.vertex_count,
+                  "faces": mesh.face_count, "components": [{"component": i, **describe_faces(mesh, faces)} for i, faces in enumerate(groups)]}
+        if args.obj:
+            width = len(str(max(len(groups) - 1, 0)))
+            report["obj"] = _labelled(mesh, {f"component_{i:0{width}d}": faces for i, faces in enumerate(groups)}, args.obj)
+        if args.out:
+            atomic_json(args.out, report)
+        return report
+    data = contracts.load("semantic-map", args.semantic_map)
+    if args.semantic_command == "check":
+        report = semantic.region_status(data, mesh)
+        report["pass"] = bool(report["regions"]) and not report["stale"] and not report["invalid"]
+        args.failed = 0 if report["pass"] else 1
+        return report
+    if args.semantic_command == "preview":
+        status = semantic.region_status(data, mesh)
+        parts, covered, overlapping = {}, set(), 0
+        for key in status["bound"]:
+            faces = data["regions"][key]["faces"]
+            overlapping += len(covered.intersection(faces))
+            covered.update(faces)
+            parts[key] = list(faces)
+        rest = [k for k in range(mesh.face_count) if k not in covered]
+        if rest:
+            parts["~unassigned"] = rest   # ~ は面領域の key に使えない文字なので重ならない
+        return {"out": _labelled(mesh, parts, args.out),
+                "regions": {key: {"role": data["regions"][key]["role"], "state": data["regions"][key]["state"],
+                                  "faces": len(data["regions"][key]["faces"])} for key in status["bound"]},
+                "unassigned_faces": len(rest), "overlapping_faces": overlapping, "stale": status["stale"], "invalid": status["invalid"]}
+    chosen, selection = set(), {}
+    if args.component:
+        groups = face_components(mesh)
+        for number in args.component:
+            if not 0 <= number < len(groups):
+                raise ToolError(f"成分 {number} はありません（0〜{len(groups) - 1}。番号は semantic components の component）")
+            chosen.update(groups[number])
+        selection["components"] = list(args.component)
+    if args.faces:
+        listed = read_json(args.faces)
+        listed = listed.get("faces") if isinstance(listed, dict) else listed
+        if not isinstance(listed, list):
+            raise ToolError("--faces は面番号の列か {\"faces\": [...]} の JSON にしてください")
+        chosen.update(semantic.face_list(mesh, listed))
+        selection["faces_file"] = {"path": str(args.faces.resolve()), "sha256": sha256(args.faces)}
+    for name in args.mesh_part:
+        if name not in mesh.parts:
+            raise ToolError(f"メッシュに面集合 {name} がありません（ある面集合: {', '.join(sorted(mesh.parts)) or 'なし'}）")
+        chosen.update(mesh.parts[name])
+    if args.mesh_part:
+        selection["mesh_parts"] = list(args.mesh_part)
+    if args.box:
+        lo, hi = np.asarray(args.box[:3]), np.asarray(args.box[3:])
+        if (lo > hi).any():
+            raise ToolError("--box は X0 Y0 Z0 X1 Y1 Z1（X0 <= X1、Y0 <= Y1、Z0 <= Z1）の順にしてください")
+        centers = face_centers(mesh)
+        boxed = set(np.flatnonzero(np.all((centers >= lo) & (centers <= hi), axis=1)).tolist()) if len(centers) else set()
+        chosen = chosen & boxed if selection else boxed   # ほかの選び方があれば、その中で箱に入る面だけ
+        selection["box"] = list(args.box)
+    if not selection:
+        raise ToolError("面の選び方を 1 つ以上指定してください（--component / --faces / --mesh-part / --box）")
+    selection["mesh"] = {"path": str(args.mesh.resolve()), "sha256": sha256(args.mesh)}
+    entry = semantic.add_region(data, args.key, args.role, mesh, sorted(chosen), args.by, args.part, args.basis, args.note,
+                                args.replace, selection)
+    contracts.validate("semantic-map", data)
+    atomic_json(args.semantic_map, data)
+    return {"out": str(args.semantic_map.resolve()), "key": args.key, "role": entry["role"], "faces": len(entry["faces"]),
+            "topology_sha256": entry["topology_sha256"], "basis": entry["basis"], "state": entry["state"]}
+
+
 def command(args):
     if args.command == "demo":
         from . import demo
@@ -226,6 +350,8 @@ def command(args):
             atomic_json(args.out, data)
             return {"out": str(args.out.resolve()), "parts": len(data["parts"]), "bones": len(data["bones"]),
                     "unmapped": data["unmapped"], "required_missing": data["required_missing"]}
+        if args.semantic_command in ("components", "add-region", "check", "remap", "preview"):
+            return _regions(args, semantic)
         data = contracts.load("semantic-map", args.semantic_map)
         semantic.confirm(data, args.kind, args.key, args.state, args.by, args.note)
         contracts.validate("semantic-map", data)

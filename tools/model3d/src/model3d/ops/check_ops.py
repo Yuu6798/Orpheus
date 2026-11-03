@@ -3,7 +3,7 @@
 from .. import checks, semantic
 from ..io import ToolError, atomic_json, read_json
 from ..mesh import Mesh
-from . import StepResult, register, require
+from . import StepResult, register, require, selected
 
 
 def _finish(report, outputs, parameters, label):
@@ -48,11 +48,13 @@ def check_structure(inputs, parameters, outputs, context):
     return result
 
 
-@register("check.penetration", inputs=("mesh", "collider"), outputs=("report",),
-          summary="mesh の頂点が閉じた collider の中にないことを検査する")
+@register("check.penetration", inputs=("mesh", "collider"), outputs=("report",), selectable=("mesh",),
+          summary="mesh の頂点（select で役割の面の頂点だけ）が閉じた collider の中にないことを検査する")
 def check_penetration(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "collider"), "check.penetration")
-    report = checks.penetration(Mesh.load(inputs["mesh"]), Mesh.load(inputs["collider"]), parameters.get("directions"))
+    chosen = selected(context, "mesh", parameters, "check.penetration")
+    report = checks.penetration(Mesh.load(inputs["mesh"]), Mesh.load(inputs["collider"]), parameters.get("directions"),
+                                vertices=chosen["vertices"] if chosen else None)
     if report["inside"]:
         report["failures"] = [f"{report['inside']} 頂点が中にあります（最大の深さ {report['max_depth']:.4g}）"]
     return _finish(report, outputs, parameters, "貫通の検査")

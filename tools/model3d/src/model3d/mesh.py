@@ -230,6 +230,74 @@ class Mesh:
                 "topology_sha256": self.topology_hash(), "geometry_sha256": self.geometry_hash()}
 
 
+# ---- 面の集まり（面領域の材料）------------------------------------------------------------------
+
+def face_components(mesh):
+    """頂点を共有する面でつながった面の集まり（連結成分）。最小の面番号の順に並べ、各成分の面番号は昇順。"""
+    parent = list(range(mesh.vertex_count))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for face in mesh.faces:
+        root = find(face[0])
+        for i in face[1:]:
+            other = find(i)
+            if other != root:
+                parent[other] = root
+    groups = {}
+    for k, face in enumerate(mesh.faces):
+        groups.setdefault(find(face[0]), []).append(k)
+    return sorted(groups.values(), key=lambda faces: faces[0])
+
+
+def face_vertices(mesh, faces):
+    """面の集まりが使う頂点の番号（昇順）。"""
+    return sorted({i for k in faces for i in mesh.faces[k]})
+
+
+def face_centers(mesh):
+    """面ごとの重心（頂点の平均）(F,3)。"""
+    if not mesh.faces:
+        return np.zeros((0, 3))
+    return np.asarray([mesh.vertices[face].mean(axis=0) for face in mesh.faces])
+
+
+def submesh(mesh, faces):
+    """面の集まりだけのメッシュと、新→旧の頂点番号・面番号。使わない頂点は落とし、uv・頂点色・単位・軸は引き継ぐ。"""
+    faces = sorted({int(k) for k in faces})
+    vertices = face_vertices(mesh, faces)
+    new_index = {old: new for new, old in enumerate(vertices)}
+    palette = mesh.extra.get("x_vertex_colors")
+    extra = {"x_vertex_colors": [palette[i] for i in vertices]} if isinstance(palette, list) and len(palette) == mesh.vertex_count else {}
+    part = Mesh(mesh.vertices[vertices], [[new_index[i] for i in mesh.faces[k]] for k in faces],
+                None if mesh.uv is None else mesh.uv[vertices], mesh.name, mesh.units, mesh.axes, extra=extra)
+    return part, {"vertices": vertices, "faces": faces}
+
+
+def describe_faces(mesh, faces):
+    """面の集まりの要約（人が役割を決める材料）: 面と頂点の数、面積、bounds、面積で重みを付けた重心、閉じているか、頂点色の平均。"""
+    part, _ = submesh(mesh, faces)
+    lo, hi = part.bounds()
+    points = part.triangle_points()
+    areas = np.linalg.norm(part.triangle_normals(unit=False), axis=1) / 2.0 if len(points) else np.zeros(0)
+    if areas.sum() > 0:
+        centroid = (points.mean(axis=1) * areas[:, None]).sum(axis=0) / areas.sum()
+    else:
+        centroid = part.vertices.mean(axis=0) if part.vertex_count else np.zeros(3)
+    edges = part.edge_report()
+    palette = part.extra.get("x_vertex_colors")
+    summary = {"faces": part.face_count, "vertices": part.vertex_count, "area": float(areas.sum()), "bounds": {"min": lo, "max": hi},
+               "centroid": [float(x) for x in centroid], "closed": edges["closed"], "boundary_edges": edges["boundary_edges"],
+               "nonmanifold_edges": edges["nonmanifold_edges"]}
+    if isinstance(palette, list) and len(palette) == part.vertex_count and part.vertex_count:
+        summary["mean_color"] = [float(x) for x in np.asarray(palette, dtype=np.float64).mean(axis=0)]
+    return summary
+
+
 # ---- 列挙順に依らない指紋 ------------------------------------------------------------------
 
 def canonical_signature(mesh, colors=True):
@@ -625,7 +693,8 @@ def weld(mesh, distance, selection=None, center="mean"):
                parts, selection_out, extra)
     vertex_mapping = {"source_vertex_count": n, "target_vertex_count": out.vertex_count,
                       "source_topology_sha256": mesh.topology_hash(), "target_topology_sha256": out.topology_hash(),
-                      "old_to_new": [remap[i] for i in range(n)], "center": center}
+                      "old_to_new": [remap[i] for i in range(n)], "center": center,
+                      "face_old_to_new": [face_index.get(k, -1) for k in range(mesh.face_count)]}   # 消えた面は -1。面領域の付け替えに使う
     report = {"distance": float(distance), "center": center, "selected": len(chosen), "merged_groups": len(groups),
               "vertices_before": n, "vertices_after": out.vertex_count, "faces_before": mesh.face_count,
               "faces_after": out.face_count, "faces_removed_degenerate": degenerate, "faces_removed_contained": len(contained),

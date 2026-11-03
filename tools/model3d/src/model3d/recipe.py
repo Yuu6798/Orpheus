@@ -88,5 +88,6 @@ def step_key(step, input_hashes, fingerprint, library_versions, context_hashes=N
                "inputs": dict(sorted(input_hashes.items())), "outputs": dict(sorted(step.get("outputs", {}).items())),
                "fingerprint": fingerprint, "libraries": library_versions, "context": dict(sorted((context_hashes or {}).items())),
                "applies_to": sorted(step.get("applies_to", [])), "preconditions": list(step.get("preconditions", [])),
+               "select": dict(sorted(step.get("select", {}).items())),   # 選ぶ面が変われば生成物も変わる
                "space": step.get("space")}   # space は生成物（deltas）の記録に写るので key に入れる
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()

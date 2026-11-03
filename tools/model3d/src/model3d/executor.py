@@ -11,6 +11,8 @@
   前の生成物がハッシュまで揃っているときだけ。ファイルがあるだけでは再利用しない。別プロセスを呼ぶ操作
   （external.run・blender.run_script）は設定が参照する実行ファイルや素材を知らないので、毎回実行する（索引にも載せない）。
 - 入力の sha256 が recipe の宣言と違えば実行しない。未確認の役割・観測不足は unresolved に残し、成功扱いにしない。
+- 工程の select（{"<入力名>": "<役割>"}）は、対応表でその入力メッシュの頂点構成に結び付いた面領域（か同じ名前の面集合）を
+  選んで操作に渡す。古い対応（頂点構成の違う面領域）や当たる面の無い役割では工程を止め、メッシュ全体へ黙って当てない。
 """
 import platform
 import shutil
@@ -43,6 +45,7 @@ class Context:
     options: dict = field(default_factory=dict)
     space: object = None          # 工程が宣言した座標系（local / world / rest / pose）。生成物の記録に使う
     applies_to: tuple = ()        # 工程が宣言した役割
+    selections: dict = field(default_factory=dict)   # 工程の select で選んだ面領域（入力名 -> semantic.select の結果）
 
 
 def library_versions():
@@ -179,7 +182,16 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
     base = recipe_path.parent
     ordered = recipes.order_steps(recipe)
     for step in ordered:
-        ops.get(step["operation"])
+        op = ops.get(step["operation"])
+        for name in step.get("select", {}):
+            if name not in step.get("inputs", {}):
+                raise ToolError(f"工程 {step['id']} の select の {name} は、その工程の入力にありません")
+            if name not in op.selectable:
+                usable = sorted(o.name for o in ops.OPERATIONS.values() if o.selectable)
+                raise ToolError(f"工程 {step['id']}: 操作 {step['operation']} は入力 {name} の select（面領域の選択）に対応していません"
+                                f"（対応する操作: {', '.join(usable)}）")
+        if step.get("select") and not recipe.get("semantic_map"):
+            raise ToolError(f"工程 {step['id']} の select には、recipe の semantic_map（面領域を持つ対応表）が要ります")
     preset = None
     preset_file = Path(preset_path).resolve() if preset_path else (resolve_path(base, recipe["preset"]) if recipe.get("preset") else None)
     if preset_file is not None:
@@ -216,6 +228,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                                         "parameters": step.get("parameters", {}), "inputs": {}, "artifacts": {},
                                         "observations": [], "unresolved": [], "error": None, "reused_from": None,
                                         **({"applies_to": step["applies_to"]} if step.get("applies_to") else {}),
+                                        **({"select": step["select"]} if step.get("select") else {}),
                                         **({"space": step["space"]} if step.get("space") else {})})
         run.save()
         run.log(f"recipe {recipe['name']} sha256 {recipe_sha} steps {len(ordered)}")
@@ -256,9 +269,16 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                                 raise ToolError(f"applies_to の役割 {role} が対応表にありません（未対応か rejected）")
                     for text in step.get("preconditions", []):
                         _precondition(text, step, step_inputs, semantic_map)
+                    # select: 入力メッシュの頂点構成に結び付いた面領域だけを渡す。古い対応・当たる面の無い役割は止める。
+                    selections = {name: semantic.select(semantic_map, role, Mesh.load(step_inputs[name]))
+                                  for name, role in sorted(step.get("select", {}).items())}
+                    chosen_notes = [{"kind": "selection", "input": name, "role": chosen["role"], "faces": len(chosen["faces"]),
+                                     "vertices": len(chosen["vertices"]), "topology_sha256": chosen["topology_sha256"],
+                                     "sources": chosen["sources"], "ignored_stale": chosen["ignored_stale"]}
+                                    for name, chosen in selections.items()]
                     # 使用する役割だけを候補扱いにする。無関係な未確認の対応は run の警告に留める。
                     # 同じ役割が applies_to と role: の両方に出ても、未解決事項は一度だけ記録する。
-                    used_roles = set(step.get("applies_to", [])) | {
+                    used_roles = set(step.get("applies_to", [])) | set(step.get("select", {}).values()) | {
                         text.split(":", 1)[1] for text in step.get("preconditions", []) if text.startswith("role:")}
                     if semantic_map is not None:
                         for role in sorted(used_roles & semantic.unconfirmed_roles(semantic_map)):
@@ -278,9 +298,9 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                         say(f"[model3d] {step['id']}: {step['operation']}")
                         run.log(f"{step['id']}: run {step['operation']}")
                         context = Context(run.dir, step_dir, base, preset, semantic_map, tools, run.log, {"force": force},
-                                          step.get("space"), tuple(step.get("applies_to", [])))
+                                          step.get("space"), tuple(step.get("applies_to", [])), selections)
                         result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
-                        entry["observations"] = list(result.observations)
+                        entry["observations"] = chosen_notes + list(result.observations)
                         unresolved.extend(result.unresolved)
                         if result.review:
                             entry["status"] = "needs_review"

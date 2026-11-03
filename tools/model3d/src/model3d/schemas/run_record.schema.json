@@ -261,6 +261,12 @@
               "type": "string"
             }
           },
+          "select": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "space": {
             "type": "string"
           }
