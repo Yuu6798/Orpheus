@@ -105,15 +105,22 @@ def structure(rig, semantic_map=None, required_bone_roles=None, tolerance=1e-3):
     return {"check": "structure", "pass": not failures, "failures": failures, "stats": stats}
 
 
-def require_same_units(mesh, collider):
+def require_same_frame(mesh, collider):
+    """単位と軸の約束が同じときだけ座標を比べる。違えば止める（換算は mesh.transform の to_units / to_axes）。"""
     if mesh.units != collider.units:
         raise ToolError(f"単位が違います（mesh: {mesh.units}、collider: {collider.units}）。"
                         "mesh.transform の to_units でそろえてから渡してください（座標をそのまま比べない）")
+    if mesh.axes != collider.axes:
+        raise ToolError(f"軸の約束が違います（mesh: {mesh.axes}、collider: {collider.axes}）。"
+                        "mesh.transform の to_axes でそろえてから渡してください（座標をそのまま比べない）")
+
+
+require_same_units = require_same_frame
 
 
 def penetration(mesh, collider, directions=None, limit=50):
     """mesh の頂点のうち collider（閉じたメッシュ）の中にあるものの数・番号・深さ。"""
-    require_same_units(mesh, collider)
+    require_same_frame(mesh, collider)
     report = collider.edge_report()
     if not report["closed"]:
         raise ToolError(f"衝突相手が閉じていません（境界辺 {report['boundary_edges']}・非多様体辺 {report['nonmanifold_edges']}）。"

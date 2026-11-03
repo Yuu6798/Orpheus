@@ -23,6 +23,22 @@ def _triangles(mesh):
     return points
 
 
+def directions_of(directions):
+    """内外判定に使う方向。None なら既定の 3 本。[[x, y, z], …] で 1 本以上・有限・長さ 0 でないことを確かめて正規化する。
+    偶数本だと同数（引き分け）を外と数えるので、奇数本を勧める。"""
+    if directions is None:
+        return DIRECTIONS
+    dirs = np.asarray(directions, dtype=np.float64)
+    if dirs.ndim != 2 or dirs.shape[1] != 3 or len(dirs) == 0:
+        raise ToolError("directions は [[x, y, z], …]（1 本以上）にしてください")
+    if not np.isfinite(dirs).all():
+        raise ToolError("directions に非有限の値があります")
+    norms = np.linalg.norm(dirs, axis=1)
+    if (norms <= 0).any():
+        raise ToolError("directions に長さ 0 のベクトルがあります")
+    return dirs / norms[:, None]
+
+
 def _chunks(count, per_item):
     size = max(1, BUDGET // max(per_item, 1))
     for start in range(0, count, size):
@@ -60,7 +76,7 @@ def inside(points, mesh, directions=None):
     """閉じたメッシュ mesh の中にある点の真偽 (P,)。bounding box の外は見ずに外とする。"""
     points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     tri = _triangles(mesh)
-    dirs = DIRECTIONS if directions is None else np.asarray(directions, dtype=np.float64).reshape(-1, 3)
+    dirs = directions_of(directions)
     result = np.zeros(len(points), dtype=bool)
     if not len(points):
         return result
@@ -70,7 +86,7 @@ def inside(points, mesh, directions=None):
         return result
     votes = np.zeros(int(candidate.sum()), dtype=np.int64)
     for d in dirs:
-        votes += ray_hits(points[candidate], d / np.linalg.norm(d), tri) % 2
+        votes += ray_hits(points[candidate], d, tri) % 2
     result[candidate] = votes * 2 > len(dirs)
     return result
 
@@ -141,6 +157,7 @@ def push_out(points, mesh, clearance, directions=None, pad_outside=True):
     if isinstance(clearance, bool) or not isinstance(clearance, (int, float)) or not np.isfinite(clearance) or clearance < 0:
         raise ToolError(f"clearance は 0 以上の有限の数にしてください: {clearance!r}")
     points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    directions = directions_of(directions)
     tri = _triangles(mesh)
     normals = mesh.triangle_normals()
     if mesh.signed_volume() < 0:   # 内向きに張られたメッシュでも外向きの法線を使う
@@ -162,5 +179,5 @@ def push_out(points, mesh, clearance, directions=None, pad_outside=True):
     report = {"points": int(len(points)), "inside": int(is_inside.sum()), "padded": int(padded.sum()),
               "moved": int((is_inside | padded).sum()), "max_depth": float(depth.max()) if len(points) else 0.0,
               "mean_depth": float(depth[is_inside].mean()) if is_inside.any() else 0.0, "clearance": float(clearance),
-              "residual_inside": residual, "directions": (DIRECTIONS if directions is None else np.asarray(directions)).tolist()}
+              "residual_inside": residual, "directions": directions.tolist()}
     return moved, report

@@ -77,6 +77,17 @@ def test_push_out_rejects_bad_clearance(clearance):
         collide.push_out([[0, 0, 0]], box(), clearance)
 
 
+def test_directions_are_validated():
+    cube = box(2.0)
+    for bad in ([], [[0, 0, 0]], [[1, 0, float("nan")]], [1, 0, 0]):
+        with pytest.raises(ToolError, match="directions"):
+            collide.inside([[0, 0, 0]], cube, directions=bad)
+        with pytest.raises(ToolError, match="directions"):
+            collide.push_out([[0, 0, 0]], cube, 0.01, directions=bad)
+    _, report = collide.push_out([[0, 0, 0]], cube, 0.01, directions=[[2, 0, 0]])
+    assert report["directions"] == [[1.0, 0.0, 0.0]] and report["inside"] == 1
+
+
 def test_empty_inputs():
     assert collide.inside(np.zeros((0, 3)), box()).shape == (0,)
     with pytest.raises(ToolError, match="面がありません"):

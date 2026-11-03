@@ -1,5 +1,6 @@
 import copy
 
+import numpy as np
 import pytest
 
 from m3d_helpers import box
@@ -78,6 +79,18 @@ def test_penetration_and_push_out_reject_different_units(tmp_path):
     in_m = transform(cm_strip, to_units="m")
     assert in_m.units == "m" and abs(in_m.vertices[0][0] - 0.5) < 1e-12
     assert checks.penetration(in_m, box(2.0))["inside"] == 3
+    y_up = Mesh([[0, 5, 0], [3, 5, 0], [0, 5, 0.5]], [[0, 1, 2]], axes={"up": "+Y", "forward": "-Z"})   # 換算後: 中・外・中
+    tall = transform(box(2.0), scale=[1, 1, 6])        # Z-up で z が -6..6 の箱: Y-up の [0, 5, 0] は換算すると中
+    with pytest.raises(ToolError, match="軸の約束が違います"):
+        checks.penetration(y_up, tall)
+    y_up.save(tmp_path / "y_up.json")
+    tall.save(tmp_path / "tall.json")
+    with pytest.raises(ToolError, match="軸の約束が違います"):
+        collision_ops.push_out({"mesh": tmp_path / "y_up.json", "collider": tmp_path / "tall.json"}, {"clearance": 0.01}, {}, None)
+    z_up = transform(y_up, to_axes={"up": "+Z", "forward": "-Y"})
+    assert z_up.axes == {"up": "+Z", "forward": "-Y"} and np.allclose(z_up.vertices[0], [0, 0, 5])
+    assert np.allclose(z_up.vertices, [[0, 0, 5], [-3, 0, 5], [0, 0.5, 5]])
+    assert checks.penetration(z_up, tall)["inside_indices"] == [0, 2] and not checks.penetration(z_up, tall)["pass"]
 
 
 def test_continuity_flags_jumps_and_skips_without_frames():

@@ -53,12 +53,13 @@ def mesh_weld(inputs, parameters, outputs, context):
     return StepResult(observations=[{"kind": "weld", **report, "topology_sha256": welded.topology_hash()}])
 
 
-@register("mesh.transform", inputs=("mesh",), outputs=("mesh",), summary="to_units（単位の換算）→ scale → rotate_z_deg → translate の順に当てる")
+@register("mesh.transform", inputs=("mesh",), outputs=("mesh",),
+          summary="to_units（単位の換算）→ to_axes（軸の換算）→ scale → rotate_z_deg → translate の順に当てる")
 def mesh_transform(inputs, parameters, outputs, context):
     require(inputs, ("mesh",), "mesh.transform")
     mesh = Mesh.load(inputs["mesh"])
     moved = transform(mesh, parameters.get("translate"), parameters.get("scale"), parameters.get("rotate_z_deg", 0.0),
-                      parameters.get("to_units"))
+                      parameters.get("to_units"), parameters.get("to_axes"))
     _save(moved, outputs)
     return StepResult(observations=[{"kind": "mesh", **moved.summary()}])
 

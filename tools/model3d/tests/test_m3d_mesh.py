@@ -222,3 +222,15 @@ def test_transform_order_scale_rotate_translate():
     assert mm.units == "m" and np.allclose(mm.vertices[0], [2, 0, 0])    # 換算（×0.001）の後に m で平行移動
     with pytest.raises(ToolError, match="to_units"):
         transform(mesh, to_units="inch")
+    from model3d.mesh import axis_basis, convert_axes
+    for source, target in (({"up": "+Y", "forward": "-Z"}, {"up": "+Z", "forward": "-Y"}), ({"up": "+Z", "forward": "+X"}, {"up": "-Y", "forward": "+Z"})):
+        rotation = axis_basis(target) @ axis_basis(source).T
+        assert abs(np.linalg.det(rotation) - 1.0) < 1e-12                     # 鏡映にならない回転
+        up_s, fwd_s = np.asarray(axis_basis(source)[:, 0]), np.asarray(axis_basis(source)[:, 1])
+        assert np.allclose(convert_axes([up_s * 5], source, target)[0], axis_basis(target)[:, 0] * 5)   # up は up へ
+        assert np.allclose(convert_axes([fwd_s * 3], source, target)[0], axis_basis(target)[:, 1] * 3)  # forward は forward へ
+    assert np.allclose(convert_axes([[1, 2, 3]], {"up": "+Z", "forward": "-Y"}, {"up": "+Z", "forward": "-Y"}), [[1, 2, 3]])
+    with pytest.raises(ToolError, match="直交"):
+        axis_basis({"up": "+Z", "forward": "-Z"})
+    with pytest.raises(ToolError, match="axes"):
+        axis_basis({"up": "+W", "forward": "-Y"})

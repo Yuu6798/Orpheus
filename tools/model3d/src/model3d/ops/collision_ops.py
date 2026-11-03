@@ -12,7 +12,7 @@ from . import StepResult, number, register, require
 def push_out(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "collider"), "collision.push_out")
     mesh, collider = Mesh.load(inputs["mesh"]), Mesh.load(inputs["collider"])
-    checks.require_same_units(mesh, collider)   # clearance も mesh の単位で読む
+    checks.require_same_frame(mesh, collider)   # 単位と軸が同じときだけ。clearance も mesh の単位で読む
     closed = collider.edge_report()
     if not closed["closed"]:
         raise ToolError(f"衝突相手が閉じていません（境界辺 {closed['boundary_edges']}・非多様体辺 {closed['nonmanifold_edges']}）")

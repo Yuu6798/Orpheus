@@ -378,10 +378,30 @@ def write_obj(mesh, path):
 # ---- 変形 --------------------------------------------------------------------------
 
 UNIT_FACTORS = {"m": 1.0, "cm": 0.01, "mm": 0.001}
+AXIS_VECTORS = {"+X": (1.0, 0.0, 0.0), "-X": (-1.0, 0.0, 0.0), "+Y": (0.0, 1.0, 0.0), "-Y": (0.0, -1.0, 0.0),
+                "+Z": (0.0, 0.0, 1.0), "-Z": (0.0, 0.0, -1.0)}
 
 
-def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None):
-    """単位の換算（to_units）→ 拡大縮小 → Z 軸まわりの回転 → 平行移動の順に当てた写し。translate は換算後の単位。"""
+def axis_basis(axes):
+    """軸の約束 {"up", "forward"} から、列が [up, forward, up×forward] の正規直交基底（右手系）を作る。"""
+    try:
+        up, forward = np.asarray(AXIS_VECTORS[axes["up"]]), np.asarray(AXIS_VECTORS[axes["forward"]])
+    except (KeyError, TypeError) as error:
+        raise ToolError(f"axes は {{\"up\": \"+Z\", \"forward\": \"-Y\"}} の形で、±X / ±Y / ±Z から選んでください: {axes!r}") from error
+    if abs(float(up @ forward)) > 0:
+        raise ToolError(f"axes の up と forward は直交する軸にしてください: {axes!r}")
+    return np.column_stack([up, forward, np.cross(up, forward)])
+
+
+def convert_axes(points, source_axes, target_axes):
+    """source の約束で書かれた座標を target の約束へ回す（up は up へ、forward は forward へ）。"""
+    rotation = axis_basis(target_axes) @ axis_basis(source_axes).T
+    return np.asarray(points, dtype=np.float64) @ rotation.T
+
+
+def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None, to_axes=None):
+    """単位の換算（to_units）→ 軸の換算（to_axes）→ 拡大縮小 → Z 軸まわりの回転 → 平行移動の順に当てた写し。
+    translate は換算後の単位と軸。"""
     out = mesh.copy()
     points = out.vertices
     if to_units is not None:
@@ -389,6 +409,10 @@ def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None)
             raise ToolError(f"to_units は m / cm / mm から選んでください: {to_units!r}")
         points = points * (UNIT_FACTORS[mesh.units] / UNIT_FACTORS[to_units])
         out.units = to_units
+    if to_axes is not None:
+        target = {"up": to_axes.get("up"), "forward": to_axes.get("forward")} if isinstance(to_axes, dict) else None
+        points = convert_axes(points, mesh.axes, target or to_axes)
+        out.axes = dict(target)
     if scale is not None:
         factor = np.asarray(scale, dtype=np.float64)
         if factor.ndim == 0:
