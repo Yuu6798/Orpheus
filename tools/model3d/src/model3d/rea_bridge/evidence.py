@@ -91,6 +91,39 @@ def comparison_verdict(comparison):
     return None
 
 
+def from_pyc_evidence(path):
+    """REA の parsePythonPyc（6.8 系）の evidence-summary.json から evidence を作る。
+
+    source_correspondence の各項目を、REA が記号と位置を確かめた根拠（rea）と、人が原本を読んで書いた契約（oss）の
+    2 つに分けて写す。検証（verification）に pass でない項目があれば rea 側は inferred にする。
+    """
+    summary = read_json(path)
+    analyzer, target = summary.get("analyzer", {}), summary.get("target", {})
+    items = summary.get("source_correspondence")
+    if not isinstance(items, list) or not items:
+        raise ToolError(f"evidence-summary に source_correspondence がありません: {path}")
+    verification = summary.get("verification", {})
+    all_pass = bool(verification) and all(str(v).lower() == "pass" for v in verification.values())
+    notes = _check_rea(analyzer, path)
+    if analyzer.get("full_cli_or_mcp_invoked") is False:
+        notes.append("REA は parser API だけを呼び、CLI / MCP の全体は使っていない")
+    commit = target.get("commit", "")
+    project = target.get("project", "target")
+    evidence = []
+    for item in items:
+        where = f"{project}@{commit}:{item.get('source')}::{item.get('rea_code_qualname')} (index {item.get('rea_code_object_index')})"
+        evidence.append({"source": "rea", "ref": where, "state": "observed" if all_pass else "inferred",
+                         "note": f"firstlineno {item.get('rea_firstlineno')}; names {', '.join(item.get('rea_observed_names', [])[:8])}; "
+                                 f"bytecode sha256 {str(item.get('rea_bytecode_sha256', ''))[:12]}"})
+        if item.get("source_reviewed_contract"):
+            evidence.append({"source": "oss", "ref": item.get("upstream_url") or f"{project}@{commit}:{item.get('source')}",
+                             "state": "observed", "note": str(item["source_reviewed_contract"])[:300]})
+    return {"tool": project, "commit": commit, "rea": {"version": analyzer.get("version"), "commit": analyzer.get("commit"),
+                                                      "pinned": {"version": REA_VERSION, "commit": REA_COMMIT}},
+            "notes": notes, "verification": verification, "evidence": _validated(evidence),
+            "limitations": list(summary.get("limitations", []))}
+
+
 def _validated(evidence):
     schema = contracts.schema("recipe")["$defs"]["evidence"]
     from jsonschema import Draft202012Validator

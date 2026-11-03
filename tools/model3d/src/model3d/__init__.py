@@ -26,6 +26,7 @@ SCHEMAS = {
     "rig": "model3d-rig/0.1",
     "preset": "model3d-preset/0.1",
     "handoff": "model3d-handoff/0.1",
+    "initial-model": "model3d-initial-model/0.1",
 }
 
 

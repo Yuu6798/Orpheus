@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-initial-model/0.1",
+  "title": "model3d initial model record",
+  "description": "設定画（RGBA 1 枚）から生成した初期モデルの記録: 入力のハッシュ、前処理の条件、生成器（別プロセス）の素性、パラメーター、生成物のハッシュ、幾何と構造の検査。review は常に needs_review（生成が終わっただけでは採用しない）。",
+  "type": "object",
+  "required": ["schema_version", "created_at", "input", "preparation", "backend", "parameters", "outputs", "checks", "review", "single_view_only"],
+  "properties": {
+    "schema_version": {"const": "model3d-initial-model/0.1"},
+    "created_at": {"type": "string"},
+    "input": {
+      "type": "object",
+      "required": ["path", "sha256", "width", "height"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "view": {"enum": ["front", "side", "back", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "preparation": {
+      "type": "object",
+      "required": ["foreground_ratio", "crop_xyxy_exclusive_compat", "square_side", "output_side", "background_rgb_float", "prepared"],
+      "properties": {
+        "foreground_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "crop_xyxy_exclusive_compat": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 4, "maxItems": 4},
+        "square_side": {"type": "integer", "minimum": 1},
+        "output_side": {"type": "integer", "minimum": 1},
+        "background_rgb_float": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "prepared": {"$ref": "#/$defs/fileref"}
+      },
+      "additionalProperties": false
+    },
+    "backend": {
+      "type": "object",
+      "required": ["tool", "version", "kind"],
+      "properties": {
+        "tool": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["single_view", "multi_view", "stand_in"]},
+        "license": {"type": "string"},
+        "weights": {"type": "object"},
+        "executable": {"type": "string"},
+        "executable_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "exit_code": {"type": "integer"},
+        "seconds": {"type": "number"},
+        "result": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "parameters": {"type": "object"},
+    "outputs": {
+      "type": "object",
+      "required": ["mesh"],
+      "properties": {
+        "mesh": {"$ref": "#/$defs/fileref"},
+        "obj": {"$ref": "#/$defs/fileref"},
+        "glb": {"$ref": "#/$defs/fileref"},
+        "result": {"$ref": "#/$defs/fileref"}
+      },
+      "additionalProperties": false
+    },
+    "checks": {
+      "type": "object",
+      "required": ["vertices", "triangles", "finite", "bounds", "extent", "components", "closed", "winding_consistent", "vertex_colors", "scale_calibrated"],
+      "properties": {
+        "vertices": {"type": "integer", "minimum": 0},
+        "triangles": {"type": "integer", "minimum": 0},
+        "finite": {"type": "boolean"},
+        "bounds": {
+          "type": "object",
+          "required": ["min", "max"],
+          "properties": {
+            "min": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+            "max": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+          },
+          "additionalProperties": false
+        },
+        "extent": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "components": {"type": "integer", "minimum": 0},
+        "closed": {"type": "boolean"},
+        "winding_consistent": {"type": "boolean"},
+        "vertex_colors": {"type": "boolean"},
+        "scale_calibrated": {"type": "boolean"},
+        "topology_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "canonical_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "review": {"const": "needs_review"},
+    "single_view_only": {"type": "boolean"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "fileref": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {"path": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "bytes": {"type": "integer", "minimum": 0}},
+      "additionalProperties": false
+    }
+  }
+}

@@ -41,7 +41,8 @@
 
 ## 2026-11-03 更新（model3d）
 
-- **orpheus-model3d 0.1.0**（`model3d` extra・`tools/model3d` のパス依存・editable）: 自作の 3D モデリングツール（`docs/model3d.md`）。依存は numpy 2.3.5 と jsonschema 4.26.0（ルートと同じ版）だけで、新しい第三者の依存は増えない。導入は `uv sync --locked --extra model3d`。uv の workspace member にはしていない（member にすると `uv sync --extra analysis …` が member にも同じ extra を求めて止まる。uv 0.13.5 で実測）。
+- **orpheus-model3d 0.1.0**（`model3d` extra・`tools/model3d` のパス依存・editable）: 自作の 3D モデリングツール（`docs/model3d.md`）。依存は numpy 2.3.5・jsonschema 4.26.0・Pillow 13.0.0（いずれもルートと同じ版。Pillow は設定画の PNG の読み書き）だけで、新しい第三者の依存は増えない。
+- 設定画から初期モデルを作る生成器（TripoSR 固定 commit `107cefdc…`、MIT。重み `stabilityai/TripoSR` revision `5b521936…`、sha256 `429e2c6b…`、約 1.68 GB。torchmcubes `a9ac95aa…`、MPL-2.0。torch 2.5.1+cpu）は**別の仮想環境**に入れ、`uv.lock` には入れない（`tools/model3d/backends/README.md`）。Hunyuan3D-2mv は Tencent の community license で任意の追加の生成器（未接続）。導入は `uv sync --locked --extra model3d`。uv の workspace member にはしていない（member にすると `uv sync --extra analysis …` が member にも同じ extra を求めて止まる。uv 0.13.5 で実測）。
 - CI の python job は `--extra fx --extra model3d` で同期し、pytest の後に合成素材で `model3d demo → run` の status を確認する。pip-audit の export は `--no-emit-local` でこのパス依存を除く（PyPI に無いため。依存の numpy・jsonschema は残る）。
 - Blender（r6 の再現では 4.5.15）・生成器・リギングの本体は導入しない。別プロセスとして argv で呼ぶ接続口だけで、この環境では未検証。
 

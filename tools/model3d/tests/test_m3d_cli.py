@@ -11,7 +11,8 @@ from model3d.io import atomic_json, read_json, sha256
 def test_demo_run_handoff_accept_end_to_end(tmp_path):
     code, created, err = run_cli("demo", tmp_path / "demo")
     assert code == 0, err
-    assert created["expected"] == {"inside_before": 15, "inside_after": 0, "welded_vertices": 35}
+    assert {k: created["expected"][k] for k in ("inside_before", "inside_after", "welded_vertices")} == {"inside_before": 15, "inside_after": 0, "welded_vertices": 35}
+    assert created["expected"]["generate_status"] == "needs_review" and (tmp_path / "demo" / "recipe_generate.json").is_file()
     for kind, name in (("preset", "preset.json"), ("semantic-map", "semantic_map.json"), ("recipe", "recipe.json")):
         contracts.load(kind, tmp_path / "demo" / name)
     contracts.load("rig", tmp_path / "demo" / "inputs" / "rig.json")

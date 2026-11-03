@@ -84,6 +84,15 @@ jobs:
           cat "$RUNNER_TEMP/model3d-run.json"
           uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); s = r['steps']; assert r['status'] == 'succeeded' and s['before']['observations'][0]['inside'] == 15 and s['after']['observations'][0]['inside'] == 0 and s['structure']['observations'][0]['pass'] is True, r" "$RUNNER_TEMP/model3d-run.json"
 
+      # 設定画 -> 初期モデル: 前処理 (自作) -> 代役の生成器 (別プロセス。輪郭の箱で、生成ではない) -> 検査 -> 記録。
+      # 生成の工程は契約として常に needs_review なので、run の status も needs_review が正常。本物の生成器 (TripoSR) は CI で動かさない。
+      - name: model3d generate smoke (sheet -> stand-in backend -> needs_review)
+        run: |
+          uv run --no-sync model3d run "$RUNNER_TEMP/model3d-demo/recipe_generate.json" --out "$RUNNER_TEMP/model3d-runs" --quiet > "$RUNNER_TEMP/model3d-generate.json"
+          cat "$RUNNER_TEMP/model3d-generate.json"
+          uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); s = r['steps']; o = s['generate']['observations'][0]; assert r['status'] == 'needs_review' and r['candidates'] == ['generate'] and o['vertex_colors'] is True and o['closed'] is True and s['inspect']['status'] == 'succeeded', r" "$RUNNER_TEMP/model3d-generate.json"
+          uv run --no-sync model3d validate initial-model "$(uv run --no-sync python -c "import json, sys; print(json.load(open(sys.argv[1]))['steps']['generate']['artifacts']['record'])" "$RUNNER_TEMP/model3d-generate.json")"
+
   node:
     # README が宣言する Node.js 22 以上の下端のみ検証する (Remotion は保守凍結)。
     runs-on: ubuntu-latest

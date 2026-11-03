@@ -1,0 +1,170 @@
+{
+  "schema": "model3d-test-fixture-prepare-reference/0.1",
+  "source": {
+    "what": "2026-11-03 の検証で、固定した TripoSR の resize_foreground（AST で切り出した原本の関数）+ run.py の合成と、独立に書いた前処理を画素単位で比べた記録。合成 6 件だけを取り込み、実設定画の 1 件は入れない",
+    "upstream_source_sha256": "590af888c98ae5768a012a81a11a4fabcdce44f7a18fb782e7522b662199274e",
+    "generator": "numpy default_rng(20261103); shapes (13,20),(20,13),(16,16),(17,17),(5,8),(8,5); alpha 0 outside a 1 px border, 1..255 inside"
+  },
+  "cases": [
+    {
+      "name": "synthetic_0",
+      "shape": [
+        20,
+        20,
+        3
+      ],
+      "sha256": "20b871cbfa2dda266a93134ec3c079b7825d3ebef484d1e6fb017f1a5ba1f543",
+      "contract": {
+        "crop_xyxy_exclusive_compat": [
+          1,
+          1,
+          18,
+          11
+        ],
+        "square_side": 17,
+        "output_side": 20,
+        "foreground_ratio": 0.85,
+        "background_rgb_float": [
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "synthetic_1",
+      "shape": [
+        20,
+        20,
+        3
+      ],
+      "sha256": "47f7cb45a1ef221313652ecbde66b221c4a4753300a6656ecc6d54d2103693f5",
+      "contract": {
+        "crop_xyxy_exclusive_compat": [
+          1,
+          1,
+          11,
+          18
+        ],
+        "square_side": 17,
+        "output_side": 20,
+        "foreground_ratio": 0.85,
+        "background_rgb_float": [
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "synthetic_2",
+      "shape": [
+        15,
+        15,
+        3
+      ],
+      "sha256": "91e61b6745afd666cf31d21fee47929973f10abad57bf1c08871250e49475815",
+      "contract": {
+        "crop_xyxy_exclusive_compat": [
+          1,
+          1,
+          14,
+          14
+        ],
+        "square_side": 13,
+        "output_side": 15,
+        "foreground_ratio": 0.85,
+        "background_rgb_float": [
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "synthetic_3",
+      "shape": [
+        16,
+        16,
+        3
+      ],
+      "sha256": "94b0ecbcce8dad98bd2dcd5d1377621155301bbe51e987e8007e1981cdccd2d1",
+      "contract": {
+        "crop_xyxy_exclusive_compat": [
+          1,
+          1,
+          15,
+          15
+        ],
+        "square_side": 14,
+        "output_side": 16,
+        "foreground_ratio": 0.85,
+        "background_rgb_float": [
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "synthetic_4",
+      "shape": [
+        5,
+        5,
+        3
+      ],
+      "sha256": "1826aaaaaba497b9d8ec0a27309c71a08abcfc01c3e22e9c267fe4c381165867",
+      "contract": {
+        "crop_xyxy_exclusive_compat": [
+          1,
+          1,
+          6,
+          3
+        ],
+        "square_side": 5,
+        "output_side": 5,
+        "foreground_ratio": 0.85,
+        "background_rgb_float": [
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    },
+    {
+      "name": "synthetic_5",
+      "shape": [
+        5,
+        5,
+        3
+      ],
+      "sha256": "b7a8c77db92ed28d8e2835aaea4886476c2cd36a0b0cbcd3ee1e79f9d1ad9db6",
+      "contract": {
+        "crop_xyxy_exclusive_compat": [
+          1,
+          1,
+          3,
+          6
+        ],
+        "square_side": 5,
+        "output_side": 5,
+        "foreground_ratio": 0.85,
+        "background_rgb_float": [
+          0.5,
+          0.5,
+          0.5
+        ]
+      }
+    }
+  ],
+  "rejections": [
+    {
+      "name": "empty_alpha",
+      "reason": "no visible foreground"
+    },
+    {
+      "name": "single_pixel",
+      "reason": "foreground must span at least two rows and columns"
+    }
+  ]
+}

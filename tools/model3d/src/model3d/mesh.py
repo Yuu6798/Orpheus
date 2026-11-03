@@ -6,6 +6,7 @@
   （面の向きだけを反転する方法では面と体積が合わない、という再構成の実行結果 2026-11-03 を踏まえる）。
 どちらも独自実装で、原本ツールとの一致は主張しない。
 """
+import hashlib
 import math
 from pathlib import Path
 
@@ -192,7 +193,28 @@ class Mesh:
                 else:
                     nonmanifold += 1
         return {"closed": boundary == 0 and nonmanifold == 0 and bool(self.faces), "boundary_edges": boundary,
-                "nonmanifold_edges": nonmanifold, "edges": len(seen)}
+                "nonmanifold_edges": nonmanifold, "edges": len(seen),
+                "consistent_winding": bool(self.faces) and all(count == 1 for count in directed.values())}
+
+    def components(self):
+        """面でつながった頂点のまとまりの数（面に使われていない頂点は数えない）。"""
+        parent = {}
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for face in self.faces:
+            for i in face:
+                parent.setdefault(i, i)
+            first = face[0]
+            for i in face[1:]:
+                a, b = find(first), find(i)
+                if a != b:
+                    parent[b] = a
+        return len({find(i) for i in parent})
 
     def topology_hash(self):
         """頂点構成（頂点数と面の頂点番号）だけのハッシュ。頂点番号で領域を指すときは、この値に結び付ける。"""
@@ -205,6 +227,41 @@ class Mesh:
         lo, hi = self.bounds()
         return {"vertices": self.vertex_count, "faces": self.face_count, "bounds": {"min": lo, "max": hi},
                 "topology_sha256": self.topology_hash(), "geometry_sha256": self.geometry_hash()}
+
+
+# ---- 列挙順に依らない指紋 ------------------------------------------------------------------
+
+def canonical_signature(mesh, colors=True):
+    """頂点番号と面の列挙順だけが違うメッシュが同じ指紋になるように正規化した sha256。
+
+    座標で頂点を並べ替え、三角形は巡回の最小の並びにして辞書順に並べる（向きは保つ）。頂点色（x_vertex_colors）が
+    あれば同じ並べ替えで付ける。丸め・許容差・位置合わせは使わない。座標が重なる頂点は 1 つに寄せて数え、
+    duplicate_positions に残す（元の列挙順で指紋が変わらないようにするため）。
+    """
+    tris, _ = mesh.triangles()
+    positions = mesh.vertices
+    unique, inverse = np.unique(positions, axis=0, return_inverse=True) if len(positions) else (positions, np.zeros(0, dtype=np.int64))
+    inverse = np.asarray(inverse).reshape(-1)
+    duplicates = bool(len(unique) != len(positions))
+    faces = inverse[tris] if len(tris) else np.zeros((0, 3), dtype=np.int64)
+    rotated = [min((tuple(row), (row[1], row[2], row[0]), (row[2], row[0], row[1]))) for row in faces.tolist()]
+    rotated.sort()
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(unique, dtype="<f8").tobytes())
+    digest.update(np.asarray(rotated, dtype="<i8").tobytes())
+    palette = mesh.extra.get("x_vertex_colors") if colors else None
+    if isinstance(palette, list) and len(palette) == len(positions) and len(positions):
+        table = np.zeros((len(unique), 3))
+        table[inverse] = np.asarray(palette, dtype=np.float64)   # 同じ座標の頂点は最後に書かれた色
+        digest.update(np.ascontiguousarray(table, dtype="<f8").tobytes())
+    return {"sha256": digest.hexdigest(), "vertices": int(len(unique)), "triangles": int(len(rotated)),
+            "duplicate_positions": duplicates, "colors": bool(isinstance(palette, list) and len(palette) == len(positions))}
+
+
+def compare_geometry(a, b, colors=True):
+    """2 つのメッシュが、頂点番号と面の列挙順の違いを除いて同じか。"""
+    left, right = canonical_signature(a, colors), canonical_signature(b, colors)
+    return {"same": left["sha256"] == right["sha256"], "left": left, "right": right}
 
 
 # ---- 多角形の三角形化 ------------------------------------------------------------------
@@ -290,7 +347,7 @@ def triangulate_polygon(points):
 
 def read_obj(path):
     """OBJ を読む（v / vt / f / o / g）。頂点ごとの uv は、各頂点が 1 つの vt にだけ対応するときに持つ。"""
-    vertices, uvs, faces, face_uvs, parts = [], [], [], [], {}
+    vertices, uvs, faces, face_uvs, parts, colors = [], [], [], [], {}, []
     group, units, axes = None, "m", None
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     for number, raw in enumerate(text.splitlines(), 1):
@@ -307,6 +364,7 @@ def read_obj(path):
         try:
             if head == "v" and len(rest) >= 3:
                 vertices.append([float(rest[0]), float(rest[1]), float(rest[2])])
+                colors.append([float(rest[3]), float(rest[4]), float(rest[5])] if len(rest) >= 6 else None)
             elif head == "vt" and len(rest) >= 2:
                 uvs.append([float(rest[0]), float(rest[1])])
             elif head in ("o", "g"):
@@ -343,7 +401,10 @@ def read_obj(path):
                 break
         if consistent and len(per_vertex) == len(vertices):
             uv = [uvs[per_vertex[i]] for i in range(len(vertices))]
-    return Mesh(vertices, faces, uv, name=Path(path).stem, units=units, axes=axes, parts=parts)
+    extra = {}
+    if vertices and all(c is not None for c in colors):   # 頂点色（0..1 の RGB。trimesh などの書き方）
+        extra["x_vertex_colors"] = colors
+    return Mesh(vertices, faces, uv, name=Path(path).stem, units=units, axes=axes, parts=parts, extra=extra)
 
 
 def write_obj(mesh, path):
@@ -356,7 +417,12 @@ def write_obj(mesh, path):
     lines = [f"# {SCHEMA} units={mesh.units} up={mesh.axes.get('up')} forward={mesh.axes.get('forward')}"]
     if mesh.name:
         lines.append(f"o {mesh.name}")
-    lines.extend(f"v {x!r} {y!r} {z!r}" for x, y, z in mesh.vertices.tolist())   # repr: 往復で値が変わらない最短表記
+    colors = mesh.extra.get("x_vertex_colors")
+    if isinstance(colors, list) and len(colors) == mesh.vertex_count:
+        lines.extend(f"v {x!r} {y!r} {z!r} {float(c[0])!r} {float(c[1])!r} {float(c[2])!r}"
+                     for (x, y, z), c in zip(mesh.vertices.tolist(), colors))
+    else:
+        lines.extend(f"v {x!r} {y!r} {z!r}" for x, y, z in mesh.vertices.tolist())   # repr: 往復で値が変わらない最短表記
     if mesh.uv is not None:
         lines.extend(f"vt {u!r} {v!r}" for u, v in mesh.uv.tolist())
     current = object()

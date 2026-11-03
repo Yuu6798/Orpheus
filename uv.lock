@@ -617,12 +617,14 @@ source = { editable = "tools/model3d" }
 dependencies = [
     { name = "jsonschema" },
     { name = "numpy" },
+    { name = "pillow" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "numpy", specifier = "==2.3.5" },
+    { name = "pillow", specifier = "==13.0.0" },
 ]
 
 [[package]]
