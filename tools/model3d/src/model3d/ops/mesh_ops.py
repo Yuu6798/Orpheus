@@ -1,6 +1,6 @@
 """メッシュの操作: 読み込み、押し出し、結合、変形、面領域の切り出し、OBJ 書き出し。"""
 from ..io import ToolError, atomic_json, read_json
-from ..mesh import Mesh, extrude_profile, remap_rig_weights, submesh, transform, weld
+from ..mesh import Mesh, extrude_profile, read_parts, remap_rig_weights, submesh, transform, weld
 from . import StepResult, number, register, require, selected
 
 
@@ -21,6 +21,19 @@ def mesh_import(inputs, parameters, outputs, context):
         mesh.validate()
     _save(mesh, outputs)
     return StepResult(observations=[{"kind": "mesh", **mesh.summary()}])
+
+
+@register("mesh.import_parts", inputs=("parts", "normals"), outputs=("mesh",),
+          summary="部品ごとの npz（names と co{i}・f{i}・uv{i}。法線は別の npz の n{i}）から part の部品を読み、model3d-mesh/0.1 で書く")
+def mesh_import_parts(inputs, parameters, outputs, context):
+    require(inputs, ("parts",), "mesh.import_parts")
+    part = parameters.get("part")
+    if not isinstance(part, str) or not part:
+        raise ToolError("parameters.part に部品の名前を書いてください")
+    mesh = read_parts(inputs["parts"], part, inputs.get("normals"))
+    _save(mesh, outputs)
+    return StepResult(observations=[{"kind": "mesh", **mesh.summary(), "part": part, "uv": mesh.uv is not None,
+                                     "normals": "x_normals" in mesh.extra}])
 
 
 @register("mesh.extrude_profile", inputs=("profile",), outputs=("mesh",),

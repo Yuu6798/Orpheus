@@ -1,7 +1,7 @@
 # 既存の3D制作レシピを model3d から実行する
 
 `model3d dance-recipe` は、回収済みの制作 CLI を別プロセスで呼ぶ5工程の RecipeGraph を作る。
-元 GLB・分割 GLB・FBX からの再構築、設定画の目元投影、質感の適用、舞台と動作の描画、動画化を
+元 GLB・分割 GLB・FBX からの再構築、設定画の投影（既存 worker の目元投影か、model3d の顔の工程）、質感の適用、舞台と動作の描画、動画化を
 `model3d run` の入力ハッシュ・工程状態・出力記録に接続する。既存のウェイト・法線・動作・補正データを再利用する。
 完成済みキャラクターの blend は再構築の入力にしない。
 
@@ -59,9 +59,38 @@ worker の詳細な中間データは `job/` に保持する。動画化は独�
 入力変更・12工程の欠落・必要な出力の欠落・画像ハッシュ不一致は失敗として記録する。
 長時間処理の途中再開機能ではない。
 
-目元投影は推定に基づくため、`project_reference` は `needs_review`、run 全体も `needs_review` になる。
+既存 worker の目元投影は推定に基づくため、`project_reference` は `needs_review`、run 全体も `needs_review` になる。
 後続の描画と動画化は続行する。人による採用は自動記録しない。
 `external.run` の任意パラメーター `review_note` は、この未解決事項を `unresolved` に残すために使う。
+
+## 顔を model3d の工程で写す（`model3d-face-projection/0.1`）
+
+`--face-config` に `"schema": "model3d-face-projection/0.1"` の設定を渡すと、目元投影の worker（`face_project.py`）の代わりに、
+model3d の操作で設定画の顔を写す。再構築・質感の適用・描画・動画化はそのまま。
+
+| 工程 | 操作 | 内容 |
+|---|---|---|
+| `face_mesh` | `mesh.import_parts` | 再構築した部品形状・法線の NPZ から、`part_name` の部品を読む |
+| `face_mask` | `texture.draw_mask` | `mask` の図形を参照画像の大きさで描く（`mask` が無ければこの工程は無い） |
+| `project_reference` | `texture.project_reference` | `reference` を `projection` の視点と目印で合わせ、`atlas` へ写す。`overlay` で位置合わせを確かめる |
+
+`atlas` と `reference` は worker 一式の中のパスで、入力一覧にハッシュ付きで載り、recipe の入力 `face_atlas`・`face_reference` になる。
+部品名・画像・マスク・目印の値はキャラごとの非公開の設定に置き、Git には入れない。値の例（作り物）:
+
+```json
+{"schema": "model3d-face-projection/0.1", "part_name": "head_part",
+ "atlas": "upstream/models/mv/basecolor.png", "reference": "references/head_sheet.png",
+ "mask": {"feather": 3.0, "shapes": [{"ellipse": [200, 300, 30, 15], "angle": 8}]},
+ "projection": {"view": {"from": "-Y", "center": [0.0, 1.5], "span": 0.3, "size": [1000, 1000]},
+                "alignment": {"model": [[400, 600], [600, 600]], "reference": [[200, 300], [300, 300]]}}}
+```
+
+知らないキー、`projection.view`・`projection.alignment` の欠け、worker 一式の外の画像は、recipe を作る前に止める。
+この経路は推定の注記を付けないので、写った画素があれば run は `succeeded` になる（1 画素も写らなければ `needs_review`）。
+採否は `overlay` と描画を見て人が決める。
+
+2026-11-03 にユーザーの Windows の PC（CPU）で、実素材と非公開の顔の設定を使い、7 工程（2 コマ、1080×1920・64 サンプル）を
+約 171 秒で通した。run 全体は `succeeded`。同じ値を手で通した描画と比べ、255 段階で 8 を超える差は 0 画素（最大 7）だった。
 
 ## 範囲
 

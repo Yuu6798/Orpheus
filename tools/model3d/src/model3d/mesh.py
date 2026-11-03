@@ -411,6 +411,38 @@ def triangulate_polygon(points):
     return result
 
 
+# ---- 部品ごとの npz ---------------------------------------------------------------
+
+def read_parts(path, part, normals=None):
+    """部品ごとの配列を持つ npz から、名前で 1 つの部品を読む。
+
+    npz は names（部品の名前の列）と、i 番目の部品の co{i}（頂点 (N,3)）・f{i}（面の頂点番号 (F,k)）・uv{i}（頂点の uv (N,2)、任意）。
+    normals（別の npz）があれば、その n{i}（頂点の法線 (N,3)）を x_normals に入れる。メッシュの名前は部品の名前
+    （面領域は名前で部品を区別する）。pickle の入った配列は読まない。
+    """
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            names = [str(n) for n in data["names"]]
+            if part not in names:
+                raise ToolError(f"部品 {part!r} がありません（{', '.join(names)}）: {path}")
+            i = names.index(part)
+            vertices = np.asarray(data[f"co{i}"], dtype=np.float64)
+            faces = np.asarray(data[f"f{i}"], dtype=np.int64)
+            uv = np.asarray(data[f"uv{i}"], dtype=np.float64) if f"uv{i}" in data.files else None
+        extra = {}
+        if normals is not None:
+            with np.load(normals, allow_pickle=False) as data:
+                given = np.asarray(data[f"n{i}"], dtype=np.float64)
+            if given.shape != vertices.shape:
+                raise ToolError(f"法線の形 {given.shape} が頂点の形 {vertices.shape} と違います: {normals}")
+            extra["x_normals"] = given.tolist()
+    except (OSError, KeyError, ValueError) as error:
+        raise ToolError(f"部品の npz を読めません: {path}（{error}）") from error
+    if faces.ndim != 2:
+        raise ToolError(f"f{i} は (面の数, 角の数) の頂点番号にしてください: {faces.shape}")
+    return Mesh(vertices, faces.tolist(), uv, name=part, extra=extra)
+
+
 # ---- OBJ ------------------------------------------------------------------------
 
 def read_obj(path):
