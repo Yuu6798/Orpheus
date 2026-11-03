@@ -137,6 +137,12 @@ def continuity(track, max_jump):
     if not isinstance(frames, list) or len(frames) < 2:
         return {"check": "continuity", "pass": None, "status": "skipped", "reason": "2 コマ以上の点の列が要ります", "frames": 0,
                 "jumps": [], "max_jump": max_jump}
+    empty = [index for index, frame in enumerate(frames)
+             if isinstance(frame, (list, tuple)) and len(frame) == 2 and isinstance(frame[1], (list, tuple)) and len(frame[1]) == 0]
+    if empty:   # 点が無いコマは「動いていない」ではなく「見ていない」
+        return {"check": "continuity", "pass": None, "status": "skipped",
+                "reason": f"点の無いコマがあります（コマ {', '.join(str(i) for i in empty[:10])}）", "frames": len(frames),
+                "jumps": [], "max_jump": max_jump}
     previous, jumps, worst, non_finite = None, [], 0.0, 0
     for index, frame in enumerate(frames):
         if not isinstance(frame, (list, tuple)) or len(frame) != 2 or isinstance(frame[0], bool) \

@@ -91,6 +91,13 @@ def test_continuity_flags_jumps_and_skips_without_frames():
         checks.continuity({"frames": [[0, [[0, 0, 0]]], [1, [[0, 0, 0], [1, 1, 1]]]]}, 0.1)
     with pytest.raises(ToolError, match="max_jump"):
         checks.continuity(track, 0)
+    empty = checks.continuity({"frames": [[0, []], [1, []]]}, 0.1)
+    assert empty["pass"] is None and empty["status"] == "skipped" and "点の無いコマ" in empty["reason"]
+    from model3d.ops import check_ops
+    with pytest.raises(ToolError, match="未実施"):
+        check_ops._finish(empty, {}, {"strict": True}, "連続性の検査")
+    lenient = check_ops._finish(empty, {}, {}, "連続性の検査")
+    assert lenient.review and "未実施" in lenient.unresolved[0]
     with pytest.raises(ToolError, match="コマ 1 の形"):
         checks.continuity({"frames": [[0, [[0, 0, 0]]], [1.0]]}, 0.1)
     with pytest.raises(ToolError, match="点の列を読めません"):

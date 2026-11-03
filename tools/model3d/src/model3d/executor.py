@@ -41,6 +41,8 @@ class Context:
     tools: dict = field(default_factory=dict)
     log: object = None
     options: dict = field(default_factory=dict)
+    space: object = None          # 工程が宣言した座標系（local / world / rest / pose）。生成物の記録に使う
+    applies_to: tuple = ()        # 工程が宣言した役割
 
 
 def library_versions():
@@ -268,7 +270,8 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     else:
                         say(f"[model3d] {step['id']}: {step['operation']}")
                         run.log(f"{step['id']}: run {step['operation']}")
-                        context = Context(run.dir, step_dir, base, preset, semantic_map, tools, run.log, {"force": force})
+                        context = Context(run.dir, step_dir, base, preset, semantic_map, tools, run.log, {"force": force},
+                                          step.get("space"), tuple(step.get("applies_to", [])))
                         result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
                         entry["observations"] = list(result.observations)
                         unresolved.extend(result.unresolved)

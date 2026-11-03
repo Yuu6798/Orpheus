@@ -195,6 +195,20 @@ def test_preset_or_semantic_map_changes_invalidate_reuse(workspace):
     assert fourth["steps"]["structure"]["reused_from"] is None and fourth["status"] == "needs_review"
 
 
+def test_push_out_deltas_carry_the_step_space(workspace):
+    root, write = workspace
+    rest = dict(PUSH, space="rest", outputs={"mesh": "fixed.json", "deltas": "deltas.json"})
+    result = executor.run_recipe(write([rest]), root / "runs")
+    assert result["status"] == "succeeded"
+    assert read_json(result["steps"]["push"]["artifacts"]["deltas"])["space"] == "rest"
+    assert result["steps"]["push"]["observations"][0]["space"] == "rest"
+    record = contracts.load("run", root / "runs" / result["run_id"] / "run_record.json")
+    assert record["steps"][0]["space"] == "rest"
+    unknown = dict(PUSH, outputs={"mesh": "fixed.json", "deltas": "deltas.json"})
+    result = executor.run_recipe(write([unknown]), root / "runs")
+    assert read_json(result["steps"]["push"]["artifacts"]["deltas"])["space"] == "unknown"
+
+
 def test_missing_declared_output_fails_the_step(workspace):
     root, write = workspace
     step = dict(PUSH, outputs={"mesh": "fixed.json", "extra": "never.json"})

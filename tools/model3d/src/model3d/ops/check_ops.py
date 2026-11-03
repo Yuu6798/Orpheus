@@ -1,4 +1,5 @@
-"""検査の操作。合否は report に残し、不合格は needs_review（strict なら失敗、report_only なら測るだけ）にする。未実施は合格にしない。"""
+"""検査の操作。合否は report に残し、不合格は needs_review（strict なら失敗、report_only なら測るだけ）にする。
+未実施（材料が無い）は合格にしない: needs_review に残し、strict なら失敗にする。"""
 from .. import checks, semantic
 from ..io import ToolError, atomic_json, read_json
 from ..mesh import Mesh
@@ -12,6 +13,8 @@ def _finish(report, outputs, parameters, label):
     if parameters.get("report_only"):   # 測るだけ（補正前の値を残すなど）。合否は report に残り、工程の状態は変えない
         return StepResult(observations=[report])
     if passed is None:
+        if parameters.get("strict"):   # 未実施は合格ではない。strict なら止める
+            raise ToolError(f"{label}: 未実施（{report.get('reason')}）は strict では不合格です")
         return StepResult(observations=[report], unresolved=[f"{label}: 未実施（{report.get('reason')}）"], review=True)
     if passed:
         return StepResult(observations=[report])

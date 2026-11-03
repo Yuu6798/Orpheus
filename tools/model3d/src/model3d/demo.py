@@ -101,7 +101,7 @@ def recipe_json(clearance):
              "parameters": {"report_only": True, "x_expect": "inside > 0"}, "outputs": {"report": "penetration_before.json"},
              "preconditions": ["closed:collider"], "notes": "補正前の測定。report_only なので合否で止めない"},
             {"id": "push", "operation": "collision.push_out", "inputs": {"mesh": "$steps.weld.mesh", "collider": "$steps.leg.mesh"},
-             "parameters": {"clearance": clearance, "pad_outside": True, "space": "pose"},
+             "parameters": {"clearance": clearance, "pad_outside": True},
              "outputs": {"mesh": "sash_fixed.json", "deltas": "sash_deltas.json", "report": "push_out.json"},
              "preconditions": ["closed:collider", "role:garment.sash.front", "units:m"], "applies_to": ["garment.sash.front"],
              "space": "pose", "evidence": [{"source": "record", "ref": "2026-11-02 session: ray parity inside test, push out, no velocity", "state": "observed"}]},

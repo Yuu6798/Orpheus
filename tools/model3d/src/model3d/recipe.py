@@ -87,5 +87,6 @@ def step_key(step, input_hashes, fingerprint, library_versions, context_hashes=N
     payload = {"operation": step["operation"], "parameters": step.get("parameters", {}),
                "inputs": dict(sorted(input_hashes.items())), "outputs": dict(sorted(step.get("outputs", {}).items())),
                "fingerprint": fingerprint, "libraries": library_versions, "context": dict(sorted((context_hashes or {}).items())),
-               "applies_to": sorted(step.get("applies_to", [])), "preconditions": list(step.get("preconditions", []))}
+               "applies_to": sorted(step.get("applies_to", [])), "preconditions": list(step.get("preconditions", [])),
+               "space": step.get("space")}   # space は生成物（deltas）の記録に写るので key に入れる
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()

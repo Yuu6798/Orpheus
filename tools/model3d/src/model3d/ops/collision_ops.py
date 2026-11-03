@@ -8,7 +8,7 @@ from . import StepResult, number, register, require
 
 
 @register("collision.push_out", inputs=("mesh", "collider"), outputs=("mesh", "deltas", "report"),
-          summary="collider の中にある頂点を面の外へ clearance だけ離す。deltas は頂点ごとの移動量（骨で動かす前の形に戻すのは別工程）")
+          summary="collider の中にある頂点を面の外へ clearance だけ離す。deltas は頂点ごとの移動量（座標系は工程の space。骨で動かす前の形に戻すのは別工程）")
 def push_out(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "collider"), "collision.push_out")
     mesh, collider = Mesh.load(inputs["mesh"]), Mesh.load(inputs["collider"])
@@ -29,11 +29,12 @@ def push_out(inputs, parameters, outputs, context):
     changed = np.flatnonzero(np.linalg.norm(deltas, axis=1) > 0)
     if "mesh" in outputs:
         fixed.save(outputs["mesh"])
+    space = getattr(context, "space", None) or parameters.get("space") or "unknown"   # 工程の宣言が正。勝手に pose と名乗らない
     if "deltas" in outputs:
         atomic_json(outputs["deltas"], {"schema_version": "model3d-deltas/0.1", "topology_sha256": mesh.topology_hash(),
-                                        "space": parameters.get("space", "pose"), "units": mesh.units,
+                                        "space": space, "units": mesh.units,
                                         "deltas": [[int(indices[i]), [float(x) for x in deltas[i]]] for i in changed]})
-    observation = {"kind": "push_out", **report, "changed": int(len(changed)), "topology_sha256": mesh.topology_hash(),
+    observation = {"kind": "push_out", **report, "changed": int(len(changed)), "space": space, "topology_sha256": mesh.topology_hash(),
                    "collider_topology_sha256": collider.topology_hash()}
     if "report" in outputs:
         atomic_json(outputs["report"], observation)
