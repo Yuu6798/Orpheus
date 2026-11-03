@@ -7,7 +7,8 @@ import pytest
 
 from m3d_helpers import box
 from model3d.io import ToolError
-from model3d.mesh import Mesh, canonical_signature, check_profile, extrude_profile, read_obj, remap_rig_weights, transform, weld, write_obj
+from model3d.mesh import (Mesh, canonical_signature, check_profile, extrude_profile, read_obj, read_parts, remap_rig_weights, transform,
+                          weld, write_obj)
 
 FIXTURE = Path(__file__).parent / "data" / "jscad" / "cases.json"
 
@@ -321,3 +322,45 @@ def test_transform_order_scale_rotate_translate():
         axis_basis({"up": "+Z", "forward": "-Z"})
     with pytest.raises(ToolError, match="axes"):
         axis_basis({"up": "+W", "forward": "-Y"})
+
+
+def _parts_npz(directory, names=("body", "head"), with_uv=True):
+    """部品ごとの npz（names と co{i}・f{i}・uv{i}）と法線の npz（n{i}）。部品 i は y = i の板。"""
+    directory.mkdir(parents=True, exist_ok=True)
+    quad = np.array([[-1, 0, -1], [1, 0, -1], [1, 0, 1], [-1, 0, 1]], dtype=np.float32)
+    data = {"names": np.array(names)}
+    for i in range(len(names)):
+        data[f"co{i}"] = quad + np.float32([0, i, 0])
+        data[f"f{i}"] = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+        if with_uv:
+            data[f"uv{i}"] = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+    np.savez(directory / "parts.npz", **data)
+    np.savez(directory / "normals.npz", **{f"n{i}": np.tile(np.float32([0, -1, 0]), (4, 1)) for i in range(len(names))})
+    return directory / "parts.npz", directory / "normals.npz"
+
+
+def test_read_parts_picks_a_part_by_name_with_uv_and_normals(tmp_path):
+    parts, normals = _parts_npz(tmp_path)
+    mesh = read_parts(parts, "head", normals)
+    assert mesh.name == "head" and mesh.vertex_count == 4 and mesh.face_count == 2
+    assert np.allclose(mesh.vertices[:, 1], 1.0) and np.allclose(mesh.uv[2], [1, 1])
+    assert np.allclose(mesh.extra["x_normals"], [[0, -1, 0]] * 4)
+    mesh.save(tmp_path / "head.json")
+    again = Mesh.load(tmp_path / "head.json")
+    assert again.name == "head" and len(again.extra["x_normals"]) == 4
+    body = read_parts(parts, "body")
+    assert body.uv is not None and "x_normals" not in body.extra
+    plain, _ = _parts_npz(tmp_path / "plain", with_uv=False)
+    assert read_parts(plain, "head").uv is None
+
+
+def test_read_parts_refuses_missing_parts_mismatched_normals_and_pickles(tmp_path):
+    parts, _ = _parts_npz(tmp_path)
+    with pytest.raises(ToolError, match="body, head"):
+        read_parts(parts, "hair")
+    np.savez(tmp_path / "short.npz", n0=np.zeros((3, 3)), n1=np.zeros((3, 3)))
+    with pytest.raises(ToolError, match="法線"):
+        read_parts(parts, "head", tmp_path / "short.npz")
+    np.savez(tmp_path / "pickled.npz", names=np.array(["head"], dtype=object), co0=np.zeros((3, 3)), f0=np.array([[0, 1, 2]]))
+    with pytest.raises(ToolError, match="読めません"):   # pickle の入った配列は読まない
+        read_parts(tmp_path / "pickled.npz", "head")
