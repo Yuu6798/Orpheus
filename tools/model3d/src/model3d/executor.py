@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import PIL
 
 from . import VERSION, contracts, fingerprint, ops, semantic
 from . import recipe as recipes
@@ -48,8 +49,16 @@ class Context:
     selections: dict = field(default_factory=dict)   # 工程の select で選んだ面領域（入力名 -> semantic.select の結果）
 
 
+def check_unchanged(paths, hashes, pinned):
+    """recipe の入力（$inputs）が、読み込んだときの sha256 のままか。変わっていれば止める
+    （変わった中身で作った結果を、古い sha256 の名で記録・再利用しないため）。"""
+    for name, source in pinned.items():
+        if sha256(paths[name]) != hashes[name]:
+            raise ToolError(f"入力 {source}（{paths[name]}）が recipe を読み込んだ後に変わりました。run をやり直してください")
+
+
 def library_versions():
-    return {"numpy": np.__version__}
+    return {"numpy": np.__version__, "Pillow": PIL.__version__}   # 画像の読み書き・ぼかしは Pillow に依る
 
 
 def environment(tools=None, code_fingerprint=None):
@@ -57,7 +66,7 @@ def environment(tools=None, code_fingerprint=None):
     for name, value in (tools or {}).items():
         path = Path(value)
         recorded[name] = {"path": str(path), "sha256": sha256(path) if path.is_file() else None}
-    return {"python": platform.python_version(), "platform": platform.platform(), "numpy": np.__version__,
+    return {"python": platform.python_version(), "platform": platform.platform(), "numpy": np.__version__, "Pillow": PIL.__version__,
             "model3d": {"version": VERSION, "fingerprint": code_fingerprint or fingerprint()}, "tools": recorded}
 
 
@@ -243,12 +252,13 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                 run.save()
                 step_began = time.monotonic()
                 try:
-                    step_inputs, hashes = {}, {}
+                    step_inputs, hashes, pinned = {}, {}, {}
                     for name, ref in step.get("inputs", {}).items():
                         parsed = recipes.parse_ref(ref)
                         if parsed[0] == "input":
                             step_inputs[name] = Path(inputs[parsed[1]]["path"])
                             hashes[name] = inputs[parsed[1]]["sha256"]       # 読み込み時に計算済み
+                            pinned[name] = parsed[1]
                         else:
                             produced = artifacts_by_step.get(parsed[1], {})
                             if parsed[2] not in produced:
@@ -287,6 +297,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     step_dir = run.dir / step["id"]
                     step_dir.mkdir(parents=True, exist_ok=True)
                     outputs = {name: step_dir / file for name, file in step.get("outputs", {}).items()}
+                    check_unchanged(step_inputs, hashes, pinned)
                     previous = None if (force or not cacheable or unresolved) else reusable(out, index, key)
                     if previous is not None:
                         for name, item in previous["artifacts"].items():
@@ -301,6 +312,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                         context = Context(run.dir, step_dir, base, preset, semantic_map, tools, run.log, {"force": force},
                                           step.get("space"), tuple(step.get("applies_to", [])), selections)
                         result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
+                        check_unchanged(step_inputs, hashes, pinned)   # 実行中に変わった入力の結果も残さない
                         entry["observations"] = chosen_notes + list(result.observations)
                         unresolved.extend(result.unresolved)
                         if result.review:

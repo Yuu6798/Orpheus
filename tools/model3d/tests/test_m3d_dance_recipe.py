@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from m3d_helpers import stand_in_executable, symlinks_available
+from m3d_helpers import parts_npz, run_cli, stand_in_executable, symlinks_available
 from model3d import dance_recipe as dance
 from model3d import executor
 
@@ -244,11 +244,7 @@ def test_external_review_note_continues_downstream_but_retains_needs_review(tmp_
     assert result["candidates"] == ["projection"]
 
 
-def fake_bundle(tmp_path, monkeypatch):
-    """Real subprocesses with fake Blender/data, including legacy CLI argv rules."""
-    root = tmp_path / "bundle"
-    root.mkdir()
-    common = """import json,sys,hashlib
+COMMON = """import json,sys,hashlib
 from pathlib import Path
 args = sys.argv[1:]
 def arg(name): return args[args.index(name)+1]
@@ -257,6 +253,13 @@ def put(path,data):
 def emit(path,data):
  p=Path(path);p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
 """
+
+
+def fake_bundle(tmp_path, monkeypatch):
+    """Real subprocesses with fake Blender/data, including legacy CLI argv rules."""
+    root = tmp_path / "bundle"
+    root.mkdir()
+    common = COMMON
     (root / "rebuild_recipe.py").write_text(common + f"""
 job=Path(arg('--job'))
 emit(job/'models/mv/char_o.blend',b'rebuilt from raw')
@@ -403,98 +406,119 @@ def test_noncanonical_private_layout_is_rejected(tmp_path, monkeypatch):
         dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
 
 
-NATIVE_REBUILD = """import json,sys
-from pathlib import Path
-import numpy as np
-args=sys.argv[1:]
-job=Path(args[args.index('--job')+1])
-mv=job/'models/mv';mv.mkdir(parents=True,exist_ok=True)
-(mv/'char_o.blend').write_bytes(b'rebuilt from raw')
-quad=np.array([[-1,0,-1],[1,0,-1],[1,0,1],[-1,0,1]],dtype=np.float32)
-faces=np.array([[0,1,2],[0,2,3]],dtype=np.int32)
-uv=np.array([[0,0],[1,0],[1,1],[0,1]],dtype=np.float32)
-np.savez(mv/'parts_geo.npz',names=np.array(['body','head']),co0=quad+np.float32([0,2,0]),f0=faces,uv0=uv,co1=quad,f1=faces,uv1=uv)
-np.savez(mv/'parts_n.npz',n0=np.tile(np.float32([0,-1,0]),(4,1)),n1=np.tile(np.float32([0,-1,0]),(4,1)))
-(job/'execution.json').write_text(json.dumps([{'step':n,'status':'passed'} for n in STAGES]))
-(job/'provenance.json').write_text(json.dumps({'starts_from_completed_character':False}))
+NATIVE_REBUILD = COMMON + """import shutil
+job=Path(arg('--job'))
+emit(job/'models/mv/char_o.blend',b'rebuilt from raw')
+shutil.copyfile('synthetic/parts.npz',job/'models/mv/parts_geo.npz')
+shutil.copyfile('synthetic/normals.npz',job/'models/mv/parts_n.npz')
+put(job/'execution.json',[{'step':n,'status':'passed'} for n in STAGES])
+put(job/'provenance.json',{'starts_from_completed_character':False})
 """
 
-NATIVE_APPLY = """import json,sys
-from pathlib import Path
-from PIL import Image
-args=sys.argv[1:]
-def arg(name): return args[args.index(name)+1]
+NATIVE_APPLY = COMMON + """from PIL import Image
 source=Path(arg('--blend'));texture=Path(arg('--texture'));out=Path(arg('--out'))
 assert source.read_bytes()==b'rebuilt from raw'
 with Image.open(texture) as im:
     rgb=im.convert('RGB')
     assert rgb.getpixel((50,20))==(30,30,220) and rgb.getpixel((10,20))==(128,128,128), 'face steps did not paint the masked half'
-out.write_bytes(b'integrated character')
-out.with_suffix('.texture_application.json').write_text(json.dumps({'replacement_texture_packed':True,'input_files_unchanged':True,'replaced_node_count':2}))
+emit(out,b'integrated character')
+put(out.with_suffix('.texture_application.json'),{'replacement_texture_packed':True,'input_files_unchanged':True,'replaced_node_count':2})
 """
 
 
 def native_face(root):
-    """model3d の顔の工程の材料: 合成の板（部品 head）の npz を書く rebuild、灰色の atlas、左右 2 色の設定画、private な設定。"""
+    """model3d の顔の工程の材料: 合成の板（部品 head）の npz をコピーする rebuild、灰色の atlas、左右 2 色の設定画、private な設定。"""
     import numpy as np
     from PIL import Image
-    (root / "rebuild_recipe.py").write_text("STAGES=" + repr(list(dance.REBUILD_STAGES)) + "\n" + NATIVE_REBUILD)
+    parts_npz(root / "synthetic")
+    (root / "rebuild_recipe.py").write_text(NATIVE_REBUILD.replace("import shutil", "import shutil\nSTAGES=" + repr(list(dance.REBUILD_STAGES))))
     (root / "apply_texture.py").write_text(NATIVE_APPLY)
     Image.fromarray(np.full((64, 64, 3), 128, dtype=np.uint8)).save(root / "upstream/models/mv/basecolor_fix3.png")
-    sheet = np.zeros((64, 64, 4), dtype=np.uint8)
-    sheet[:, :32, :3], sheet[:, 32:, :3], sheet[..., 3] = (220, 30, 30), (30, 30, 220), 255
+    sheet = np.zeros((128, 128, 4), dtype=np.uint8)   # atlas（64²）と大きさを変え、マスクの大きさを参照画像から取ることを確かめる
+    sheet[:, :64, :3], sheet[:, 64:, :3], sheet[..., 3] = (220, 30, 30), (30, 30, 220), 255
     Image.fromarray(sheet).save(root / "sheet.png")
     return dump(root / "face_model3d.json", {
-        "schema": "model3d-face-projection/0.1", "part_name": "head",
-        "atlas": "upstream/models/mv/basecolor_fix3.png", "reference": "sheet.png",
-        "mask": {"shapes": [{"polygon": [[32, 0], [64, 0], [64, 64], [32, 64]]}]},
+        "schema": "model3d-face-projection/0.1", "part_name": "head", "reference": "sheet.png",
+        "mask": {"shapes": [{"polygon": [[64, 0], [128, 0], [128, 128], [64, 128]]}]},
         "projection": {"view": {"from": "-Y", "center": [0.0, 0.0], "span": 2.0, "size": [64, 64]},
-                       "alignment": {"model": [[0, 0], [64, 0]], "reference": [[0, 0], [64, 0]]}}})
+                       "alignment": {"model": [[0, 0], [64, 0]], "reference": [[0, 0], [128, 0]]}}})
 
 
-NATIVE_STEPS = ["rebuild", "face_mesh", "face_mask", "project_reference", "apply_texture", "render", "assemble"]
+NATIVE_STEPS = ["rebuild", "face_mesh", "face_mask", "face_projection", "apply_texture", "render", "assemble"]
 
 
 def test_model3d_face_config_replaces_the_legacy_worker_with_texture_steps(tmp_path, monkeypatch):
     root, preset, _, python, blender = fake_bundle(tmp_path, monkeypatch)
     face = native_face(root)
+    (root / dance.LEGACY_FACE_WORKER).unlink()   # この経路は目元投影の worker を使わない
     result = dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
     recipe = dance.read(result["recipe"])
     assert result["stages"] == NATIVE_STEPS
     operations = {s["id"]: s["operation"] for s in recipe["steps"]}
     assert operations["face_mesh"] == "mesh.import_parts" and operations["face_mask"] == "texture.draw_mask"
-    assert operations["project_reference"] == "texture.project_reference"
+    assert operations["face_projection"] == "texture.project_reference"
+    apply = next(s for s in recipe["steps"] if s["id"] == "apply_texture")
+    assert apply["inputs"]["source_texture"] == "$steps.face_projection.texture"
     assert recipe["inputs"]["face_reference"]["path"] == str((root / "sheet.png").resolve())
-    assert recipe["inputs"]["face_atlas"]["sha256"] == dance.digest(root / "upstream/models/mv/basecolor_fix3.png")
-    assert dance.read(tmp_path / "recipe/connector.json")["face"] == "model3d"
+    assert recipe["inputs"]["face_atlas"]["path"] == str((root / "upstream/models/mv/basecolor_fix3.png").resolve())
+    assert not any(item["path"].endswith(dance.LEGACY_FACE_WORKER) for item in dance.read(result["inventory"])["files"])
     assert not any("review_note" in s["parameters"] for s in recipe["steps"])
 
 
-@pytest.mark.parametrize("change", [{"extra": 1}, {"projection": {"view": {}}}, {"reference": "../outside.png"},
-                                    {"part_name": ""}, {"mask": {"feather": 1.0}}])
+BAD_FACE_CONFIGS = {
+    "unknown key": lambda c: {**c, "extra": 1},
+    "atlas is fixed to fix3": lambda c: {**c, "atlas": "sheet.png"},
+    "bad view": lambda c: {**c, "projection": {**c["projection"], "view": {"from": "top"}}},
+    "one landmark": lambda c: {**c, "projection": {**c["projection"], "alignment": {"model": [[0, 0]], "reference": [[0, 0]]}}},
+    "misspelled parameter": lambda c: {**c, "projection": {**c["projection"], "min_facng": 0.5}},
+    "misspelled mask key": lambda c: {**c, "mask": {**c["mask"], "feathr": 3.0}},
+    "no shapes": lambda c: {**c, "mask": {"shapes": []}},
+    "outside the bundle": lambda c: {**c, "reference": "../outside.png"},
+    "empty reference": lambda c: {**c, "reference": ""},
+    "a folder": lambda c: {**c, "reference": "upstream"},
+    "no part": lambda c: {**c, "part_name": ""},
+    "unknown schema": lambda c: {**c, "schema": "model3d-face-projection/0.2"},
+    "not an object": lambda c: [c],
+}
+
+
+@pytest.mark.parametrize("change", BAD_FACE_CONFIGS.values(), ids=BAD_FACE_CONFIGS.keys())
 def test_model3d_face_config_is_checked_before_building(tmp_path, monkeypatch, change):
     root, preset, _, python, blender = fake_bundle(tmp_path, monkeypatch)
     face = native_face(root)
     (tmp_path / "outside.png").write_bytes(b"not inside the bundle")
-    dump(face, {**dance.read(face), **change})
+    dump(face, change(dance.read(face)))
     with pytest.raises(ValueError):
         dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
     assert not (tmp_path / "recipe").exists()
 
 
+def test_legacy_face_config_without_inputs_is_named(tmp_path, monkeypatch):
+    root, preset, face, python, blender = fake_bundle(tmp_path, monkeypatch)
+    dump(face, {"part_name": "head"})
+    with pytest.raises(ValueError, match="legacy face config needs inputs"):
+        dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
+
+
+def test_model3d_face_config_has_no_external_projection_stage(stage_setup, monkeypatch):
+    config, inventory, root, work, source = stage_setup
+    config["face_config"] = str(dump(root / "face.json", {"schema": dance.FACE_SCHEMA}))
+    monkeypatch.setattr(dance.subprocess, "run", lambda *a, **k: pytest.fail("worker must not start"))
+    with pytest.raises(ValueError, match="no external project_reference"):
+        dance.run_stage("project_reference", config, inventory, work, {})
+
+
 def test_public_cli_runs_the_model3d_face_steps_between_rebuild_and_apply(tmp_path, monkeypatch, capsys):
-    from model3d.cli import main
     root, preset, _, python, blender = fake_bundle(tmp_path, monkeypatch)
     face = native_face(root)
     recipe_dir = tmp_path / "recipe"
-    assert main(["dance-recipe", str(recipe_dir), "--bundle", str(root), "--preset", str(preset), "--face-config", str(face),
-                 "--python", str(python), "--blender", str(blender), "--frames", "1:9:3"]) == 0
-    capsys.readouterr()
-    assert main(["run", str(recipe_dir / "recipe.json"), "--quiet"]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["status"] == "succeeded", result
+    code, _, _ = run_cli("dance-recipe", recipe_dir, "--bundle", root, "--preset", preset, "--face-config", face,
+                         "--python", python, "--blender", blender, "--frames", "1:9:3")
+    assert code == 0
+    code, result, _ = run_cli("run", recipe_dir / "recipe.json", "--quiet")
+    assert code == 0 and result["status"] == "succeeded", result
     assert list(result["steps"]) == NATIVE_STEPS
-    assert result["steps"]["project_reference"]["observations"][0]["painted_texels"] > 0
+    assert result["steps"]["face_projection"]["observations"][0]["painted_texels"] > 0
     mesh = dance.read(result["steps"]["face_mesh"]["artifacts"]["mesh"])
     assert mesh["name"] == "head" and len(mesh["x_normals"]) == 4
     assert Path(result["steps"]["assemble"]["artifacts"]["video"]).read_bytes() == b"fake video"

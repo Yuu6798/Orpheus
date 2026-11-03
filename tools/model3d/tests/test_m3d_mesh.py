@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from m3d_helpers import box
+from m3d_helpers import box, parts_npz
 from model3d.io import ToolError
 from model3d.mesh import (Mesh, canonical_signature, check_profile, extrude_profile, read_obj, read_parts, remap_rig_weights, transform,
                           weld, write_obj)
@@ -324,43 +324,84 @@ def test_transform_order_scale_rotate_translate():
         axis_basis({"up": "+W", "forward": "-Y"})
 
 
-def _parts_npz(directory, names=("body", "head"), with_uv=True):
-    """部品ごとの npz（names と co{i}・f{i}・uv{i}）と法線の npz（n{i}）。部品 i は y = i の板。"""
-    directory.mkdir(parents=True, exist_ok=True)
-    quad = np.array([[-1, 0, -1], [1, 0, -1], [1, 0, 1], [-1, 0, 1]], dtype=np.float32)
-    data = {"names": np.array(names)}
-    for i in range(len(names)):
-        data[f"co{i}"] = quad + np.float32([0, i, 0])
-        data[f"f{i}"] = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
-        if with_uv:
-            data[f"uv{i}"] = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
-    np.savez(directory / "parts.npz", **data)
-    np.savez(directory / "normals.npz", **{f"n{i}": np.tile(np.float32([0, -1, 0]), (4, 1)) for i in range(len(names))})
-    return directory / "parts.npz", directory / "normals.npz"
-
-
 def test_read_parts_picks_a_part_by_name_with_uv_and_normals(tmp_path):
-    parts, normals = _parts_npz(tmp_path)
+    parts, normals = parts_npz(tmp_path)
     mesh = read_parts(parts, "head", normals)
-    assert mesh.name == "head" and mesh.vertex_count == 4 and mesh.face_count == 2
+    assert mesh.name == "head" and mesh.vertex_count == 4 and mesh.faces == [[1, 2, 3], [1, 3, 0]]
     assert np.allclose(mesh.vertices[:, 1], 1.0) and np.allclose(mesh.uv[2], [1, 1])
     assert np.allclose(mesh.extra["x_normals"], [[0, -1, 0]] * 4)
     mesh.save(tmp_path / "head.json")
     again = Mesh.load(tmp_path / "head.json")
     assert again.name == "head" and len(again.extra["x_normals"]) == 4
     body = read_parts(parts, "body")
-    assert body.uv is not None and "x_normals" not in body.extra
-    plain, _ = _parts_npz(tmp_path / "plain", with_uv=False)
+    assert np.allclose(body.uv[0], [1, 0]) and body.faces == [[0, 1, 2], [0, 2, 3]] and "x_normals" not in body.extra
+    assert np.allclose(read_parts(parts, "body", normals).extra["x_normals"], [[0, 0, 1]] * 4)   # 部品の番号で法線を選ぶ
+    plain, _ = parts_npz(tmp_path / "plain", with_uv=False)
     assert read_parts(plain, "head").uv is None
+    np.savez(tmp_path / "bytes.npz", names=np.array([b"body", b"head"]), co1=np.zeros((3, 3)), f1=np.array([[0, 1, 2]]))
+    assert read_parts(tmp_path / "bytes.npz", "head").vertex_count == 3   # バイト列の名前も読む
 
 
 def test_read_parts_refuses_missing_parts_mismatched_normals_and_pickles(tmp_path):
-    parts, _ = _parts_npz(tmp_path)
+    parts, normals = parts_npz(tmp_path)
     with pytest.raises(ToolError, match="body, head"):
         read_parts(parts, "hair")
     np.savez(tmp_path / "short.npz", n0=np.zeros((3, 3)), n1=np.zeros((3, 3)))
-    with pytest.raises(ToolError, match="法線"):
+    with pytest.raises(ToolError, match="short.npz"):   # 法線の誤りは法線のファイルを名指す
         read_parts(parts, "head", tmp_path / "short.npz")
+    np.savez(tmp_path / "nan.npz", n0=np.zeros((4, 3)), n1=np.full((4, 3), np.nan))
+    with pytest.raises(ToolError, match="有限"):
+        read_parts(parts, "head", tmp_path / "nan.npz")
     np.savez(tmp_path / "pickled.npz", names=np.array(["head"], dtype=object), co0=np.zeros((3, 3)), f0=np.array([[0, 1, 2]]))
     with pytest.raises(ToolError, match="読めません"):   # pickle の入った配列は読まない
         read_parts(tmp_path / "pickled.npz", "head")
+
+
+@pytest.mark.parametrize("arrays, match", [
+    ({"co0": np.zeros((3, 4)), "f0": np.array([[0, 1, 2]])}, "co0"),                     # 4 列の頂点を黙って並べ替えない
+    ({"co0": np.zeros(12), "f0": np.array([[0, 1, 2]])}, "co0"),                          # 平らな配列
+    ({"co0": np.zeros((3, 3)), "f0": np.array([[0.0, 1.0, 2.9]])}, "f0"),                 # 小数の頂点番号を切り捨てない
+    ({"co0": np.zeros((3, 3)), "f0": np.array([[0, 1, 2]]), "uv0": np.zeros((2, 2))}, "uv0"),
+])
+def test_read_parts_refuses_malformed_arrays(tmp_path, arrays, match):
+    np.savez(tmp_path / "bad.npz", names=np.array(["head"]), **arrays)
+    with pytest.raises(ToolError, match=match):
+        read_parts(tmp_path / "bad.npz", "head")
+
+
+@pytest.mark.parametrize("content", [b"", b"PK\x03\x04 truncated zip", b"not an npz at all"])
+def test_read_parts_names_the_file_it_cannot_read(tmp_path, content):
+    broken = tmp_path / "broken.npz"
+    broken.write_bytes(content)
+    with pytest.raises(ToolError, match="broken.npz"):
+        read_parts(broken, "head")
+    np.save(tmp_path / "single.npy", np.zeros(3))
+    with pytest.raises(ToolError, match="npz"):   # 1 つの配列（.npy）は部品の束ではない
+        read_parts(tmp_path / "single.npy", "head")
+
+
+def test_weld_averages_and_submesh_keeps_the_vertex_normals():
+    # 2 つの三角形が辺の頂点を別々に持つ。結合すると、重なる頂点の法線は平均して長さ 1 に戻す
+    vertices = [[0, 0, 0], [1, 0, 0], [0, 0, 1], [1, 0, 0], [1, 0, 1], [0, 0, 1]]
+    normals = [[0, -1, 0], [0, -1, 0], [0, -1, 0], [1, 0, 0], [0, -1, 0], [0, -1, 0]]
+    mesh = Mesh(vertices, [[0, 1, 2], [3, 4, 5]], extra={"x_normals": normals})
+    welded, report = weld(mesh, 1e-6)
+    assert report["vertices_after"] == 4 and len(welded.extra["x_normals"]) == 4
+    merged = welded.vertices.tolist().index([1, 0, 0])
+    assert np.allclose(welded.extra["x_normals"][merged], [2 ** -0.5, -(2 ** -0.5), 0])
+    stale = Mesh(vertices, [[0, 1, 2], [3, 4, 5]], extra={"x_normals": normals[:5]})   # 頂点数と合わない法線は持ち越さない
+    assert "x_normals" not in weld(stale, 1e-6)[0].extra
+    from model3d.mesh import submesh
+    part, _ = submesh(mesh, [1])
+    assert part.extra["x_normals"] == normals[3:]
+
+
+def test_transform_turns_the_vertex_normals_with_the_vertices(tmp_path):
+    parts, normals = parts_npz(tmp_path)
+    mesh = read_parts(parts, "head", normals)          # 法線は -Y
+    turned = transform(mesh, rotate_z_deg=180)
+    assert np.allclose(turned.extra["x_normals"], [[0, 1, 0]] * 4) and np.allclose(mesh.extra["x_normals"], [[0, -1, 0]] * 4)
+    mirrored = transform(mesh, scale=[1, -2, 1])        # 鏡映は向きも反転、長さは 1 に戻す
+    assert np.allclose(mirrored.extra["x_normals"], [[0, 1, 0]] * 4)
+    upright = transform(mesh, to_axes={"up": "+Y", "forward": "+Z"})
+    assert np.allclose(upright.extra["x_normals"], [[0, 0, 1]] * 4)

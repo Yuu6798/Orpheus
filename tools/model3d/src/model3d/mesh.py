@@ -274,6 +274,9 @@ def submesh(mesh, faces):
     new_index = {old: new for new, old in enumerate(vertices)}
     palette = mesh.extra.get("x_vertex_colors")
     extra = {"x_vertex_colors": [palette[i] for i in vertices]} if isinstance(palette, list) and len(palette) == mesh.vertex_count else {}
+    normals = mesh.extra.get("x_normals")
+    if isinstance(normals, list) and len(normals) == mesh.vertex_count:
+        extra["x_normals"] = [normals[i] for i in vertices]
     part = Mesh(mesh.vertices[vertices], [[new_index[i] for i in mesh.faces[k]] for k in faces],
                 None if mesh.uv is None else mesh.uv[vertices], mesh.name, mesh.units, mesh.axes, extra=extra)
     return part, {"vertices": vertices, "faces": faces}
@@ -413,34 +416,55 @@ def triangulate_polygon(points):
 
 # ---- 部品ごとの npz ---------------------------------------------------------------
 
+def _npz_arrays(path, what, keys, optional=()):
+    """npz の keys の配列（optional は無ければ None）。読めなければ、どのファイルかを名指す ToolError。pickle は読まない。"""
+    try:
+        data = np.load(path, allow_pickle=False)
+        if isinstance(data, np.ndarray):
+            raise ToolError(f"{what} は npz（名前つきの配列の束）にしてください: {path}")
+        with data:
+            missing = [k for k in keys if k not in data.files]
+            if missing:
+                raise ToolError(f"{what} に {', '.join(missing)} がありません: {path}")
+            arrays = {k: np.asarray(data[k]) for k in keys}
+            arrays.update({k: np.asarray(data[k]) if k in data.files else None for k in optional})
+        return arrays
+    except ToolError:
+        raise
+    except Exception as error:   # 壊れ方で OSError・ValueError・EOFError・BadZipFile・zlib.error などが出る
+        raise ToolError(f"{what} を読めません: {path}（{type(error).__name__}: {error}）") from error
+
+
 def read_parts(path, part, normals=None):
     """部品ごとの配列を持つ npz から、名前で 1 つの部品を読む。
 
-    npz は names（部品の名前の列）と、i 番目の部品の co{i}（頂点 (N,3)）・f{i}（面の頂点番号 (F,k)）・uv{i}（頂点の uv (N,2)、任意）。
-    normals（別の npz）があれば、その n{i}（頂点の法線 (N,3)）を x_normals に入れる。メッシュの名前は部品の名前
-    （面領域は名前で部品を区別する）。pickle の入った配列は読まない。
+    npz は names（部品の名前の 1 次元の列）と、i 番目の部品の co{i}（頂点 (N,3)）・f{i}（面の頂点番号 (F,k) の整数）・
+    uv{i}（頂点の uv (N,2)、任意）。normals（別の npz）があれば、その n{i}（頂点の法線 (N,3)。部品の順で対応させる）を
+    x_normals に入れる。メッシュの名前は部品の名前（面領域は名前で部品を区別する）。pickle の入った配列は読まない。
     """
-    try:
-        with np.load(path, allow_pickle=False) as data:
-            names = [str(n) for n in data["names"]]
-            if part not in names:
-                raise ToolError(f"部品 {part!r} がありません（{', '.join(names)}）: {path}")
-            i = names.index(part)
-            vertices = np.asarray(data[f"co{i}"], dtype=np.float64)
-            faces = np.asarray(data[f"f{i}"], dtype=np.int64)
-            uv = np.asarray(data[f"uv{i}"], dtype=np.float64) if f"uv{i}" in data.files else None
-        extra = {}
-        if normals is not None:
-            with np.load(normals, allow_pickle=False) as data:
-                given = np.asarray(data[f"n{i}"], dtype=np.float64)
-            if given.shape != vertices.shape:
-                raise ToolError(f"法線の形 {given.shape} が頂点の形 {vertices.shape} と違います: {normals}")
-            extra["x_normals"] = given.tolist()
-    except (OSError, KeyError, ValueError) as error:
-        raise ToolError(f"部品の npz を読めません: {path}（{error}）") from error
-    if faces.ndim != 2:
-        raise ToolError(f"f{i} は (面の数, 角の数) の頂点番号にしてください: {faces.shape}")
-    return Mesh(vertices, faces.tolist(), uv, name=part, extra=extra)
+    names = _npz_arrays(path, "部品の npz", ["names"])["names"]
+    if names.ndim != 1:
+        raise ToolError(f"names は部品の名前の 1 次元の列にしてください（形 {names.shape}）: {path}")
+    names = [n.decode("utf-8") if isinstance(n, bytes) else str(n) for n in names.tolist()]
+    if part not in names:
+        raise ToolError(f"部品 {part!r} がありません（{', '.join(names)}）: {path}")
+    i = names.index(part)
+    arrays = _npz_arrays(path, "部品の npz", [f"co{i}", f"f{i}"], optional=[f"uv{i}"])
+    vertices, faces, uv = arrays[f"co{i}"], arrays[f"f{i}"], arrays[f"uv{i}"]
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or not np.issubdtype(vertices.dtype, np.number):
+        raise ToolError(f"co{i} は頂点 (N,3) の数にしてください（形 {vertices.shape}、{vertices.dtype}）: {path}")
+    if faces.ndim != 2 or faces.shape[1] < 3 or not np.issubdtype(faces.dtype, np.integer):
+        raise ToolError(f"f{i} は面の頂点番号 (F,k) の整数にしてください（形 {faces.shape}、{faces.dtype}）: {path}")
+    if uv is not None and (uv.shape != (len(vertices), 2) or not np.issubdtype(uv.dtype, np.number)):
+        raise ToolError(f"uv{i} は頂点ごとの uv (N,2) にしてください（形 {uv.shape}）: {path}")
+    extra = {}
+    if normals is not None:
+        given = _npz_arrays(normals, "法線の npz", [f"n{i}"])[f"n{i}"]
+        if given.shape != vertices.shape or not np.issubdtype(given.dtype, np.number) or not np.isfinite(given).all():
+            raise ToolError(f"n{i} は頂点と同じ (N,3) の有限の数にしてください（形 {given.shape}）: {normals}")
+        extra["x_normals"] = given.astype(np.float64).tolist()
+    return Mesh(vertices.astype(np.float64), faces.astype(np.int64).tolist(),
+                None if uv is None else uv.astype(np.float64), name=part, extra=extra)
 
 
 # ---- OBJ ------------------------------------------------------------------------
@@ -573,9 +597,12 @@ def convert_axes(points, source_axes, target_axes):
 
 def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None, to_axes=None):
     """単位の換算（to_units）→ 軸の換算（to_axes）→ 拡大縮小 → Z 軸まわりの回転 → 平行移動の順に当てた写し。
-    translate は換算後の単位と軸。"""
+    translate は換算後の単位と軸。頂点の法線（x_normals）も同じ向きへ回す（拡大縮小はその逆を掛けて長さを 1 に戻す）。"""
     out = mesh.copy()
     points = out.vertices
+    normals = out.extra.get("x_normals")
+    normals = (np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+               if isinstance(normals, list) and len(normals) == mesh.vertex_count else None)
     if to_units is not None:
         if to_units not in UNIT_FACTORS:
             raise ToolError(f"to_units は m / cm / mm から選んでください: {to_units!r}")
@@ -584,6 +611,8 @@ def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None,
     if to_axes is not None:
         target = {"up": to_axes.get("up"), "forward": to_axes.get("forward")} if isinstance(to_axes, dict) else None
         points = convert_axes(points, mesh.axes, target or to_axes)
+        if normals is not None:
+            normals = convert_axes(normals, mesh.axes, target or to_axes)
         out.axes = dict(target)
     if scale is not None:
         factor = np.asarray(scale, dtype=np.float64)
@@ -592,6 +621,8 @@ def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None,
         if factor.shape != (3,) or not np.isfinite(factor).all() or (factor == 0).any():
             raise ToolError(f"scale は 0 でない数か 3 要素の列にしてください: {scale!r}")
         points = points * factor
+        if normals is not None:
+            normals = normals / factor   # 法線は拡大縮小の逆転置（鏡映なら向きも反転）
     if isinstance(rotate_z_deg, bool) or not isinstance(rotate_z_deg, (int, float)) or not math.isfinite(rotate_z_deg):
         raise ToolError(f"rotate_z_deg は有限の数にしてください: {rotate_z_deg!r}")
     if rotate_z_deg:
@@ -599,11 +630,16 @@ def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0, to_units=None,
         c, s = math.cos(angle), math.sin(angle)
         rotation = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
         points = points @ rotation.T
+        if normals is not None:
+            normals = normals @ rotation.T
     if translate is not None:
         offset = np.asarray(translate, dtype=np.float64)
         if offset.shape != (3,) or not np.isfinite(offset).all():
             raise ToolError(f"translate は 3 要素の列にしてください: {translate!r}")
         points = points + offset
+    if normals is not None:
+        length = np.linalg.norm(normals, axis=1, keepdims=True)
+        out.extra["x_normals"] = (normals / np.where(length > 0, length, 1.0)).tolist()
     out.vertices = np.ascontiguousarray(points)
     out.validate()
     return out
@@ -653,7 +689,8 @@ class _Union:
 def weld(mesh, distance, selection=None, center="mean"):
     """距離 distance 以内の頂点（selection があればその中だけ）を結合した写しと、結果の数。
 
-    結合した頂点の位置・uv・頂点色（x_vertex_colors）は平均（center="mean"）か、番号が最小の頂点のもの（center="first"）。
+    結合した頂点の位置・uv・頂点色（x_vertex_colors）・法線（x_normals。長さは 1 に戻す）は平均（center="mean"）か、
+    番号が最小の頂点のもの（center="first"）。
     面は番号を付け替え、連続する同じ頂点を畳み、頂点が 3 つ未満になった面と、同じ頂点集合の面・他の面の
     頂点集合に含まれる面を除く（結合に関わった面と、それと頂点を共有する面だけを見る。元から重なっていた面は見ない）。
     結合は推移的（A-B と B-C が近ければ A-B-C が 1 つになる）。
@@ -684,6 +721,8 @@ def weld(mesh, distance, selection=None, center="mean"):
     uv = None if mesh.uv is None else mesh.uv.copy()
     palette = mesh.extra.get("x_vertex_colors")
     colors = np.asarray(palette, dtype=np.float64).reshape(-1, 3).copy() if isinstance(palette, list) and len(palette) == n and n else None
+    given = mesh.extra.get("x_normals")
+    normals = np.asarray(given, dtype=np.float64).reshape(-1, 3).copy() if isinstance(given, list) and len(given) == n and n else None
     if center == "mean":
         for root, members in groups.items():
             vertices[root] = mesh.vertices[members].mean(axis=0)
@@ -691,6 +730,8 @@ def weld(mesh, distance, selection=None, center="mean"):
                 uv[root] = mesh.uv[members].mean(axis=0)
             if colors is not None:
                 colors[root] = colors[members].mean(axis=0)   # 頂点色も uv と同じ規則（first なら番号が最小の頂点の色）
+            if normals is not None:
+                normals[root] = normals[members].mean(axis=0)
     keep = [i for i in range(n) if representative[i] == i]
     new_index = {old: new for new, old in enumerate(keep)}
     remap = {i: new_index[representative[i]] for i in range(n)}
@@ -728,6 +769,11 @@ def weld(mesh, distance, selection=None, center="mean"):
     extra = dict(mesh.extra)
     if colors is not None:
         extra["x_vertex_colors"] = [[float(c) for c in row] for row in colors[keep].tolist()]
+    extra.pop("x_normals", None)   # 頂点数の合わない古い法線は持ち越さない
+    if normals is not None:
+        kept = normals[keep]
+        length = np.linalg.norm(kept, axis=1, keepdims=True)
+        extra["x_normals"] = (kept / np.where(length > 0, length, 1.0)).tolist()
     out = Mesh(vertices[keep], final_faces, None if uv is None else uv[keep], mesh.name, mesh.units, mesh.axes,
                parts, selection_out, extra)
     vertex_mapping = {"source_vertex_count": n, "target_vertex_count": out.vertex_count,

@@ -28,6 +28,23 @@ def workspace(tmp_path):
     return tmp_path, write
 
 
+def test_inputs_changed_after_loading_stop_the_step_instead_of_being_cached(tmp_path):
+    from model3d.mesh import Mesh
+    mesh_path = tmp_path / "panel.json"
+    Mesh([[0, 0, 0], [1, 0, 0], [0, 0, 1]], [[0, 1, 2]], name="panel").save(mesh_path)
+    edit = ("import sys,json;from pathlib import Path;p=Path(sys.argv[1]);d=json.loads(p.read_text());"
+            "d['vertices'][0]=[0,0,0.5];p.write_text(json.dumps(d));Path(sys.argv[2]).write_text('edited')")
+    steps = [{"id": "edit", "operation": "external.run", "outputs": {"artifact": "edit.txt"},
+              "parameters": {"config": {"tool": "test", "version": "1", "argv": [sys.executable, "-c", edit, str(mesh_path), "{artifact}"]}}},
+             {"id": "read", "operation": "mesh.import", "inputs": {"file": "$inputs.panel"}, "outputs": {"mesh": "mesh.json"}}]
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "changed input",
+                                           "inputs": {"panel": {"path": "panel.json"}}, "steps": steps})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "failed" and "変わりました" in result["steps"]["read"]["error"]
+    assert read_json(tmp_path / "runs" / "index.json")["steps"] == {}   # 変わった中身の結果を古い sha256 の名で残さない
+    assert executor.library_versions()["Pillow"]
+
+
 PUSH = {"id": "push", "operation": "collision.push_out", "inputs": {"mesh": "$inputs.strip", "collider": "$inputs.box"},
         "parameters": {"clearance": 0.01}, "outputs": {"mesh": "fixed.json", "report": "push.json"}, "preconditions": ["closed:collider"]}
 AFTER = {"id": "after", "operation": "check.penetration", "inputs": {"mesh": "$steps.push.mesh", "collider": "$inputs.box"},

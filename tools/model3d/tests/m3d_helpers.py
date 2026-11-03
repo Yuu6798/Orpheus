@@ -22,6 +22,26 @@ def run_cli(*args):
     return code, result, err.getvalue()
 
 
+def parts_npz(directory, names=("body", "head"), with_uv=True):
+    """部品ごとの npz（names と co{i}・f{i}・uv{i}）と法線の npz（n{i}）を書く。部品 i は y = i の板で -Y を向く。
+    取り違えに気付けるよう、偶数番目の部品は面の分け方・u の左右・法線（+Z）を変える。"""
+    import numpy as np
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    quad = np.array([[-1, 0, -1], [1, 0, -1], [1, 0, 1], [-1, 0, 1]], dtype=np.float32)
+    data = {"names": np.array(names)}
+    uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+    for i in range(len(names)):
+        data[f"co{i}"] = quad + np.float32([0, i, 0])
+        data[f"f{i}"] = np.array([[1, 2, 3], [1, 3, 0]] if i % 2 else [[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+        if with_uv:
+            data[f"uv{i}"] = uv if i % 2 else uv[[1, 0, 3, 2]]
+    np.savez(directory / "parts.npz", **data)
+    np.savez(directory / "normals.npz", **{f"n{i}": np.tile(np.float32([0, -1, 0] if i % 2 else [0, 0, 1]), (4, 1))
+                                           for i in range(len(names))})
+    return directory / "parts.npz", directory / "normals.npz"
+
+
 def stand_in_executable(directory, name, source):
     """Python の source を実行する代役の実行ファイル（引数は sys.argv[1:] に入る）。POSIX はシバン付きのスクリプト、
     Windows はシバンを使えないので、この Python で source を呼ぶ .cmd にする。"""

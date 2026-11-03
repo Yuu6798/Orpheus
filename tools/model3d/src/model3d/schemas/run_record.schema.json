@@ -118,6 +118,9 @@
         "numpy": {
           "type": "string"
         },
+        "Pillow": {
+          "type": "string"
+        },
         "model3d": {
           "type": "object",
           "required": [

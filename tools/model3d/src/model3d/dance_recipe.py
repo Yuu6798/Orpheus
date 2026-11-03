@@ -6,7 +6,8 @@ The stage entry point uses only stdlib so worker dependencies stay isolated.
 
 A face config that declares "model3d-face-projection/0.1" replaces the legacy
 face worker with model3d's own steps (mesh.import_parts, texture.draw_mask,
-texture.project_reference); its part name, images, mask and landmarks stay private.
+texture.project_reference). They paint the accepted basecolor_fix3.png atlas; the
+part name, reference image, mask and landmarks stay in the private config.
 """
 from __future__ import annotations
 
@@ -38,7 +39,10 @@ OUTPUTS = {
 
 
 FACE_SCHEMA = "model3d-face-projection/0.1"
-FACE_KEYS = {"schema", "part_name", "atlas", "reference", "mask", "projection", "notes"}
+FACE_KEYS = {"schema", "part_name", "reference", "mask", "projection", "notes"}
+FACE_ATLAS = "basecolor_fix3.png"     # the accepted atlas (in REUSED) that apply_texture replaces
+FACE_STEP = "face_projection"
+LEGACY_FACE_WORKER = "face_project.py"
 
 
 def digest(path):
@@ -112,27 +116,35 @@ def validate_frames(spec, total):
     return frames
 
 
-def face_projection_images(root, face):
-    """Check a model3d face projection config and return its images (inside the bundle) by recipe input name."""
+def face_projection_images(root, upstream, face):
+    """Check a model3d face projection config before anything runs and return its images by recipe input name.
+
+    The atlas is always the accepted upstream basecolor_fix3.png, the image apply_texture replaces, so texels outside
+    the face stay as accepted. Projection and mask parameters go through the same checks the steps use, so a bad view,
+    landmark, mask or a misspelled key stops here instead of after the long rebuild.
+    """
+    from PIL import Image
+    from .io import ToolError, safe_path
+    from .ops.texture_ops import mask_from, projection_settings
+
     unknown = set(face) - FACE_KEYS
     if unknown:
         raise ValueError(f"Unknown face projection keys: {sorted(unknown)}")
     if not isinstance(face.get("part_name"), str) or not face["part_name"]:
         raise ValueError("Face projection needs part_name (the rebuilt part to paint)")
-    projection = face.get("projection")
-    if not isinstance(projection, dict) or not {"view", "alignment"} <= set(projection):
-        raise ValueError("Face projection needs projection.view and projection.alignment")
-    if "mask" in face and (not isinstance(face["mask"], dict) or "shapes" not in face["mask"]):
-        raise ValueError("Face projection mask needs shapes")
-    images = {}
-    for key, name in (("atlas", "face_atlas"), ("reference", "face_reference")):
-        if not isinstance(face.get(key), str):
-            raise ValueError(f"Face projection needs {key} (a path inside the bundle)")
-        path = (root / face[key]).resolve(strict=True)
-        if not path.is_relative_to(root):
-            raise ValueError(f"Face projection {key} must stay inside the bundle: {face[key]}")
-        images[name] = path
-    return images
+    if not isinstance(face.get("projection"), dict) or not isinstance(face.get("mask", {}), dict):
+        raise ValueError("Face projection needs projection (and mask, if given) as objects")
+    try:
+        reference = safe_path(root, face.get("reference"))
+        if not reference.is_file():
+            raise ToolError(f"reference is not a file inside the bundle: {face.get('reference')!r}")
+        projection_settings(face["projection"])
+        if "mask" in face:
+            with Image.open(reference) as image:
+                mask_from(face["mask"], list(image.size))
+    except (ToolError, OSError) as error:
+        raise ValueError(f"Face projection config is invalid: {error}") from error
+    return {"face_atlas": (upstream / "models/mv" / FACE_ATLAS).resolve(strict=True), "face_reference": reference}
 
 
 def face_steps(face):
@@ -145,8 +157,7 @@ def face_steps(face):
         steps.append({"id": "face_mask", "operation": "texture.draw_mask", "inputs": {"like": "$inputs.face_reference"},
                       "parameters": face["mask"], "outputs": {"mask": "face_mask.png"}})
         project["mask"] = "$steps.face_mask.mask"
-    # Keeps the legacy step id so apply_texture reads $steps.project_reference.texture either way.
-    steps.append({"id": "project_reference", "operation": "texture.project_reference", "inputs": project,
+    steps.append({"id": FACE_STEP, "operation": "texture.project_reference", "inputs": project,
                   "parameters": face["projection"],
                   "outputs": {"texture": "basecolor_face.png", "weights": "face_weights.png", "report": "face_report.json",
                               "overlay": "face_overlay.png"},
@@ -165,12 +176,18 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
     if threads < 1:
         raise ValueError("Threads must be positive")
     setting, face = read(preset), read(face_config)
-    native = face.get("schema") == FACE_SCHEMA
-    face_images = face_projection_images(root, face) if native else {}
+    if not isinstance(face, dict):
+        raise ValueError("The face config must be a JSON object")
+    if face.get("schema", FACE_SCHEMA) != FACE_SCHEMA:
+        raise ValueError(f"Unknown face config schema: {face['schema']!r} (use {FACE_SCHEMA}, or a legacy config without schema)")
+    native = "schema" in face
+    if not native and not isinstance(face.get("inputs"), dict):
+        raise ValueError(f"A legacy face config needs inputs; a model3d face config declares schema {FACE_SCHEMA}")
     source = (root / setting["source_assets"]).resolve(strict=True)
     upstream = (root / setting["recipe"]).resolve(strict=True)
     if upstream != (root / "upstream").resolve():
         raise ValueError("Recovered render workers require the bundle/upstream recipe layout")
+    face_images = face_projection_images(root, upstream, face) if native else {}
     keys = (root / setting["light_keys"]).resolve(strict=True)
     animation = read(keys)
     selected = validate_frames(frames, int(animation["frames"]))
@@ -178,7 +195,7 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
     if profile not in setting["render_profiles"]:
         raise ValueError(f"Unknown render profile: {profile}")
     files = {preset, face_config, keys, source / "manifest.json", Path(__file__).resolve(), python, blender}
-    files.update(root / name for name in WORKERS)
+    files.update(root / name for name in WORKERS if not (native and name == LEGACY_FACE_WORKER))
     files.update(upstream / "models/mv" / name for name in REUSED)
     files.update(upstream.joinpath("scripts").glob("*.py"))
     for item in read(source / "manifest.json"):
@@ -198,8 +215,7 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
     config = {"schema": "model3d-dance-connector/0.1", "bundle": str(root), "preset": str(preset),
               "face_config": str(face_config), "python": str(python), "blender": str(blender), "video_tools": tools,
               "frames": frames, "selected_frames": selected, "profile": profile, "threads": threads,
-              "source_fps": animation["fps"], "source_frames": animation["frames"],
-              "face": "model3d" if native else "legacy_worker"}
+              "source_fps": animation["fps"], "source_frames": animation["frames"]}
     out.mkdir(parents=True, exist_ok=True)
     config_path, inventory_path = out / "connector.json", out / "input_inventory.json"
     write(config_path, config)
@@ -212,25 +228,28 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
     dependencies = {
         "rebuild": {},
         "project_reference": {"source_geometry": "$steps.rebuild.geometry", "source_normals": "$steps.rebuild.normals"},
-        "apply_texture": {"source_blend": "$steps.rebuild.blend", "source_texture": "$steps.project_reference.texture"},
+        "apply_texture": {"source_blend": "$steps.rebuild.blend",
+                          "source_texture": f"$steps.{FACE_STEP if native else 'project_reference'}.texture"},
         "render": {"source_blend": "$steps.apply_texture.blend"},
         "assemble": {"render_manifest": "$steps.render.manifest"},
     }
-    def external(stage):
+    config_sha256, inventory_sha256 = inputs["config"]["sha256"], inputs["inventory"]["sha256"]
+    steps = []
+    for stage in STAGES:
+        if native and stage == "project_reference":
+            steps.extend(face_steps(face))
+            continue
         argv = [sys.executable, str(Path(__file__).resolve()), "--stage", stage, "--config", "{config}",
-                "--config-sha256", digest(config_path), "--inventory", "{inventory}",
-                "--inventory-sha256", digest(inventory_path), "--work", "{work}"]
+                "--config-sha256", config_sha256, "--inventory", "{inventory}",
+                "--inventory-sha256", inventory_sha256, "--work", "{work}"]
         for name in dependencies[stage]:
             argv.extend(["--input", name + "={" + name + "}"])
         parameters = {"config": {"tool": "private-dance-connector", "version": "0.1", "argv": argv}}
         if stage == "project_reference":
             parameters["review_note"] = "Reference projection uses a recovered heuristic; visual review and human acceptance remain required."
-        return {"id": stage, "operation": "external.run", "inputs": {"config": "$inputs.config", "inventory": "$inputs.inventory", **dependencies[stage]},
-                "parameters": parameters, "outputs": {**OUTPUTS[stage], "receipt": "stage_receipt.json"},
-                "notes": "Private recovered workers; original assets and accepted motion/corrections are reused."}
-
-    steps = [external("rebuild"), *(face_steps(face) if native else [external("project_reference")]),
-             *(external(stage) for stage in ("apply_texture", "render", "assemble"))]
+        steps.append({"id": stage, "operation": "external.run", "inputs": {"config": "$inputs.config", "inventory": "$inputs.inventory", **dependencies[stage]},
+                      "parameters": parameters, "outputs": {**OUTPUTS[stage], "receipt": "stage_receipt.json"},
+                      "notes": "Private recovered workers; original assets and accepted motion/corrections are reused."})
     recipe = {"schema_version": "model3d-recipe/0.1", "name": "Private recovered dance reconstruction",
               "scope": "Raw asset rebuild, reference texture, existing choreography and preview rendering; not new image-to-3D generation.",
               "inputs": inputs, "steps": steps}
@@ -295,6 +314,8 @@ def run_stage(stage, config, inventory, work, inputs):
                    "normals": job / "models/mv/parts_n.npz", "provenance": job / "provenance.json", "execution": job / "execution.json"}
     elif stage == "project_reference":
         face = read(config["face_config"])
+        if face.get("schema") == FACE_SCHEMA:
+            raise ValueError(f"A {FACE_SCHEMA} face config has no external project_reference stage; its face steps run in the recipe")
         for name, value in face["inputs"].items():
             if name != "part_name":
                 face["inputs"][name] = str((root / value).resolve())
