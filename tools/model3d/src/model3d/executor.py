@@ -256,10 +256,17 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                                 raise ToolError(f"applies_to の役割 {role} が対応表にありません（未対応か rejected）")
                     for text in step.get("preconditions", []):
                         _precondition(text, step, step_inputs, semantic_map)
+                    # 使用する役割だけを候補扱いにする。無関係な未確認の対応は run の警告に留める。
+                    # 同じ役割が applies_to と role: の両方に出ても、未解決事項は一度だけ記録する。
+                    used_roles = set(step.get("applies_to", [])) | {
+                        text.split(":", 1)[1] for text in step.get("preconditions", []) if text.startswith("role:")}
+                    if semantic_map is not None:
+                        for role in sorted(used_roles & semantic.unconfirmed_roles(semantic_map)):
+                            unresolved.append(f"役割 {role} の対応が未確認です（model3d semantic confirm で確認してください）")
                     step_dir = run.dir / step["id"]
                     step_dir.mkdir(parents=True, exist_ok=True)
                     outputs = {name: step_dir / file for name, file in step.get("outputs", {}).items()}
-                    previous = None if (force or not cacheable) else reusable(out, index, key)
+                    previous = None if (force or not cacheable or unresolved) else reusable(out, index, key)
                     if previous is not None:
                         for name, item in previous["artifacts"].items():
                             shutil.copyfile(safe_path(out, item["path"]), outputs[name])

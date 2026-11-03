@@ -26,6 +26,18 @@ def test_demo_run_handoff_accept_end_to_end(tmp_path):
     assert steps["before"]["observations"][0]["inside"] == 15 and steps["before"]["status"] == "succeeded"
     assert steps["push"]["observations"][0]["moved"] == 15 and steps["push"]["observations"][0]["residual_inside"] == 0
     assert steps["after"]["observations"][0]["inside"] == 0 and steps["structure"]["observations"][0]["pass"]
+    assert steps["structure"]["observations"][0]["stats"]["weights"]["vertex_count"] == 35
+    assert steps["structure"]["observations"][0]["stats"]["mesh_binding"]["vertex_count"] == 35
+    rig = contracts.load("rig", steps["weld"]["artifacts"]["rig"])
+    mapping = read_json(steps["weld"]["artifacts"]["mapping"])
+    assert len(mapping["old_to_new"]) == 42 and set(mapping["old_to_new"]) == set(range(35))
+    assert rig["weights"]["topology_sha256"] == mapping["target_topology_sha256"]
+    assert rig["weights"]["topology_sha256"] == steps["structure"]["observations"][0]["stats"]["mesh_binding"]["topology_sha256"]
+    code, binding, err = run_cli("check", "structure", steps["weld"]["artifacts"]["rig"], "--mesh", steps["push"]["artifacts"]["mesh"])
+    assert code == 0 and binding["pass"], err
+    code, mismatch, err = run_cli("check", "structure", tmp_path / "demo" / "inputs" / "rig.json",
+                                 "--mesh", steps["push"]["artifacts"]["mesh"])
+    assert code == 1 and not mismatch["pass"] and "頂点数" in " ".join(mismatch["failures"]), err
     assert steps["sleeve"]["observations"][0]["closed"] and steps["leg"]["observations"][0]["closed"]
     run_dir = tmp_path / "runs" / result["run_id"]
     record = contracts.load("run", run_dir / "run_record.json")
@@ -61,6 +73,17 @@ def test_run_exit_code_reflects_failure(tmp_path):
     atomic_json(tmp_path / "demo" / "recipe.json", recipe)
     code, result, err = run_cli("run", tmp_path / "demo" / "recipe.json", "--out", tmp_path / "runs", "--quiet")
     assert code == 1 and result["status"] == "failed" and "不合格" in result["error"]
+
+
+def test_demo_rejects_original_weights_for_the_processed_mesh(tmp_path):
+    run_cli("demo", tmp_path / "demo")
+    recipe = read_json(tmp_path / "demo" / "recipe.json")
+    structure = next(s for s in recipe["steps"] if s["id"] == "structure")
+    structure["inputs"]["rig"] = "$inputs.rig"
+    structure["parameters"]["strict"] = True
+    atomic_json(tmp_path / "demo" / "recipe.json", recipe)
+    code, result, _ = run_cli("run", tmp_path / "demo" / "recipe.json", "--out", tmp_path / "runs", "--quiet")
+    assert code == 1 and result["status"] == "failed" and "頂点数" in result["error"]
 
 
 def test_validate_check_mesh_and_ops_commands(tmp_path):

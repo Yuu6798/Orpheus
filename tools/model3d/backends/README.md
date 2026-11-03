@@ -16,7 +16,12 @@
 
 Linux・Python 3.12・gcc/g++。GPU も有料 API も要らない。重みは別途取得する。
 
+`--source` は固定 commit の **Git checkout のルート**を指定する（`.git` のない展開 ZIP は受け付けない）。
+実行前に commit・未コミット変更・未追跡ファイルと checkpoint の sha256 を照合する。確認できなければ依存の import や
+モデルのロードに進まず終了コード **2** で止まる。自作したファイルや出力は source の外に置く。
+
 ```sh
+git clone https://github.com/VAST-AI-Research/TripoSR /path/TripoSR && git -C /path/TripoSR checkout --detach 107cefdc244c39106fa830359024f6a2f1c78871   # --source に渡す clean checkout
 python3.12 -m venv /path/triposr_env
 /path/triposr_env/bin/python -m pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
 /path/triposr_env/bin/python -m pip install numpy==1.26.4 Pillow==10.1.0 trimesh==4.0.5 omegaconf==2.3.0 transformers==4.35.0 huggingface-hub==0.17.3 einops==0.7.0 safetensors==0.8.0
@@ -27,6 +32,14 @@ python3 tools/model3d/backends/fetch_triposr_weights.py /path/triposr_weights   
 固定: TripoSR `107cefdc244c39106fa830359024f6a2f1c78871`、HF `stabilityai/TripoSR` revision `5b521936…`（model.ckpt sha256 `429e2c6b…`）、
 torchmcubes `a9ac95aa…`。DINO の補助 config は固定 revision `f205d5d8…` を `HF_HUB_CACHE` に置き、`HF_HUB_OFFLINE=1` で動かす。
 依存全体の版はユーザーの記録（requirements_cpu.txt）にある。ここに書いた最小の組は未検証なので、動かないときは記録の版に揃える。
+
+`result.json` は宣言した固定値を `expected_pins` に、実測した source commit・Python ファイルの sha256・config.yaml の sha256 を
+別に残す。固定値と照合するのは source commit（clean checkout）と checkpoint の sha256。
+config.yaml はハッシュの記録のみ、torchmcubes の commit は実行時には未照合で、`pin_verification` でも区別する。
+`--verify-original` で元の抽出との比較が不一致なら、比較結果と出力を診断用に残し、終了コード **4** を返す。
+ファイルが残っていても成功ではない。空・非有限のメッシュは終了コード **3**。
+
+これらの異常系は合成の Git checkout と代役の依存でテストする。本物の TripoSR 推論と Blender の実行検証には数えない。
 
 ## ライセンスと範囲
 

@@ -13,13 +13,15 @@ _VERSIONS = {}   # (path, mtime_ns, size) -> 版。同じ実行ファイルに�
 
 
 def argv_for(blender, script, blend=None, args=(), background=True):
-    """[blender, --background, (blend), --python, script, --, *args]。Blender は `--` の後ろをスクリプトに渡す。"""
+    """Python 例外を非ゼロ終了にしてから script を実行する。`--` の後ろは script の引数。"""
     argv = [str(blender)]
     if background:
         argv.append("--background")
     if blend is not None:
         argv.append(str(blend))
-    argv.extend(["--python", str(script)])
+    # Blender は指定が無いと Python 例外があっても終了コード 0 になり得る。
+    # 引数は左から処理されるので、必ず --python より前に置く。
+    argv.extend(["--python-exit-code", "1", "--python", str(script)])
     if args:
         argv.append("--")
         argv.extend(str(a) for a in args)

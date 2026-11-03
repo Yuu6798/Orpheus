@@ -77,6 +77,7 @@ def parser():
     check_sub = check.add_subparsers(dest="check_command", required=True)
     structure = check_sub.add_parser("structure")
     structure.add_argument("rig", type=Path)
+    structure.add_argument("--mesh", type=Path, help="also verify vertex count and recorded topology against this mesh")
     structure.add_argument("--semantic-map", type=Path)
     structure.add_argument("--required", help="comma-separated bone roles, or 'humanoid'")
     structure.add_argument("--tolerance", type=float, default=1e-3)
@@ -229,7 +230,8 @@ def command(args):
                 required = list(semantic.HUMANOID_REQUIRED_BONES)
             elif args.required:
                 required = [r for r in args.required.split(",") if r]
-            report = checks.structure(rig, semantic_map, required, args.tolerance)
+            report = checks.structure(rig, semantic_map, required, args.tolerance,
+                                      mesh=Mesh.load(args.mesh) if args.mesh else None)
         elif args.check_command == "penetration":
             report = checks.penetration(Mesh.load(args.mesh), Mesh.load(args.collider))
         else:

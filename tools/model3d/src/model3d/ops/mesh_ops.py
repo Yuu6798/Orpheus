@@ -1,6 +1,6 @@
 """メッシュの操作: 読み込み、押し出し、結合、変形、OBJ 書き出し。"""
-from ..io import ToolError, read_json
-from ..mesh import Mesh, extrude_profile, transform, weld
+from ..io import ToolError, atomic_json, read_json
+from ..mesh import Mesh, extrude_profile, remap_rig_weights, transform, weld
 from . import StepResult, number, register, require
 
 
@@ -42,13 +42,22 @@ def mesh_extrude(inputs, parameters, outputs, context):
                                      "area": mesh.area(), "signed_volume": mesh.signed_volume()}])
 
 
-@register("mesh.weld", inputs=("mesh",), outputs=("mesh",), summary="distance 以内の頂点を結合する（selection は任意・center は mean か first）")
+@register("mesh.weld", inputs=("mesh",), outputs=("mesh", "mapping", "rig"),
+          summary="distance 以内の頂点を結合する。任意の mapping 出力、rig 入出力でウェイトも移す（mean / first）")
 def mesh_weld(inputs, parameters, outputs, context):
     require(inputs, ("mesh",), "mesh.weld")
     mesh = Mesh.load(inputs["mesh"])
     distance = number(parameters, "distance", minimum=0, exclusive=True)
     selection = parameters.get("selection", mesh.selection if parameters.get("use_selection") else None)
     welded, report = weld(mesh, distance, selection, parameters.get("center", "mean"))
+    mapping = report.pop("vertex_mapping")
+    if ("rig" in inputs) != ("rig" in outputs):
+        raise ToolError("mesh.weld でリグを扱うときは入力 rig と出力 rig を両方宣言してください")
+    if "rig" in inputs:
+        rig = remap_rig_weights(read_json(inputs["rig"]), mesh, welded, mapping)
+        atomic_json(outputs["rig"], rig)
+    if "mapping" in outputs:
+        atomic_json(outputs["mapping"], mapping)
     _save(welded, outputs)
     return StepResult(observations=[{"kind": "weld", **report, "topology_sha256": welded.topology_hash()}])
 

@@ -57,6 +57,42 @@ def test_structure_required_roles_need_a_semantic_map():
     assert "spine" in report["failures"][0] and "対応表にある骨がリグにありません" in report["failures"][1]
 
 
+def test_structure_with_mesh_requires_matching_vertex_count_and_recorded_topology():
+    from model3d.mesh import weld
+    mesh = demo.sash_mesh()
+    rig = demo.rig_json(mesh.vertex_count, mesh.topology_hash())
+    assert checks.structure(rig, mesh=mesh)["pass"]
+    welded, _ = weld(mesh, 1e-6)
+    report = checks.structure(rig, mesh=welded)
+    assert not report["pass"] and report["stats"]["weights"]["vertex_count"] == 42
+    assert report["stats"]["mesh_binding"]["vertex_count"] == 35
+    assert "頂点数" in " ".join(report["failures"]) and "topology_sha256" in " ".join(report["failures"])
+    unbound = demo.rig_json(mesh.vertex_count)
+    assert checks.structure(unbound)["pass"]   # 既存のリグ単体検査と、実メッシュへの結び付けを区別
+    assert not checks.structure(unbound, mesh=mesh)["pass"]
+    wrong_topology = copy.deepcopy(rig)
+    wrong_topology["weights"]["topology_sha256"] = "0" * 64
+    assert not checks.structure(wrong_topology, mesh=mesh)["pass"]
+    no_weights = {k: v for k, v in rig.items() if k != "weights"}
+    assert not checks.structure(no_weights, mesh=mesh)["pass"]
+
+
+def test_structure_operation_keeps_used_unconfirmed_bone_roles_for_review(tmp_path):
+    from types import SimpleNamespace
+    from model3d.io import atomic_json
+    from model3d.ops import check_ops
+    rig = demo.rig_json(demo.sash_mesh().vertex_count)
+    semantic_map = semantic.build("synthetic", demo.preset_json(), bones=rig["bones"])
+    atomic_json(tmp_path / "rig.json", rig)
+    context = SimpleNamespace(preset=None, semantic_map=semantic_map)
+    args = ({"rig": tmp_path / "rig.json"}, {"required_bone_roles": ["hips"]}, {}, context)
+    result = check_ops.check_structure(*args)
+    assert result.observations[0]["pass"] and result.review and "hips" in result.unresolved[0]
+    semantic_map["bones"]["mixamorig:Hips"]["state"] = "confirmed"
+    result = check_ops.check_structure(*args)
+    assert not result.review and not result.unresolved   # 未使用の spine などは成功を妨げない
+
+
 def test_penetration_reports_inside_vertices_and_depth():
     strip = Mesh([[0, 0, 0], [0.5, 0, 0], [3, 0, 0], [3, 0, 1]], [[0, 1, 2, 3]])
     report = checks.penetration(strip, box(2.0))

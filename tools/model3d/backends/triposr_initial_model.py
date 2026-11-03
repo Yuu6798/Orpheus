@@ -15,6 +15,7 @@ OUT_DIR に initial_model.obj / initial_model.glb / result.json（--verify-origi
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -64,7 +65,35 @@ def reconstruct_extraction(model, scene, resolution, threshold, marching_cubes, 
 
 
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    checksum = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest()
+
+
+def verify_source(source):
+    """固定 commit の未変更の Git checkout だけを実行する。宣言文字列を実測の版として記録しない。"""
+    source = Path(source).resolve()
+
+    def git(*args):
+        try:
+            return subprocess.run(["git", "-C", str(source), *args], check=True, capture_output=True,
+                                  text=True, encoding="utf-8", timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError("TripoSR source の Git checkout を検証できません（固定 commit の checkout が必要です）") from error
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != source:
+        raise ValueError("--source は TripoSR の Git checkout のルートを指定してください")
+    commit = git("rev-parse", "HEAD")
+    if commit != PINNED["TripoSR"]:
+        raise ValueError(f"TripoSR source commit が固定した値と違います: {commit}")
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("TripoSR source に未コミットの変更か未追跡ファイルがあります")
+    files = {str(p.relative_to(source).as_posix()): digest(p) for p in sorted((source / "tsr").rglob("*.py"))}
+    if "tsr/system.py" not in files:
+        raise ValueError("TripoSR source に tsr/system.py がありません")
+    return {"path": str(source), "commit": commit, "clean": True, "python_files_sha256": files}
 
 
 def main(argv=None):
@@ -80,6 +109,16 @@ def main(argv=None):
     parser.add_argument("--chunk-size", type=int, default=4096)
     parser.add_argument("--verify-original", action="store_true", help="元の extract_mesh とも比べる（時間が増える）")
     args = parser.parse_args(argv)
+    # 重みと source の照合が済むまで、外部のコードやニューラルの依存を import / load しない。
+    try:
+        weight_sha = digest(args.weights / "model.ckpt")
+        if weight_sha != PINNED["weight_sha256"]:
+            raise ValueError(f"model.ckpt の sha256 が固定した値と違います: {weight_sha}")
+        source = verify_source(args.source)
+        config_sha = digest(args.weights / "config.yaml")
+    except (OSError, ValueError) as error:
+        print(f"backend input verification failed: {error}", file=sys.stderr)
+        return 2
     import torch
     import trimesh
     from PIL import Image
@@ -87,10 +126,6 @@ def main(argv=None):
     sys.path.insert(0, str(args.source.resolve()))
     from tsr.system import TSR   # noqa: E402 - 固定 commit の TripoSR
 
-    weight = args.weights / "model.ckpt"
-    weight_sha = digest(weight)
-    if weight_sha != PINNED["weight_sha256"]:
-        print(f"warning: model.ckpt の sha256 が固定した値と違う: {weight_sha}", file=sys.stderr)
     started = time.perf_counter()
     torch.set_num_threads(args.threads)
     torch.manual_seed(args.seed)
@@ -110,15 +145,23 @@ def main(argv=None):
         comparison = None
         if args.verify_original:
             print("comparing with the original extraction", flush=True)
-            original = model.extract_mesh(scene, True, resolution=args.resolution)[0]
+            original = model.extract_mesh(scene, True, resolution=args.resolution, threshold=args.threshold)[0]
             original.export(args.out_dir / "original_same_scene.glb")
-            comparison = {"same_scene_code": True, **compare_geometry(mesh, original)}
+            try:
+                comparison = {"same_scene_code": True, **compare_geometry(mesh, original)}
+            except ValueError as error:
+                comparison = {"same_scene_code": True, "passed": False, "error": str(error)}
     if not len(mesh.faces) or not np.isfinite(mesh.vertices).all():
         print("the extracted mesh is empty or not finite", file=sys.stderr)
         return 3
     mesh.export(args.out_dir / "initial_model.glb")
     mesh.export(args.out_dir / "initial_model.obj")
-    result = {"backend": "TripoSR original network + public weights, CPU float32", "pinned": PINNED,
+    comparison_failed = comparison is not None and not comparison["passed"]
+    result = {"backend": "TripoSR original network + public weights, CPU float32", "expected_pins": PINNED,
+              "source": source, "config_sha256": config_sha,
+              "pin_verification": {"source_commit_and_clean_checkout": True, "weight_sha256": True,
+                                   "config_expected_hash": False, "torchmcubes_commit": False},
+              "status": "failed" if comparison_failed else "succeeded",
               "weight_sha256": weight_sha, "single_view_only": True, "input_sha256": digest(args.prepared),
               "resolution": args.resolution, "density_threshold": args.threshold, "seed": args.seed,
               "scene_shape": list(scene.shape), "scene_sha256": hashlib.sha256(scene.numpy().tobytes()).hexdigest(),
@@ -133,6 +176,9 @@ def main(argv=None):
         result["output_files"][path.name] = {"bytes": path.stat().st_size, "sha256": digest(path)}
     (args.out_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: result[k] for k in ("vertices", "triangles", "components", "watertight", "winding_consistent")}), flush=True)
+    if comparison_failed:
+        print("original extraction comparison failed; see result.json", file=sys.stderr)
+        return 4
     return 0
 
 

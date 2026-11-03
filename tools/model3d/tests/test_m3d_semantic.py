@@ -41,6 +41,19 @@ def test_confirm_and_roles_present():
         semantic.confirm(result, "parts", "garment_sash_front", "maybe", "tester")
 
 
+def test_unconfirmed_roles_include_regions_and_do_not_hide_duplicate_mappings():
+    result = semantic.build("asset", demo.preset_json(), parts=["garment_sash_front", "leg_upper_l_collider"],
+                            bones=["mixamorig:Hips"])
+    semantic.confirm(result, "parts", "garment_sash_front", "confirmed", "tester")
+    semantic.confirm(result, "parts", "leg_upper_l_collider", "rejected", "tester")
+    result["regions"]["extra_sash"] = {"role": "garment.sash.front", "part": "garment_sash_front", "faces": [0],
+                                       "topology_sha256": "0" * 64, "basis": "inferred", "state": "unconfirmed"}
+    contracts.validate("semantic-map", result)
+    assert semantic.unconfirmed_roles(result) == {"garment.sash.front", "hips"}
+    semantic.confirm(result, "regions", "extra_sash", "confirmed", "tester")
+    assert semantic.unconfirmed_roles(result) == {"hips"}
+
+
 def test_asset_manifest_records_hashes_and_mesh_identity(tmp_path):
     sash = demo.sash_mesh()
     sash.save(tmp_path / "sash.json")
