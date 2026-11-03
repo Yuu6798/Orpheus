@@ -71,10 +71,14 @@ def test_rasterize_covers_pixel_centres_and_large_triangles():
     assert len(texture.rasterize([[[0, 0], [1, 1], [2, 2]]], 8, 8)[0]) == 0   # 退化した三角形は飛ばす
 
 
-def test_triangles_keep_their_shape_at_u_one_and_in_other_tiles():
-    # 頂点ごとに 1 で割った余りを取ると u = 1 の角が 0 へ飛んで潰れる。三角形ごとに同じ 1 枚へずらす
-    corners = texture.triangle_texels([[[0, 0], [1, 0], [1, 1]], [[1, 0], [2, 0], [2, 1]], [[-1, 2], [0, 2], [0, 3]]], 64, 64)
-    assert np.allclose(corners, [[[0, 64], [64, 64], [64, 0]]] * 3)
+def test_tile_copies_fold_every_overlapped_tile_into_the_base_texture():
+    # 頂点ごとに 1 で割った余りを取ると u = 1 の角が 0 へ飛んで潰れる。三角形を重なる 1 枚ごとに基本の 1 枚へずらす
+    uv = np.array([[[0, 0], [1, 0], [1, 1]], [[1, 0], [2, 0], [2, 1]], [[-1, 2], [0, 2], [0, 3]]], dtype=float)
+    copies, owner = texture.tile_copies(texture.texel_coordinates(uv, 64, 64), 64, 64)
+    assert owner.tolist() == [0, 1, 2] and np.allclose(copies, [[[0, 64], [64, 64], [64, 0]]] * 3)
+    crossing = texture.texel_coordinates([[[0.75, 0.0], [1.25, 0.0], [1.25, 1.0]]], 64, 64)   # u が 1 をまたぐ
+    copies, owner = texture.tile_copies(crossing, 64, 64)
+    assert owner.tolist() == [0, 0] and np.allclose(copies[:, :, 0].min(axis=1), [48, -16])
 
 
 def test_stretch_flags_triangles_whose_uv_spans_far_more_than_their_size():
@@ -102,6 +106,25 @@ def test_projection_paints_visible_front_faces_with_the_reference():
     assert weights[20, 10] == pytest.approx(1.0) and report["painted_texels"] > 3000
     back, _, report = project(mesh_of(quad(flip=True)))   # 裏を向いた面は塗らない
     assert report["painted_texels"] == 0 and np.allclose(back, 128)
+
+
+def test_sloped_surfaces_do_not_hide_themselves_between_pixel_centres():
+    # y = x の板（正面から 45° 傾く）。画素の中心の奥行きと比べると、点が半画素ずれる所で自分に隠れて縞が抜けた
+    corners = [[-1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, -1.0, 1.0]]
+    slope = Mesh(corners, [[0, 1, 2, 3]], [[0, 0], [1, 0], [1, 1], [0, 1]], name="slope")
+    matrix, offset, _ = texture.alignment(*IDENTITY)
+    _, weights, report = texture.project_reference(slope, gray(128), halves(), FRONT, matrix, offset, expand=0.0)
+    assert report["painted_texels"] == 128 * 128 and weights.min() == pytest.approx(1.0)
+
+
+def test_projection_wraps_uv_that_crosses_the_tile_edge_like_the_render():
+    # 左半分は u 0.75〜1（画素 48〜64）、右半分は u 1〜1.25（繰り返しで画素 0〜16）。描画は sample の wrap で同じ画素を引く
+    mesh = mesh_of(quad(uv_box=(0.75, 0.0, 1.25, 1.0)))
+    new, _, report = project(mesh)
+    assert report["tile_copies"] == 4
+    assert np.allclose(new[20, 56], [220, 30, 30]) and np.allclose(new[20, 8], [30, 30, 220]) and np.allclose(new[20, 32], 128)
+    image, _ = texture.render_view(mesh, new, FRONT)
+    assert np.allclose(image[20, 10], [220, 30, 30]) and np.allclose(image[20, 50], [30, 30, 220])
 
 
 def test_hidden_and_unselected_faces_keep_their_colour():

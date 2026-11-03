@@ -3,11 +3,13 @@
 - 視点は座標軸に沿った正射影。`from` はカメラのある側（-Y は正面、+Y は背面、+X・-X は横）で、上は +Z。
   視点の平面での中心 `center`（[右, 上]）、画像の高さに当たる幅 `span`、画素数 `size`（[幅, 高さ]）で決める。
   長さはメッシュの単位で、軸の約束は 上 +Z・正面 -Y のメッシュだけを受け付ける（違えば mesh.transform の to_axes で直す）。
-- 見え隠れは z バッファで決める。その画素でいちばん手前の面から `depth_tolerance` 以内にある点だけを見えると数える。
+- 見え隠れは z バッファで決める。点の写る画素でいちばん手前の面の平面を、その点の位置まで延ばした奥行きから `depth_tolerance`
+  以内にある点だけを見えると数える（画素の中心の奥行きと比べると、傾いた面が自分を隠して縞が抜けるため）。
 - 参照画像と視点の画素の対応は、目印の組（視点の画素 ↔ 参照画像の画素）から相似変換か affine で決める。目印は推定しない。
 - 色はテクスチャの画素ごとに、その画素が載る 3D の点を視点へ写して参照画像から引き、混ぜる（テクスチャ側から引くので穴が空かない）。
   重みは 面の向き × 見えているか × マスク × 参照画像のアルファ。重みの無い画素は元の色のまま残す。
-- uv が島をまたいで引き伸ばされた三角形（継ぎ目の頂点を結合したときなど）は塗らない。
+- uv が島をまたいで引き伸ばされた三角形（継ぎ目の頂点を結合したときなど）は塗らない。繰り返しの uv で 1 をまたぐ三角形は、
+  重なる 1 枚ごとに基本の 1 枚へずらして塗る（描画の sample(wrap=True) と同じ画素に当たる）。
 - 三角形の塗りつぶしは numpy でまとめて行う（大きさごとに束ねる）。同じ入力なら同じ出力。
 """
 import numpy as np
@@ -132,6 +134,15 @@ def rasterize(triangles, width, height, expand=0.0):
     return tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
 
 
+def depth_planes(points, depth, triangles):
+    """三角形ごとの奥行きの平面。視点の画素の座標 p での奥行きは z0 + g·(p - o)（正射影なので画面の座標に対して線形。
+    三角形の外は延長）。返り値は o (T,2)、g (T,2)、z0 (T,)。"""
+    origin, inverse, _ = _inverse(points[triangles])
+    corner = depth[triangles]
+    gradient = np.einsum("tij,ti->tj", inverse, corner[:, 1:] - corner[:, :1])
+    return origin, gradient, corner[:, 0]
+
+
 def zbuffer(points, depth, triangles, width, height):
     """画素ごとのいちばん手前の奥行き (H,W)（面の無い画素は inf）と、勝った断片（三角形の番号・x・y・重心座標）。"""
     triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
@@ -254,11 +265,23 @@ def texel_coordinates(uv, width, height):
     return np.stack([uv[..., 0] * width, (1.0 - uv[..., 1]) * height], axis=-1)
 
 
-def triangle_texels(uv, width, height):
-    """三角形ごとの uv (T,3,2) を、いちばん小さい角が入る繰り返しの 1 枚へずらしてから画素の座標へ。
-    頂点ごとに 1 で割った余りを取ると、u = 1 ちょうどの角が 0 へ飛んで三角形が潰れるため。"""
-    uv = np.asarray(uv, dtype=np.float64)
-    return texel_coordinates(uv - np.floor(uv.min(axis=1, keepdims=True)), width, height)
+def tile_copies(corners, width, height):
+    """テクスチャの画素の座標の三角形 (T,3,2) を、重なる繰り返しの 1 枚ごとに基本の 1 枚へずらした写し (C,3,2) と、元の番号 (C,)。
+    頂点ごとに 1 で割った余りを取ると u = 1 ちょうどの角が 0 へ飛んで三角形が潰れ、三角形ごとに 1 枚へずらすだけでは
+    u が 0.75〜1.25 のような三角形の 1 を超えた部分（0〜0.25 の画素）が欠ける。ほとんどの三角形は写し 1 つ。"""
+    corners = np.asarray(corners, dtype=np.float64).reshape(-1, 3, 2)
+    size = np.array([width, height], dtype=np.float64)
+    first = np.floor(corners.min(axis=1) / size).astype(np.int64)
+    last = np.maximum(np.ceil(corners.max(axis=1) / size).astype(np.int64) - 1, first)
+    single = (last == first).all(axis=1)
+    parts = [corners[single] - (first[single] * size)[:, None, :]]
+    owners = [np.flatnonzero(single)]
+    for t in np.flatnonzero(~single):   # 1 をまたぐ三角形（繰り返しの uv）だけ、重なる 1 枚ごとに写す
+        for kx in range(first[t, 0], last[t, 0] + 1):
+            for ky in range(first[t, 1], last[t, 1] + 1):
+                parts.append(corners[t][None] - np.array([kx, ky]) * size)
+                owners.append(np.array([t]))
+    return np.concatenate(parts), np.concatenate(owners)
 
 
 def stretch(corners, points):
@@ -383,16 +406,21 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     triangles, owner = mesh.triangles()
     _, _, forward, _, _, (width, height) = check_view(view)
     points, depth = project_points(mesh.vertices, view)
-    buffer, _ = zbuffer(points, depth, triangles, width, height)
+    _, (win_index, win_x, win_y, _) = zbuffer(points, depth, triangles, width, height)
+    front = np.full(width * height, -1, dtype=np.int64)   # 画素ごとのいちばん手前の三角形（無ければ -1）
+    front[win_y * width + win_x] = win_index
+    plane_origin, plane_gradient, plane_depth = depth_planes(points, depth, triangles)
     chosen = np.isin(owner, np.asarray(sorted(set(faces)), dtype=np.int64)) if faces is not None else np.ones(len(triangles), bool)
     candidates = triangles[chosen]
     tex_h, tex_w = texture.shape[:2]
-    corners = triangle_texels(mesh.uv[candidates], tex_w, tex_h)
+    corners = texel_coordinates(mesh.uv[candidates], tex_w, tex_h)
     stretched = stretch(corners, mesh.vertices[candidates]) > max_stretch
     candidates, corners = candidates[~stretched], corners[~stretched]
-    index, tx, ty, bary = rasterize(corners, tex_w, tex_h, expand)
+    copies, copied_from = tile_copies(corners, tex_w, tex_h)
+    index, tx, ty, bary = rasterize(copies, tex_w, tex_h, expand)
+    index = copied_from[index]
     report = {"kind": "project_reference", "view": dict(view), "candidate_triangles": int(len(candidates)),
-              "skipped_stretched_triangles": int(stretched.sum()), "fragments": int(len(index))}
+              "skipped_stretched_triangles": int(stretched.sum()), "tile_copies": int(len(copies)), "fragments": int(len(index))}
     new = texture[..., :3].copy()
     weights = np.zeros((tex_h, tex_w))
     if not len(index):
@@ -405,8 +433,13 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     at, z = project_points(surface, view)
     px, py = np.floor(at[:, 0]).astype(np.int64), np.floor(at[:, 1]).astype(np.int64)
     on_view = (px >= 0) & (py >= 0) & (px < width) & (py < height)
-    visible = np.zeros(len(index), dtype=bool)
-    visible[on_view] = z[on_view] <= buffer[py[on_view], px[on_view]] + depth_tolerance
+    nearest = np.full(len(index), -1, dtype=np.int64)
+    nearest[on_view] = front[py[on_view] * width + px[on_view]]
+    visible = on_view & (nearest < 0)   # 画素の中心を覆う面が無い（縁の）点は、隠すものが無い
+    covered = np.flatnonzero(nearest >= 0)
+    k = nearest[covered]
+    surface_z = plane_depth[k] + ((at[covered] - plane_origin[k]) * plane_gradient[k]).sum(axis=1)
+    visible[covered] = z[covered] <= surface_z + depth_tolerance
     facing = np.clip((-(normal @ forward) - min_facing) / facing_ramp, 0.0, 1.0)
     source = (at - offset) @ np.linalg.inv(matrix).T
     color, outside = sample(reference, source)
