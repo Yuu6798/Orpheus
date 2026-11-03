@@ -5,7 +5,8 @@ from . import StepResult, register
 
 
 @register("external.run", cacheable=False,
-          summary="設定 JSON の argv で別プロセスを呼ぶ。{入力名}・{出力名}・{work} を置き換える。版・ライセンス・重みを記録する。再利用しない（毎回実行）")
+          summary="設定 JSON の argv で別プロセスを呼ぶ。{入力名}・{出力名}・{work} を置き換える。版・ライセンス・重みを記録する。"
+                  "任意の review_note は unresolved に残して needs_review にする。再利用しない（毎回実行）")
 def external_run(inputs, parameters, outputs, context):
     note = parameters.get("review_note")
     if note is not None and (not isinstance(note, str) or not note.strip()):

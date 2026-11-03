@@ -266,7 +266,13 @@ def run_stage(stage, config, inventory, work, inputs):
             if not source.is_relative_to(manifest_path.parent) or digest(source) != item["sha256"]:
                 raise ValueError("Assembly source frame changed or escaped the render directory")
             destination = job / item["file"]
-            destination.symlink_to(source)
+            try:
+                destination.symlink_to(source)
+            except OSError:
+                # Symlinks need extra privilege on Windows (WinError 1314); hand over a verified copy instead.
+                shutil.copyfile(source, destination)
+                if digest(destination) != item["sha256"]:
+                    raise ValueError("Assembly frame copy differs from the render record")
         execute([*cli, "assemble", "--job", job, "--output", work / "dance.mp4"])
         report = read(work / "dance.json")
         if report["frames"] != len(config["selected_frames"]) or report.get("audio") is not False:

@@ -117,6 +117,38 @@ def test_assembler_uses_isolated_job_and_leaves_render_record_unchanged(stage_se
     assert {p.name: p.read_bytes() for p in render.iterdir()} == before
 
 
+def test_assembler_copies_verified_frames_when_symlinks_are_unavailable(stage_setup, monkeypatch):
+    """Windows without symlink privilege raises OSError (WinError 1314); simulated here."""
+    config, inventory, root, work, source = stage_setup
+    render = root / "previous_render"
+    render.mkdir()
+    frames = []
+    for frame in (1, 2, 3):
+        file = render / f"f{frame:04d}.png"
+        file.write_bytes(b"fake png %d" % frame)
+        frames.append({"frame": frame, "file": file.name, "sha256": dance.digest(file)})
+    manifest = dump(render / "render_manifest.json", {"status": "passed", "config": {"frames": [1, 2, 3]}, "outputs": frames})
+    before = {p.name: p.read_bytes() for p in render.iterdir()}
+
+    def no_symlink(self, target, target_is_directory=False):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    def fake(argv, **kwargs):
+        job = Path(argv[argv.index("--job") + 1])
+        for item in frames:
+            copied = job / item["file"]
+            assert copied.is_file() and not copied.is_symlink()
+            assert dance.digest(copied) == item["sha256"]
+        (work / "dance.mp4").write_bytes(b"fake mp4")
+        dump(work / "dance.json", {"frames": 3, "audio": False})
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(Path, "symlink_to", no_symlink)
+    monkeypatch.setattr(dance.subprocess, "run", fake)
+    dance.run_stage("assemble", config, inventory, work, {"render_manifest": manifest})
+    assert {p.name: p.read_bytes() for p in render.iterdir()} == before
+
+
 def test_worker_runtime_change_is_not_accepted(stage_setup, monkeypatch):
     config, inventory, root, work, source = stage_setup
     monkeypatch.setattr(dance, "runtime_versions", lambda *args: {"fake": "new-version"})
