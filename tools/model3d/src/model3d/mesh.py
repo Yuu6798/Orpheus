@@ -545,7 +545,7 @@ class _Union:
 def weld(mesh, distance, selection=None, center="mean"):
     """距離 distance 以内の頂点（selection があればその中だけ）を結合した写しと、結果の数。
 
-    結合した頂点の位置と uv は平均（center="mean"）か、番号が最小の頂点のもの（center="first"）。
+    結合した頂点の位置・uv・頂点色（x_vertex_colors）は平均（center="mean"）か、番号が最小の頂点のもの（center="first"）。
     面は番号を付け替え、連続する同じ頂点を畳み、頂点が 3 つ未満になった面と、同じ頂点集合の面・他の面の
     頂点集合に含まれる面を除く（結合に関わった面と、それと頂点を共有する面だけを見る。元から重なっていた面は見ない）。
     結合は推移的（A-B と B-C が近ければ A-B-C が 1 つになる）。
@@ -574,11 +574,15 @@ def weld(mesh, distance, selection=None, center="mean"):
             representative[i] = root
     vertices = mesh.vertices.copy()
     uv = None if mesh.uv is None else mesh.uv.copy()
+    palette = mesh.extra.get("x_vertex_colors")
+    colors = np.asarray(palette, dtype=np.float64).reshape(-1, 3).copy() if isinstance(palette, list) and len(palette) == n and n else None
     if center == "mean":
         for root, members in groups.items():
             vertices[root] = mesh.vertices[members].mean(axis=0)
             if uv is not None:
                 uv[root] = mesh.uv[members].mean(axis=0)
+            if colors is not None:
+                colors[root] = colors[members].mean(axis=0)   # 頂点色も uv と同じ規則（first なら番号が最小の頂点の色）
     keep = [i for i in range(n) if representative[i] == i]
     new_index = {old: new for new, old in enumerate(keep)}
     remap = {i: new_index[representative[i]] for i in range(n)}
@@ -613,8 +617,11 @@ def weld(mesh, distance, selection=None, center="mean"):
     face_index = {old: new for new, old in enumerate(final_old)}
     parts = {name: sorted(face_index[k] for k in indices if k in face_index) for name, indices in mesh.parts.items()}
     selection_out = None if mesh.selection is None else sorted({remap[i] for i in mesh.selection})
+    extra = dict(mesh.extra)
+    if colors is not None:
+        extra["x_vertex_colors"] = [[float(c) for c in row] for row in colors[keep].tolist()]
     out = Mesh(vertices[keep], final_faces, None if uv is None else uv[keep], mesh.name, mesh.units, mesh.axes,
-               parts, selection_out, mesh.extra)
+               parts, selection_out, extra)
     report = {"distance": float(distance), "center": center, "selected": len(chosen), "merged_groups": len(groups),
               "vertices_before": n, "vertices_after": out.vertex_count, "faces_before": mesh.face_count,
               "faces_after": out.face_count, "faces_removed_degenerate": degenerate, "faces_removed_contained": len(contained)}
