@@ -24,11 +24,12 @@ class Operation:
     summary: str
     inputs: tuple = ()
     cacheable: bool = True   # False: 隠れた入力（実行ファイル・設定が参照する素材）を知らないので毎回実行する
+    selectable: tuple = ()   # 工程の select（役割の面領域だけを対象にする）を受け付ける入力
 
 
-def register(name, *, outputs=(), inputs=(), summary="", cacheable=True):
+def register(name, *, outputs=(), inputs=(), summary="", cacheable=True, selectable=()):
     def wrap(function):
-        OPERATIONS[name] = Operation(name, function, tuple(outputs), summary, tuple(inputs), cacheable)
+        OPERATIONS[name] = Operation(name, function, tuple(outputs), summary, tuple(inputs), cacheable, tuple(selectable))
         return function
     return wrap
 
@@ -49,7 +50,16 @@ def get(name):
 def describe():
     load_all()
     return [{"operation": op.name, "inputs": list(op.inputs), "outputs": list(op.outputs), "summary": op.summary,
-             "cacheable": op.cacheable} for op in sorted(OPERATIONS.values(), key=lambda o: o.name)]
+             "cacheable": op.cacheable, "selectable": list(op.selectable)} for op in sorted(OPERATIONS.values(), key=lambda o: o.name)]
+
+
+def selected(context, name, parameters=None, operation=""):
+    """工程の select で入力 name に選んだ面領域（{"role", "faces", "vertices", …}）。select が無ければ None。
+    パラメーターの selection（頂点番号）と同時には使わせない（どちらが正か曖昧になる）。"""
+    chosen = (getattr(context, "selections", None) or {}).get(name)
+    if chosen is not None and parameters is not None and (parameters.get("selection") is not None or parameters.get("use_selection")):
+        raise ToolError(f"{operation}: パラメーターの selection / use_selection と工程の select（面領域）は同時に使えません")
+    return chosen
 
 
 def require(inputs, names, operation):

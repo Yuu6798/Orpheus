@@ -131,19 +131,22 @@ def require_same_frame(mesh, collider):
 require_same_units = require_same_frame
 
 
-def penetration(mesh, collider, directions=None, limit=50):
-    """mesh の頂点のうち collider（閉じたメッシュ）の中にあるものの数・番号・深さ。"""
+def penetration(mesh, collider, directions=None, limit=50, vertices=None):
+    """mesh の頂点（vertices があればその番号の頂点だけ）のうち collider（閉じたメッシュ）の中にあるものの数・番号・深さ。"""
     require_same_frame(mesh, collider)
     report = collider.edge_report()
     if not report["closed"]:
         raise ToolError(f"衝突相手が閉じていません（境界辺 {report['boundary_edges']}・非多様体辺 {report['nonmanifold_edges']}）。"
                         "口の開いた筒では内外を決められないので、ふさいでから渡してください")
-    is_inside = collide.inside(mesh.vertices, collider, directions)
-    indices = np.flatnonzero(is_inside)
+    checked = np.arange(mesh.vertex_count) if vertices is None else np.asarray(sorted(set(vertices)), dtype=np.int64)
+    if len(checked) and (checked.min() < 0 or checked.max() >= mesh.vertex_count):
+        raise ToolError("検査する頂点の番号がメッシュの範囲外です")
+    indices = checked[collide.inside(mesh.vertices[checked], collider, directions)]
     depth = np.zeros(0)
     if len(indices):
         _, depth, _ = collide.closest_points(mesh.vertices[indices], collider)
-    return {"check": "penetration", "pass": not len(indices), "vertices": mesh.vertex_count, "inside": int(len(indices)),
+    return {"check": "penetration", "pass": not len(indices), "vertices": mesh.vertex_count,
+            **({"checked": int(len(checked))} if vertices is not None else {}), "inside": int(len(indices)),
             "inside_indices": indices[:limit].tolist(), "truncated": bool(len(indices) > limit),
             "max_depth": float(depth.max()) if len(depth) else 0.0, "mean_depth": float(depth.mean()) if len(depth) else 0.0,
             "topology_sha256": mesh.topology_hash(), "collider_topology_sha256": collider.topology_hash()}

@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from m3d_helpers import stand_in_executable, symlinks_available
 from model3d import dance_recipe as dance
 from model3d import executor
 
@@ -104,10 +105,14 @@ def test_assembler_uses_isolated_job_and_leaves_render_record_unchanged(stage_se
         frames.append({"frame": frame, "file": file.name, "sha256": dance.digest(file)})
     manifest = dump(render / "render_manifest.json", {"status": "passed", "config": {"frames": [1, 2, 3]}, "outputs": frames})
     before = {p.name: p.read_bytes() for p in render.iterdir()}
+    linked = symlinks_available(root)
     def fake(argv, **kwargs):
         job = Path(argv[argv.index("--job") + 1])
         assert job == work / "job"
-        assert (job / "f0001.png").is_symlink()
+        if linked:
+            assert (job / "f0001.png").is_symlink()
+        else:   # without symlink privilege (Windows) the assembler hands over a verified copy
+            assert not (job / "f0001.png").is_symlink() and dance.digest(job / "f0001.png") == frames[0]["sha256"]
         (job / "invocation.json").write_text("legacy assembler log")
         (work / "dance.mp4").write_bytes(b"fake mp4")
         dump(work / "dance.json", {"frames": 3, "audio": False})
@@ -184,8 +189,12 @@ def test_recipe_binds_sources_but_not_completed_character(tmp_path, monkeypatch)
     blender = root / "blender"
     blender.write_bytes(b"fake executable")
     # An absolute venv symlink must remain a symlink path in argv/config.
+    # Without symlink privilege (Windows, WinError 1314) only that check is skipped; the rest still runs.
     python_link = root / "venv-python"
-    python_link.symlink_to(sys.executable)
+    if symlinks_available(tmp_path):
+        python_link.symlink_to(sys.executable)
+    else:
+        python_link = Path(sys.executable)
     monkeypatch.setattr(dance, "runtime_versions", lambda *args: {"fake": True})
     result = dance.build(tmp_path / "recipe", root, preset, face, python_link, blender)
     recipe = dance.read(result["recipe"])
@@ -298,23 +307,22 @@ else: raise ValueError(args)
     (root / "sheet.png").write_bytes(b"sheet")
     face = dump(root / "face.json", {"inputs": {"geometry_npz": "old/parts.npz", "normals_npz": "old/normals.npz",
                                                "part_name": "part", "sheet": "sheet.png"}})
-    python = root / "fake-python"
-    python.write_text(f"#!{sys.executable}\nimport os,sys,json\n"
-                      "if sys.argv[1]=='-c': print(json.dumps({'python':'fake','packages':{'fake':'1'}}))\n"
-                      f"else: os.execv({sys.executable!r},[{sys.executable!r},*sys.argv[1:]])\n")
-    python.chmod(0o755)
-    blender = root / "blender"
-    blender.write_text(f"#!{sys.executable}\nimport sys,runpy\n"
-                       "if '--version' in sys.argv: print('Fake Blender 0.1')\n"
-                       "else:\n script=sys.argv[sys.argv.index('--python')+1]\n"
-                       " sys.argv=[script,*sys.argv[sys.argv.index('--')+1:]]\n runpy.run_path(script,run_name='__main__')\n")
-    blender.chmod(0o755)
+    # Stand-ins are shebang scripts on POSIX and .cmd files on Windows (shebangs cannot start there).
+    # The fake python waits for the real one: on Windows os.execv starts a new process and exits at once,
+    # so the worker runner would stop waiting before the real python finishes.
+    python = stand_in_executable(root, "fake-python",
+                                 "import subprocess,sys,json\n"
+                                 "if sys.argv[1]=='-c': print(json.dumps({'python':'fake','packages':{'fake':'1'}}))\n"
+                                 f"else: sys.exit(subprocess.call([{sys.executable!r},*sys.argv[1:]]))\n")
+    blender = stand_in_executable(root, "blender",
+                                  "import sys,runpy\n"
+                                  "if '--version' in sys.argv: print('Fake Blender 0.1')\n"
+                                  "else:\n script=sys.argv[sys.argv.index('--python')+1]\n"
+                                  " sys.argv=[script,*sys.argv[sys.argv.index('--')+1:]]\n runpy.run_path(script,run_name='__main__')\n")
     bin_dir = root / "bin"
     bin_dir.mkdir()
     for name in ("ffmpeg", "ffprobe"):
-        p = bin_dir / name
-        p.write_text(f"#!{sys.executable}\nprint('Fake {name} 0.1')\n")
-        p.chmod(0o755)
+        stand_in_executable(bin_dir, name, f"print('Fake {name} 0.1')\n")
     monkeypatch.setenv("PATH", str(bin_dir))
     return root, preset, face, python, blender
 

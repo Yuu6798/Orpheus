@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from m3d_helpers import stand_in_executable
 from model3d import contracts
 from model3d.adapters import process
 from model3d.blender_adapter import launcher, observe
@@ -78,11 +79,8 @@ def test_blender_argv_order_and_validation(tmp_path):
 
 def test_blender_launcher_runs_a_stand_in_and_records_version(tmp_path):
     """Blender の代役（引数を書き出す Python）で、起動・ログ・版の記録を確かめる。本物の Blender は未検証。"""
-    stand_in = tmp_path / "blender.py"
-    stand_in.write_text("import sys\nif sys.argv[1] == '--version':\n    print('Blender 4.5.15')\nelse:\n    print(' '.join(sys.argv[1:]))\n", encoding="utf-8")
-    wrapper = tmp_path / "blender"
-    wrapper.write_text(f"#!{sys.executable}\nimport runpy, sys\nsys.argv = sys.argv\nrunpy.run_path({str(stand_in)!r}, run_name='__main__')\n", encoding="utf-8")
-    wrapper.chmod(0o755)
+    wrapper = stand_in_executable(tmp_path, "blender",
+                                  "import sys\nif sys.argv[1] == '--version':\n    print('Blender 4.5.15')\nelse:\n    print(' '.join(sys.argv[1:]))\n")
     script = tmp_path / "s.py"
     script.write_text("", encoding="utf-8")
     record = launcher.run_blender(wrapper, script, args=["--out", "x"], log=tmp_path / "b.log")
@@ -120,15 +118,12 @@ def test_observe_builds_a_valid_observation_without_bpy():
 
 def test_blender_launcher_rejects_script_exception_after_partial_output(tmp_path):
     """Blender の終了コード挙動を模したプロセス。実 Blender の実行検証ではない。"""
-    wrapper = tmp_path / "blender"
-    wrapper.write_text(f"#!{sys.executable}\n" +
-                       "import runpy, sys, traceback\n"
-                       "if '--version' in sys.argv:\n    print('Blender 4.5.15')\n"
-                       "else:\n    try:\n        runpy.run_path(sys.argv[sys.argv.index('--python') + 1], run_name='__main__')\n"
-                       "    except Exception:\n        traceback.print_exc()\n"
-                       "        if '--python-exit-code' in sys.argv:\n            sys.exit(int(sys.argv[sys.argv.index('--python-exit-code') + 1]))\n",
-                       encoding="utf-8")
-    wrapper.chmod(0o755)
+    wrapper = stand_in_executable(tmp_path, "blender",
+                                  "import runpy, sys, traceback\n"
+                                  "if '--version' in sys.argv:\n    print('Blender 4.5.15')\n"
+                                  "else:\n    try:\n        runpy.run_path(sys.argv[sys.argv.index('--python') + 1], run_name='__main__')\n"
+                                  "    except Exception:\n        traceback.print_exc()\n"
+                                  "        if '--python-exit-code' in sys.argv:\n            sys.exit(int(sys.argv[sys.argv.index('--python-exit-code') + 1]))\n")
     partial = tmp_path / "partial.txt"
     script = tmp_path / "fail.py"
     script.write_text(f"from pathlib import Path\nPath({str(partial)!r}).write_text('partial')\nraise RuntimeError('deliberate failure')\n",

@@ -51,6 +51,9 @@
           "preconditions": {"type": "array", "items": {"type": "string"}},
           "space": {"enum": ["local", "world", "rest", "pose"]},
           "applies_to": {"type": "array", "items": {"type": "string"}},
+          "select": {"type": "object", "description": "入力名 -> 役割。対応表でその入力メッシュの頂点構成に結び付いた面領域だけを操作に渡す",
+                     "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                     "additionalProperties": {"type": "string", "minLength": 1}},
           "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
           "notes": {"type": "string"}
         },

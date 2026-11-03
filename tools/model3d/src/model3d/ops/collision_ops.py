@@ -4,11 +4,11 @@ import numpy as np
 from .. import checks, collide
 from ..io import ToolError, atomic_json
 from ..mesh import Mesh
-from . import StepResult, number, register, require
+from . import StepResult, number, register, require, selected
 
 
-@register("collision.push_out", inputs=("mesh", "collider"), outputs=("mesh", "deltas", "report"),
-          summary="collider の中にある頂点を面の外へ clearance だけ離す。deltas は頂点ごとの移動量（座標系は工程の space。骨で動かす前の形に戻すのは別工程）")
+@register("collision.push_out", inputs=("mesh", "collider"), outputs=("mesh", "deltas", "report"), selectable=("mesh",),
+          summary="collider の中にある頂点を面の外へ clearance だけ離す（select で役割の面の頂点だけ）。deltas は頂点ごとの移動量（座標系は工程の space。骨で動かす前の形に戻すのは別工程）")
 def push_out(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "collider"), "collision.push_out")
     mesh, collider = Mesh.load(inputs["mesh"]), Mesh.load(inputs["collider"])
@@ -17,7 +17,8 @@ def push_out(inputs, parameters, outputs, context):
     if not closed["closed"]:
         raise ToolError(f"衝突相手が閉じていません（境界辺 {closed['boundary_edges']}・非多様体辺 {closed['nonmanifold_edges']}）")
     clearance = number(parameters, "clearance", minimum=0)
-    selection = parameters.get("selection")
+    chosen = selected(context, "mesh", parameters, "collision.push_out")
+    selection = chosen["vertices"] if chosen else parameters.get("selection")
     indices = np.arange(mesh.vertex_count) if selection is None else np.asarray(selection, dtype=np.int64)
     if len(indices) and (indices.min() < 0 or indices.max() >= mesh.vertex_count):
         raise ToolError("selection が無い頂点を指しています")
