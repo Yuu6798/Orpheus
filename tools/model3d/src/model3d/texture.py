@@ -438,7 +438,10 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     copies, copied_from = tile_copies(corners, tex_w, tex_h)
     index, tx, ty, bary = rasterize(copies, tex_w, tex_h, expand)
     index = copied_from[index]
-    report = {"kind": "project_reference", "view": dict(view), "candidate_triangles": int(len(candidates)),
+    given = mesh.extra.get("x_normals")
+    report = {"kind": "project_reference", "view": dict(view),
+              "normals": "x_normals" if isinstance(given, list) and len(given) == mesh.vertex_count else "computed",
+              "candidate_triangles": int(len(candidates)),
               "skipped_stretched_triangles": int(stretched.sum()), "tile_copies": int(len(copies)), "fragments": int(len(index))}
     new = texture[..., :3].copy()
     weights = np.zeros((tex_h, tex_w))

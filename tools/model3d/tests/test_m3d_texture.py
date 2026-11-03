@@ -163,6 +163,14 @@ def test_expand_pads_thin_triangles_by_the_requested_distance():
     assert np.allclose(bary.sum(axis=1), 1.0)
 
 
+def test_projection_reports_which_normals_set_the_facing():
+    _, _, computed = project(mesh_of(quad()))
+    corners, face, uv = quad()
+    given = Mesh(corners, [face], uv, name="panel", extra={"x_normals": [[0, -1, 0]] * 4})
+    _, _, report = project(given)
+    assert computed["normals"] == "computed" and report["normals"] == "x_normals" and report["painted_texels"] > 0
+
+
 def test_projection_keeps_the_texture_alpha():
     base = np.concatenate([gray(), np.zeros((64, 64, 1))], axis=2)
     base[:32, :, 3] = 255   # 上半分だけ不透明
@@ -287,6 +295,19 @@ def test_recipe_writes_an_rgba_atlas_back_with_the_same_alpha(workspace):
         assert im.mode == "RGBA"
         written = np.asarray(im, dtype=float)
     assert np.array_equal(written[..., 3], rgba[..., 3]) and np.allclose(written[20, 50, :3], [30, 30, 220])
+
+
+def test_recipe_review_note_keeps_the_projection_for_review_and_unknown_keys_stop(workspace):
+    data = read_json(workspace / "recipe.json")
+    data["steps"][2]["parameters"]["review_note"] = "目印は自動検出の値（人が確かめていない）"
+    atomic_json(workspace / "recipe.json", data)
+    result = executor.run_recipe(workspace / "recipe.json", workspace / "runs")
+    assert result["status"] == "needs_review" and result["steps"]["paint"]["unresolved"] == ["目印は自動検出の値（人が確かめていない）"]
+    for step, key in ((2, "min_facng"), (1, "feathr")):
+        broken = read_json(workspace / "recipe.json")
+        broken["steps"][step]["parameters"][key] = 0.5   # 綴りの誤りは既定値に戻さず止める
+        atomic_json(workspace / "recipe.json", broken)
+        assert executor.run_recipe(workspace / "recipe.json", workspace / "runs")["status"] == "failed"
 
 
 def test_recipe_marks_an_empty_projection_for_review(workspace):
