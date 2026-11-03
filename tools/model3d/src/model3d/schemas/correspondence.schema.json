@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-correspondence/0.1",
+  "title": "CorrespondenceMap",
+  "description": "転送元と転送先の版、対応点・面上の位置、距離や曖昧さ、未対応領域。空間的に近いだけの対応は作らない（役割と目印で制約する）。",
+  "type": "object",
+  "required": ["schema_version", "source", "target", "method", "points", "unmatched"],
+  "properties": {
+    "schema_version": {"const": "model3d-correspondence/0.1"},
+    "source": {"$ref": "#/$defs/endpoint"},
+    "target": {"$ref": "#/$defs/endpoint"},
+    "method": {"type": "string", "minLength": 1},
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_vertex", "target_face", "barycentric", "distance", "ambiguity", "role"],
+        "properties": {
+          "source_vertex": {"type": "integer", "minimum": 0},
+          "target_face": {"type": "integer", "minimum": 0},
+          "barycentric": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+          "distance": {"type": "number", "minimum": 0},
+          "ambiguity": {"type": "number", "minimum": 0, "maximum": 1},
+          "role": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "unmatched": {
+      "type": "object",
+      "required": ["source_roles", "target_roles"],
+      "properties": {
+        "source_roles": {"type": "array", "items": {"type": "string"}},
+        "target_roles": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": ["asset_id", "version", "topology_sha256"],
+      "properties": {
+        "asset_id": {"type": "string"},
+        "version": {"type": "string"},
+        "topology_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

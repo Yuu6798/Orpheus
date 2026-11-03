@@ -39,6 +39,12 @@
 - **fx は ffmpeg だけを使い、ffprobe に依存しません**：構造検査（technical_pass）は `ffmpeg -i` と `ffmpeg -progress` で行います。ffmpeg は PATH のもの、なければ imageio-ffmpeg 同梱版を使います（PATH に ffprobe が無い環境でも動きます）。`ORPHEUS_FFMPEG` で差し替えられます。
 - CI の python job は `--extra fx` で同期し、pytest の後に合成素材（320x180・2秒）で `mv fx demo → mv fx render` の technical_pass を確認します。
 
+## 2026-11-03 更新（model3d）
+
+- **orpheus-model3d 0.1.0**（`model3d` extra・`tools/model3d` のパス依存・editable）: 自作の 3D モデリングツール（`docs/model3d.md`）。依存は numpy 2.3.5 と jsonschema 4.26.0（ルートと同じ版）だけで、新しい第三者の依存は増えない。導入は `uv sync --locked --extra model3d`。uv の workspace member にはしていない（member にすると `uv sync --extra analysis …` が member にも同じ extra を求めて止まる。uv 0.13.5 で実測）。
+- CI の python job は `--extra fx --extra model3d` で同期し、pytest の後に合成素材で `model3d demo → run` の status を確認する。pip-audit の export は `--no-emit-local` でこのパス依存を除く（PyPI に無いため。依存の numpy・jsonschema は残る）。
+- Blender（r6 の再現では 4.5.15）・生成器・リギングの本体は導入しない。別プロセスとして argv で呼ぶ接続口だけで、この環境では未検証。
+
 ## 2026-10-30 更新（Windows のスマート アプリ コントロール）
 
 Windows 11 のスマート アプリ コントロール（SAC）が「オン」の PC では、uv が入れる Python（python-build-standalone）に署名が無いため、`python313.dll` の読み込みが止められて Python 自体が起動しません（終了コード `-1058471934` = `0xC0E90002`、CodeIntegrity のイベント 3077・3033）。SAC は「評価中」の間は何も止めず、その後自動でオンになることがあります（Microsoft の説明）。実測した PC でも、以前は動いていた同じ Python が、ある日から止められていました。SAC は一度切ると Windows の版によっては再インストールしないと戻せないため、切らずに次の手順で対処します。手順と結果は 2026-10-30 に、SAC がオンの Windows 11 で実測したものです。

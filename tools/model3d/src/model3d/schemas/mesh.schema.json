@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-mesh/0.1",
+  "title": "model3d mesh",
+  "description": "ポリゴンメッシュの交換形式。頂点は 3 次元、面は頂点番号（0 始まり）の列。uv は頂点ごと（任意）。parts は面番号の集合に名前を付ける。",
+  "type": "object",
+  "required": ["schema_version", "vertices", "faces"],
+  "properties": {
+    "schema_version": {"const": "model3d-mesh/0.1"},
+    "name": {"type": "string"},
+    "units": {"enum": ["m", "cm", "mm"]},
+    "axes": {"$ref": "#/$defs/axes"},
+    "vertices": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}},
+    "faces": {"type": "array", "items": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 3}},
+    "uv": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+    "parts": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "integer", "minimum": 0}}},
+    "selection": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "axes": {
+      "type": "object",
+      "properties": {
+        "up": {"enum": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]},
+        "forward": {"enum": ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

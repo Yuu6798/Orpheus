@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-asset-manifest/0.1",
+  "title": "AssetManifest",
+  "description": "入力参照とハッシュ、部品 ID、形状とトポロジーの識別値、単位、軸、変換行列、資産の版。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "asset_id",
+    "version",
+    "created_at",
+    "inputs",
+    "units",
+    "axes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "model3d-asset-manifest/0.1"
+    },
+    "asset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "sha256",
+          "bytes",
+          "kind"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "enum": [
+              "mesh",
+              "image",
+              "blend",
+              "glb",
+              "fbx",
+              "obj",
+              "json",
+              "recipe",
+              "other"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "topology_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "geometry_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "vertex_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "face_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "units": {
+      "enum": [
+        "m",
+        "cm",
+        "mm"
+      ]
+    },
+    "axes": {
+      "$ref": "#/$defs/axes"
+    },
+    "transform": {
+      "$ref": "#/$defs/matrix4"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "patternProperties": {
+    "^x_": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
+    },
+    "axes": {
+      "type": "object",
+      "properties": {
+        "up": {
+          "enum": [
+            "+X",
+            "-X",
+            "+Y",
+            "-Y",
+            "+Z",
+            "-Z"
+          ]
+        },
+        "forward": {
+          "enum": [
+            "+X",
+            "-X",
+            "+Y",
+            "-Y",
+            "+Z",
+            "-Z"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

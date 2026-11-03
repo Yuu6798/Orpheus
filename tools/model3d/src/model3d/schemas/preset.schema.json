@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-preset/0.1",
+  "title": "model3d preset",
+  "description": "キャラ（資産）ごとの対応表と値。部品 ID → 役割、骨名 → 骨の役割、役割ごとのパラメーター、必須の役割。共通処理には入れない値をここに置く。実キャラの preset は Git の外に置く。",
+  "type": "object",
+  "required": ["schema_version", "name", "parts", "bones", "parameters", "required_roles"],
+  "properties": {
+    "schema_version": {"const": "model3d-preset/0.1"},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "body": {
+      "type": "object",
+      "properties": {"height": {"type": "number", "exclusiveMinimum": 0}, "units": {"enum": ["m", "cm", "mm"]}},
+      "additionalProperties": false
+    },
+    "parts": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "bones": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "parameters": {"type": "object", "additionalProperties": {"type": "object"}},
+    "required_roles": {
+      "type": "object",
+      "properties": {
+        "parts": {"type": "array", "items": {"type": "string"}},
+        "bones": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false
+}

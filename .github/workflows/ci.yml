@@ -51,8 +51,9 @@ jobs:
       # --locked: uv.lock が pyproject.toml と食い違えば更新せず失敗する。dev group (pytest) は既定で入る。
       # fx extra (opencv-python-headless) は fx のテストを skip させないために入れる。
       # 既存コマンドが cv2 なしで動くことは、fx 側が cv2 を遅延 import する構造とテストの importorskip で守る。
+      # model3d extra (tools/model3d のパス依存) も同じ理由で入れる (無いと tools/model3d/tests は importorskip で skip される)。
       - name: Install (locked)
-        run: uv sync --locked --extra fx
+        run: uv sync --locked --extra fx --extra model3d
 
       # lint は ruff 設定の導入 (別 PR) 後に追加する。
       - name: Test
@@ -73,6 +74,15 @@ jobs:
           uv run --no-sync mv dance render "$RUNNER_TEMP/dancedemo/spec.json" --out "$RUNNER_TEMP/danceruns" > "$RUNNER_TEMP/dance-render.json"
           cat "$RUNNER_TEMP/dance-render.json"
           uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); assert r['status'] == 'succeeded' and r['technical_pass'] is True, r" "$RUNNER_TEMP/dance-render.json"
+
+      # model3d (自作 3D ツール) の一気通貫: 合成素材 -> 押し出し・結合・貫通の補正・検査・OBJ -> run の status。
+      # status は構造と数値の検査であり、見た目の採否や実キャラの資産での成立ではない。Blender や生成器は呼ばない。
+      - name: model3d smoke (demo -> run -> succeeded)
+        run: |
+          uv run --no-sync model3d demo "$RUNNER_TEMP/model3d-demo"
+          uv run --no-sync model3d run "$RUNNER_TEMP/model3d-demo/recipe.json" --out "$RUNNER_TEMP/model3d-runs" --quiet > "$RUNNER_TEMP/model3d-run.json"
+          cat "$RUNNER_TEMP/model3d-run.json"
+          uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); s = r['steps']; assert r['status'] == 'succeeded' and s['before']['observations'][0]['inside'] == 15 and s['after']['observations'][0]['inside'] == 0 and s['structure']['observations'][0]['pass'] is True, r" "$RUNNER_TEMP/model3d-run.json"
 
   node:
     # README が宣言する Node.js 22 以上の下端のみ検証する (Remotion は保守凍結)。
@@ -194,8 +204,9 @@ jobs:
       - name: Install pip-audit (locked)
         run: uv sync --locked --only-group audit --no-install-project
 
+      # --no-emit-local: tools/model3d (パス依存) は PyPI に無いので除く。その依存 (numpy・jsonschema) は残る。
       - name: Export locked requirements (all extras, all groups)
-        run: uv export --frozen --all-extras --all-groups --no-emit-project --no-hashes -o "$RUNNER_TEMP/audit-requirements.txt"
+        run: uv export --frozen --all-extras --all-groups --no-emit-project --no-emit-local --no-hashes -o "$RUNNER_TEMP/audit-requirements.txt"
 
       - name: pip-audit
         run: uv run --no-sync pip-audit --strict --no-deps --disable-pip -r "$RUNNER_TEMP/audit-requirements.txt"

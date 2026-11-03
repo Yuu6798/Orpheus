@@ -38,6 +38,12 @@ uv run mv verify projects/demo
 `uv sync --locked --extra analysis --extra fx` の後、`uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json` で合成素材の4版と2×2グリッドを出します。
 設定は `contracts/` の外にあり、採点も自動合否も行いません。詳細と限界は [docs/fx.md](docs/fx.md)。
 
+## 自作の 3D モデリングツール model3d（外部ツール・実験的）
+
+設定画や既存モデルから、部位・骨の対応（役割名）、加工レシピの実行、形状と動作の検査、書き出しをレシピと記録で進める道具。`tools/model3d/` にあり、Orpheus とは出力ファイルと制作記録だけで接続します（`mv_pipeline` とは互いに import しません）。
+`uv sync --locked --extra analysis --extra fx --extra model3d` の後、`uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json` で合成素材の一気通貫（押し出し → 結合 → 貫通の補正 → 検査 → OBJ）を通します。
+Blender・生成器・リギングは別プロセスで呼ぶ接続口だけがあり、この環境では未検証です。詳細と限界は [docs/model3d.md](docs/model3d.md)。
+
 ## 現在の範囲
 
 実曲のMV制作には、音源・正しい歌詞・対象区間・画像が必要です。合成素材の描画確認は実曲の同期精度を保証しません。
@@ -52,6 +58,9 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 - [元の設計](docs/design.md)（設計時の仮名 `ugh-mv-pipeline` は本リポジトリでは `Orpheus`）
 - [同期アダプター](docs/adapters.md)
 - [演出エンジン fx（実験的）](docs/fx.md)
+- [ダンス合成 dance（実験的）](docs/dance.md)
+- [書き出し前の検査 gate（実験的）](docs/gate.md)
+- [自作の 3D モデリングツール model3d（外部ツール・実験的）](docs/model3d.md)
 - [ロードマップ](docs/roadmap.md)（実装前の計画を含む。実装済みの機能とは区別）
 
 `contracts/` が唯一のJSON契約です。`examples/` は元の架空データであり、対応する音源・画像は付属しません。
@@ -60,7 +69,7 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 ## 開発検証
 
 ```sh
-uv sync --locked --extra analysis --extra fx   # fx のテストは --extra fx が前提（無いと黙って skip される）
+uv sync --locked --extra analysis --extra fx --extra model3d   # fx / model3d のテストは各 extra が前提（無いと黙って skip される）
 uv run pytest
 pnpm typecheck
 pnpm test

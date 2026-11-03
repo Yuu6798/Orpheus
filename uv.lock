@@ -611,6 +611,21 @@ wheels = [
 ]
 
 [[package]]
+name = "orpheus-model3d"
+version = "0.1.0"
+source = { editable = "tools/model3d" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = "==4.26.0" },
+    { name = "numpy", specifier = "==2.3.5" },
+]
+
+[[package]]
 name = "orpheus-mv-pipeline"
 version = "0.1.0"
 source = { editable = "." }
@@ -630,6 +645,9 @@ analysis = [
 fx = [
     { name = "opencv-python-headless" },
 ]
+model3d = [
+    { name = "orpheus-model3d" },
+]
 
 [package.dev-dependencies]
 audit = [
@@ -648,9 +666,10 @@ requires-dist = [
     { name = "numba", marker = "extra == 'analysis'", specifier = "==0.63.1" },
     { name = "numpy", specifier = "==2.3.5" },
     { name = "opencv-python-headless", marker = "extra == 'fx'", specifier = "==5.0.0.93" },
+    { name = "orpheus-model3d", marker = "extra == 'model3d'", editable = "tools/model3d" },
     { name = "pillow", specifier = "==13.0.0" },
 ]
-provides-extras = ["analysis", "fx"]
+provides-extras = ["analysis", "fx", "model3d"]
 
 [package.metadata.requires-dev]
 audit = [{ name = "pip-audit", specifier = "==2.10.1" }]
