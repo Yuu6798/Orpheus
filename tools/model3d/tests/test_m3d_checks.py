@@ -62,3 +62,7 @@ def test_continuity_flags_jumps_and_skips_without_frames():
         checks.continuity({"frames": [[0, [[0, 0, 0]]], [1, [[0, 0, 0], [1, 1, 1]]]]}, 0.1)
     with pytest.raises(ToolError, match="max_jump"):
         checks.continuity(track, 0)
+    with pytest.raises(ToolError, match="コマ 1 の形"):
+        checks.continuity({"frames": [[0, [[0, 0, 0]]], [1.0]]}, 0.1)
+    with pytest.raises(ToolError, match="点の列を読めません"):
+        checks.continuity({"frames": [[0, [[0, 0, 0]]], [1, [[0, 0]]]]}, 0.1)

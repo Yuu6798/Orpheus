@@ -129,7 +129,14 @@ def continuity(track, max_jump):
                 "jumps": [], "max_jump": max_jump}
     previous, jumps, worst, non_finite = None, [], 0.0, 0
     for index, frame in enumerate(frames):
-        t, points = frame[0], np.asarray(frame[1], dtype=np.float64).reshape(-1, 3)
+        if not isinstance(frame, (list, tuple)) or len(frame) != 2 or isinstance(frame[0], bool) \
+                or not isinstance(frame[0], (int, float)) or not isinstance(frame[1], (list, tuple)):
+            raise ToolError(f"コマ {index} の形が違います（[t, [[x, y, z], …]] にしてください）")
+        try:
+            points = np.asarray(frame[1], dtype=np.float64).reshape(-1, 3)
+        except (TypeError, ValueError) as error:
+            raise ToolError(f"コマ {index} の点の列を読めません（{error}）") from error
+        t = frame[0]
         if not np.isfinite(points).all():
             non_finite += 1
         if previous is not None:

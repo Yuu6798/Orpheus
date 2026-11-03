@@ -7,6 +7,8 @@ from pathlib import Path
 from . import VERSION, contracts
 from .io import ToolError, atomic_json, read_json
 
+INPUT_KINDS = ("mesh", "image", "blend", "glb", "fbx", "obj", "json", "recipe", "other")
+
 
 def parser():
     p = argparse.ArgumentParser(prog="model3d", description="self-made 3D modeling tool: recipes, semantic parts, checks, run records")
@@ -40,7 +42,8 @@ def parser():
     manifest = commands.add_parser("manifest", help="write an AssetManifest for input files")
     manifest.add_argument("out", type=Path)
     manifest.add_argument("--asset-id", required=True)
-    manifest.add_argument("--input", action="append", default=[], metavar="NAME=PATH[:KIND]", required=True)
+    manifest.add_argument("--input", action="append", default=[], metavar="NAME=PATH[:KIND]", required=True,
+                          help=f"KIND: {', '.join(INPUT_KINDS)}（省略時は拡張子と中身から決める）")
     manifest.add_argument("--units", default="m", choices=["m", "cm", "mm"])
     manifest.add_argument("--up", default="+Z")
     manifest.add_argument("--forward", default="-Y")
@@ -163,7 +166,11 @@ def command(args):
             if "=" not in item:
                 raise ToolError(f"--input は NAME=PATH[:KIND] の形にしてください: {item!r}")
             name, rest = item.split("=", 1)
-            path, kind = (rest.rsplit(":", 1) if ":" in rest and not rest[-2:-1] == ":" and rest.rsplit(":", 1)[1].isalpha() else (rest, None))
+            path, kind = rest, None
+            if ":" in rest:
+                head, tail = rest.rsplit(":", 1)
+                if tail in INPUT_KINDS:   # 末尾が種類のときだけ切る（Windows の C: やパスの中のコロンは残す）
+                    path, kind = head, tail
             inputs.append((name, path, kind))
         data = manifest.build(args.asset_id, inputs, args.units, {"up": args.up, "forward": args.forward}, args.asset_version,
                               args.part or None, notes=args.notes)
@@ -251,7 +258,7 @@ def main(argv=None):
     try:
         result = command(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    except (ToolError, OSError, ValueError, KeyError) as error:
+    except (ToolError, OSError, ValueError, KeyError, TypeError, IndexError) as error:   # 形の違う入力は Error: で止める
         print(f"Error: {error}", file=sys.stderr)
         return 1
     return getattr(args, "failed", 0)

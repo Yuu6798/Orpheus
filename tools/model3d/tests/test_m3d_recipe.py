@@ -236,6 +236,24 @@ def test_accept_and_edit_are_recorded_separately_from_technical_status(workspace
         executor.accept(run_dir, "maybe", "tester")
 
 
+def test_interrupted_step_is_recorded_as_failed(workspace, monkeypatch):
+    from model3d import ops
+    ops.load_all()
+
+    def interrupt(inputs, parameters, outputs, context):
+        raise KeyboardInterrupt
+
+    monkeypatch.setitem(ops.OPERATIONS, "test.interrupt", ops.Operation("test.interrupt", interrupt, (), ""))
+    root, write = workspace
+    path = write([dict(PUSH, id="stop", operation="test.interrupt", outputs={"mesh": "never.json"}), dict(PUSH, inputs={"mesh": "$steps.stop.mesh", "collider": "$inputs.box"})])
+    with pytest.raises(KeyboardInterrupt):
+        executor.run_recipe(path, root / "runs")
+    record_path = next((root / "runs").glob("*/run_record.json"))
+    record = contracts.load("run", record_path)
+    assert record["status"] == "failed" and [s["status"] for s in record["steps"]] == ["failed", "pending"]
+    assert "interrupted" in record["steps"][0]["error"] and record["steps"][0]["finished_at"]
+
+
 def test_execute_interface_rejects_wrong_return(monkeypatch, tmp_path):
     from model3d import ops
     ops.load_all()

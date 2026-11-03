@@ -8,7 +8,9 @@ from .io import ToolError, now, sha256
 
 SIDES = ("L", "R", "C")
 
-_SIDED = lambda base: (base, f"{base}.L", f"{base}.R")  # noqa: E731
+def _SIDED(base):
+    return (base, f"{base}.L", f"{base}.R")
+
 
 PART_ROLES = frozenset(
     ["body", "body.head", "body.neck", "body.torso", "body.torso.upper", "body.torso.lower", "body.hips",

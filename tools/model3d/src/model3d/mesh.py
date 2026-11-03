@@ -189,9 +189,15 @@ class Mesh:
 def read_obj(path):
     """OBJ を読む（v / vt / f / o / g）。頂点ごとの uv は、各頂点が 1 つの vt にだけ対応するときに持つ。"""
     vertices, uvs, faces, face_uvs, parts = [], [], [], [], {}
-    group = None
+    group, units, axes = None, "m", None
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     for number, raw in enumerate(text.splitlines(), 1):
+        if raw.startswith(f"# {SCHEMA} "):   # write_obj が書く見出し: units と軸を戻す
+            fields = dict(token.split("=", 1) for token in raw.split()[2:] if "=" in token)
+            units = fields.get("units", units)
+            if fields.get("up") and fields.get("forward"):
+                axes = {"up": fields["up"], "forward": fields["forward"]}
+            continue
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
@@ -235,7 +241,7 @@ def read_obj(path):
                 break
         if consistent and len(per_vertex) == len(vertices):
             uv = [uvs[per_vertex[i]] for i in range(len(vertices))]
-    return Mesh(vertices, faces, uv, name=Path(path).stem, parts=parts)
+    return Mesh(vertices, faces, uv, name=Path(path).stem, units=units, axes=axes, parts=parts)
 
 
 def write_obj(mesh, path):
@@ -248,9 +254,9 @@ def write_obj(mesh, path):
     lines = [f"# {SCHEMA} units={mesh.units} up={mesh.axes.get('up')} forward={mesh.axes.get('forward')}"]
     if mesh.name:
         lines.append(f"o {mesh.name}")
-    lines.extend(f"v {x:.9g} {y:.9g} {z:.9g}" for x, y, z in mesh.vertices.tolist())
+    lines.extend(f"v {x!r} {y!r} {z!r}" for x, y, z in mesh.vertices.tolist())   # repr: 往復で値が変わらない最短表記
     if mesh.uv is not None:
-        lines.extend(f"vt {u:.9g} {v:.9g}" for u, v in mesh.uv.tolist())
+        lines.extend(f"vt {u!r} {v!r}" for u, v in mesh.uv.tolist())
     current = object()
     for k, face in enumerate(mesh.faces):
         group = owner.get(k)
@@ -280,6 +286,8 @@ def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0):
         if factor.shape != (3,) or not np.isfinite(factor).all() or (factor == 0).any():
             raise ToolError(f"scale は 0 でない数か 3 要素の列にしてください: {scale!r}")
         points = points * factor
+    if isinstance(rotate_z_deg, bool) or not isinstance(rotate_z_deg, (int, float)) or not math.isfinite(rotate_z_deg):
+        raise ToolError(f"rotate_z_deg は有限の数にしてください: {rotate_z_deg!r}")
     if rotate_z_deg:
         angle = math.radians(float(rotate_z_deg))
         c, s = math.cos(angle), math.sin(angle)
@@ -291,6 +299,7 @@ def transform(mesh, translate=None, scale=None, rotate_z_deg=0.0):
             raise ToolError(f"translate は 3 要素の列にしてください: {translate!r}")
         points = points + offset
     out.vertices = np.ascontiguousarray(points)
+    out.validate()
     return out
 
 
@@ -340,7 +349,8 @@ def weld(mesh, distance, selection=None, center="mean"):
 
     結合した頂点の位置と uv は平均（center="mean"）か、番号が最小の頂点のもの（center="first"）。
     面は番号を付け替え、連続する同じ頂点を畳み、頂点が 3 つ未満になった面と、同じ頂点集合の面・他の面の
-    頂点集合に含まれる面を除く。結合は推移的（A-B と B-C が近ければ A-B-C が 1 つになる）。
+    頂点集合に含まれる面を除く（結合に関わった面と、それと頂点を共有する面だけを見る。元から重なっていた面は見ない）。
+    結合は推移的（A-B と B-C が近ければ A-B-C が 1 つになる）。
     """
     if not isinstance(distance, (int, float)) or isinstance(distance, bool) or not math.isfinite(distance) or distance <= 0:
         raise ToolError(f"distance は 0 より大きい有限の数にしてください: {distance!r}")
@@ -374,7 +384,7 @@ def weld(mesh, distance, selection=None, center="mean"):
     keep = [i for i in range(n) if representative[i] == i]
     new_index = {old: new for new, old in enumerate(keep)}
     remap = {i: new_index[representative[i]] for i in range(n)}
-    faces, kept_faces, degenerate = [], [], 0
+    faces, kept_faces, touched, degenerate = [], [], [], 0
     for k, face in enumerate(mesh.faces):
         corners = [remap[i] for i in face]
         folded = [corners[j] for j in range(len(corners)) if corners[j] != corners[j - 1]]
@@ -383,10 +393,20 @@ def weld(mesh, distance, selection=None, center="mean"):
             continue
         faces.append(folded)
         kept_faces.append(k)
+        if any(representative[i] != i for i in face):
+            touched.append(len(faces) - 1)
     sets = [frozenset(f) for f in faces]
+    by_vertex = {}
+    for k, face in enumerate(faces):
+        for vertex in sets[k]:
+            by_vertex.setdefault(vertex, []).append(k)
+    pool = set(touched)
+    for a in touched:   # 結合に関わった面と頂点を共有する面も見る（そちらが含まれる側のこともある）
+        for vertex in sets[a]:
+            pool.update(by_vertex[vertex])
     contained = set()
-    for a in range(len(sets)):
-        for b in range(len(sets)):
+    for a in sorted(pool):
+        for b in by_vertex[faces[a][0]]:   # a を含む面は a の全頂点、特に先頭の頂点を持つ
             if a != b and sets[a] <= sets[b] and (len(sets[a]) < len(sets[b]) or a > b):
                 contained.add(a)
                 break

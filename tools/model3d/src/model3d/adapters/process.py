@@ -49,6 +49,16 @@ def describe(config):
     return info
 
 
+def write_log(log, stdout, stderr):
+    """子プロセスの標準出力と標準エラーを log に書く（timeout で途中までしか無くても残す）。"""
+    if not log:
+        return
+    def text(value):
+        return value.decode("utf-8", "replace") if isinstance(value, bytes) else (value or "")
+    Path(log).parent.mkdir(parents=True, exist_ok=True)
+    Path(log).write_text(text(stdout) + text(stderr), encoding="utf-8")
+
+
 def run(config, placeholders, log=None, cwd=None, timeout=None):
     """argv を実行し、標準出力と標準エラーを log に書く。終了コードが 0 でなければ ToolError。"""
     check_config(config)
@@ -61,11 +71,10 @@ def run(config, placeholders, log=None, cwd=None, timeout=None):
     except OSError as error:
         raise ToolError(f"アダプターを起動できません（{argv[0]}）: {error}") from error
     except subprocess.TimeoutExpired as error:
-        raise ToolError(f"アダプターが timeout（{timeout} 秒）を超えました: {config['tool']}") from error
+        write_log(log, error.stdout, error.stderr)
+        raise ToolError(f"アダプターが timeout（{timeout} 秒）を超えました: {config['tool']}（ログ: {log}）") from error
     seconds = round(time.monotonic() - began, 3)
-    if log:
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
-        Path(log).write_text(completed.stdout + completed.stderr, encoding="utf-8")
+    write_log(log, completed.stdout, completed.stderr)
     if completed.returncode:
         raise ToolError(f"{config['tool']} が終了コード {completed.returncode} で失敗しました: {completed.stderr[-2000:]}")
     return {"argv": argv, "exit_code": completed.returncode, "seconds": seconds, **describe(config)}

@@ -5,9 +5,11 @@ import subprocess
 import time
 from pathlib import Path
 
+from ..adapters.process import write_log
 from ..io import ToolError
 
 OBSERVE_SCRIPT = Path(__file__).resolve().parent / "observe.py"
+_VERSIONS = {}   # (path, mtime_ns, size) -> 版。同じ実行ファイルに何度も --version を聞かない
 
 
 def argv_for(blender, script, blend=None, args=(), background=True):
@@ -25,14 +27,22 @@ def argv_for(blender, script, blend=None, args=(), background=True):
 
 
 def blender_version(blender, timeout=60):
-    """`blender --version` の 1 行目（例: Blender 4.5.15）。読めなければ None。"""
+    """`blender --version` の 1 行目（例: Blender 4.5.15）。読めなければ None。実行ファイルごとに 1 回だけ聞く。"""
+    try:
+        stat = Path(blender).stat()
+        key = (str(blender), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+    if key in _VERSIONS:
+        return _VERSIONS[key]
     try:
         completed = subprocess.run([str(blender), "--version"], capture_output=True, text=True, encoding="utf-8",
                                    errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     match = re.search(r"Blender\s+([0-9][0-9A-Za-z.\-]*)", completed.stdout + completed.stderr)
-    return match.group(1) if match else None
+    _VERSIONS[key] = match.group(1) if match else None
+    return _VERSIONS[key]
 
 
 def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cwd=None, background=True):
@@ -53,10 +63,9 @@ def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cw
     except OSError as error:
         raise ToolError(f"Blender を起動できません（{blender}）: {error}") from error
     except subprocess.TimeoutExpired as error:
-        raise ToolError(f"Blender が timeout（{timeout} 秒）を超えました") from error
-    if log:
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
-        Path(log).write_text(completed.stdout + completed.stderr, encoding="utf-8")
+        write_log(log, error.stdout, error.stderr)
+        raise ToolError(f"Blender が timeout（{timeout} 秒）を超えました（ログ: {log}）") from error
+    write_log(log, completed.stdout, completed.stderr)
     record = {"argv": argv, "exit_code": completed.returncode, "seconds": round(time.monotonic() - began, 3),
               "blender_version": blender_version(blender)}
     if completed.returncode:

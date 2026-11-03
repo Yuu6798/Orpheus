@@ -35,6 +35,10 @@ def test_process_config_validation_and_failure(tmp_path):
     failing = {"tool": "t", "version": "1", "argv": [sys.executable, "-c", "import sys; print('boom', file=sys.stderr); sys.exit(3)"]}
     with pytest.raises(ToolError, match="終了コード 3"):
         process.run(failing, {})
+    hanging = {"tool": "t", "version": "1", "argv": [sys.executable, "-c", "import time; print('progress 1', flush=True); time.sleep(30)"]}
+    with pytest.raises(ToolError, match="timeout"):
+        process.run(hanging, {}, log=tmp_path / "hang.log", timeout=1.5)
+    assert "progress 1" in (tmp_path / "hang.log").read_text(encoding="utf-8")   # 途中までの出力が残る
 
 
 def test_external_run_operation_through_the_executor(tmp_path):
@@ -54,6 +58,7 @@ def test_external_run_operation_through_the_executor(tmp_path):
     # 設定が参照する実行ファイルや素材（隠れた入力）を知らないので、同じ入力でも再利用しない
     again = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
     assert again["steps"]["gen"]["reused_from"] is None and again["status"] == "succeeded"
+    assert result["candidates"] == [] and again["candidates"] == []      # 再利用しない工程は候補ではない
     from model3d.io import read_json
     assert read_json(tmp_path / "runs" / "index.json")["steps"] == {}
 
@@ -83,6 +88,7 @@ def test_blender_launcher_runs_a_stand_in_and_records_version(tmp_path):
     record = launcher.run_blender(wrapper, script, args=["--out", "x"], log=tmp_path / "b.log")
     assert record["exit_code"] == 0 and record["blender_version"] == "4.5.15"
     assert "--python" in (tmp_path / "b.log").read_text(encoding="utf-8")
+    assert launcher.blender_version(wrapper) == "4.5.15" and any(k[0] == str(wrapper) for k in launcher._VERSIONS)
 
 
 def test_observe_builds_a_valid_observation_without_bpy():

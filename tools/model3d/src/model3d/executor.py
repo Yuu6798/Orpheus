@@ -47,13 +47,13 @@ def library_versions():
     return {"numpy": np.__version__}
 
 
-def environment(tools=None):
+def environment(tools=None, code_fingerprint=None):
     recorded = {}
     for name, value in (tools or {}).items():
         path = Path(value)
         recorded[name] = {"path": str(path), "sha256": sha256(path) if path.is_file() else None}
     return {"python": platform.python_version(), "platform": platform.platform(), "numpy": np.__version__,
-            "model3d": {"version": VERSION, "fingerprint": fingerprint()}, "tools": recorded}
+            "model3d": {"version": VERSION, "fingerprint": code_fingerprint or fingerprint()}, "tools": recorded}
 
 
 def execute(operation, inputs, parameters, context, outputs):
@@ -193,17 +193,18 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
     libraries = library_versions()
     context_hashes = {"preset": sha256(preset_file) if preset_file is not None else None,
                       "semantic_map": sha256(semantic_file) if semantic_file is not None else None}
+    digests_by_step = {}
     with directory_lock(out):
         close_orphans(out)
         index = load_index(out)
         run = Run(out, recipe_sha)
         shutil.copyfile(recipe_path, run.dir / "recipe.json")
         run.record.update(recipe={"path": str(recipe_path), "sha256": recipe_sha, "name": recipe["name"]}, inputs=inputs,
-                          environment=environment(tools))
+                          environment=environment(tools, code_fingerprint))
         if preset_file is not None:
-            run.record["preset"] = {"path": str(preset_file), "sha256": sha256(preset_file)}
+            run.record["preset"] = {"path": str(preset_file), "sha256": context_hashes["preset"]}
         if semantic_file is not None:
-            run.record["semantic_map"] = {"path": str(semantic_file), "sha256": sha256(semantic_file)}
+            run.record["semantic_map"] = {"path": str(semantic_file), "sha256": context_hashes["semantic_map"]}
             unconfirmed = sum(1 for kind in ("parts", "bones", "regions") for v in semantic_map[kind].values() if v["state"] != "confirmed")
             if unconfirmed:
                 run.record["warnings"].append(f"対応表に未確認の対応が {unconfirmed} 件あります（確認は model3d semantic confirm）")
@@ -227,17 +228,18 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                 run.save()
                 step_began = time.monotonic()
                 try:
-                    step_inputs = {}
+                    step_inputs, hashes = {}, {}
                     for name, ref in step.get("inputs", {}).items():
                         parsed = recipes.parse_ref(ref)
                         if parsed[0] == "input":
                             step_inputs[name] = Path(inputs[parsed[1]]["path"])
+                            hashes[name] = inputs[parsed[1]]["sha256"]       # 読み込み時に計算済み
                         else:
                             produced = artifacts_by_step.get(parsed[1], {})
                             if parsed[2] not in produced:
                                 raise ToolError(f"工程 {parsed[1]} の出力 {parsed[2]} がありません（その工程が失敗したか、作られていない）")
                             step_inputs[name] = produced[parsed[2]]
-                    hashes = {name: sha256(path) for name, path in step_inputs.items()}
+                            hashes[name] = digests_by_step[parsed[1]][parsed[2]]
                     entry["inputs"] = hashes
                     key = recipes.step_key(step, hashes, code_fingerprint, libraries, context_hashes)
                     entry["key"] = key
@@ -278,16 +280,17 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     entry["artifacts"] = {name: {"path": str(path.relative_to(run.dir).as_posix()), "sha256": sha256(path),
                                                  "bytes": path.stat().st_size} for name, path in outputs.items()}
                     artifacts_by_step[step["id"]] = outputs
+                    digests_by_step[step["id"]] = {name: item["sha256"] for name, item in entry["artifacts"].items()}
                     entry["unresolved"] = unresolved
                     if entry["status"] == "running":
                         entry["status"] = "needs_review" if unresolved else "succeeded"
-                    if entry["status"] == "succeeded" and cacheable:
+                    if entry["status"] == "needs_review":
+                        run.record["candidates"].append(step["id"])
+                    elif entry["status"] == "succeeded" and cacheable:
                         index["steps"][key] = {"run_id": run.run_id, "step": step["id"],
                                                "artifacts": {name: {**item, "path": f"{run.run_id}/{item['path']}"}
                                                              for name, item in entry["artifacts"].items()},
                                                "observations": entry["observations"]}
-                    else:
-                        run.record["candidates"].append(step["id"])
                     run.log(f"{step['id']}: {entry['status']} {'; '.join(unresolved)}")
                 except ToolError as error:
                     entry["status"], entry["error"], failed = "failed", str(error)[:3000], True
@@ -300,6 +303,11 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     entry["seconds"] = round(time.monotonic() - step_began, 3)
                     run.save()
         finally:
+            for entry in run.record["steps"]:   # KeyboardInterrupt などで途中で止まった工程を running のまま残さない
+                if entry["status"] == "running":
+                    entry["status"] = "failed"
+                    entry["error"] = entry["error"] or "interrupted: 工程の途中で止まりました"
+                    entry["finished_at"] = entry["finished_at"] or now()
             statuses = [s["status"] for s in run.record["steps"]]
             if "failed" in statuses:
                 run.record["status"] = "failed"

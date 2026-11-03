@@ -117,6 +117,12 @@ def test_weld_removes_duplicate_and_contained_faces():
     mesh = Mesh([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 1, 1e-9]], [[0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 2]])
     welded, report = weld(mesh, 1e-6)
     assert welded.face_count == 1 and report["faces_removed_contained"] == 2
+    # 結合に関わらない、元から重なっている面（頂点 0-1-2 の 2 枚）は触らない。結合した側の重なりだけを除く
+    far = Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0], [5, 5, 5], [6, 5, 5], [5, 6, 5], [5, 5, 5.0000001]],
+               [[0, 1, 2], [0, 1, 2], [3, 4, 5], [6, 4, 5]])
+    welded, report = weld(far, 1e-3)
+    assert report["merged_groups"] == 1 and report["faces_removed_contained"] == 1 and welded.face_count == 3
+    assert welded.faces[:2] == [[0, 1, 2], [0, 1, 2]]
 
 
 @pytest.mark.parametrize("distance", [0, -1, float("nan"), True])
@@ -156,6 +162,19 @@ def test_json_and_obj_round_trip(tmp_path):
     assert back.edge_report()["closed"] and abs(back.signed_volume() - 8.0) < 1e-9
 
 
+def test_obj_round_trip_keeps_units_axes_and_exact_coordinates(tmp_path):
+    mesh = extrude_profile([[0.0003509780730004703, -0.04230702128362548], [0.05417201544554691, -0.02895345867957695], [0.01, 0.07]],
+                           0.123456789012345, twist_deg=17.5, steps=3, units="mm")
+    mesh.axes = {"up": "+Y", "forward": "+Z"}
+    write_obj(mesh, tmp_path / "part.obj")
+    back = read_obj(tmp_path / "part.obj")
+    assert back.units == "mm" and back.axes == {"up": "+Y", "forward": "+Z"}
+    assert back.geometry_hash() == mesh.geometry_hash()      # 数値が往復で変わらない
+    plain = tmp_path / "plain.obj"
+    plain.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+    assert read_obj(plain).units == "m" and read_obj(plain).axes == {"up": "+Z", "forward": "-Y"}
+
+
 def test_obj_negative_indices_and_inconsistent_uv(tmp_path):
     obj = tmp_path / "t.obj"
     obj.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nf -3/1 -2/2 -1/1\nf 1/2 2/1 3/1\n", encoding="utf-8")
@@ -173,3 +192,5 @@ def test_transform_order_scale_rotate_translate():
     assert np.allclose(moved.vertices[0], [1, 2, 0])      # (2,0,0) → 回転 (0,2,0) → 平行移動 (1,2,0)
     with pytest.raises(ToolError, match="scale"):
         transform(mesh, scale=0)
+    with pytest.raises(ToolError, match="rotate_z_deg"):
+        transform(mesh, rotate_z_deg=float("inf"))

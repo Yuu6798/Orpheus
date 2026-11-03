@@ -86,6 +86,9 @@ def test_validate_check_mesh_and_ops_commands(tmp_path):
     atomic_json(tmp_path / "track.json", {"frames": [[0, [[0, 0, 0]]], [1, [[0, 0, 2]]]]})
     code, report, _ = run_cli("check", "continuity", tmp_path / "track.json", "--max-jump", "0.5")
     assert code == 1 and report["jumps"]
+    atomic_json(tmp_path / "bad.json", {"frames": [{"t": 0}, [1, [[0, 0, 0]]]]})
+    code, _, err = run_cli("check", "continuity", tmp_path / "bad.json", "--max-jump", "0.5")
+    assert code == 1 and err.startswith("Error:")
 
 
 def test_manifest_and_semantic_commands(tmp_path):
@@ -96,6 +99,9 @@ def test_manifest_and_semantic_commands(tmp_path):
     assert code == 0, err
     data = contracts.load("asset-manifest", tmp_path / "asset.json")
     assert {i["name"]: i["kind"] for i in data["inputs"]} == {"sash": "mesh", "rig": "json"}
+    code, result, err = run_cli("manifest", tmp_path / "asset2.json", "--asset-id", "demo", "--input",
+                                f"rig={tmp_path / 'demo' / 'inputs' / 'rig.json'}:other")
+    assert code == 0 and contracts.load("asset-manifest", tmp_path / "asset2.json")["inputs"][0]["kind"] == "other"
     code, result, err = run_cli("semantic", "build", tmp_path / "demo" / "preset.json", tmp_path / "map.json", "--asset-id", "demo",
                                 "--parts", "garment_sash_front,ghost", "--rig", tmp_path / "demo" / "inputs" / "rig.json", "--bones", "Extra:mixamorig:Hips")
     assert code == 0 and result["unmapped"] == {"parts": ["ghost"], "bones": ["Extra"]}

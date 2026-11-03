@@ -120,9 +120,9 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 |---|---|---|
 | `mesh.import` | file → mesh | JSON か OBJ を読んで `model3d-mesh/0.1` で書く |
 | `mesh.extrude_profile` | profile（`{"points": [[x, y], …]}`）→ mesh | 厳密に凸で反時計回りの断面を `height` だけ押し出す。`twist_deg` か `twist_rad`、`steps`、`offset`。高さが負なら先に断面の有向辺を反転する。ねじり 0 なら 1 段 |
-| `mesh.weld` | mesh → mesh | `distance` 以内の頂点を結合（`selection`・`center: mean|first`）。退化した面と他の面に含まれる面を除く |
+| `mesh.weld` | mesh → mesh | `distance` 以内の頂点を結合（`selection`・`center: mean|first`）。退化した面と、他の面に含まれる面を除く（結合に関わった面とその隣だけを見る。元から重なっていた面は触らない） |
 | `mesh.transform` | mesh → mesh | `scale` → `rotate_z_deg` → `translate` |
-| `mesh.export_obj` | mesh → obj | v / vt / f / g |
+| `mesh.export_obj` | mesh → obj | v / vt / f / g。見出しの行に units と軸を書き、`mesh.import` で戻す。数値は往復で変わらない表記 |
 | `collision.push_out` | mesh, collider → mesh, deltas, report | 閉じた collider の中の頂点を最も近い面の外へ `clearance` だけ離す。外でも余裕より近い点は離す（`pad_outside`）。`deltas` は頂点ごとの移動量 |
 | `check.structure` | rig → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`） |
 | `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ |
@@ -157,7 +157,9 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
   オブジェクト・骨・ウェイトの要約・modifier・シェイプキーを Observation3D に書く。`model3d blender script` で任意のスクリプトを呼ぶ。
   起動の argv・版の記録・観測の整形はテストした（代役のプロセスで）。**本物の Blender では未検証**。
 - **生成器・リギング**（`external.run`）: 設定 JSON（`docs/adapters.md` と同じ約束。`tool`・`version`・`argv`、任意で `license`・`weights`）。
-  Hunyuan3D-2mv・TRELLIS.2・SkinTokens などの候補は、この接続口で別プロセスとして呼ぶ想定。本体はこのリポジトリに入れない。
+  **設定の argv はローカルで実行するプログラム**なので、recipe が参照する設定は自分で中身を確かめたものだけを使う（シェルは通さず、
+  実行ファイルは存在する絶対パスに限る）。Hunyuan3D-2mv・TRELLIS.2・SkinTokens などの候補は、この接続口で別プロセスとして呼ぶ想定。
+  本体はこのリポジトリに入れない。timeout で止めたときも、そこまでの出力は `external.log` に残る。
 - **REA**（`model3d rea report analysis_report.json out.json` / `model3d rea summary summary.json out.json`）: REA 6.4.0
   （commit `a56f7bb6…`）の解析報告と実験の集計を、工程の `evidence`（observed / inferred / unknown / unavailable）に写す。
   coverage が unknown のグラフは unknown のまま。集計に比較の結果（`final_all_pass` か `passed`/`total`）が無いツールの比較は
@@ -181,5 +183,6 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 - **Blender・生成器・リギングの実行は未検証**（この環境に本体が無い）。接続口の形だけがある。
 - **別メッシュへの転送（CorrespondenceMap の処理）・揺れのベイクと再開・30 秒の動作検査・GLB 書き出しは未実装**。
 - 貫通の補正は凸の衝突相手で確かめた。凹んだ相手では 1 回の補正で出ないことがあり、`residual_inside` に残る。
-- 結合は O(候補の組) で、大きなメッシュ（数十万頂点）では遅い可能性がある（未測定）。
+- 結合の候補は格子で絞るが、大きなメッシュ（数十万頂点）での速さは未測定。内外の判定と貫通の補正は 点 × 三角形 の総当たり
+  （帯と大腿のような部品どうしを想定）で、全身どうしの検査には空間分割（BVH など）が要る（未実装）。
 - 骨で動かす前の形へ `deltas` を戻してシェイプキーに書く工程は Blender 側で、未実装。
