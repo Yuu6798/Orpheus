@@ -96,6 +96,16 @@ def test_canonical_signature_ignores_enumeration_but_not_winding():
     assert signature["vertices"] == 3 and signature["triangles"] == 1 and signature["colors"] and not signature["duplicate_positions"]
     doubled = Mesh(np.vstack([vertices, vertices[:1]]), [[0, 1, 2], [3, 1, 2]])
     assert canonical_signature(doubled)["duplicate_positions"]
+    # 座標が同じで色の違う頂点（継ぎ目）は別の頂点として残す: 並べ替えても同じ指紋、片方の色を変えると違う指紋
+    seam_colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]]
+    seam = Mesh(np.vstack([vertices, vertices[:1]]), [[0, 1, 2], [3, 1, 2]], extra={"x_vertex_colors": seam_colors})
+    order = [3, 1, 2, 0]
+    shuffled = Mesh(seam.vertices[order], [[3, 1, 2], [0, 1, 2]], extra={"x_vertex_colors": [seam_colors[i] for i in order]})
+    assert compare_geometry(seam, shuffled)["same"] and canonical_signature(seam)["vertices"] == 4
+    changed = Mesh(seam.vertices, seam.faces, extra={"x_vertex_colors": seam_colors[:3] + [[0.5, 0.5, 0.5]]})
+    assert not compare_geometry(seam, changed)["same"]
+    merged = Mesh(np.vstack([vertices, vertices[:1]]), [[0, 1, 2], [3, 1, 2]], extra={"x_vertex_colors": seam_colors[:3] + [seam_colors[0]]})
+    assert canonical_signature(merged)["vertices"] == 3 and canonical_signature(merged)["duplicate_positions"]
 
 
 def test_demo_generate_recipe_runs_with_the_stand_in_and_stays_needs_review(tmp_path):

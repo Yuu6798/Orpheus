@@ -234,28 +234,26 @@ class Mesh:
 def canonical_signature(mesh, colors=True):
     """頂点番号と面の列挙順だけが違うメッシュが同じ指紋になるように正規化した sha256。
 
-    座標で頂点を並べ替え、三角形は巡回の最小の並びにして辞書順に並べる（向きは保つ）。頂点色（x_vertex_colors）が
-    あれば同じ並べ替えで付ける。丸め・許容差・位置合わせは使わない。座標が重なる頂点は 1 つに寄せて数え、
-    duplicate_positions に残す（元の列挙順で指紋が変わらないようにするため）。
+    座標（頂点色 x_vertex_colors があれば座標と色の組）で頂点を並べ替え、三角形は巡回の最小の並びにして辞書順に並べる
+    （向きは保つ）。丸め・許容差・位置合わせは使わない。座標と色が同じ頂点は 1 つに寄せて数え、座標だけ同じ頂点
+    （継ぎ目で分かれた、色の違う頂点）は別のまま残す。座標が重なる頂点があれば duplicate_positions に残す。
     """
     tris, _ = mesh.triangles()
     positions = mesh.vertices
-    unique, inverse = np.unique(positions, axis=0, return_inverse=True) if len(positions) else (positions, np.zeros(0, dtype=np.int64))
+    palette = mesh.extra.get("x_vertex_colors") if colors else None
+    colored = bool(isinstance(palette, list) and len(palette) == len(positions) and len(positions))
+    keyed = np.hstack([positions, np.asarray(palette, dtype=np.float64).reshape(-1, 3)]) if colored else positions
+    unique, inverse = np.unique(keyed, axis=0, return_inverse=True) if len(keyed) else (keyed, np.zeros(0, dtype=np.int64))
     inverse = np.asarray(inverse).reshape(-1)
-    duplicates = bool(len(unique) != len(positions))
+    duplicates = bool(len(np.unique(positions, axis=0)) != len(positions)) if len(positions) else False
     faces = inverse[tris] if len(tris) else np.zeros((0, 3), dtype=np.int64)
     rotated = [min((tuple(row), (row[1], row[2], row[0]), (row[2], row[0], row[1]))) for row in faces.tolist()]
     rotated.sort()
     digest = hashlib.sha256()
-    digest.update(np.ascontiguousarray(unique, dtype="<f8").tobytes())
+    digest.update(np.ascontiguousarray(unique, dtype="<f8").tobytes())   # 色付きなら座標と色の組
     digest.update(np.asarray(rotated, dtype="<i8").tobytes())
-    palette = mesh.extra.get("x_vertex_colors") if colors else None
-    if isinstance(palette, list) and len(palette) == len(positions) and len(positions):
-        table = np.zeros((len(unique), 3))
-        table[inverse] = np.asarray(palette, dtype=np.float64)   # 同じ座標の頂点は最後に書かれた色
-        digest.update(np.ascontiguousarray(table, dtype="<f8").tobytes())
     return {"sha256": digest.hexdigest(), "vertices": int(len(unique)), "triangles": int(len(rotated)),
-            "duplicate_positions": duplicates, "colors": bool(isinstance(palette, list) and len(palette) == len(positions))}
+            "duplicate_positions": duplicates, "colors": colored}
 
 
 def compare_geometry(a, b, colors=True):
