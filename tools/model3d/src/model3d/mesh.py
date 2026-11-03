@@ -573,6 +573,12 @@ def check_profile(profile):
         if not cross > 1e-12:
             raise ToolError("profile は厳密に凸で反時計回り（+Z から見て）の断面にしてください（時計回りなら点の順を逆にする。"
                             f"点 {i}-{(i + 1) % n}-{(i + 2) % n} の外積 {cross:.3g}）")
+    for i in range(n):   # 曲がりが全部正でも星形は通るので、全ての辺の左側に他の全頂点があることも確かめる（自己交差の拒否）
+        a, b = points[i], points[(i + 1) % n]
+        others = np.delete(points, [i, (i + 1) % n], axis=0)
+        side = (b[0] - a[0]) * (others[:, 1] - a[1]) - (b[1] - a[1]) * (others[:, 0] - a[0])
+        if not (side > 1e-12).all():
+            raise ToolError(f"profile が凸でないか自己交差しています（辺 {i}-{(i + 1) % n} の右側に頂点があります）")
     return points
 
 

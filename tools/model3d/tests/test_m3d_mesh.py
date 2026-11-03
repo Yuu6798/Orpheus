@@ -80,6 +80,17 @@ def test_profile_validation(profile, message):
         check_profile(profile)
 
 
+def test_profile_rejects_self_intersecting_star():
+    """連続する曲がりが全部正でも、五芒星は自己交差している（全ての辺の左側に他の頂点があるかで拒否する）。"""
+    star = [[math.cos(4 * math.pi * i / 5), math.sin(4 * math.pi * i / 5)] for i in range(5)]
+    with pytest.raises(ToolError, match="自己交差"):
+        check_profile(star)
+    with pytest.raises(ToolError):
+        extrude_profile(star, 1.0)
+    pentagon = [[math.cos(2 * math.pi * i / 5), math.sin(2 * math.pi * i / 5)] for i in range(5)]
+    assert len(check_profile(pentagon)) == 5
+
+
 @pytest.mark.parametrize("height", [0, float("nan"), float("inf"), True, "1"])
 def test_extrude_rejects_bad_height(height):
     with pytest.raises(ToolError):

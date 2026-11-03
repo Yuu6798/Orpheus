@@ -4,6 +4,7 @@
 
 取るもの: オブジェクトの種類・寸法・modifier、メッシュの頂点数と面数、アーマチュアの骨（名前・親・head/tail・レスト行列）、
 頂点グループごとのウェイトの数と範囲、シェイプキーの名前。姿勢のコマは取らない（coverage.unmeasured に残す）。
+長さはシーンの unit_settings.scale_length（1 Blender 単位 = 何 m）で換算してから --units の単位で書く。
 **未検証**: この環境に Blender が無い。bpy に触れない整形（build_observation）だけをテストしている。
 """
 import argparse
@@ -15,6 +16,40 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 METHOD = {"name": "model3d.blender_adapter.observe", "version": "0.1.0"}
+UNIT_FACTORS = {"m": 1.0, "cm": 0.01, "mm": 0.001}   # 1 単位 = 何 m
+
+
+def length_factor(scale_length, units):
+    """Blender 単位 → 出力の単位 の係数。scale_length は 1 Blender 単位 = 何 m（scene.unit_settings.scale_length）。"""
+    if units not in UNIT_FACTORS:
+        raise ValueError(f"units は m / cm / mm から選んでください: {units!r}")
+    if not isinstance(scale_length, (int, float)) or isinstance(scale_length, bool) or not math.isfinite(scale_length) or scale_length <= 0:
+        raise ValueError(f"scale_length は 0 より大きい有限の数にしてください: {scale_length!r}")
+    return float(scale_length) / UNIT_FACTORS[units]
+
+
+def _scaled(values, factor):
+    return None if values is None else [None if v is None else v * factor for v in values]
+
+
+def _scaled_matrix(matrix, factor):
+    """4x4 行列の平行移動成分だけを換算する（回転の成分は触らない）。"""
+    return [[(value * factor if (column == 3 and row < 3) else value) for column, value in enumerate(line)]
+            for row, line in enumerate(matrix)]
+
+
+def convert_object(info, factor):
+    """describe_object の生の値（Blender 単位）を出力の単位に換算した写し。"""
+    out = dict(info)
+    if "dimensions" in info:
+        out["dimensions"] = _scaled(info["dimensions"], factor)
+    if "matrix_world" in info:
+        out["matrix_world"] = _scaled_matrix(info["matrix_world"], factor)
+    if "bones" in info:
+        out["bones"] = [{**bone, "head": _scaled(bone.get("head"), factor), "tail": _scaled(bone.get("tail"), factor),
+                         **({"rest_matrix": _scaled_matrix(bone["rest_matrix"], factor)} if bone.get("rest_matrix") else {})}
+                        for bone in info["bones"]]
+    return out
 
 
 def parse_args(argv):
@@ -61,11 +96,18 @@ def describe_object(obj):
 
 
 def build_observation(scene_name, objects, source_path, source_sha256, units="m", space="rest", created_at=None,
-                      blender_version=None):
-    """オブジェクトの事実の列から Observation3D を組み立てる（bpy に依存しない）。"""
+                      blender_version=None, scale_length=1.0):
+    """オブジェクトの事実の列から Observation3D を組み立てる（bpy に依存しない）。
+
+    objects は describe_object の生の値（Blender 単位）。scale_length（1 Blender 単位 = 何 m）と units から換算してから単位を付ける。
+    """
     created_at = created_at or datetime.now(timezone.utc).isoformat()
     evidence_id = "ev-bpy-data"
-    facts = []
+    factor = length_factor(scale_length, units)
+    facts = [{"id": "scene:scale_length", "name": "scale_length", "value": float(scale_length), "type": "number", "units": "m",
+              "evidence_ref": evidence_id},
+             {"id": "scene:length_factor", "name": "length_factor", "value": factor, "type": "number", "evidence_ref": evidence_id}]
+    objects = [convert_object(info, factor) for info in objects]
     for info in objects:
         base = f"object:{info['name']}"
         facts.append({"id": f"{base}:type", "name": "type", "value": info["type"], "type": "string", "evidence_ref": evidence_id})
@@ -98,9 +140,11 @@ def build_observation(scene_name, objects, source_path, source_sha256, units="m"
             "evidence": [{"id": evidence_id, "source": {"path": str(source_path), "data_path": "bpy.data.objects"},
                           "method": method, "state": "observed"}],
             "coverage": {"objects": [o["name"] for o in objects],
-                         "items": ["type", "dimensions", "modifiers", "vertex_count", "face_count", "vertex_groups", "shape_keys", "bones"],
+                         "items": ["scale_length", "length_factor", "type", "dimensions", "modifiers", "vertex_count", "face_count",
+                                   "vertex_groups", "shape_keys", "bones"],
                          "frames": [], "unmeasured": ["pose frames", "materials", "constraints", "physics caches"]},
-            "limitations": ["static scene data only; animation frames are not sampled", "weights are summarized per group, not per vertex"],
+            "limitations": ["static scene data only; animation frames are not sampled", "weights are summarized per group, not per vertex",
+                            "lengths converted with scene.unit_settings.scale_length; per-object scale is kept inside matrix_world"],
             "unknowns": []}
 
 
@@ -113,8 +157,9 @@ def main(argv=None):
     chosen = [o for o in bpy.data.objects if args.objects is None or o.name in args.objects]
     source = bpy.data.filepath or ""
     digest = hashlib.sha256(Path(source).read_bytes()).hexdigest() if source and Path(source).is_file() else "0" * 64
+    scale_length = float(bpy.context.scene.unit_settings.scale_length)   # 1 Blender 単位 = 何 m
     observation = build_observation(bpy.context.scene.name, [describe_object(o) for o in chosen], source, digest,
-                                    args.units, args.space, blender_version=bpy.app.version_string)
+                                    args.units, args.space, blender_version=bpy.app.version_string, scale_length=scale_length)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(observation, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

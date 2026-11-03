@@ -106,6 +106,16 @@ def test_observe_builds_a_valid_observation_without_bpy():
     assert data["evidence"][0]["state"] == "observed" and "4.5.15" in data["evidence"][0]["method"]["version"]
     args = observe.parse_args(["--out", "o.json", "--objects", "Body", "--units", "cm"])
     assert args.objects == ["Body"] and args.units == "cm"
+    # 長さはシーンの scale_length（1 BU = 何 m）と units で換算する: 1 BU = 1 m の 2 BU は cm で 200
+    cm = observe.build_observation("Scene", objects, "/x/scene.blend", "a" * 64, units="cm", scale_length=1.0)
+    values = {f["id"]: f["value"] for f in cm["facts"]}
+    assert values["object:Body:dimensions"] == [40.0, 20.0, 160.0] and values["scene:length_factor"] == 100.0
+    assert values["object:Rig:bones"][0]["head"] == [0.0, 0.0, 100.0] and values["object:Rig:bones"][0]["rest_matrix"][2][3] == 0
+    half = observe.build_observation("Scene", objects, "/x/scene.blend", "a" * 64, units="m", scale_length=0.5)
+    assert {f["id"]: f["value"] for f in half["facts"]}["object:Body:dimensions"] == [0.2, 0.1, 0.8]
+    with pytest.raises(ValueError, match="scale_length"):
+        observe.build_observation("Scene", objects, "/x/scene.blend", "a" * 64, scale_length=0)
+    assert objects[0]["dimensions"] == [0.4, 0.2, 1.6]      # 元の値は書き換えない
 
 
 def test_observation_from_mesh_and_dangling_evidence():
