@@ -6,6 +6,7 @@
   （面の向きだけを反転する方法では面と体積が合わない、という再構成の実行結果 2026-11-03 を踏まえる）。
 どちらも独自実装で、原本ツールとの一致は主張しない。
 """
+import copy
 import hashlib
 import math
 from pathlib import Path
@@ -622,10 +623,56 @@ def weld(mesh, distance, selection=None, center="mean"):
         extra["x_vertex_colors"] = [[float(c) for c in row] for row in colors[keep].tolist()]
     out = Mesh(vertices[keep], final_faces, None if uv is None else uv[keep], mesh.name, mesh.units, mesh.axes,
                parts, selection_out, extra)
+    vertex_mapping = {"source_vertex_count": n, "target_vertex_count": out.vertex_count,
+                      "source_topology_sha256": mesh.topology_hash(), "target_topology_sha256": out.topology_hash(),
+                      "old_to_new": [remap[i] for i in range(n)], "center": center}
     report = {"distance": float(distance), "center": center, "selected": len(chosen), "merged_groups": len(groups),
               "vertices_before": n, "vertices_after": out.vertex_count, "faces_before": mesh.face_count,
-              "faces_after": out.face_count, "faces_removed_degenerate": degenerate, "faces_removed_contained": len(contained)}
+              "faces_after": out.face_count, "faces_removed_degenerate": degenerate, "faces_removed_contained": len(contained),
+              "vertex_mapping": vertex_mapping}
     return out, report
+
+
+def remap_rig_weights(rig, source_mesh, target_mesh, mapping):
+    """結合の正確な旧→新頂点対応でウェイトを移す。近傍推定や別メッシュへのリグ転送ではない。
+
+    source の topology に結び付いた有効なリグだけを受け付ける。結合された頂点のウェイトは、
+    位置と同じ mean / first 規則でまとめる。負値や未正規化の入力を黙って修復しない。
+    """
+    from . import checks
+    contracts.validate("rig", rig)
+    report = checks.structure(rig, mesh=source_mesh)
+    if not report["pass"]:
+        raise ToolError("結合前のリグが入力メッシュと整合しません: " + "; ".join(report["failures"]))
+    expected = {"source_vertex_count": source_mesh.vertex_count, "target_vertex_count": target_mesh.vertex_count,
+                "source_topology_sha256": source_mesh.topology_hash(), "target_topology_sha256": target_mesh.topology_hash()}
+    if any(mapping.get(key) != value for key, value in expected.items()):
+        raise ToolError("頂点対応の source / target が入力メッシュと違います")
+    indices, center = mapping.get("old_to_new"), mapping.get("center")
+    if center not in ("mean", "first") or not isinstance(indices, list) or len(indices) != source_mesh.vertex_count \
+            or any(isinstance(i, bool) or not isinstance(i, int) or not 0 <= i < target_mesh.vertex_count for i in indices):
+        raise ToolError("頂点対応は source の全頂点を target の整数番号へ写す mean / first の対応にしてください")
+    members = [[] for _ in range(target_mesh.vertex_count)]
+    for old, new in enumerate(indices):
+        members[new].append(old)
+    if any(not group for group in members):
+        raise ToolError("頂点対応に転送元のない target 頂点があります")
+    groups = {}
+    for name, pairs in rig["weights"]["groups"].items():
+        old_weights = np.zeros(source_mesh.vertex_count, dtype=np.float64)
+        for vi, weight in pairs:
+            old_weights[int(vi)] += weight
+        new_weights = [float(old_weights[group].mean()) if center == "mean" else float(old_weights[group[0]])
+                       for group in members]
+        groups[name] = [[vi, weight] for vi, weight in enumerate(new_weights) if weight != 0]
+    out = copy.deepcopy(rig)
+    out["weights"] = {**out["weights"], "vertex_count": target_mesh.vertex_count,
+                      "topology_sha256": target_mesh.topology_hash(), "groups": groups}
+    contracts.validate("rig", out)
+    report = checks.structure(out, mesh=target_mesh)
+    if not report["pass"]:
+        raise ToolError("結合後のリグが出力メッシュと整合しません: " + "; ".join(report["failures"]))
+    return out
 
 
 # ---- 押し出し ------------------------------------------------------------------------

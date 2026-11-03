@@ -47,7 +47,7 @@ def sash_mesh():
     return Mesh(vertices, faces, uv, name="sash_front", parts={"garment_sash_front": list(range(len(faces)))})
 
 
-def rig_json(vertex_count):
+def rig_json(vertex_count, topology_sha256=None):
     bones = [("mixamorig:Hips", None), ("mixamorig:Spine", "mixamorig:Hips"), ("mixamorig:Head", "mixamorig:Spine"),
              ("mixamorig:LeftArm", "mixamorig:Spine"), ("mixamorig:RightArm", "mixamorig:Spine"),
              ("mixamorig:LeftUpLeg", "mixamorig:Hips"), ("mixamorig:LeftLeg", "mixamorig:LeftUpLeg"),
@@ -59,7 +59,8 @@ def rig_json(vertex_count):
     return {"schema_version": "model3d-rig/0.1", "name": "demo_rig",
             "bones": [{"name": n, "parent": p, "head": [0.0, 0.0, 0.0], "tail": [0.0, 0.0, 0.1],
                        "rest_matrix": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]} for n, p in bones],
-            "weights": {"vertex_count": vertex_count, "groups": {"mixamorig:LeftUpLeg": leg, "mixamorig:Hips": hips}}}
+            "weights": {"vertex_count": vertex_count, "groups": {"mixamorig:LeftUpLeg": leg, "mixamorig:Hips": hips},
+                        **({"topology_sha256": topology_sha256} if topology_sha256 else {})}}
 
 
 def preset_json():
@@ -94,8 +95,10 @@ def recipe_json(clearance):
             {"id": "sleeve", "operation": "mesh.extrude_profile", "inputs": {"profile": "$inputs.profile_sleeve"},
              "parameters": {"height": 0.25, "twist_deg": 20, "steps": 5, "name": "sleeve_l"}, "outputs": {"mesh": "sleeve.json"},
              "applies_to": ["garment.sleeve.L"], "space": "rest"},
-            {"id": "weld", "operation": "mesh.weld", "inputs": {"mesh": "$inputs.sash"}, "parameters": {"distance": 1e-6},
-             "outputs": {"mesh": "sash_welded.json"}, "applies_to": ["garment.sash.front"],
+            {"id": "weld", "operation": "mesh.weld", "inputs": {"mesh": "$inputs.sash", "rig": "$inputs.rig"},
+             "parameters": {"distance": 1e-6},
+             "outputs": {"mesh": "sash_welded.json", "mapping": "vertex_mapping.json", "rig": "sash_rig.json"},
+             "applies_to": ["garment.sash.front"],
              "notes": "UV の継ぎ目の二重頂点を 1 つにする（2026-11-02 の記録）"},
             {"id": "before", "operation": "check.penetration", "inputs": {"mesh": "$steps.weld.mesh", "collider": "$steps.leg.mesh"},
              "parameters": {"report_only": True, "x_expect": "inside > 0"}, "outputs": {"report": "penetration_before.json"},
@@ -107,7 +110,7 @@ def recipe_json(clearance):
              "space": "pose", "evidence": [{"source": "record", "ref": "2026-11-02 session: ray parity inside test, push out, no velocity", "state": "observed"}]},
             {"id": "after", "operation": "check.penetration", "inputs": {"mesh": "$steps.push.mesh", "collider": "$steps.leg.mesh"},
              "parameters": {"strict": True}, "outputs": {"report": "penetration_after.json"}, "preconditions": ["closed:collider"]},
-            {"id": "structure", "operation": "check.structure", "inputs": {"rig": "$inputs.rig"},
+            {"id": "structure", "operation": "check.structure", "inputs": {"rig": "$steps.weld.rig", "mesh": "$steps.push.mesh"},
              "parameters": {"required_bone_roles": "preset", "tolerance": 0.001}, "outputs": {"report": "structure.json"}},
             {"id": "export", "operation": "mesh.export_obj", "inputs": {"mesh": "$steps.push.mesh"}, "outputs": {"obj": "sash_fixed.obj"}},
             {"id": "export_collider", "operation": "mesh.export_obj", "inputs": {"mesh": "$steps.leg.mesh"}, "outputs": {"obj": "collider.obj"}},
@@ -146,13 +149,19 @@ def create(directory, clearance=0.004, resolution=64):
     atomic_json(inputs / "profile_sleeve.json", {"points": regular_polygon(6, 0.03), "units": "m"})
     sash = sash_mesh()
     sash.save(inputs / "sash.json")
-    atomic_json(inputs / "rig.json", contracts.validate("rig", rig_json(sash.vertex_count)))
+    rig = rig_json(sash.vertex_count, sash.topology_hash())
+    atomic_json(inputs / "rig.json", contracts.validate("rig", rig))
     preset = contracts.validate("preset", preset_json())
     atomic_json(root / "preset.json", preset)
-    rig = rig_json(sash.vertex_count)
     semantic_map = semantic.build("demo-asset", preset, parts=list(preset["parts"]),
                                   bones=[{"name": b["name"], "parent": b["parent"]} for b in rig["bones"]],
                                   preset_path=root / "preset.json")
+    # 名前も意味もこの関数が定義する合成物だけを確認済みにする。利用者の資産の確認や採用とは別。
+    for kind in ("parts", "bones"):
+        for entry in semantic_map[kind].values():
+            entry["state"] = "confirmed"
+    semantic_map["x_synthetic_provenance"] = "model3d.demo.create: program-defined synthetic parts and bones only"
+    contracts.validate("semantic-map", semantic_map)
     atomic_json(root / "semantic_map.json", semantic_map)
     recipe = contracts.validate("recipe", recipe_json(clearance))
     atomic_json(root / "recipe.json", recipe)

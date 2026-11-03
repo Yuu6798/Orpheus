@@ -18,8 +18,8 @@ def _finite_matrix(matrix):
     return array.shape == (4, 4) and bool(np.isfinite(array).all())
 
 
-def structure(rig, semantic_map=None, required_bone_roles=None, tolerance=1e-3):
-    """必須骨の欠落・循環・非有限値がなく、ウェイトが頂点ごとに正規化されていること。"""
+def structure(rig, semantic_map=None, required_bone_roles=None, tolerance=1e-3, mesh=None):
+    """骨とウェイトを検査する。mesh を渡した場合は頂点数と記録した topology との整合も必須。"""
     failures, stats = [], {}
     bones = rig.get("bones", [])
     names = [b["name"] for b in bones]
@@ -62,6 +62,19 @@ def structure(rig, semantic_map=None, required_bone_roles=None, tolerance=1e-3):
                 failures.append(f"対応表にある骨がリグにありません: {', '.join(sorted(absent))}")
             stats["required_roles"] = list(required_bone_roles)
     weights = rig.get("weights")
+    if mesh is not None:
+        recorded_topology = weights.get("topology_sha256") if weights else None
+        stats["mesh_binding"] = {"vertex_count": mesh.vertex_count, "topology_sha256": mesh.topology_hash(),
+                                 "rig_topology_sha256": recorded_topology}
+        if weights is None:
+            failures.append("メッシュとの整合を確かめるウェイトがありません")
+        else:
+            if weights["vertex_count"] != mesh.vertex_count:
+                failures.append(f"ウェイトの頂点数 {weights['vertex_count']} とメッシュの頂点数 {mesh.vertex_count} が違います")
+            if not recorded_topology:
+                failures.append("ウェイトに対象メッシュの topology_sha256 が記録されていません")
+            elif recorded_topology != mesh.topology_hash():
+                failures.append("ウェイトの topology_sha256 とメッシュが違います")
     if weights is not None:
         count = int(weights["vertex_count"])
         total = np.zeros(count)

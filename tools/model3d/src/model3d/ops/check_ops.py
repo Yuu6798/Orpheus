@@ -25,7 +25,7 @@ def _finish(report, outputs, parameters, label):
 
 
 @register("check.structure", inputs=("rig",), outputs=("report",),
-          summary="骨の欠落・循環・非有限値とウェイトの正規化を検査する。required_bone_roles は preset か配列")
+          summary="骨・ウェイトを検査し、任意の入力 mesh と頂点数・topology を照合する。required_bone_roles は preset か配列")
 def check_structure(inputs, parameters, outputs, context):
     require(inputs, ("rig",), "check.structure")
     from .. import contracts
@@ -37,8 +37,15 @@ def check_structure(inputs, parameters, outputs, context):
         required = context.preset["required_roles"].get("bones", [])
     elif required == "humanoid":
         required = list(semantic.HUMANOID_REQUIRED_BONES)
-    report = checks.structure(rig, context.semantic_map, required, parameters.get("tolerance", 1e-3))
-    return _finish(report, outputs, parameters, "構造の検査")
+    mesh = Mesh.load(inputs["mesh"]) if "mesh" in inputs else None
+    report = checks.structure(rig, context.semantic_map, required, parameters.get("tolerance", 1e-3), mesh=mesh)
+    result = _finish(report, outputs, parameters, "構造の検査")
+    if required and context.semantic_map is not None:
+        unconfirmed = {v["role"] for v in context.semantic_map["bones"].values() if v["state"] == "unconfirmed"}
+        for role in sorted(set(required) & unconfirmed):
+            result.unresolved.append(f"構造の検査: 必須骨の役割 {role} の対応が未確認です")
+            result.review = True
+    return result
 
 
 @register("check.penetration", inputs=("mesh", "collider"), outputs=("report",),

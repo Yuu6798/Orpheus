@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-METHOD = {"name": "model3d.blender_adapter.observe", "version": "0.1.0"}
+METHOD = {"name": "model3d.blender_adapter.observe", "version": "0.1.1"}
 UNIT_FACTORS = {"m": 1.0, "cm": 0.01, "mm": 0.001}   # 1 単位 = 何 m
 
 
@@ -57,7 +57,7 @@ def parse_args(argv):
     parser.add_argument("--out", required=True)
     parser.add_argument("--objects", nargs="*", default=None)
     parser.add_argument("--units", default="m", choices=["m", "cm", "mm"])
-    parser.add_argument("--space", default="rest", choices=["local", "world", "rest", "pose"])
+    parser.add_argument("--space", default="rest", choices=["rest"], help="骨は armature-local の rest データのみ。world/pose 評価は未実装")
     return parser.parse_args(argv)
 
 
@@ -101,6 +101,8 @@ def build_observation(scene_name, objects, source_path, source_sha256, units="m"
 
     objects は describe_object の生の値（Blender 単位）。scale_length（1 Blender 単位 = 何 m）と units から換算してから単位を付ける。
     """
+    if space != "rest":
+        raise ValueError(f"space は rest のみ対応しています。world/pose 評価は未実装です: {space!r}")
     created_at = created_at or datetime.now(timezone.utc).isoformat()
     evidence_id = "ev-bpy-data"
     factor = length_factor(scale_length, units)
@@ -113,6 +115,14 @@ def build_observation(scene_name, objects, source_path, source_sha256, units="m"
         facts.append({"id": f"{base}:type", "name": "type", "value": info["type"], "type": "string", "evidence_ref": evidence_id})
         facts.append({"id": f"{base}:dimensions", "name": "dimensions", "value": info.get("dimensions"), "type": "vec3",
                       "units": units, "evidence_ref": evidence_id})
+        if "matrix_world" in info:
+            facts.append({"id": f"{base}:matrix_world", "name": "matrix_world", "value": info["matrix_world"],
+                          "type": "matrix4", "evidence_ref": evidence_id})
+        facts.append({"id": f"{base}:coordinate_spaces", "name": "coordinate_spaces", "type": "object",
+                      "value": {"bones": "armature_local_rest", "matrix_world": "object_local_to_world",
+                                "matrix_translation_units": units, "matrix_linear_units": "dimensionless",
+                                "dimensions": "bpy_object_dimensions (object scale included; not sampled rest geometry)"},
+                      "evidence_ref": evidence_id})
         if "vertices" in info:
             facts.append({"id": f"{base}:vertices", "name": "vertex_count", "value": info["vertices"], "type": "integer",
                           "evidence_ref": evidence_id})
@@ -140,10 +150,12 @@ def build_observation(scene_name, objects, source_path, source_sha256, units="m"
             "evidence": [{"id": evidence_id, "source": {"path": str(source_path), "data_path": "bpy.data.objects"},
                           "method": method, "state": "observed"}],
             "coverage": {"objects": [o["name"] for o in objects],
-                         "items": ["scale_length", "length_factor", "type", "dimensions", "modifiers", "vertex_count", "face_count",
+                         "items": ["scale_length", "length_factor", "type", "dimensions", "matrix_world", "coordinate_spaces", "modifiers", "vertex_count", "face_count",
                                    "vertex_groups", "shape_keys", "bones"],
                          "frames": [], "unmeasured": ["pose frames", "materials", "constraints", "physics caches"]},
             "limitations": ["static scene data only; animation frames are not sampled", "weights are summarized per group, not per vertex",
+                            "rest refers to armature-local bone data; world/pose bone coordinates are not evaluated",
+                            "matrix_world is the current object transform, not an evaluated pose or a sampled rest geometry transform",
                             "lengths converted with scene.unit_settings.scale_length; per-object scale is kept inside matrix_world"],
             "unknowns": []}
 

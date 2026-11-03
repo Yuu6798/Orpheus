@@ -147,7 +147,8 @@ def test_preconditions_and_roles_are_enforced(workspace, tmp_path):
     atomic_json(root / "semantic_map.json", semantic_map)
     with_role = dict(PUSH, applies_to=["garment.sash.front"], preconditions=["closed:collider", "role:garment.sash.front", "units:m", "帯の面が確定していること"])
     result = executor.run_recipe(write([with_role], preset="preset.json", semantic_map="semantic_map.json"), root / "runs")
-    assert result["status"] == "succeeded" and result["warnings"] and "未確認" in result["warnings"][0]
+    assert result["status"] == "needs_review" and result["warnings"] and "未確認" in result["warnings"][0]
+    assert result["candidates"] == ["push"] and len(result["steps"]["push"]["unresolved"]) == 1
     missing = dict(with_role, applies_to=["garment.sash.back"])
     result = executor.run_recipe(write([missing], preset="preset.json", semantic_map="semantic_map.json"), root / "runs")
     assert result["status"] == "failed" and "garment.sash.back" in result["error"]
@@ -162,6 +163,49 @@ def test_preconditions_and_roles_are_enforced(workspace, tmp_path):
     assert result["status"] == "failed" and "閉じていません" in result["error"]
 
 
+@pytest.mark.parametrize("role_declaration", [
+    {"applies_to": ["garment.sash.front"]},
+    {"preconditions": ["role:garment.sash.front"]},
+    {"applies_to": ["garment.sash.front"], "preconditions": ["role:garment.sash.front"]},
+])
+def test_used_unconfirmed_roles_remain_candidates_until_confirmed(workspace, role_declaration):
+    from model3d import demo, semantic
+    root, write = workspace
+    mapping = semantic.build("asset", demo.preset_json(), parts=["garment_sash_front"], bones=["mixamorig:Hips"])
+    atomic_json(root / "semantic_map.json", mapping)
+    path = write([dict(PUSH, **role_declaration), AFTER], semantic_map="semantic_map.json")
+    first = executor.run_recipe(path, root / "runs")
+    second = executor.run_recipe(path, root / "runs")
+    for result in (first, second):
+        assert result["status"] == "needs_review" and result["candidates"] == ["push"]
+        step = result["steps"]["push"]
+        assert step["status"] == "needs_review" and step["reused_from"] is None
+        assert len(step["unresolved"]) == 1 and "garment.sash.front" in step["unresolved"][0]
+        # 検査は候補を調べられるが、その合格で元工程や run の未確認を消さない。
+        assert result["steps"]["after"]["status"] == "succeeded"
+    index = read_json(root / "runs" / "index.json")
+    assert {item["step"] for item in index["steps"].values()} == {"after"}
+
+    semantic.confirm(mapping, "parts", "garment_sash_front", "confirmed", "tester")
+    atomic_json(root / "semantic_map.json", mapping)
+    confirmed = executor.run_recipe(path, root / "runs")
+    assert confirmed["status"] == "succeeded" and confirmed["candidates"] == []
+    assert confirmed["steps"]["push"]["unresolved"] == []
+    assert confirmed["warnings"]   # 使用しない hips は未確認のまま。加工を妨げない。
+    reused = executor.run_recipe(path, root / "runs")
+    assert reused["steps"]["push"]["reused_from"] == confirmed["run_id"]
+
+
+def test_unscoped_steps_are_not_blocked_by_unrelated_unconfirmed_roles(workspace):
+    from model3d import demo, semantic
+    root, write = workspace
+    mapping = semantic.build("asset", demo.preset_json(), parts=["garment_sash_front"], bones=["mixamorig:Hips"])
+    atomic_json(root / "semantic_map.json", mapping)
+    result = executor.run_recipe(write([PUSH], semantic_map="semantic_map.json"), root / "runs")
+    assert result["status"] == "succeeded" and result["warnings"]
+    assert result["steps"]["push"]["unresolved"] == []
+
+
 def test_preset_or_semantic_map_changes_invalidate_reuse(workspace):
     """check.structure は preset（必須の骨）と対応表を読む。どちらかが変われば key が変わり、古い報告を再利用しない。"""
     root, write = workspace
@@ -172,6 +216,8 @@ def test_preset_or_semantic_map_changes_invalidate_reuse(workspace):
     atomic_json(root / "inputs" / "rig.json", rig)
     semantic_map = semantic.build("asset", preset, bones=[{"name": b["name"], "parent": b["parent"]} for b in rig["bones"]],
                                   preset_path=root / "preset.json")
+    for name in semantic_map["bones"]:
+        semantic.confirm(semantic_map, "bones", name, "confirmed", "tester")
     atomic_json(root / "semantic_map.json", semantic_map)
     check = {"id": "structure", "operation": "check.structure", "inputs": {"rig": "$inputs.rig"},
              "parameters": {"required_bone_roles": "preset"}, "outputs": {"report": "structure.json"}}

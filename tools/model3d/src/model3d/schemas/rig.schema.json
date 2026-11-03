@@ -64,6 +64,11 @@
         "groups"
       ],
       "properties": {
+        "topology_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "このウェイトが指すメッシュの頂点構成。mesh と組にして検査するときは必須。"
+        },
         "vertex_count": {
           "type": "integer",
           "minimum": 0
@@ -91,7 +96,10 @@
         }
       },
       "additionalProperties": false,
-      "description": "骨ごとの [頂点番号（整数 0 以上）, 重み] の列"
+      "description": "骨ごとの [頂点番号（整数 0 以上）, 重み] の列",
+      "patternProperties": {
+        "^x_": {}
+      }
     }
   },
   "patternProperties": {

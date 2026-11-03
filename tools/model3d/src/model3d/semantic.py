@@ -145,3 +145,9 @@ def roles_present(semantic_map, confirmed_only=False):
     return {"parts": {v["role"] for v in semantic_map["parts"].values() if keep(v)} |
                      {v["role"] for v in semantic_map["regions"].values() if keep(v)},
             "bones": {v["role"] for v in semantic_map["bones"].values() if keep(v)}}
+
+
+def unconfirmed_roles(semantic_map):
+    """未確認の対応を含む役割。同じ役割に確認済みの対応があっても、残る未確認を隠さない。"""
+    return {entry["role"] for kind in ("parts", "bones", "regions")
+            for entry in semantic_map[kind].values() if entry["state"] == "unconfirmed"}

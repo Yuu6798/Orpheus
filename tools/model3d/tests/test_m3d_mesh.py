@@ -7,7 +7,7 @@ import pytest
 
 from m3d_helpers import box
 from model3d.io import ToolError
-from model3d.mesh import Mesh, canonical_signature, check_profile, extrude_profile, read_obj, transform, weld, write_obj
+from model3d.mesh import Mesh, canonical_signature, check_profile, extrude_profile, read_obj, remap_rig_weights, transform, weld, write_obj
 
 FIXTURE = Path(__file__).parent / "data" / "jscad" / "cases.json"
 
@@ -138,6 +138,66 @@ def test_weld_remaps_vertex_colors(tmp_path):
     write_obj(welded, tmp_path / "welded.obj")
     assert np.allclose(read_obj(tmp_path / "welded.obj").extra["x_vertex_colors"], welded.extra["x_vertex_colors"])
     assert canonical_signature(welded)["colors"]
+
+
+@pytest.mark.parametrize("center, expected", [("mean", [0.5, 0.5]), ("first", [1.0, 0.0])])
+def test_weld_remaps_bound_rig_weights_with_the_geometry_rule(center, expected):
+    import copy
+    from model3d import checks
+    mesh = Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0]], [[0, 1, 2], [3, 1, 2]])
+    rig = {"schema_version": "model3d-rig/0.1", "x_note": "preserve me",
+           "bones": [{"name": "a", "parent": None}, {"name": "b", "parent": "a"}],
+           "weights": {"vertex_count": 4, "topology_sha256": mesh.topology_hash(), "x_note": "weights",
+                       "groups": {"a": [[0, 1.0], [1, 1.0], [2, 0.25]], "b": [[2, 0.75], [3, 1.0]]}}}
+    before = copy.deepcopy(rig)
+    welded, report = weld(mesh, 1e-6, center=center)
+    mapping = report["vertex_mapping"]
+    assert mapping["old_to_new"] == [0, 1, 2, 0]
+    out = remap_rig_weights(rig, mesh, welded, mapping)
+    assert rig == before and out["bones"] == before["bones"] and out["x_note"] == "preserve me"
+    assert out["weights"]["x_note"] == "weights" and out["weights"]["vertex_count"] == 3
+    assert [dict(out["weights"]["groups"][b]).get(0, 0.0) for b in ("a", "b")] == expected
+    assert dict(out["weights"]["groups"]["a"])[2] == 0.25
+    assert dict(out["weights"]["groups"]["b"])[2] == 0.75
+    assert checks.structure(out, mesh=welded)["pass"]
+
+
+def test_weight_remapping_rejects_unbound_wrong_or_invalid_source_and_mapping():
+    import copy
+    from model3d import demo
+    mesh = demo.sash_mesh()
+    welded, report = weld(mesh, 1e-6)
+    mapping = report["vertex_mapping"]
+    rig = demo.rig_json(mesh.vertex_count, mesh.topology_hash())
+    unbound = demo.rig_json(mesh.vertex_count)
+    with pytest.raises(ToolError, match="topology_sha256"):
+        remap_rig_weights(unbound, mesh, welded, mapping)
+    stale = copy.deepcopy(rig)
+    stale["weights"]["topology_sha256"] = "0" * 64
+    with pytest.raises(ToolError, match="topology_sha256"):
+        remap_rig_weights(stale, mesh, welded, mapping)
+    invalid = copy.deepcopy(rig)
+    invalid["weights"]["groups"]["mixamorig:LeftUpLeg"][0][1] = -1
+    with pytest.raises(ToolError, match="負の値"):
+        remap_rig_weights(invalid, mesh, welded, mapping)
+    for indices in ([0.5] + mapping["old_to_new"][1:], [True] + mapping["old_to_new"][1:], mapping["old_to_new"][:-1]):
+        with pytest.raises(ToolError, match="頂点対応"):
+            remap_rig_weights(rig, mesh, welded, {**mapping, "old_to_new": indices})
+    with pytest.raises(ToolError, match="source / target"):
+        remap_rig_weights(rig, mesh, welded, {**mapping, "target_topology_sha256": "0" * 64})
+
+
+def test_weld_requires_rig_input_and_output_together(tmp_path):
+    from model3d import demo
+    from model3d.ops import mesh_ops
+    mesh = demo.sash_mesh()
+    mesh.save(tmp_path / "mesh.json")
+    for inputs, outputs in [({"mesh": tmp_path / "mesh.json", "rig": tmp_path / "rig.json"},
+                             {"mesh": tmp_path / "out.json"}),
+                            ({"mesh": tmp_path / "mesh.json"},
+                             {"mesh": tmp_path / "out.json", "rig": tmp_path / "out_rig.json"})]:
+        with pytest.raises(ToolError, match="入力 rig と出力 rig"):
+            mesh_ops.mesh_weld(inputs, {"distance": 1e-6}, outputs, None)
 
 
 def test_weld_removes_duplicate_and_contained_faces():

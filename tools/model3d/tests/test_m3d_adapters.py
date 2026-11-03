@@ -65,8 +65,8 @@ def test_external_run_operation_through_the_executor(tmp_path):
 
 def test_blender_argv_order_and_validation(tmp_path):
     argv = launcher.argv_for("/opt/blender", "/x/observe.py", "/x/scene.blend", ["--out", "o.json"])
-    assert argv == ["/opt/blender", "--background", "/x/scene.blend", "--python", "/x/observe.py", "--", "--out", "o.json"]
-    assert launcher.argv_for("/opt/blender", "/x/s.py", background=False) == ["/opt/blender", "--python", "/x/s.py"]
+    assert argv == ["/opt/blender", "--background", "/x/scene.blend", "--python-exit-code", "1", "--python", "/x/observe.py", "--", "--out", "o.json"]
+    assert launcher.argv_for("/opt/blender", "/x/s.py", background=False) == ["/opt/blender", "--python-exit-code", "1", "--python", "/x/s.py"]
     with pytest.raises(ToolError, match="絶対パス"):
         launcher.run_blender("blender", tmp_path / "s.py")
     fake = tmp_path / "blender"
@@ -116,6 +116,51 @@ def test_observe_builds_a_valid_observation_without_bpy():
     with pytest.raises(ValueError, match="scale_length"):
         observe.build_observation("Scene", objects, "/x/scene.blend", "a" * 64, scale_length=0)
     assert objects[0]["dimensions"] == [0.4, 0.2, 1.6]      # 元の値は書き換えない
+
+
+def test_blender_launcher_rejects_script_exception_after_partial_output(tmp_path):
+    """Blender の終了コード挙動を模したプロセス。実 Blender の実行検証ではない。"""
+    wrapper = tmp_path / "blender"
+    wrapper.write_text(f"#!{sys.executable}\n" +
+                       "import runpy, sys, traceback\n"
+                       "if '--version' in sys.argv:\n    print('Blender 4.5.15')\n"
+                       "else:\n    try:\n        runpy.run_path(sys.argv[sys.argv.index('--python') + 1], run_name='__main__')\n"
+                       "    except Exception:\n        traceback.print_exc()\n"
+                       "        if '--python-exit-code' in sys.argv:\n            sys.exit(int(sys.argv[sys.argv.index('--python-exit-code') + 1]))\n",
+                       encoding="utf-8")
+    wrapper.chmod(0o755)
+    partial = tmp_path / "partial.txt"
+    script = tmp_path / "fail.py"
+    script.write_text(f"from pathlib import Path\nPath({str(partial)!r}).write_text('partial')\nraise RuntimeError('deliberate failure')\n",
+                      encoding="utf-8")
+    with pytest.raises(ToolError, match="終了コード 1"):
+        launcher.run_blender(wrapper, script, log=tmp_path / "failure.log")
+    assert partial.read_text() == "partial"
+    assert "deliberate failure" in (tmp_path / "failure.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("space", ["world", "pose", "local"])
+def test_observe_rejects_unimplemented_coordinate_spaces(space):
+    with pytest.raises(ValueError, match="rest のみ"):
+        observe.build_observation("Scene", [], "/scene.blend", "a" * 64, space=space)
+    with pytest.raises(SystemExit):
+        observe.parse_args(["--out", "o.json", "--space", space])
+
+
+def test_observe_preserves_transform_and_labels_local_rest_bones():
+    matrix = [[2, 0, 0, 10], [0, 3, 0, 20], [0, 0, 4, 30], [0, 0, 0, 1]]
+    objects = [{"name": "Rig", "type": "ARMATURE", "matrix_world": matrix,
+                "bones": [{"name": "Root", "parent": None, "head": [1, 0, 0], "tail": [1, 0, 1]}]}]
+    result = observe.build_observation("Scene", objects, "/scene.blend", "a" * 64, units="cm")
+    contracts.validate("observation", result)
+    facts = {f["id"]: f["value"] for f in result["facts"]}
+    # Local lengths and world translation are converted once. Dimensionless scale stays unchanged.
+    assert facts["object:Rig:matrix_world"] == [[2, 0, 0, 1000], [0, 3, 0, 2000], [0, 0, 4, 3000], [0, 0, 0, 1]]
+    assert facts["object:Rig:bones"][0]["head"] == [100, 0, 0]
+    assert facts["object:Rig:coordinate_spaces"]["bones"] == "armature_local_rest"
+    assert facts["object:Rig:coordinate_spaces"]["matrix_world"] == "object_local_to_world"
+    assert facts["object:Rig:coordinate_spaces"]["matrix_translation_units"] == "cm"
+    assert objects[0]["matrix_world"] == matrix
 
 
 def test_observation_from_mesh_and_dangling_evidence():
