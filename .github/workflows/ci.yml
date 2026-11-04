@@ -158,7 +158,7 @@ jobs:
         run: corepack enable
 
       - name: Install Python (locked)
-        run: uv sync --locked
+        run: uv sync --locked --extra analysis
 
       - name: Install Node (frozen lockfile)
         run: pnpm install --frozen-lockfile
@@ -182,6 +182,11 @@ jobs:
           uv run --no-sync mv demo "$RUNNER_TEMP/demo"
           uv run --no-sync mv render "$RUNNER_TEMP/demo"
           uv run --no-sync mv verify "$RUNNER_TEMP/demo"
+
+      # 合成音源の実解析 -> 仮の歌詞時刻 -> 確認用 fixture -> 演出 -> 描画 -> 用途別の完了確認。
+      # 実歌唱の同期精度・人間による作品採用を保証しない。入力と動画は runner の一時領域だけに置く。
+      - name: Workflow example (audio + lyrics -> plan -> render -> completion)
+        run: uv run --no-sync python examples/workflow/run.py "$RUNNER_TEMP/workflow-example"
 
   dependency-audit:
     # uv.lock の固定版を export した requirements (全 extras + 全 group) を pip-audit で照合する。

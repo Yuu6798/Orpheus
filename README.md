@@ -20,6 +20,36 @@ uv run mv verify projects/demo
 初回の描画ではRemotionがChrome Headless Shellを取得します。FFmpegはPATH上のもの、なければ固定版imageio-ffmpeg、ffprobeはRemotion同梱版を使います。
 既存ブラウザーを使う場合は `ORPHEUS_BROWSER` に実行ファイルのパスを設定できます。
 
+## AI に制作を任せるとき
+
+最初に用途を選び、必要な入力・既存コマンド・次の工程への受け渡しを制作計画にします。
+`workflow` は解析や描画を勝手に実行せず、現在のファイルと検証結果から工程の完了を確認します。
+
+```sh
+# 歌詞付き MV。対象ディレクトリは mv init の前でも指定できます。
+uv run mv workflow plan projects/song-a --purpose lyric-mv
+# 計画に示された既存コマンドで制作した後に確認します。
+uv run mv workflow check projects/song-a/workflow.json --out projects/song-a/workflow-report
+
+# 既存ダンス素材の音楽編集。歌詞を表示しない場合も拍の確認は必要です。
+uv run mv workflow plan projects/dance/spec.json --purpose dance-edit --no-lyrics
+uv run mv workflow check projects/dance/workflow.json --run projects/dance/dance_runs/RUN_ID --gate-config projects/dance/gate.json
+```
+
+必要な工程が未実施・未確認なら終了コードは 1。拍・歌詞同期を意図的に省く場合は
+`mv workflow omit PLAN beats --reason "自由拍の区間として編集する"` のように理由を記録します。
+省略は検査合格に変わらず `complete_with_omissions` として残り、失敗した検査は省略理由で隠せません。
+作品の採用判断（`accepted`）は別です。
+
+合成音源・架空歌詞から拍解析、歌詞時刻、演出、描画、完了確認まで追う実行例:
+
+```sh
+uv run python examples/workflow/run.py projects/workflow-example
+```
+
+入力素材は実行時に生成します。実曲の歌詞同期精度を検証する例ではありません。
+[用途別の手順と判定](docs/workflow.md) / [制作例の入出力](examples/workflow/README.md)
+
 ## 実装済み
 
 - 入力のSHA-256記録、区間切り出し、48kHz・ステレオPCMへの正規化
@@ -31,6 +61,7 @@ uv run mv verify projects/demo
 - Remotion Studioと本番で共通のコンポジション、全体レイヤーの日本語歌詞
 - プロジェクトロック、工程状態、ハッシュキャッシュ、描画からの再開、実行ごとの入力保存
 - MP4全復号、解像度・fps・フレーム数・音声・元音源との比較
+- 用途別の制作計画、必須工程の完了確認、省略理由の記録（既存の入出力契約は変更しない）
 
 ## 演出エンジン fx（実験的）
 
@@ -54,6 +85,8 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 ## 手順・仕様
 
 - [実行手順](docs/runbook.md)
+- [用途別の制作計画と完了確認](docs/workflow.md)
+- [音源・歌詞から描画までの実行例](examples/workflow/README.md)
 - [検証結果](docs/implementation-validation.md)
 - [採用ツールと利用条件](docs/dependencies.md)
 - [元の設計](docs/design.md)（設計時の仮名 `ugh-mv-pipeline` は本リポジトリでは `Orpheus`）
@@ -64,7 +97,8 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 - [自作の 3D モデリングツール model3d（外部ツール・実験的）](docs/model3d.md)
 - [ロードマップ](docs/roadmap.md)（実装前の計画を含む。実装済みの機能とは区別）
 
-`contracts/` が唯一のJSON契約です。`examples/` は元の架空データであり、対応する音源・画像は付属しません。
+MV の原契約は `contracts/` が正典です。dance・fx の設定と用途別の制作計画は、その外で管理します。
+`examples/` 直下は元の架空データであり、対応する音源・画像は付属しません。`examples/workflow/` は実行時に合成素材を生成します。
 `projects/` の音源、画像、動画、ログや鍵はGitへ追加しません。
 
 ## 開発検証
