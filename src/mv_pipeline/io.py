@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -53,12 +54,67 @@ def safe_path(root, value):
     return result
 
 
+def _render_error_summary(stderr):
+    """Keep the renderer's cause visible before the truncated stderr tail."""
+    def short(value):
+        return value.strip().splitlines()[0][:300] if isinstance(value, str) and value.strip() else ""
+
+    prefix = "[orpheus-render-error] "
+    for line in stderr.splitlines():
+        if not line.startswith(prefix):
+            continue
+        try:
+            record = json.loads(line[len(prefix):])
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        error = record.get("error")
+        if not isinstance(error, (dict, str)):
+            continue
+        causes, no_space = [], ""
+        while isinstance(error, (dict, str)):
+            if isinstance(error, str):
+                error = {"message": error}
+            detail = ": ".join(filter(None, (short(error.get("code"))[:80], short(error.get("message")))))
+            detail = detail or short(error.get("name"))
+            if detail:
+                causes.append(detail)
+            # Remotion can wrap ENOSPC in a multiline message without .code/.cause.
+            for text in (error.get("message"), error.get("stack")):
+                if not isinstance(text, str):
+                    continue
+                for cause_line in text.splitlines():
+                    match = re.search(r"\bENOSPC\b", cause_line)
+                    if match:
+                        no_space = cause_line[max(0, match.start() - 80):match.end() + 300].strip()
+                        break
+            if error.get("code") == "ENOSPC" and not no_space:
+                no_space = detail
+            error = error.get("cause")
+        # Bound the CLI summary while retaining the innermost cause. The log is complete.
+        details = causes if len(causes) <= 4 else causes[:1] + causes[-3:]
+        if no_space and no_space not in details:
+            details.insert(0, no_space)
+        phase = short(record.get("phase"))[:80] or "unknown"
+        return f"render {phase}: " + " <- ".join(details or ["unknown error"])
+    return ""
+
+
 def run(args, log=None, cwd=None):
     result = subprocess.run([str(a) for a in args], cwd=cwd, capture_output=True,
                             text=True, encoding="utf-8", errors="replace", shell=False)
+    log_error = None
     if log:
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
-        Path(log).write_text(result.stdout + result.stderr, encoding="utf-8")
+        try:
+            Path(log).parent.mkdir(parents=True, exist_ok=True)
+            Path(log).write_text(result.stdout + result.stderr, encoding="utf-8")
+        except OSError as error:
+            if not result.returncode:
+                raise
+            log_error = f"Could not write log {log}: {error}"
     if result.returncode:
-        raise PipelineError(f"{Path(args[0]).name} exited {result.returncode}: {result.stderr[-2500:]}")
+        details = [_render_error_summary(result.stderr), result.stderr[-2500:], log_error]
+        raise PipelineError(f"{Path(args[0]).name} exited {result.returncode}: "
+                            + "\n".join(detail for detail in details if detail))
     return result.stdout

@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "render": "node renderer/render.mjs",
     "studio": "remotion studio renderer/src/index.tsx",
-    "test": "node --experimental-strip-types --test renderer/tests/*.test.ts"
+    "test": "node --experimental-strip-types --test renderer/tests/*.test.ts renderer/tests/*.test.mjs"
   },
   "dependencies": {
     "@remotion/bundler": "4.0.532",
