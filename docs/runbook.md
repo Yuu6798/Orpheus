@@ -67,6 +67,31 @@ uv run mv import-assets projects/song-a assets.json
 
 ## 5. 確認と描画
 
+### 一時領域と出力先を確認
+
+描画前に、Node が実際に使う一時領域と、動画・ログを保存する `runs` の空き容量・書き込み権限を確認します。Linux/macOS では次のように確認できます。
+
+```sh
+orpheus_tmpdir="$(node -p 'require("node:os").tmpdir()')"
+df -h "$orpheus_tmpdir" projects/song-a/runs
+test -w "$orpheus_tmpdir"
+test -w projects/song-a/runs
+```
+
+`/tmp` は環境によってディスク上にも tmpfs 上にもあります。小容量の tmpfs などで容量が足りない場合は、十分な空き容量と書き込み権限のあるディスク上のディレクトリを `TMPDIR` に指定します。以下の `/mnt/render-disk` は、実際のディスクのマウント先に置き換えてください。設定後は一時領域と出力先の容量を再確認します。
+
+```sh
+mkdir -p /mnt/render-disk/orpheus-tmp
+export TMPDIR=/mnt/render-disk/orpheus-tmp
+node -p 'require("node:os").tmpdir()'
+df -h "$TMPDIR" projects/song-a/runs
+test -w "$TMPDIR"
+```
+
+`TMPDIR` の変更は動画の出力先を変えません。bundle には素材のコピーも作られるため、1回の描画で必要な一時容量を確保してください。必要量は素材や描画条件で変わり、固定の容量閾値による自動停止は行いません。
+
+### 描画を実行
+
 ```sh
 uv run mv validate projects/song-a
 uv run mv preview projects/song-a
@@ -83,6 +108,12 @@ resumeは現在の契約を検査し、必要な場合のみ描画を再開し�
 
 各runにJSON・画像・正規化音源・手修正・バージョン指紋・描画ログ・動画・検証結果が残ります。
 一時動画は検証に通ってからvideo.mp4になります。失敗したrunも調査用に残り、過去の成功動画は上書きされません。
+
+### 失敗時の診断と後始末
+
+`runs/<run_id>/render.log` には renderer の標準出力・標準エラーの全文が残ります。失敗時は、失敗工程、元のエラーと取得できる原因コード・cause、一時領域と出力先の空き容量、メモリ状況を一時 bundle の削除前に記録します。CLI の原因要約と併せて確認し、`ENOSPC` などの原因コードをメモリ不足と取り違えないようにします。診断情報を取得できなくても、元のエラーを保持します。
+
+通常終了・例外時には、その描画で作った一時 bundle の削除を試みます。過去に残ったディレクトリや、`SIGKILL` などの強制終了による残骸は自動削除しません。古い `remotion-webpack-bundle-*` を整理する場合は、対象のパスと、実行中の描画が使用していないことを確認してから個別に削除してください。`runs` は調査記録として残します。ログの保存先自体が容量不足の場合やプロセスの強制終了時には、診断を保存できない場合があります。
 
 ## 検証結果の読み方
 
