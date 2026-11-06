@@ -351,6 +351,21 @@ def test_motion_check_compares_thresholds_with_unrounded_values():
     assert "right_wrist" in text and "0.1000" in text and "left: 接地中に床へ 0.0100" in text
 
 
+def test_motion_check_measures_the_first_frame_of_a_window_against_the_frame_before():
+    points, stance = prepared_clip()
+    sliding, contact = points.copy(), np.ones_like(stance)
+    left_foot = list(motion.LEGS[0][3])
+    sliding[:, left_foot, 0] += np.arange(len(points))[:, None] * (1.0 / 30)   # 足がずっと 1 m/s で滑る
+    two = checks.motion(sliding, contact, frames=(10, 12), thresholds={"max_skate_fraction": 0.75})
+    assert two["skate"]["left"]["fraction"] == 1.0 and two["pass"] is False        # 2 コマとも前のコマと比べる
+    start = checks.motion(sliding, contact, frames=(0, 2))
+    assert start["skate"]["left"]["measured_contact_frames"] == 1 and start["skate"]["left"]["fraction"] == 1.0
+    jumped = points.copy()
+    jumped[10:, 41] += [0.0, 0.0, 0.2]                                            # 区間に入る 1 コマで手首が跳ぶ
+    assert checks.motion(jumped, stance, frames=(10, 20))["steps"]["right_wrist"] == {"max_m": pytest.approx(0.2, abs=0.01),
+                                                                                      "frame": 10}
+
+
 def test_motion_check_rejects_bad_input():
     points, stance = prepared_clip(10)
     with pytest.raises(ToolError, match="しきい値"):

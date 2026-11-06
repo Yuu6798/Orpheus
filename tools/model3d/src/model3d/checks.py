@@ -242,11 +242,17 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
         if stance.shape != (n_all, 2):
             raise ToolError(f"stance は (コマ, 2) にしてください: {stance.shape}")
         stance = stance[start:end]
-    points = points[start:end]
-    if len(points) < 2:
+    if end - start < 2:
         raise ToolError("2 コマ以上が要ります")
+    whole_hip = points[:, list(mo.HIPS)].mean(axis=1)
+
+    def per_frame(values):
+        """1 つ前のコマからの移動（区間で切る前に数え、区間の最初のコマも前のコマと比べる）。クリップの最初のコマは NaN。"""
+        return np.r_[np.nan, np.linalg.norm(np.diff(values, axis=0), axis=-1)][start:end]
+
+    whole = points
+    points = points[start:end]
     index = np.arange(start, end)
-    hip = points[:, list(mo.HIPS)].mean(axis=1)
     report = {"check": "motion", "status": "done", "frames": [int(start), int(end)], "fps": fps,
               "settings": {"bend_min_deg": bend_min_deg, "contact_height_m": contact_height, "skate_speed_mps": skate_speed,
                            "floor_tolerance_m": floor_tolerance, "contact_from": "stance" if stance is not None else "height"},
@@ -266,16 +272,16 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
             "worst": _worst(chosen, index[bent], top) if len(chosen) else []}
         lowest = points[:, list(foot), 2].min(axis=1)
         contact = stance[:, mo.SIDES.index(side)] > 0.5 if stance is not None else lowest < contact_height
-        centre = points[:, list(foot), :2].mean(axis=1)
-        speed = np.r_[0.0, np.linalg.norm(np.diff(centre, axis=0), axis=1)] * fps
-        skating = contact & (speed > skate_speed)
-        raw["skate"][side] = float(skating.sum() / max(contact.sum(), 1))
+        speed = per_frame(whole[:, list(foot), :2].mean(axis=1)) * fps
+        measured = contact & np.isfinite(speed)      # 前のコマが無いコマ（クリップの最初）は速さを測っていない
+        skating = measured & (speed > skate_speed)
+        raw["skate"][side] = float(skating.sum() / max(measured.sum(), 1))
         raw["floor"][side] = float(max(0.0, -lowest[contact].min())) if contact.any() else 0.0
         report["skate"][side] = {
-            "contact_frames": int(contact.sum()), "skating_frames": int(skating.sum()),
-            "fraction": round(float(skating.sum() / max(contact.sum(), 1)), 4),
-            "max_contact_speed_mps": round(float(speed[contact].max()), 4) if contact.any() else None,
-            "worst": _worst(speed[contact], index[contact], top) if contact.any() else []}
+            "contact_frames": int(contact.sum()), "measured_contact_frames": int(measured.sum()),
+            "skating_frames": int(skating.sum()), "fraction": round(raw["skate"][side], 4),
+            "max_contact_speed_mps": round(float(speed[measured].max()), 4) if measured.any() else None,
+            "worst": _worst(speed[measured], index[measured], top) if measured.any() else []}
         below = contact & (lowest < -floor_tolerance)
         report["floor"][side] = {
             "depth_m": round(float(max(0.0, -lowest[contact].min())), 4) if contact.any() else 0.0,
@@ -283,11 +289,12 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
             "max_height_in_contact_m": round(float(lowest[contact].max()), 4) if contact.any() else None,
             "worst": _worst(-lowest[below], index[below], top)}
     for name, joint in mo.TRACKED.items():
-        step = np.r_[0.0, np.linalg.norm(np.diff(points[:, joint] - hip, axis=0), axis=1)]
-        raw["steps"][name] = float(step.max())
-        report["steps"][name] = {"max_m": round(float(step.max()), 4), "frame": int(index[int(step.argmax())])}
-    whole = np.r_[0.0, np.linalg.norm(np.diff(hip, axis=0), axis=1)]
-    report["steps"]["hip_centre"] = {"max_m": round(float(whole.max()), 4), "frame": int(index[int(whole.argmax())])}
+        step = per_frame(whole[:, joint] - whole_hip)
+        raw["steps"][name] = float(np.nanmax(step))
+        report["steps"][name] = {"max_m": round(raw["steps"][name], 4), "frame": int(index[int(np.nanargmax(step))])}
+    centre_step = per_frame(whole_hip)
+    report["steps"]["hip_centre"] = {"max_m": round(float(np.nanmax(centre_step)), 4),
+                                     "frame": int(index[int(np.nanargmax(centre_step))])}
     for name, (a, b) in mo.SEGMENTS.items():
         length = np.linalg.norm(points[:, b] - points[:, a], axis=1)
         middle = float(np.median(length))
