@@ -322,7 +322,7 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   unknown にし、観測にしない。REA の JS/TS 意味解析と 6.8 系 Python code object の構造解析は区別する。3D 専用の provider は無く、
   この CLI は保存済みの解析結果を変換する入口であり、REA 本体の解析実行や制作工程の自動回復は行わない。
 - 2026-11-03 の再構成の実験一式（Blockbench の原本・再構成コード・REA の生出力）は**リポジトリに入れない**。Blockbench 由来の部分が
-  GPL-3.0-or-later で、このリポジトリの LICENSE は未決のため（STATUS の DECIDE-1）。JSCAD（MIT）の原本出力の合成部品だけをテストに取り込んだ。
+  GPL-3.0-or-later で、このリポジトリの LICENSE（Apache-2.0、2026-11-06 に決定）での配布と両立しないため。JSCAD（MIT）の原本出力の合成部品だけをテストに取り込んだ。
 
 ## Orpheus との接続（受け渡し）
 
