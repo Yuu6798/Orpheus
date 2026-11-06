@@ -1,11 +1,12 @@
-"""motion.prepare_keypoints: 合成の 70 点（SAM 3D Body と同じ並び）で、整える手順の各段を確かめる。実際の推定の精度は見ない。"""
+"""motion.prepare_keypoints と check.motion: 合成の 70 点（SAM 3D Body と同じ並び）で、整える手順の各段と、動きの数の測り方を
+確かめる。実際の推定の精度や、動きの良し悪しは見ない。"""
 import json
 import math
 
 import numpy as np
 import pytest
 
-from model3d import motion
+from model3d import checks, motion
 from model3d.io import ToolError, atomic_json
 
 
@@ -282,3 +283,126 @@ def test_the_operation_rejects_an_npz_without_keypoints(tmp_path):
     np.savez(tmp_path / "other.npz", points=np.zeros((10, 70, 3)))
     with pytest.raises(ToolError, match="pred_keypoints_3d"):
         get("motion.prepare_keypoints").function({"keypoints": tmp_path / "other.npz"}, {}, {}, None)
+
+
+def prepared_clip(frames=60):
+    keypoints, translation = to_camera(skeleton(frames))
+    points, stance, _ = motion.prepare(keypoints, translation, contact="relative", step_split=0.06)
+    return points, stance
+
+
+def test_swivel_is_the_angle_between_knee_and_foot_around_the_leg():
+    points = np.zeros((2, 70, 3))
+    points[:, 9], points[:, 11], points[:, 13] = [0.0, 0.0, 1.0], [0.0, -0.3, 0.55], [0.0, 0.0, 0.1]   # 膝が前へ出て曲がる
+    points[:, 17] = [0.0, 0.0, 0.05]                                                                       # かかと
+    turn = math.radians(70)
+    points[:, 15] = points[:, 16] = [0.15 * math.sin(turn), -0.15 * math.cos(turn), 0.05]               # つま先が脚の軸のまわりに 70°
+    angle, bend = checks.leg_swivel(points, 9, 11, 13, (15, 16), 17)
+    knee_angle = math.degrees(math.acos((0.3 * 0.3 - 0.45 * 0.45) / (0.3 * 0.3 + 0.45 * 0.45)))   # 膝での骨どうしの角度
+    assert np.allclose(angle, 70.0, atol=1e-6) and np.allclose(bend, 180 - knee_angle, atol=1e-6)
+    points[:, 11] = [0.0, 0.0, 0.55]                                                                       # 膝が軸の上: 向きが決まらない
+    assert np.isnan(checks.leg_swivel(points, 9, 11, 13, (15, 16), 17)[0]).all()
+
+
+def test_motion_check_measures_a_clean_clip_without_judging_it():
+    points, stance = prepared_clip()
+    report = checks.motion(points, stance)
+    assert report["pass"] is None and report["failures"] == [] and report["settings"]["contact_from"] == "stance"
+    assert all(report["floor"][side]["depth_m"] < 0.003 for side in motion.SIDES)
+    assert report["steps"]["right_wrist"]["max_m"] < 0.01
+    assert all(segment["spread"] < 0.01 for segment in report["segments"].values())
+    generous = {"max_skate_fraction": 1.0, "max_floor_depth_m": 0.01, "max_step_m": 0.1, "max_length_spread": 0.05}
+    assert checks.motion(points, stance, thresholds=generous)["pass"] is True
+    window = checks.motion(points, stance, frames=(10, 30))
+    assert window["frames"] == [10, 30] and window["skate"]["left"]["contact_frames"] <= 20
+
+
+def test_motion_check_finds_skating_sinking_jumping_and_stretching():
+    points, stance = prepared_clip()
+    bad, contact = points.copy(), stance.copy()
+    left_foot = list(motion.LEGS[0][3])
+    bad[20:30, left_foot, 0] += np.linspace(0.0, 0.3, 10)[:, None]          # 接地中に 30 cm 滑る（1 m/s ほど）
+    bad[30:, left_foot, 0] += 0.3
+    bad[40:45, left_foot, 2] -= 0.04                                         # 床へ 4 cm めり込む
+    contact[20:45, 0] = 1.0
+    bad[50, 41] += [0.0, 0.0, 0.2]                                           # 右手首が 1 コマだけ 20 cm 跳ぶ
+    bad[::2, 62] = bad[::2, 7] + (bad[::2, 62] - bad[::2, 7]) * 1.15        # 左の前腕が 1 コマおきに 15% 伸びる
+    report = checks.motion(bad, contact, thresholds={"max_skate_fraction": 0.05, "max_floor_depth_m": 0.01,
+                                                     "max_step_m": 0.1, "max_length_spread": 0.05})
+    assert report["pass"] is False
+    text = " ".join(report["failures"])
+    assert "left: 接地中の足の滑り" in text and "left: 接地中に床へ" in text and "right_wrist" in text and "left_forearm" in text
+    assert report["floor"]["left"]["depth_m"] >= 0.035 and report["skate"]["left"]["max_contact_speed_mps"] > 0.8
+    assert report["steps"]["right_wrist"] == {"max_m": pytest.approx(0.2, abs=0.01), "frame": 50}
+
+
+def test_motion_check_compares_thresholds_with_unrounded_values():
+    # 報告は 4 桁に丸めるが、しきい値とは丸める前の値で比べる（0.10004 m は 0.1 と書かれても 0.1 を超えている）
+    points, stance = prepared_clip()
+    bad, contact = points.copy(), stance.copy()
+    bad[50:, 41] += [0.0, 0.0, 0.10004]                                     # 右手首が 1 コマで 0.10004 m 動く
+    left_foot = list(motion.LEGS[0][3])
+    bad[40:45, left_foot, 2] -= 0.01004 + max(0.0, bad[40:45, left_foot, 2].min())   # 床からちょうど 0.01004 m 下
+    contact[40:45, 0] = 1.0
+    report = checks.motion(bad, contact, thresholds={"max_step_m": 0.1, "max_floor_depth_m": 0.01})
+    assert report["steps"]["right_wrist"]["max_m"] == pytest.approx(0.1, abs=1e-4)      # 丸めた報告の値
+    assert report["pass"] is False
+    text = " ".join(report["failures"])
+    assert "right_wrist" in text and "0.1000" in text and "left: 接地中に床へ 0.0100" in text
+
+
+def test_motion_check_measures_the_first_frame_of_a_window_against_the_frame_before():
+    points, stance = prepared_clip()
+    sliding, contact = points.copy(), np.ones_like(stance)
+    left_foot = list(motion.LEGS[0][3])
+    sliding[:, left_foot, 0] += np.arange(len(points))[:, None] * (1.0 / 30)   # 足がずっと 1 m/s で滑る
+    two = checks.motion(sliding, contact, frames=(10, 12), thresholds={"max_skate_fraction": 0.75})
+    assert two["skate"]["left"]["fraction"] == 1.0 and two["pass"] is False        # 2 コマとも前のコマと比べる
+    start = checks.motion(sliding, contact, frames=(0, 2))
+    assert start["skate"]["left"]["measured_contact_frames"] == 1 and start["skate"]["left"]["fraction"] == 1.0
+    jumped = points.copy()
+    jumped[10:, 41] += [0.0, 0.0, 0.2]                                            # 区間に入る 1 コマで手首が跳ぶ
+    assert checks.motion(jumped, stance, frames=(10, 20))["steps"]["right_wrist"] == {"max_m": pytest.approx(0.2, abs=0.01),
+                                                                                      "frame": 10}
+
+
+def test_motion_check_rejects_bad_input():
+    points, stance = prepared_clip(10)
+    with pytest.raises(ToolError, match="しきい値"):
+        checks.motion(points, stance, thresholds={"max_wobble": 1})
+    with pytest.raises(ToolError, match="frames"):
+        checks.motion(points, stance, frames=(5, 50))
+    with pytest.raises(ToolError, match="stance"):
+        checks.motion(points, stance[:5])
+    broken = points.copy()
+    broken[3, 7, 0] = np.nan
+    with pytest.raises(ToolError, match="NaN"):
+        checks.motion(broken)
+
+
+def test_the_motion_check_runs_after_preparation_in_a_recipe(tmp_path):
+    from model3d import executor
+    write_npz(tmp_path / "clip.npz")
+    steps = [{"id": "prepare", "operation": "motion.prepare_keypoints", "inputs": {"keypoints": "$inputs.clip"},
+              "parameters": {"contact": "relative", "step_split": 0.06}, "outputs": {"points": "points.npz"}},
+             {"id": "measure", "operation": "check.motion", "inputs": {"points": "$steps.prepare.points"},
+              "parameters": {"report_only": True}, "outputs": {"report": "motion.json"}},
+             {"id": "judge", "operation": "check.motion", "inputs": {"points": "$steps.prepare.points"},
+              "parameters": {"max_step_m": 0.0001}, "outputs": {"report": "judged.json"}}]
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "check",
+                                           "inputs": {"clip": {"path": "clip.npz"}}, "steps": steps})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["steps"]["measure"]["status"] == "succeeded"
+    measured = json.loads(open(result["steps"]["measure"]["artifacts"]["report"], encoding="utf-8").read())
+    assert measured["check"] == "motion" and measured["pass"] is None and "swivel" in measured
+    assert result["steps"]["judge"]["status"] == "needs_review" and result["status"] == "needs_review"
+
+
+def test_the_motion_check_operation_rejects_unknown_parameters(tmp_path):
+    from model3d.ops import get
+    points, stance = prepared_clip(10)
+    np.savez(tmp_path / "points.npz", points=points, stance=stance)
+    with pytest.raises(ToolError, match="知らないパラメーター"):
+        get("check.motion").function({"points": tmp_path / "points.npz"}, {"max_wobble": 1}, {}, None)
+    with pytest.raises(ToolError, match="frames"):
+        get("check.motion").function({"points": tmp_path / "points.npz"}, {"frames": "0:5"}, {}, None)

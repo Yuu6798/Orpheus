@@ -189,3 +189,151 @@ def continuity(track, max_jump):
     passed = not jumps and not non_finite
     return {"check": "continuity", "pass": passed, "status": "done", "frames": len(frames), "max_jump": max_jump,
             "worst_move": worst, "jumps": jumps[:50], "non_finite_frames": non_finite}
+
+
+MOTION_THRESHOLDS = ("max_swivel_deg", "max_skate_fraction", "max_floor_depth_m", "max_step_m", "max_length_spread")
+
+
+def _worst(values, frames, top):
+    order = np.argsort(-values)[:top]
+    return [[int(frames[i]), round(float(values[i]), 4)] for i in order]
+
+
+def leg_swivel(points, hip, knee, ankle, toes, heel):
+    """股関節→足首の軸のまわりで、膝の出ている向きと足の向き（かかと→つま先）の角度（度）と、膝の曲がり（度）。
+
+    向きが決まらないコマ（膝が軸の上・足が軸に沿う）は角度を NaN にする。
+    """
+    h, k, a = points[:, hip], points[:, knee], points[:, ankle]
+    axis = a - h
+    axis /= np.linalg.norm(axis, axis=1, keepdims=True)
+    knee_out = (k - h) - ((k - h) * axis).sum(1, keepdims=True) * axis
+    foot = points[:, list(toes)].mean(1) - points[:, heel]
+    foot = foot - (foot * axis).sum(1, keepdims=True) * axis
+    lengths = np.linalg.norm(knee_out, axis=1) * np.linalg.norm(foot, axis=1)
+    cosine = np.where(lengths > 1e-12, (knee_out * foot).sum(1) / np.maximum(lengths, 1e-12), np.nan)
+    angle = np.degrees(np.arccos(np.clip(cosine, -1, 1)))
+    u, v = h - k, a - k
+    bend = 180 - np.degrees(np.arccos(np.clip((u * v).sum(1) / (np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1)), -1, 1)))
+    return angle, bend
+
+
+def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03, skate_speed=0.2, floor_tolerance=0.005,
+           thresholds=None, frames=None, top=8):
+    """整えた 70 点（x 右・y 奥・z 上、m、床 z = 0）の動きを数で測る。好みは判定しない。
+
+    測るもの: 膝とつま先の向きの食い違い（膝を bend_min_deg 以上曲げたコマ）、接地中の足の滑り（水平の速さ > skate_speed）、
+    接地中の床へのめり込み、腰から見た足首・手首・鼻の 1 コマの移動、骨の長さのぶれ（(p95 − p5) / 中央値）。
+    接地は stance（motion.prepare_keypoints の重み、> 0.5）、無ければ足の最下点が contact_height 未満。
+    thresholds（MOTION_THRESHOLDS の一部）を渡したときだけ合否を出し、無ければ pass は None（測っただけ）。
+    """
+    from . import motion as mo
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 3 or points.shape[1:] != (mo.N_POINTS, 3):
+        raise ToolError(f"点は (コマ, {mo.N_POINTS}, 3) にしてください: {points.shape}")
+    if not np.isfinite(points).all():
+        raise ToolError("点に NaN・無限大があります")
+    n_all = len(points)
+    start, end = (0, n_all) if frames is None else frames
+    if not 0 <= start < end <= n_all:
+        raise ToolError(f"frames は 0 以上 {n_all} 以下の [開始, 終了) にしてください: {frames}")
+    if stance is not None:
+        stance = np.asarray(stance, dtype=np.float64)
+        if stance.shape != (n_all, 2):
+            raise ToolError(f"stance は (コマ, 2) にしてください: {stance.shape}")
+        stance = stance[start:end]
+    if end - start < 2:
+        raise ToolError("2 コマ以上が要ります")
+    whole_hip = points[:, list(mo.HIPS)].mean(axis=1)
+
+    def per_frame(values):
+        """1 つ前のコマからの移動（区間で切る前に数え、区間の最初のコマも前のコマと比べる）。クリップの最初のコマは NaN。"""
+        return np.r_[np.nan, np.linalg.norm(np.diff(values, axis=0), axis=-1)][start:end]
+
+    whole = points
+    points = points[start:end]
+    index = np.arange(start, end)
+    report = {"check": "motion", "status": "done", "frames": [int(start), int(end)], "fps": fps,
+              "settings": {"bend_min_deg": bend_min_deg, "contact_height_m": contact_height, "skate_speed_mps": skate_speed,
+                           "floor_tolerance_m": floor_tolerance, "contact_from": "stance" if stance is not None else "height"},
+              "swivel": {}, "skate": {}, "floor": {}, "steps": {}, "segments": {}}
+    # しきい値と比べるのは丸める前の値。報告に書く数だけを丸める（丸めた値で比べると、少しだけ超えた値を合格にしてしまう）
+    raw = {"swivel": {}, "skate": {}, "floor": {}, "steps": {}, "spread": {}}
+    for side, (h, k, a, toes, heel), (_, _, _, foot) in zip(mo.SIDES, mo.SWIVEL_LEGS, mo.LEGS):
+        angle, bend = leg_swivel(points, h, k, a, toes, heel)
+        bent = (bend >= bend_min_deg) & np.isfinite(angle)
+        chosen = angle[bent]
+        raw["swivel"][side] = (chosen, index[bent])
+        report["swivel"][side] = {
+            "bent_frames": int(bent.sum()), "undefined_frames": int(((bend >= bend_min_deg) & ~np.isfinite(angle)).sum()),
+            "median_deg": round(float(np.median(chosen)), 2) if len(chosen) else None,
+            "p90_deg": round(float(np.percentile(chosen, 90)), 2) if len(chosen) else None,
+            "max_deg": round(float(chosen.max()), 2) if len(chosen) else None,
+            "worst": _worst(chosen, index[bent], top) if len(chosen) else []}
+        lowest = points[:, list(foot), 2].min(axis=1)
+        contact = stance[:, mo.SIDES.index(side)] > 0.5 if stance is not None else lowest < contact_height
+        speed = per_frame(whole[:, list(foot), :2].mean(axis=1)) * fps
+        measured = contact & np.isfinite(speed)      # 前のコマが無いコマ（クリップの最初）は速さを測っていない
+        skating = measured & (speed > skate_speed)
+        raw["skate"][side] = float(skating.sum() / max(measured.sum(), 1))
+        raw["floor"][side] = float(max(0.0, -lowest[contact].min())) if contact.any() else 0.0
+        report["skate"][side] = {
+            "contact_frames": int(contact.sum()), "measured_contact_frames": int(measured.sum()),
+            "skating_frames": int(skating.sum()), "fraction": round(raw["skate"][side], 4),
+            "max_contact_speed_mps": round(float(speed[measured].max()), 4) if measured.any() else None,
+            "worst": _worst(speed[measured], index[measured], top) if measured.any() else []}
+        below = contact & (lowest < -floor_tolerance)
+        report["floor"][side] = {
+            "depth_m": round(float(max(0.0, -lowest[contact].min())), 4) if contact.any() else 0.0,
+            "frames_below": int(below.sum()),
+            "max_height_in_contact_m": round(float(lowest[contact].max()), 4) if contact.any() else None,
+            "worst": _worst(-lowest[below], index[below], top)}
+    for name, joint in mo.TRACKED.items():
+        step = per_frame(whole[:, joint] - whole_hip)
+        raw["steps"][name] = float(np.nanmax(step))
+        report["steps"][name] = {"max_m": round(raw["steps"][name], 4), "frame": int(index[int(np.nanargmax(step))])}
+    centre_step = per_frame(whole_hip)
+    report["steps"]["hip_centre"] = {"max_m": round(float(np.nanmax(centre_step)), 4),
+                                     "frame": int(index[int(np.nanargmax(centre_step))])}
+    for name, (a, b) in mo.SEGMENTS.items():
+        length = np.linalg.norm(points[:, b] - points[:, a], axis=1)
+        middle = float(np.median(length))
+        raw["spread"][name] = float((np.percentile(length, 95) - np.percentile(length, 5)) / middle) if middle > 0 else None
+        report["segments"][name] = {
+            "median_m": round(middle, 4), "min_m": round(float(length.min()), 4), "max_m": round(float(length.max()), 4),
+            "spread": None if raw["spread"][name] is None else round(raw["spread"][name], 4)}
+    thresholds = {k: v for k, v in (thresholds or {}).items() if v is not None}
+    unknown = set(thresholds) - set(MOTION_THRESHOLDS)
+    if unknown:
+        raise ToolError(f"知らないしきい値: {sorted(unknown)}（使えるのは {list(MOTION_THRESHOLDS)}）")
+    report["thresholds"] = thresholds
+    if not thresholds:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+        return report
+    failures = []
+    for side in mo.SIDES:
+        limit = thresholds.get("max_swivel_deg")
+        angles, at = raw["swivel"][side]
+        if limit is not None and len(angles) and angles.max() > limit:
+            over = angles > limit
+            examples = _worst(angles[over], at[over], 3)
+            failures.append(f"{side}: 膝とつま先の食い違いが {limit}° を超えるコマが {int(over.sum())} あります"
+                            f"（最大 {angles.max():.6g}°、例 {examples}）")
+        limit = thresholds.get("max_skate_fraction")
+        if limit is not None and raw["skate"][side] > limit:
+            failures.append(f"{side}: 接地中の足の滑りが {raw['skate'][side]:.6g}（しきい値 {limit}）")
+        limit = thresholds.get("max_floor_depth_m")
+        if limit is not None and raw["floor"][side] > limit:
+            failures.append(f"{side}: 接地中に床へ {raw['floor'][side]:.6g} m めり込んでいます（しきい値 {limit} m）")
+    limit = thresholds.get("max_step_m")
+    if limit is not None:
+        for name, value in raw["steps"].items():
+            if value > limit:
+                failures.append(f"{name}: コマ {report['steps'][name]['frame']} で 1 コマに {value:.6g} m 動いています（しきい値 {limit} m）")
+    limit = thresholds.get("max_length_spread")
+    if limit is not None:
+        for name, value in raw["spread"].items():
+            if value is not None and value > limit:
+                failures.append(f"{name}: 骨の長さのぶれが {value:.6g}（しきい値 {limit}）")
+    report.update({"pass": not failures, "failures": failures})
+    return report
