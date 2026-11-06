@@ -102,7 +102,11 @@ def _render_error_summary(stderr):
 
 
 def run(args, log=None, cwd=None):
-    result = subprocess.run([str(a) for a in args], cwd=cwd, capture_output=True,
+    # 出力は UTF-8 で読む。Windows の Python の子はパイプへ ANSI コードページ（cp932 など）で書くので、
+    # 子の標準入出力を UTF-8 にそろえる（利用者が PYTHONIOENCODING を決めていればそれを使う）。
+    env = {**os.environ}
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    result = subprocess.run([str(a) for a in args], cwd=cwd, capture_output=True, env=env,
                             text=True, encoding="utf-8", errors="replace", shell=False)
     log_error = None
     if log:
