@@ -17,7 +17,8 @@
 --skip-vertices の npz の真偽の配列は、すべて合わせて「胴の面として数えない頂点」にする（髪の前に手があるだけで内側と判定しない）。
 頂点の数が合うメッシュにだけ当てる。
 
-出力: --out-blend（骨に動きを打った .blend）、--pose（コマごとの骨の行列。names・rest・tail・pose・world の npz）、--report（JSON）。
+出力: --out-blend（骨に動きを打った .blend。シーンの model3d_points_frames に、各コマが points の何コマ目かを残す）、
+--pose（コマごとの骨の行列。names・rest・tail・pose・world・frames の npz）、--report（JSON）。
 **検証**: 本物の Blender 4.5.15 で、試作と同じ入力から同じ骨の行列になることを確かめた（docs/model3d.md）。CI には Blender が無い。
 """
 import argparse
@@ -439,6 +440,7 @@ def main(argv=None):
     sc.render.fps = a.fps
     sc.frame_start = 1
     sc.frame_end = len(fr)
+    sc["model3d_points_frames"] = [int(t) for t in fr]   # 各コマが points の何コマ目か（後の工程が接地の印を合わせる）
     for k, t in enumerate(fr, start=1):
         pose_frame(t)
         for b in pb:
