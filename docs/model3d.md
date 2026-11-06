@@ -192,7 +192,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
 | `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
 | `external.run` | 任意 → 任意 | 設定 JSON の argv で別プロセスを呼ぶ（`{入力名}`・`{出力名}`・`{work}`）。版・ライセンス・重み・実行ファイルの sha256 を記録。シェルは使わない。任意の `review_note`（空でない文字列）は `unresolved` に残して `needs_review` にする。再利用しない |
-| `blender.run_script` | 任意 → 任意 | `blender --background [blend] --python script -- args…`。再利用しない。**未検証** |
+| `blender.run_script` | 任意 → 任意 | `blender --background --factory-startup [blend] --python script -- args…`（利用者の設定・アドオンが要るときだけ `factory_startup: false`）。再利用しない。起動は本物の Blender で確かめた。recipe の工程としては**未検証** |
 
 `mesh.weld` のウェイト移し替えは結合時に得た正確な頂点対応だけを使う。別メッシュへの近傍転送ではない。
 元のリグが入力の頂点数・topology と一致しなければ止まり、未正規化や負のウェイトを黙って修復しない。
@@ -296,8 +296,20 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
 - **Blender**（`model3d blender observe --blender EXE --blend FILE --out obs.json`）: `blender_adapter/observe.py` を Blender の中で動かし、
   オブジェクト・骨・ウェイトの要約・modifier・シェイプキーを Observation3D に書く。`model3d blender script` で任意のスクリプトを呼ぶ。
   観測の `space` は `rest` のみ。骨は armature-local の rest 座標、`matrix_world` は現在の object-local→world 変換として意味を分けて記録する。
-  world／pose の骨座標や動作フレームは評価しない。起動は `--python-exit-code 1` を `--python` より前に渡す。
-  起動の argv・版の記録・観測の整形はテストした（代役のプロセスで）。**本物の Blender では未検証**。
+  world／pose の骨座標や動作フレームは評価しない。
+  起動では、次の 2 つを渡す。
+  - `--factory-startup`: 利用者の設定・アドオン・起動用 .blend を読まず、PC ごとの差を結果に入れない。
+  - `--python-exit-code 1`: `--python` より前に置く。
+  
+  起動の argv・版の記録・観測の整形は、代役のプロセスでテストした。
+  
+  2026-11-06 に、Windows の Blender 4.5.15 で次を確かめた（実測）。
+  - スクリプトの実行（終了コード 0）、例外での終了コード 1、UTF-8 のログ（日本語も）、版の記録。
+  - 既定のシーン（Camera・Cube・Light）の観測。
+  - Blender の Python は環境変数を見ない（ignore_environment）。Windows でも UTF-8 モードで動く。
+  
+  骨やウェイトのあるキャラの観測は、まだ本物の Blender で確かめていない。
+  Windows で `model3d` の CLI の出力をファイルへ回すと、cp932 で書かれる（別件）。
 - **生成器・リギング**（`external.run`）: 設定 JSON（`docs/adapters.md` と同じ約束。`tool`・`version`・`argv`、任意で `license`・`weights`）。
   **設定の argv はローカルで実行するプログラム**なので、recipe が参照する設定は自分で中身を確かめたものだけを使う（シェルは通さず、
   実行ファイルは存在する絶対パスに限る）。Hunyuan3D-2mv・TRELLIS.2・SkinTokens などの候補は、この接続口で別プロセスとして呼ぶ想定。
@@ -320,13 +332,14 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
 3. `mv dance render` の manifest に残る素材の sha256 と、`handoff.json` の `artifact.sha256` を照合する。`mv gate check` はそのまま使える。
 
 既存制作 worker による描画と動画化は `model3d dance-recipe` の経路を使う（[手順](model3d-dance.md)）。
-Blender での30秒描画、最終品質の全編出力、汎用 `blender.run_script` の観測は別途確認が必要。
+Blender での30秒描画と最終品質の全編出力は、まだこの経路で確かめていない。リポジトリ外の手順では、2026-11-06 に 32 秒を描いた。
+汎用 `blender.run_script` を recipe の工程として通す確認も、まだしていない。
 
 ## 限界・未検証
 
 - **既存制作 worker の接続は限定的**。元 GLB／分割 GLB／FBX、採用済みのウェイト・法線・動作・補正を再利用する。
   `dance-recipe` は確認済みの配置と CLI 契約に対応し、任意の作品へ自動適応するものではない。素材・preset 自体は Git に入れない。
-- **汎用 Blender 観測・生成器・別メッシュへのリギングは未検証**。既存 worker の再実行とは区別する。
+- **汎用 Blender 観測は、既定のシーンでだけ確かめた。生成器と別メッシュへのリギングは未検証**。既存 worker の再実行とは区別する。
 - **別メッシュへの転送（CorrespondenceMap の処理）・揺れのベイクと再開・30 秒の動作検査・GLB 書き出しは未実装**。
 - 面領域は部品の名前と頂点構成に結び付けて持ち、工程の `select` で対象の面だけを加工できるが、**部位の自動分割（髪・顔・衣装を分ける処理）は無い**。
   部品の区別は名前だけで、同じ名前・同じ頂点構成の別のメッシュ（取り違えたファイルなど）は見分けられない。

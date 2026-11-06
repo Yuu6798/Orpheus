@@ -12,11 +12,17 @@ OBSERVE_SCRIPT = Path(__file__).resolve().parent / "observe.py"
 _VERSIONS = {}   # (path, mtime_ns, size) -> 版。同じ実行ファイルに何度も --version を聞かない
 
 
-def argv_for(blender, script, blend=None, args=(), background=True):
-    """Python 例外を非ゼロ終了にしてから script を実行する。`--` の後ろは script の引数。"""
+def argv_for(blender, script, blend=None, args=(), background=True, factory_startup=True):
+    """Python 例外を非ゼロ終了にしてから script を実行する。`--` の後ろは script の引数。
+
+    factory_startup（既定）は利用者の設定・アドオン・起動用 .blend を読まずに起動し、PC ごとの差を結果に入れない。
+    Blender 4.5.15 の Python は環境変数を見ず（ignore_environment）、Windows でも UTF-8 モードで動く（2026-11-06 実測）。
+    """
     argv = [str(blender)]
     if background:
         argv.append("--background")
+    if factory_startup:
+        argv.append("--factory-startup")
     if blend is not None:
         argv.append(str(blend))
     # Blender は指定が無いと Python 例外があっても終了コード 0 になり得る。
@@ -47,8 +53,12 @@ def blender_version(blender, timeout=60):
     return _VERSIONS[key]
 
 
-def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cwd=None, background=True):
-    """Blender を起動して待つ。終了コードが 0 でなければ ToolError。未検証（この環境に Blender が無い）。"""
+def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cwd=None, background=True,
+                factory_startup=True):
+    """Blender を起動して待つ。終了コードが 0 でなければ ToolError。
+
+    Windows の Blender 4.5.15 で、起動・ログ・終了コード・版の記録を確かめた（2026-11-06）。CI には Blender が無い。
+    """
     blender, script = Path(blender), Path(script)
     if not blender.is_absolute() or not blender.is_file():
         raise ToolError(f"Blender の実行ファイルは存在する絶対パスにしてください: {blender}")
@@ -56,7 +66,7 @@ def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cw
         raise ToolError(f"スクリプトが見つかりません: {script}")
     if blend is not None and not Path(blend).is_file():
         raise ToolError(f".blend が見つかりません: {blend}")
-    argv = argv_for(blender, script, blend, args, background)
+    argv = argv_for(blender, script, blend, args, background, factory_startup)
     began = time.monotonic()
     environment = {**os.environ, "PYTHONUNBUFFERED": "1"}
     try:

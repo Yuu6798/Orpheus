@@ -66,8 +66,13 @@ def test_external_run_operation_through_the_executor(tmp_path):
 
 def test_blender_argv_order_and_validation(tmp_path):
     argv = launcher.argv_for("/opt/blender", "/x/observe.py", "/x/scene.blend", ["--out", "o.json"])
-    assert argv == ["/opt/blender", "--background", "/x/scene.blend", "--python-exit-code", "1", "--python", "/x/observe.py", "--", "--out", "o.json"]
-    assert launcher.argv_for("/opt/blender", "/x/s.py", background=False) == ["/opt/blender", "--python-exit-code", "1", "--python", "/x/s.py"]
+    assert argv == ["/opt/blender", "--background", "--factory-startup", "/x/scene.blend",
+                    "--python-exit-code", "1", "--python", "/x/observe.py", "--", "--out", "o.json"]
+    assert launcher.argv_for("/opt/blender", "/x/s.py", background=False) == [
+        "/opt/blender", "--factory-startup", "--python-exit-code", "1", "--python", "/x/s.py"]
+    # 利用者の設定・アドオンが要るスクリプトだけ外せる
+    assert launcher.argv_for("/opt/blender", "/x/s.py", factory_startup=False) == [
+        "/opt/blender", "--background", "--python-exit-code", "1", "--python", "/x/s.py"]
     with pytest.raises(ToolError, match="絶対パス"):
         launcher.run_blender("blender", tmp_path / "s.py")
     fake = tmp_path / "blender"
