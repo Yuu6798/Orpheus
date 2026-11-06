@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from mv_pipeline import cli
@@ -67,7 +68,7 @@ def test_line_count_mismatch_stays_unknown(lines):
     out, timed = convert(analysis(lines), response(TWO_LINES), 0.0)
     assert all(r["timing_source"] == "unknown" and r["start_s"] is None and r["end_s"] is None for r in out["lyrics"])
     assert all("行数が違う" in r["reason"] for r in out["lyrics"])
-    assert all(line["words"] is None for line in timed["lines"])
+    assert all("words" not in line for line in timed["lines"])
 
 
 def test_one_different_line_makes_every_line_unknown():
@@ -82,8 +83,8 @@ def test_spacing_width_and_punctuation_differences_still_match():
     out, timed = convert(analysis(["ｂｌｕｅ、SKY!", "あおい　そら"]), response(words), 0.0)
     assert spans(out["lyrics"]) == [("model", 0.5, 1.5), ("model", 2.0, 3.0)]
     assert [r["text"] for r in out["lyrics"]] == ["ｂｌｕｅ、SKY!", "あおい　そら"]  # 歌詞の行の字のまま
-    # 字面が違う行は、つないだ語が text と一致しないので語に分けない
-    assert all(line["words"] is None and "字面" in line["reason"] for line in timed["lines"])
+    # 字面が違う行は、つないだ語が text と一致しないので語に分けない（words を付けない）
+    assert all("words" not in line and "字面" in line["reason"] for line in timed["lines"])
 
 
 def test_word_crossing_a_line_boundary_does_not_guess_the_boundary():
@@ -126,7 +127,7 @@ def test_same_count_but_outside_the_clip_is_unknown():
     out, timed = convert(analysis(["あおい そら", "しろい くも", "くろい くも"], duration=5.0), response(words), 0.0)
     assert spans(out["lyrics"]) == [("model", 0.5, 1.5), ("unknown", None, None), ("unknown", None, None)]
     assert all("範囲の外" in r["reason"] for r in out["lyrics"][1:])
-    assert timed["lines"][1]["words"] is None
+    assert "words" not in timed["lines"][1]
 
 
 def test_words_join_to_the_line_text_for_dance_spec():
@@ -137,6 +138,21 @@ def test_words_join_to_the_line_text_for_dance_spec():
     assert all("".join(word["text"] for word in l["words"]) == l["text"] for l in timed["lines"])
     assert (line["start"], line["end"], line["interpolated_words"]) == (2.75, 4.85, [])
     assert timed["review_status"] == "unreviewed" and timed["offset_s"] == 0.25
+
+
+def dance_line_errors(line):
+    """text・start・end・words（あれば）を写して layer を足した行を、dance spec のスキーマで見る。"""
+    root = json.loads((Path(__file__).resolve().parents[1] / "src/mv_pipeline/dance/dance_shot.schema.json").read_text(encoding="utf-8"))
+    schema = {"$defs": root["$defs"], **root["properties"]["lyrics"]["properties"]["lines"]["items"]}
+    copied = {"layer": "band", **{key: line[key] for key in ("text", "start", "end", "words") if key in line}}
+    return list(jsonschema.Draft202012Validator(schema).iter_errors(copied))
+
+
+def test_copied_lines_pass_the_dance_spec_schema():
+    _, split = convert(analysis(["あおい そら", "しろい くも ながれる"]), response(TWO_LINES), 0.0)
+    _, whole = convert(analysis(["Blue sky!"]), response([w("Blue", 0.5, 0.9), w(" sky", 0.9, 1.5)]), 0.0)
+    assert "words" not in whole["lines"][0]  # 字面が違うので語に分けない。行だけで描かれる
+    assert all(not dance_line_errors(line) for line in split["lines"] + whole["lines"])
 
 
 @pytest.mark.parametrize("status", ["processing", "unavailable"])

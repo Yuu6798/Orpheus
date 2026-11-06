@@ -83,7 +83,7 @@ uv run mv import-alignment projects/song-a projects/song-a/work/suno-alignment.j
 
 ### 語の秒（dance spec 用）
 
-`--words-output words.json` で行ごとの語の秒も書き出します。`lines[]` の `text`・`start`・`end`・`words` はdance specの `lyrics.lines[]` にそのまま貼れます（`layer` は足します）。
+`--words-output words.json` で行ごとの語の秒も書き出します。`lines[]` の `text`・`start`・`end`・`words`（あれば）を写して `layer` を足すと、dance specの `lyrics.lines[]` の行になります。`id`・`timing_source`・`interpolated_words`・`reason` は確かめるための印で、dance specのスキーマが受け付けないので写しません。unknownの行は `start`・`end` がnullなので使えません。
 
 ```json
 {"id": "lyric-001", "text": "窓の向こうへ", "timing_source": "model", "start": 1.0, "end": 3.0,
@@ -92,7 +92,7 @@ uv run mv import-alignment projects/song-a projects/song-a/work/suno-alignment.j
 ```
 
 - 秒はプロジェクトの切り出し音源の秒（Sunoの秒 + offset_s）です。dance specの `audio` がその切り出し音源で `offset_s` が0なら、動画の秒と同じです。
-- `words` をつなぐと `text` と一致します（dance specの決まり）。Sunoの字が歌詞の行と字面で違う行（空白・記号・全角半角だけの違い）は語に分けず、`words` をnullにします。
+- `words` をつなぐと `text` と一致します（dance specの決まり）。Sunoの字が歌詞の行と字面で違う行（空白・記号・全角半角だけの違い）や、秒の無い語がある行は語に分けず、`words` を付けません（dance specでは行だけで描かれます）。
 - `interpolated_words` は `success: false` の語の番号（0から）です。`start`・`end` は歌っている間なので、字を出す長さは作品ごとに決めます。
 
 公式API参照：[Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)、[Demucs](https://github.com/facebookresearch/demucs)。

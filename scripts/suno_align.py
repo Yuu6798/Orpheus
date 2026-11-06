@@ -141,13 +141,16 @@ def match(lyrics, words, offset_s, duration_s):
 
 
 def word_lines(rows, chosen, words, offset_s):
-    """dance spec の lyrics.lines[] に貼れる形（start・end・words[].t は切り出しの秒）。words をつなぐと text になる。"""
+    """dance spec の lyrics.lines[] に写せる形（start・end・words[].t は切り出しの秒）。words をつなぐと text になる。
+
+    語の秒を出せない行には words を付けない（null だと dance spec のスキーマが通らない。無ければ行だけで描かれる）。
+    """
     def shift(value):
         return None if value is None else round(value + offset_s, 6)
     out = []
     for row, line in zip(rows, chosen):
         item = {"id": row["id"], "text": row["text"], "timing_source": row["timing_source"],
-                "start": shift(row["start_s"]), "end": shift(row["end_s"]), "words": None}
+                "start": shift(row["start_s"]), "end": shift(row["end_s"])}
         starts = [] if line is None else [seconds(words[k].get("start_s")) for k, _ in line["parts"]]
         if row["timing_source"] == "unknown":
             item["reason"] = row["reason"]
