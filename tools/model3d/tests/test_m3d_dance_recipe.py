@@ -11,6 +11,10 @@ from model3d import dance_recipe as dance
 from model3d import executor
 
 
+# 再利用ファイルの名前は非公開の worker 一式のもので、preset の reused で渡す。ここでは合成の名前を使う。
+REUSED = ("parts_w.npz", "parts_n.npz", "chains.npz", "torso_cut.npy", "atlas.png", "clip/clip_p.blend")
+
+
 def dump(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value))
@@ -178,7 +182,7 @@ def test_recipe_binds_sources_but_not_completed_character(tmp_path, monkeypatch)
     root.mkdir()
     for name in dance.WORKERS:
         (root / name).write_text("# fake private worker")
-    for name in dance.REUSED:
+    for name in REUSED:
         file = root / "upstream/models/mv" / name
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_bytes(b"accepted input")
@@ -193,7 +197,7 @@ def test_recipe_binds_sources_but_not_completed_character(tmp_path, monkeypatch)
     dump(source.parent / "manifest.json", [{"name": source.name, "sha256": dance.digest(source)}])
     dump(root / "keys.json", {"frames": 147, "fps": 30})
     preset = dump(root / "preset.json", {"recipe": "upstream", "source_assets": "source", "light_keys": "keys.json",
-                                        "render_profiles": {"preview": {}}})
+                                        "render_profiles": {"preview": {}}, "reused": list(REUSED)})
     sheet = root / "sheet.png"
     sheet.write_bytes(b"sheet")
     face = dump(root / "face.json", {"inputs": {"geometry_npz": "old/parts.npz", "normals_npz": "old/normals.npz",
@@ -305,7 +309,7 @@ else: raise ValueError(args)
 """)
     for name in ("run_upstream_blender.py", "render_stage.py"):
         (root / name).write_text("# synthetic worker placeholder")
-    for name in dance.REUSED:
+    for name in REUSED:
         file = root / "upstream/models/mv" / name
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_bytes(b"accepted input")
@@ -318,7 +322,8 @@ else: raise ValueError(args)
     dump(source.parent / "manifest.json", [{"name": source.name, "sha256": dance.digest(source)}])
     dump(root / "keys.json", {"frames": 9, "fps": 30})
     preset = dump(root / "preset.json", {"recipe": "upstream", "source_assets": "source", "light_keys": "keys.json",
-                                        "render_profiles": {"preview": {}}})
+                                        "render_profiles": {"preview": {}}, "reused": list(REUSED),
+                                        "face_atlas": "atlas.png"})
     (root / "sheet.png").write_bytes(b"sheet")
     face = dump(root / "face.json", {"inputs": {"geometry_npz": "old/parts.npz", "normals_npz": "old/normals.npz",
                                                "part_name": "part", "sheet": "sheet.png"}})
@@ -406,6 +411,30 @@ def test_noncanonical_private_layout_is_rejected(tmp_path, monkeypatch):
         dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
 
 
+@pytest.mark.parametrize("reused", [None, [], [""], ["parts_w.npz", "parts_w.npz"], ["../keys.json"], ["missing.npz"]],
+                         ids=["absent", "empty", "blank", "duplicate", "outside", "missing"])
+def test_bundle_preset_must_list_the_reused_files(tmp_path, monkeypatch, reused):
+    root, preset, face, python, blender = fake_bundle(tmp_path, monkeypatch)
+    setting = dance.read(preset)
+    setting.pop("reused") if reused is None else setting.update(reused=reused)
+    dump(preset, setting)
+    with pytest.raises(ValueError, match="reused"):
+        dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
+    assert not (tmp_path / "recipe").exists()
+
+
+@pytest.mark.parametrize("atlas", [None, "sheet.png"], ids=["absent", "not reused"])
+def test_model3d_face_config_needs_the_preset_atlas_among_reused_files(tmp_path, monkeypatch, atlas):
+    root, preset, _, python, blender = fake_bundle(tmp_path, monkeypatch)
+    face = native_face(root)
+    setting = dance.read(preset)
+    setting.pop("face_atlas") if atlas is None else setting.update(face_atlas=atlas)
+    dump(preset, setting)
+    with pytest.raises(ValueError, match="face_atlas"):
+        dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
+    assert not (tmp_path / "recipe").exists()
+
+
 NATIVE_REBUILD = COMMON + """import shutil
 job=Path(arg('--job'))
 emit(job/'models/mv/char_o.blend',b'rebuilt from raw')
@@ -433,7 +462,7 @@ def native_face(root):
     parts_npz(root / "synthetic")
     (root / "rebuild_recipe.py").write_text(NATIVE_REBUILD.replace("import shutil", "import shutil\nSTAGES=" + repr(list(dance.REBUILD_STAGES))))
     (root / "apply_texture.py").write_text(NATIVE_APPLY)
-    Image.fromarray(np.full((64, 64, 3), 128, dtype=np.uint8)).save(root / "upstream/models/mv/basecolor_fix3.png")
+    Image.fromarray(np.full((64, 64, 3), 128, dtype=np.uint8)).save(root / "upstream/models/mv/atlas.png")
     sheet = np.zeros((128, 128, 4), dtype=np.uint8)   # atlas（64²）と大きさを変え、マスクの大きさを参照画像から取ることを確かめる
     sheet[:, :64, :3], sheet[:, 64:, :3], sheet[..., 3] = (220, 30, 30), (30, 30, 220), 255
     Image.fromarray(sheet).save(root / "sheet.png")
@@ -460,14 +489,14 @@ def test_model3d_face_config_replaces_the_legacy_worker_with_texture_steps(tmp_p
     apply = next(s for s in recipe["steps"] if s["id"] == "apply_texture")
     assert apply["inputs"]["source_texture"] == "$steps.face_projection.texture"
     assert recipe["inputs"]["face_reference"]["path"] == str((root / "sheet.png").resolve())
-    assert recipe["inputs"]["face_atlas"]["path"] == str((root / "upstream/models/mv/basecolor_fix3.png").resolve())
+    assert recipe["inputs"]["face_atlas"]["path"] == str((root / "upstream/models/mv/atlas.png").resolve())
     assert not any(item["path"].endswith(dance.LEGACY_FACE_WORKER) for item in dance.read(result["inventory"])["files"])
     assert not any("review_note" in s["parameters"] for s in recipe["steps"])
 
 
 BAD_FACE_CONFIGS = {
     "unknown key": lambda c: {**c, "extra": 1},
-    "atlas is fixed to fix3": lambda c: {**c, "atlas": "sheet.png"},
+    "atlas comes from the bundle preset": lambda c: {**c, "atlas": "sheet.png"},
     "bad view": lambda c: {**c, "projection": {**c["projection"], "view": {"from": "top"}}},
     "one landmark": lambda c: {**c, "projection": {**c["projection"], "alignment": {"model": [[0, 0]], "reference": [[0, 0]]}}},
     "misspelled parameter": lambda c: {**c, "projection": {**c["projection"], "min_facng": 0.5}},

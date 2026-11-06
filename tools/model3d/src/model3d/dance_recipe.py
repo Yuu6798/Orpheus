@@ -6,8 +6,10 @@ The stage entry point uses only stdlib so worker dependencies stay isolated.
 
 A face config that declares "model3d-face-projection/0.1" replaces the legacy
 face worker with model3d's own steps (mesh.import_parts, texture.draw_mask,
-texture.project_reference). They paint the accepted basecolor_fix3.png atlas; the
-part name, reference image, mask and landmarks stay in the private config.
+texture.project_reference). They paint the accepted atlas that the bundle preset
+names in face_atlas; the part name, reference image, mask and landmarks stay in
+the private config. The files the workers reuse are listed in the preset's
+reused, so no private asset name lives in this module.
 """
 from __future__ import annotations
 
@@ -25,7 +27,6 @@ STAGES = ("rebuild", "project_reference", "apply_texture", "render", "assemble")
 REBUILD_STAGES = ("import_mesh", "import_segmentation", "label_parts", "split_parts", "dump_geometry",
                   "binding_validation", "extract_texture", "normalize_rig", "label_rig",
                   "add_secondary_bones", "bind_character", "outline")
-REUSED = ("parts_w.npz", "parts_n.npz", "chains.npz", "torso_cut.npy", "basecolor_fix3.png", "e919/e919_p.blend")
 WORKERS = ("rebuild_recipe.py", "run_upstream_blender.py", "face_project.py", "apply_texture.py",
            "dance_tool.py", "render_stage.py")
 OUTPUTS = {
@@ -40,7 +41,6 @@ OUTPUTS = {
 
 FACE_SCHEMA = "model3d-face-projection/0.1"
 FACE_KEYS = {"schema", "part_name", "reference", "mask", "projection", "notes"}
-FACE_ATLAS = "basecolor_fix3.png"     # the accepted atlas (in REUSED) that apply_texture replaces
 FACE_STEP = "face_projection"
 LEGACY_FACE_WORKER = "face_project.py"
 
@@ -116,17 +116,39 @@ def validate_frames(spec, total):
     return frames
 
 
-def face_projection_images(root, upstream, face):
+def reused_files(setting, upstream):
+    """The accepted files under upstream/models/mv that the recovered workers reuse, as the bundle preset lists them.
+
+    The names (parts, chains, the accepted atlas, the motion blend) belong to the private bundle, so they come from the
+    preset key reused instead of this module. Each must be a file inside upstream/models/mv; all of them are hashed.
+    """
+    names = setting.get("reused")
+    if (not isinstance(names, list) or not names or len(set(map(str, names))) != len(names)
+            or not all(isinstance(name, str) and name for name in names)):
+        raise ValueError("The bundle preset needs reused: the distinct files under upstream/models/mv the workers reuse")
+    base = (upstream / "models/mv").resolve()
+    paths = {}
+    for name in names:
+        path = (base / name).resolve()
+        if not path.is_relative_to(base) or not path.is_file():
+            raise ValueError(f"reused must name files inside upstream/models/mv: {name!r}")
+        paths[name] = path
+    return paths
+
+
+def face_projection_images(root, reused, atlas, face):
     """Check a model3d face projection config before anything runs and return its images by recipe input name.
 
-    The atlas is always the accepted upstream basecolor_fix3.png, the image apply_texture replaces, so texels outside
-    the face stay as accepted. Projection and mask parameters go through the same checks the steps use, so a bad view,
-    landmark, mask or a misspelled key stops here instead of after the long rebuild.
+    The atlas is the accepted image apply_texture replaces, named by the bundle preset's face_atlas and listed in its
+    reused files, so texels outside the face stay as accepted. Projection and mask parameters go through the same
+    checks the steps use, so a bad view, landmark, mask or a misspelled key stops here instead of after the long rebuild.
     """
     from PIL import Image
     from .io import ToolError, safe_path
     from .ops.texture_ops import mask_from, projection_settings
 
+    if atlas not in reused:
+        raise ValueError("A model3d face config needs the bundle preset's face_atlas: one of its reused files")
     unknown = set(face) - FACE_KEYS
     if unknown:
         raise ValueError(f"Unknown face projection keys: {sorted(unknown)}")
@@ -144,7 +166,7 @@ def face_projection_images(root, upstream, face):
                 mask_from(face["mask"], list(image.size))
     except (ToolError, OSError) as error:
         raise ValueError(f"Face projection config is invalid: {error}") from error
-    return {"face_atlas": (upstream / "models/mv" / FACE_ATLAS).resolve(strict=True), "face_reference": reference}
+    return {"face_atlas": reused[atlas], "face_reference": reference}
 
 
 def face_steps(face):
@@ -187,7 +209,8 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
     upstream = (root / setting["recipe"]).resolve(strict=True)
     if upstream != (root / "upstream").resolve():
         raise ValueError("Recovered render workers require the bundle/upstream recipe layout")
-    face_images = face_projection_images(root, upstream, face) if native else {}
+    reused = reused_files(setting, upstream)
+    face_images = face_projection_images(root, reused, setting.get("face_atlas"), face) if native else {}
     keys = (root / setting["light_keys"]).resolve(strict=True)
     animation = read(keys)
     selected = validate_frames(frames, int(animation["frames"]))
@@ -196,7 +219,7 @@ def build(out, bundle, preset, face_config, python, blender, frames="1:147:3", p
         raise ValueError(f"Unknown render profile: {profile}")
     files = {preset, face_config, keys, source / "manifest.json", Path(__file__).resolve(), python, blender}
     files.update(root / name for name in WORKERS if not (native and name == LEGACY_FACE_WORKER))
-    files.update(upstream / "models/mv" / name for name in REUSED)
+    files.update(reused.values())
     files.update(upstream.joinpath("scripts").glob("*.py"))
     for item in read(source / "manifest.json"):
         path = (source / item["name"]).resolve(strict=True)
