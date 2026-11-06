@@ -336,6 +336,21 @@ def test_motion_check_finds_skating_sinking_jumping_and_stretching():
     assert report["steps"]["right_wrist"] == {"max_m": pytest.approx(0.2, abs=0.01), "frame": 50}
 
 
+def test_motion_check_compares_thresholds_with_unrounded_values():
+    # 報告は 4 桁に丸めるが、しきい値とは丸める前の値で比べる（0.10004 m は 0.1 と書かれても 0.1 を超えている）
+    points, stance = prepared_clip()
+    bad, contact = points.copy(), stance.copy()
+    bad[50:, 41] += [0.0, 0.0, 0.10004]                                     # 右手首が 1 コマで 0.10004 m 動く
+    left_foot = list(motion.LEGS[0][3])
+    bad[40:45, left_foot, 2] -= 0.01004 + max(0.0, bad[40:45, left_foot, 2].min())   # 床からちょうど 0.01004 m 下
+    contact[40:45, 0] = 1.0
+    report = checks.motion(bad, contact, thresholds={"max_step_m": 0.1, "max_floor_depth_m": 0.01})
+    assert report["steps"]["right_wrist"]["max_m"] == pytest.approx(0.1, abs=1e-4)      # 丸めた報告の値
+    assert report["pass"] is False
+    text = " ".join(report["failures"])
+    assert "right_wrist" in text and "0.1000" in text and "left: 接地中に床へ 0.0100" in text
+
+
 def test_motion_check_rejects_bad_input():
     points, stance = prepared_clip(10)
     with pytest.raises(ToolError, match="しきい値"):

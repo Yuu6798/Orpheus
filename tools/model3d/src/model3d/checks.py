@@ -251,10 +251,13 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
               "settings": {"bend_min_deg": bend_min_deg, "contact_height_m": contact_height, "skate_speed_mps": skate_speed,
                            "floor_tolerance_m": floor_tolerance, "contact_from": "stance" if stance is not None else "height"},
               "swivel": {}, "skate": {}, "floor": {}, "steps": {}, "segments": {}}
+    # しきい値と比べるのは丸める前の値。報告に書く数だけを丸める（丸めた値で比べると、少しだけ超えた値を合格にしてしまう）
+    raw = {"swivel": {}, "skate": {}, "floor": {}, "steps": {}, "spread": {}}
     for side, (h, k, a, toes, heel), (_, _, _, foot) in zip(mo.SIDES, mo.SWIVEL_LEGS, mo.LEGS):
         angle, bend = leg_swivel(points, h, k, a, toes, heel)
         bent = (bend >= bend_min_deg) & np.isfinite(angle)
         chosen = angle[bent]
+        raw["swivel"][side] = (chosen, index[bent])
         report["swivel"][side] = {
             "bent_frames": int(bent.sum()), "undefined_frames": int(((bend >= bend_min_deg) & ~np.isfinite(angle)).sum()),
             "median_deg": round(float(np.median(chosen)), 2) if len(chosen) else None,
@@ -266,6 +269,8 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
         centre = points[:, list(foot), :2].mean(axis=1)
         speed = np.r_[0.0, np.linalg.norm(np.diff(centre, axis=0), axis=1)] * fps
         skating = contact & (speed > skate_speed)
+        raw["skate"][side] = float(skating.sum() / max(contact.sum(), 1))
+        raw["floor"][side] = float(max(0.0, -lowest[contact].min())) if contact.any() else 0.0
         report["skate"][side] = {
             "contact_frames": int(contact.sum()), "skating_frames": int(skating.sum()),
             "fraction": round(float(skating.sum() / max(contact.sum(), 1)), 4),
@@ -279,15 +284,17 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
             "worst": _worst(-lowest[below], index[below], top)}
     for name, joint in mo.TRACKED.items():
         step = np.r_[0.0, np.linalg.norm(np.diff(points[:, joint] - hip, axis=0), axis=1)]
+        raw["steps"][name] = float(step.max())
         report["steps"][name] = {"max_m": round(float(step.max()), 4), "frame": int(index[int(step.argmax())])}
     whole = np.r_[0.0, np.linalg.norm(np.diff(hip, axis=0), axis=1)]
     report["steps"]["hip_centre"] = {"max_m": round(float(whole.max()), 4), "frame": int(index[int(whole.argmax())])}
     for name, (a, b) in mo.SEGMENTS.items():
         length = np.linalg.norm(points[:, b] - points[:, a], axis=1)
         middle = float(np.median(length))
+        raw["spread"][name] = float((np.percentile(length, 95) - np.percentile(length, 5)) / middle) if middle > 0 else None
         report["segments"][name] = {
             "median_m": round(middle, 4), "min_m": round(float(length.min()), 4), "max_m": round(float(length.max()), 4),
-            "spread": round(float((np.percentile(length, 95) - np.percentile(length, 5)) / middle), 4) if middle > 0 else None}
+            "spread": None if raw["spread"][name] is None else round(raw["spread"][name], 4)}
     thresholds = {k: v for k, v in (thresholds or {}).items() if v is not None}
     unknown = set(thresholds) - set(MOTION_THRESHOLDS)
     if unknown:
@@ -298,26 +305,28 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
         return report
     failures = []
     for side in mo.SIDES:
-        swivel, skate, floor = report["swivel"][side], report["skate"][side], report["floor"][side]
         limit = thresholds.get("max_swivel_deg")
-        if limit is not None and swivel["max_deg"] is not None and swivel["max_deg"] > limit:
-            over = [w for w in swivel["worst"] if w[1] > limit]
-            failures.append(f"{side}: 膝とつま先の食い違いが {limit}° を超えるコマがあります（最大 {swivel['max_deg']}°、例 {over[:3]}）")
+        angles, at = raw["swivel"][side]
+        if limit is not None and len(angles) and angles.max() > limit:
+            over = angles > limit
+            examples = _worst(angles[over], at[over], 3)
+            failures.append(f"{side}: 膝とつま先の食い違いが {limit}° を超えるコマが {int(over.sum())} あります"
+                            f"（最大 {angles.max():.6g}°、例 {examples}）")
         limit = thresholds.get("max_skate_fraction")
-        if limit is not None and skate["fraction"] > limit:
-            failures.append(f"{side}: 接地中の足の滑りが {skate['fraction']:.1%}（しきい値 {limit:.1%}）")
+        if limit is not None and raw["skate"][side] > limit:
+            failures.append(f"{side}: 接地中の足の滑りが {raw['skate'][side]:.6g}（しきい値 {limit}）")
         limit = thresholds.get("max_floor_depth_m")
-        if limit is not None and floor["depth_m"] > limit:
-            failures.append(f"{side}: 接地中に床へ {floor['depth_m']} m めり込んでいます（しきい値 {limit} m）")
+        if limit is not None and raw["floor"][side] > limit:
+            failures.append(f"{side}: 接地中に床へ {raw['floor'][side]:.6g} m めり込んでいます（しきい値 {limit} m）")
     limit = thresholds.get("max_step_m")
     if limit is not None:
-        for name, step in report["steps"].items():
-            if name != "hip_centre" and step["max_m"] > limit:
-                failures.append(f"{name}: コマ {step['frame']} で 1 コマに {step['max_m']} m 動いています（しきい値 {limit} m）")
+        for name, value in raw["steps"].items():
+            if value > limit:
+                failures.append(f"{name}: コマ {report['steps'][name]['frame']} で 1 コマに {value:.6g} m 動いています（しきい値 {limit} m）")
     limit = thresholds.get("max_length_spread")
     if limit is not None:
-        for name, segment in report["segments"].items():
-            if segment["spread"] is not None and segment["spread"] > limit:
-                failures.append(f"{name}: 骨の長さのぶれが {segment['spread']:.1%}（しきい値 {limit:.1%}）")
+        for name, value in raw["spread"].items():
+            if value is not None and value > limit:
+                failures.append(f"{name}: 骨の長さのぶれが {value:.6g}（しきい値 {limit}）")
     report.update({"pass": not failures, "failures": failures})
     return report
