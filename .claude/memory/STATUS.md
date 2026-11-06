@@ -8,7 +8,7 @@
 
 | ID | Title | Priority | Notes |
 |---|---|---|---|
-| TOOLKIT-1 | 計画の段 1（3D 動画の道具を model3d へ）: 点の下ごしらえ → 動きの検査 → 点の手直し → 移し替え → ねじれ・手・床 → 二次の動き → ステージ描画とまとめ | P1 | リポジトリ外の 32 秒の手順が元。済み: 点の下ごしらえ `motion.prepare_keypoints`（#39。推定の癖は docs/model3d.md）、動きの検査 `check.motion`（#40）、点の手直し `motion.edit_keypoints`（#41）、移し替え `motion.retarget`（#42）、前腕のねじれの分け直し `motion.twist_split`（#43）、足を床に着ける `motion.ground_feet`（この PR）。ねじれ・手・床は骨の動きの上で直すので、移し替えの後に順番を入れ替えた。次は手の押し出し（試作は部品の名前に頼るので、体と手の頂点を骨の重みで選ぶ形にする） |
+| TOOLKIT-1 | 計画の段 1（3D 動画の道具を model3d へ）: 点の下ごしらえ → 動きの検査 → 点の手直し → 移し替え → ねじれ・手・床 → 二次の動き → ステージ描画とまとめ | P1 | リポジトリ外の 32 秒の手順が元。済み: 点の下ごしらえ `motion.prepare_keypoints`（#39。推定の癖は docs/model3d.md）、動きの検査 `check.motion`（#40）、点の手直し `motion.edit_keypoints`（#41）、移し替え `motion.retarget`（#42）、前腕のねじれの分け直し `motion.twist_split`（#43）、足を床に着ける `motion.ground_feet`（#45）、手を体から浮かせる `motion.push_hands`（この PR。試作は部品の名前と手の印に頼っていたので、体と手の点を骨の重みで選ぶ形にした）。ねじれ・手・床は骨の動きの上で直すので、移し替えの後に順番を入れ替えた。次は二次の動き（髪・帯のばね） |
 | TOOLKIT-2 | 計画の段 2（3D 初期モデルの道具を model3d へ） | P2 | 部品ラベルの移し・穴ふさぎ・法線・GLB・輪郭線・比較・投影の遮りと色合わせ |
 | TOOLKIT-3 | 計画の段 3（2D 動画の道具を fx / dance へ） | P2 | fx-timeline/0.1 ほか。FX-PIVOT-1・FX-LYRIC-1・FX-SYNC-1 を含む。fx が Remotion と同じことをできたら Remotion を外す（別の PR） |
 | TOOLKIT-4 | 計画の段 4（GPU の仕事の道具と受け渡しの決まり） | P3 | HANDOFF-1 を含む。起動は毎回ユーザーの承認。結果の検査を足すかはユーザー判断 |
