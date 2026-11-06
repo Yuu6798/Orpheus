@@ -159,6 +159,29 @@ def test_a_collider_on_one_bone_is_a_sphere_and_still_pushes():
     assert np.isfinite(spring_bones.rest_limit(nodes, capsule(1, centre, centre, 0.05))).all()
 
 
+def test_a_node_sitting_on_a_collider_axis_is_still_pushed_out():
+    nodes = np.array([[[0.0, 0.0, 1.3], [0.0, 0.0, 1.2]]])          # 静止では、2 つ目の節は軸から 0.2 m 離れている
+    targets = np.tile(np.array([[[0.0, 0.0, 1.1], [0.0, 0.0, 1.0]]]), (10, 1, 1, 1))   # 2 つ目の節の狙いは軸の上
+    col = capsule(10, [-0.2, 0.0, 1.0], [0.2, 0.0, 1.0], 0.05)
+    sim, hits = spring_bones.simulate(nodes, targets, [col])
+    stuck, _ = prototype_simulate(nodes, targets, [col], ())         # 試作の式では、軸の上で押す向きが 0 になり出られない
+    near_targets = targets.copy()
+    near_targets[..., 1, 1] = 1e-4                                   # 狙いを軸から 0.1 mm だけずらすと、試作の式でも出られる
+    near, _ = prototype_simulate(nodes, near_targets, [col], ())
+    off_axis = lambda p: np.hypot(p[1], p[2] - 1.0)                  # 軸（x の向き、y=0, z=1）までの距離
+    assert hits > 0 and off_axis(stuck[-1, 0, 1]) < 1e-9
+    assert off_axis(sim[-1, 0, 1]) == pytest.approx(off_axis(near[-1, 0, 1]), abs=1e-3)   # すぐ近くの節と同じ所に落ち着く
+
+
+def test_escape_uses_the_last_position_then_a_side_away_from_the_chain():
+    ab = np.array([0.4, 0.0, 0.0])
+    out = spring_bones.escape(np.array([[0.0, 0.03, 0.0], [0.0, 0.0, 0.0]]), ab, np.array([[0.0, 0.0, -0.1], [0.0, 0.0, -0.1]]))
+    np.testing.assert_allclose(out[0], [0, 1, 0])                    # 1 刻み前にいた側へ
+    np.testing.assert_allclose(np.abs(out[1]), [0, 1, 0])            # 軸にも鎖にも垂直（鎖に沿って押すと長さの戻しで戻る）
+    sphere = spring_bones.escape(np.zeros((1, 3)), np.zeros(3), np.array([[0.0, 0.0, -0.1]]))
+    assert abs(sphere[0] @ [0, 0, 1]) < 1e-12 and np.isclose(np.linalg.norm(sphere[0]), 1.0)
+
+
 def test_links_keep_neighbouring_chains_together():
     nodes, targets = hanging_chains(chains=2, swing=0.0)
     targets = targets.copy()

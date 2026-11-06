@@ -56,6 +56,33 @@ def along_axis(points, a, ab):
     return np.clip(((points - a) @ ab) / length2, 0, 1)
 
 
+def perpendicular(v, w=None):
+    """v に垂直な単位ベクトル。w があれば v と w の両方に垂直にする（v と w が平行なら、v に垂直なだけ）。"""
+    v = np.asarray(v, float)
+    if w is not None:
+        c = np.cross(v, w)
+        if np.linalg.norm(c) > 1e-9:
+            return c / np.linalg.norm(c)
+    c = np.cross(v, np.eye(3)[int(np.argmin(np.abs(v)))])    # v といちばん平行でない座標軸
+    return c / np.linalg.norm(c)
+
+
+def escape(offsets, ab, segments):
+    """当たりの軸の上に乗った節を押し出す向き（n, 3 の単位ベクトル）。1 刻み前の位置への向き（offsets）を使い、それも
+    軸の上なら、軸と、親の節からの向き（segments）の両方に垂直な向きにする（鎖に沿って押すと、すぐ後の長さの戻しで
+    軸の上に戻される）。球なら、親の節からの向きに垂直にする。"""
+    out = np.zeros((len(offsets), 3))
+    axis = ab / np.linalg.norm(ab) if np.linalg.norm(ab) > 1e-6 else None
+    for i, (offset, segment) in enumerate(zip(np.asarray(offsets, float), np.asarray(segments, float))):
+        if np.linalg.norm(offset) >= 1e-6:
+            out[i] = offset / np.linalg.norm(offset)
+        elif axis is not None:
+            out[i] = perpendicular(axis, segment if np.linalg.norm(segment) > 1e-9 else None)
+        else:
+            out[i] = perpendicular(segment) if np.linalg.norm(segment) > 1e-9 else (0.0, 0.0, 1.0)
+    return out
+
+
 def rest_limit(nodes, collider):
     """静止で当たりに近い節は、その近さまでを許す（最初から押し出さないように）。"""
     ab = collider["qb"] - collider["qa"]
@@ -100,7 +127,7 @@ def simulate(nodes, targets, colliders=(), links=(), fps=30, substeps=8, f_root=
             x_new[c1, 1:] -= (0.5 * over[:, None] * d)[1:]
         return x_new, (x_new - x) / dt
 
-    def collide(x, f):
+    def collide(x, f, before):
         hits = 0
         for c, dcap in zip(colliders, rest_cap):
             a0, ab = c["pa"][f], c["pb"][f] - c["pa"][f]
@@ -112,7 +139,13 @@ def simulate(nodes, targets, colliders=(), links=(), fps=30, substeps=8, f_root=
             m = ln < rc
             m[:, 0] = False
             if m.any():                                  # 1 刻みで押し切らず、少しずつ押す（毛先が急に飛ばないように）
-                x[m] += push * (q[m] + d[m] / np.maximum(ln[m, None], 1e-6) * rc[m, None] - x[m])
+                out = d / np.maximum(ln[..., None], 1e-6)
+                on_axis = m & (ln < 1e-6)                # 軸の上の節は向きが決まらないので、逃げる向きを別に決める
+                if on_axis.any():
+                    segments = np.zeros_like(x)
+                    segments[:, 1:] = x[:, 1:] - x[:, :-1]
+                    out[on_axis] = escape(before[on_axis] - q[on_axis], ab, segments[on_axis])
+                x[m] += push * (q[m] + out[m] * rc[m, None] - x[m])
                 hits += int(m.sum())
         return x, hits
 
@@ -127,8 +160,9 @@ def simulate(nodes, targets, colliders=(), links=(), fps=30, substeps=8, f_root=
         tv = (targets[f] - targets[f - 1]) * fps
         for k in range(substeps):
             tar = targets[f - 1] + (targets[f] - targets[f - 1]) * (k + 1) / substeps
+            before = x                                   # 1 刻み前の位置（軸の上に乗った節の逃げる向き）
             x, v = step(x, v, tar, tv)
-            x, h = collide(x, f)
+            x, h = collide(x, f, before)
             hits += h
         sim[f] = x
     return sim, hits
