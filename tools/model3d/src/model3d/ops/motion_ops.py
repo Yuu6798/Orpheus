@@ -187,6 +187,24 @@ def edit_keypoints(inputs, parameters, outputs, context):
                                                                          for a in applied]}])
 
 
+def _blender(parameters, context, operation):
+    blender = parameters.get("blender") or (getattr(context, "tools", None) or {}).get("blender")
+    if not blender:
+        raise ToolError(f"{operation} には Blender の実行ファイル（パラメーター blender か --tool blender=PATH）が要ります")
+    return blender
+
+
+def _bone_prefix(parameters):
+    prefix = parameters.get("bone_prefix", "mixamorig:")
+    if not isinstance(prefix, str):
+        raise ToolError(f"bone_prefix は文字列にしてください: {prefix!r}")
+    return prefix
+
+
+def _timeout(parameters):
+    return None if parameters.get("timeout") is None else number(parameters, "timeout", minimum=0, exclusive=True)
+
+
 RETARGET_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "retarget.py"
 RETARGET_PARAMETERS = {"blender", "frames", "bone_prefix", "pitch0_deg", "foot_yaw", "resolve", "smooth_arms", "check", "fps",
                        "timeout"}
@@ -207,20 +225,15 @@ def retarget(inputs, parameters, outputs, context):
     missing = [name for name in ("blend", "pose", "report") if name not in outputs]
     if missing:
         raise ToolError(f"motion.retarget には outputs の {', '.join(missing)} が要ります")
-    blender = parameters.get("blender") or (getattr(context, "tools", None) or {}).get("blender")
-    if not blender:
-        raise ToolError("motion.retarget には Blender の実行ファイル（パラメーター blender か --tool blender=PATH）が要ります")
+    blender = _blender(parameters, context, "motion.retarget")
     foot_yaw = parameters.get("foot_yaw", "toes")
     if foot_yaw not in ("toes", "heel"):
         raise ToolError(f"foot_yaw は toes か heel: {foot_yaw!r}")
     frames = parameters.get("frames", "")
     if not isinstance(frames, str) or (frames and not all(part.strip().lstrip("-").isdigit() for part in frames.replace(",", ":").split(":"))):
         raise ToolError(f"frames は a:b[:step] か 0,5,9 の文字列にしてください: {frames!r}")
-    prefix = parameters.get("bone_prefix", "mixamorig:")
-    if not isinstance(prefix, str):
-        raise ToolError(f"bone_prefix は文字列にしてください: {prefix!r}")
     args = ["--points", inputs["points"], "--character", inputs["character"], "--out-blend", outputs["blend"],
-            "--pose", outputs["pose"], "--report", outputs["report"], "--bone-prefix", prefix, "--foot-yaw", foot_yaw,
+            "--pose", outputs["pose"], "--report", outputs["report"], "--bone-prefix", _bone_prefix(parameters), "--foot-yaw", foot_yaw,
             "--fps", str(number(parameters, "fps", 30, minimum=1, integer=True))]
     if frames:
         args += ["--frames", frames]
@@ -235,9 +248,8 @@ def retarget(inputs, parameters, outputs, context):
             raise ToolError(f"{name} は true か false: {value!r}")
         if value:
             args.append(flag)
-    timeout = parameters.get("timeout")
     record = launcher.run_blender(blender, RETARGET_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
-                                  timeout=None if timeout is None else number(parameters, "timeout", minimum=0, exclusive=True))
+                                  timeout=_timeout(parameters))
     report = read_json(outputs["report"])
     info = report.get("info", {})
     observation = {"kind": "retarget", "exit_code": record["exit_code"], "seconds": record["seconds"],
@@ -246,4 +258,49 @@ def retarget(inputs, parameters, outputs, context):
                    "resolved_frames": (info.get("resolve") or {}).get("frames_fixed")}
     if report.get("check"):
         observation["check_summary"] = report["check"]["summary"]
+    return StepResult(observations=[observation])
+
+
+TWIST_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "twist_split.py"
+TWIST_PARAMETERS = {"blender", "frames", "bone_prefix", "timeout"}
+# 直した後も変わってはいけない量の許容。単精度の誤差（実測で 0.0004 mm・0.00004° ほど）より十分大きく、目に見える差より十分小さい
+TWIST_TOLERANCE = {"hand_turn_deg": 0.01, "forearm_direction_deg": 0.01, "fingertip_mm": 0.1}
+
+
+@register("motion.twist_split", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="骨へ移した動き（blend）の前腕のねじれを、肘と手首に半分ずつ持たせ直す（Blender の中で）。手の向き・前腕の向き・"
+                  "指先の位置は変えず、変わっていないことを確かめて報告に残す（許容を超えたら止まる）。frames は a:b（b を含む）で、"
+                  "既定はシーンの開始〜終了。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def twist_split(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    require(inputs, ("blend",), "motion.twist_split")
+    unknown = set(parameters) - TWIST_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.twist_split の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(TWIST_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"motion.twist_split には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "motion.twist_split")
+    frames = parameters.get("frames", "")
+    bounds = frames.split(":") if isinstance(frames, str) and frames else []
+    if (not isinstance(frames, str) or (frames and (len(bounds) != 2 or not all(b.strip().lstrip("-").isdigit() for b in bounds)
+                                                     or int(bounds[1]) < int(bounds[0])))):
+        raise ToolError(f"frames は a:b（a ≤ b、b を含む）の文字列にしてください: {frames!r}")
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--bone-prefix", _bone_prefix(parameters)]
+    if frames:
+        args += ["--frames", ":".join(b.strip() for b in bounds)]
+    record = launcher.run_blender(blender, TWIST_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    unchanged = report.get("unchanged") or {}
+    over = {name: unchanged.get(name) for name, limit in TWIST_TOLERANCE.items()
+            if not (isinstance(unchanged.get(name), (int, float)) and unchanged[name] <= limit)}
+    if over:
+        raise ToolError(f"motion.twist_split の後で手・前腕の向きか指先の位置が変わりました: {over}（許容 {TWIST_TOLERANCE}）。"
+                        "前腕や手に IK などの拘束やドライバーが掛かっているリグは扱えません")
+    observation = {"kind": "twist_split", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": report.get("frames"), "sides": report.get("sides"),
+                   "unchanged": {name: round(float(value), 4) for name, value in unchanged.items()}}
     return StepResult(observations=[observation])
