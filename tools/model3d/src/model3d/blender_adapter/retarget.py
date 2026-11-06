@@ -187,6 +187,32 @@ def main(argv=None):
     OBS = meshes
     COLLISION = a.resolve or a.check                # 刺さりの準備は、直すか検査するときだけ（重いので）
     DOM, skipped, ARMV, SURF_FACES, REST_CO, YR = {}, {}, {}, {}, {}, {}
+    # モディファイアの表示は元の状態を覚えて戻す。頂点の数を変えるもの（Decimate など）は、刺さりの計算の間だけ止める
+    # （評価した頂点と、元のメッシュの番号で作った骨・面の表がずれないように）
+    ORIGINAL_VIEW = {(ob.name, m.name): m.show_viewport for ob in meshes for m in ob.modifiers}
+    KEEP_OFF = set()
+
+    def restore_view(collision=True):
+        for ob in meshes:
+            for m in ob.modifiers:
+                m.show_viewport = ORIGINAL_VIEW[(ob.name, m.name)] and not (collision and (ob.name, m.name) in KEEP_OFF)
+        vl.update()
+
+    def evaluated_vertices(ob):
+        ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        count = len(ev.to_mesh().vertices)
+        ev.to_mesh_clear()
+        return count
+
+    for ob in (OBS if COLLISION else []):
+        if evaluated_vertices(ob) != len(ob.data.vertices):
+            for m in ob.modifiers:
+                if m.type != "ARMATURE" and m.show_viewport:
+                    m.show_viewport = False
+                    KEEP_OFF.add((ob.name, m.name))
+            vl.update()
+            if evaluated_vertices(ob) != len(ob.data.vertices):
+                raise SystemExit(f"{ob.name}: 頂点の数が評価で変わるので、刺さりの計算ができません（resolve・check を外してください）")
     if COLLISION:
         DOM = {ob.name: dom_groups(ob) for ob in OBS}
     if COLLISION and a.skip_vertices:
@@ -433,9 +459,7 @@ def main(argv=None):
             hp.matrix = m
             vl.update()
             hp.keyframe_insert("location", frame=k)
-    for o in meshes:
-        for m in o.modifiers:
-            m.show_viewport = True
+    restore_view(collision=True)                    # 刺さりの計算は、元のモディファイアで（頂点の数を変えるものは止めたまま）
     info = dict(frames=len(fr), first_frame=fr[0] if fr else None, focal=focal, pitch0_deg=PITCH0, scale=S, leg_scale=SL,
                 floor_shift=dz, floor_from="stance" if HAS_CONTACT else "foot_bones", skipped_vertices=skipped)
 
@@ -506,14 +530,15 @@ def main(argv=None):
                 print("resolve", k, "/", len(fr), flush=True)
         info["resolve"] = dict(frames_fixed=len(rlog), log={str(t_): v for t_, v in rlog.items()})
         info["before"] = {str(t_): v for t_, v in before.items()}
-        if a.smooth_arms and rlog:
+        if a.smooth_arms and rlog and len(fr) >= 2:
             # 補正はコマごとに別々に入るので腕が跳ねる。補正した区間の前後だけ、肩から見た肘と手首の通り道をならして解き直す
             n_ = len(fr)
             near = np.zeros(n_)
             for t_ in rlog:
                 near[fr.index(t_)] = 1.0
             kern = np.array([1, 2, 3, 2, 1]) / 3.0
-            wgt = np.clip(np.convolve(near, kern, mode="same"), 0, 1)
+            # 中央の n_ 個を切り出す（5 コマ以上では mode="same" と同じ。それより短いと same は 5 個を返すので切る）
+            wgt = np.clip(np.convolve(near, kern, mode="full")[2:2 + n_], 0, 1)
 
             def blur(x):
                 for _ in range(2):
@@ -609,9 +634,7 @@ def main(argv=None):
     with open(a.pose, "wb") as stream:
         np.savez(stream, names=np.array(names), rest=rest, tail=tail, pose=pose, world=np.array(arm.matrix_world),
                  frames=np.array(fr))
-    for o in meshes:
-        for m in o.modifiers:
-            m.show_viewport = True
+    restore_view(collision=False)                   # 保存するキャラのモディファイアは元の表示に戻す
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
     report = {"schema_version": "model3d-retarget/0.1", "blender": bpy.app.version_string, "bone_prefix": a.bone_prefix,
               "foot_yaw": a.foot_yaw, "resolve": a.resolve, "smooth_arms": a.smooth_arms, "info": info,
