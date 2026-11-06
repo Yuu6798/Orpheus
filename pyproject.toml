@@ -6,6 +6,8 @@ build-backend = "hatchling.build"
 name = "orpheus-mv-pipeline"
 version = "0.1.0"
 description = "Reproducible local music video pipeline"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.14"
 dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio-ffmpeg==0.6.0"]
 
