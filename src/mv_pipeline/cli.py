@@ -86,6 +86,8 @@ def _fx_parser(commands):
     legacy.add_argument("--width", type=int)
     legacy.add_argument("--height", type=int)
     legacy.add_argument("--fps", type=float)
+    legacy.add_argument("--units", choices=["seconds", "frames"], default="seconds",
+                        help="how seg START END is passed: seconds (default) or frame numbers with END excluded (needs --fps)")
     legacy.add_argument("--out", type=Path, help="default: <config dir>/fx_runs")
     legacy.add_argument("--timeout", type=float, help="seconds (default: max(600, 120 x duration))")
     legacy.add_argument("--cwd", type=Path, help="working directory for the renderer (default: its own directory)")
@@ -215,7 +217,7 @@ def fx_command(args):
     if command == "legacy":
         from .fx import legacy
         return legacy.run_legacy(args.renderer, args.config, args.start, args.duration, args.python, args.width,
-                                 args.height, args.fps, args.out, args.timeout, args.cwd, _progress)
+                                 args.height, args.fps, args.out, args.timeout, args.cwd, _progress, args.units)
     _require_fx()
     from .fx import demo, runs
     if command == "demo":
