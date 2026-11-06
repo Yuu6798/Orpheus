@@ -118,6 +118,15 @@ def main(argv=None):
     if not armatures:
         raise SystemExit("キャラの .blend にアーマチュアがありません")
     arm = armatures[0]
+    # キャラにもとからある動き（アクション・NLA）は外す。残すと、回転と腰の位置しか打ち直さないので、ほかの骨の位置などの
+    # キーが新しい動きに混ざる。ドライバーはリグの仕組みなので残す
+    cleared_animation = None
+    if arm.animation_data is not None:
+        ad = arm.animation_data
+        cleared_animation = {"action": ad.action.name if ad.action else None, "nla_tracks": len(ad.nla_tracks)}
+        ad.action = None
+        for track in list(ad.nla_tracks):
+            ad.nla_tracks.remove(track)
     meshes = [o for o in bpy.data.objects if o.type == "MESH"]
     pb = arm.pose.bones
     for b in pb:
@@ -461,7 +470,8 @@ def main(argv=None):
             hp.keyframe_insert("location", frame=k)
     restore_view(collision=True)                    # 刺さりの計算は、元のモディファイアで（頂点の数を変えるものは止めたまま）
     info = dict(frames=len(fr), first_frame=fr[0] if fr else None, focal=focal, pitch0_deg=PITCH0, scale=S, leg_scale=SL,
-                floor_shift=dz, floor_from="stance" if HAS_CONTACT else "foot_bones", skipped_vertices=skipped)
+                floor_shift=dz, floor_from="stance" if HAS_CONTACT else "foot_bones", skipped_vertices=skipped,
+                cleared_animation=cleared_animation)
 
     def counts(P):
         return {s_: {k_: int(sum(1 for d_, _ in P[s_][k_] if d_ > 0.02)) for k_ in ("hand", "forearm")} for s_ in ("L", "R")}
