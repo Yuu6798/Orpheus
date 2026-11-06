@@ -191,6 +191,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `texture.project_reference` | mesh, texture, reference [, mask] → texture [, weights, report, overlay] | 参照画像を、目印で合わせた視点からテクスチャの画素へ写す（[設定画をテクスチャへ写す](#設定画をテクスチャへ写す)）。工程の `select` で役割の面だけを塗る。1 画素も写らないとき・任意の `review_note` があるときは `needs_review`。知らないパラメーターは止める |
 | `motion.prepare_keypoints` | keypoints → points [, report] | SAM 3D Body の 70 点（npz の `pred_keypoints_3d` + `pred_cam_t`）を整える。1 コマの跳ねの除去、平滑化（奥行きは窓を広く）、床の水平化（`pitch_deg` で上書き可）、上体を起こす（`torso_back_deg`）、接地の区間で足を止める（`contact`・`step_split`）。points は x 右・y 奥・z 上・m・床 z=0 の npz（[推定した 3D の点を整える](#推定した-3d-の点を整える)）。知らないパラメーターは止める |
 | `motion.edit_keypoints` | points → points [, report] | 整えた 70 点を区間ごとに手直しする（[点を手直しする](#点を手直しする)）。`edits` に順に並べる: `head_turn`（顔の向きを足す）・`fist`（片手を握りに）・`forearm_roll`（両の拳が胸の前で回り合う動きを作り直す）。`stance` と `focal` は引き継ぐ。知らないキーは止める |
+| `motion.retarget` | points, character [, skip_vertices, head_dpitch] → blend, pose, report | 整えた 70 点を、Mixamo 式の骨のキャラ（.blend）へ Blender の中で移す（[点をキャラの骨へ移す](#点をキャラの骨へ移す)）。`resolve` で手・前腕の胴への刺さりを直す。Blender が要り、再利用しない（毎回実行） |
 | `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
 | `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
@@ -465,6 +466,55 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   - 拳の回し: 肘を止め、縦の拳、輪 7.2 × 4.5 cm を 20° 傾ける
   - 顔の向き: −22°
   - 握り: 右手
+
+## 点をキャラの骨へ移す
+
+`motion.retarget` は、整えた 70 点（`motion.prepare_keypoints` の points。手直しした後のものでもよい）を、Mixamo 式の骨（`mixamorig:Hips` など。接頭辞は `bone_prefix`）と重みを持つキャラの .blend へ移す。
+- Blender の中で動く台本 `blender_adapter/retarget.py` を、model3d の Blender の起動（`--factory-startup`）で呼ぶ。
+- 実行ファイルは、パラメーター `blender` か `model3d run --tool blender=PATH` で渡す。
+
+**骨の向きの決め方**（リポジトリ外の 32 秒の試作の手順）:
+- **腰**: 股関節の左右と、腰の中心 → 肩の中心の上向きで向きを決める。位置は、踊り手とキャラの脚の長さの比で縮めた腰の中心。
+- **背骨 3 本**: 上向きに沿わせる。左右は、腰と肩の左右を 2:1・1:2・0:1 で混ぜる。
+- **首と頭**: 両耳と鼻から、顔の上向きと左右を取る。頭の上下の基準角 `pitch0_deg`（既定はクリップの中央値）を引く。踊りの頷きで基準がずれないよう、クリップをまたいで固定できる。
+- **腕**: 上腕を肘へ、前腕を手首へ向ける。ひねりは、肘の曲がり具合で「前腕の向き」と「手の左右（人差し指 → 小指の付け根）」を混ぜる。
+- **指**: 各指の 3 本の骨を、点の並びに沿わせる（指の骨が無いリグでは飛ばす）。
+- **脚**: キャラの太もも・脛の長さで、縮めた足首の位置へ IK で届かせる。膝は点の膝の向きに曲げる。
+  - 接地のコマ（points の `stance`）は、足を床に平らに置く。
+  - 床は、接地中の足首の高さの中央値を、キャラの足首の高さに合わせて決める。
+- **足の向き**（`foot_yaw`）: `toes` は親指 → 小指の線。`heel` はかかと → つま先の向きで、推定のつま先の点が不安定なときに使う。
+
+**刺さりの直し**（`resolve: true`）:
+- 手・前腕の頂点が胴（腰・背骨・首・頭・太ももの骨に主に付いた面）の内側に入ったコマで、直す。
+  - 前腕が入ったときは、肩〜手首の軸のまわりに肘を外へ振る。
+  - 手が入ったときは、手首を外へ押して肩〜肘を解き直す。
+- 内外は、骨の軸から外向きに飛ばした光線（BVH）で見る。
+- `smooth_arms: true` は、直したコマの前後で、肩から見た肘と手首の通り道をならす。
+- 入力 `skip_vertices`（真偽の配列の npz）の頂点は、胴の面として数えない（髪の前に手があるだけで内側と判定しない）。頂点の数が合うメッシュにだけ当てる。
+
+**出力**:
+- `blend`: 骨に動きを打った .blend。
+- `pose`: コマごとの骨の行列の npz（`names`・`rest`・`tail`・`pose`・`world`・`frames`）。
+- `report`: `model3d-retarget/0.1`。
+  - 縮めた比、頭の基準角、直したコマ
+  - `check: true` のときは、コマごとの刺さり・頭と胸の角度・腕のひねりの跳び
+
+**限界**:
+- 骨の名前は Mixamo 式に限る（役割の地図からの対応は未対応）。
+- 接地の重みが無い points では、床をつま先・足首の骨の高さから決める。その差の値（1〜8.5 cm）は人の足の目安。
+- 刺さりの直しは、腕の頂点を最初の 2 つのメッシュから取る（試作と同じ）。
+
+**確かめたこと**:
+- CI（Blender なし）では、台本の引数と、工程の受け渡しを確かめた（代役の Blender）。
+  - points・character・選んだオプションが Blender へ渡る。
+  - 出力がそろう、毎回実行する、悪い設定を止める。
+- 2026-11-06 に Windows の Blender 4.5.15 で、リポジトリ外の試作の 1 クリップ（101 コマ・65 本の骨）を、試作と同じ入力とオプションで移した。
+  - オプション: `pitch0_deg` 35、`foot_yaw` heel、`resolve`・`smooth_arms`・`check`、髪とスカートの頂点を外す。
+  - 結果は試作と一致した。
+    - 骨の行列の差の最大: 回転の成分 1.8e-5、位置 4.6 µm
+    - 直したコマ: 34
+    - 検査の要約: 同じ
+  - 101 コマで約 96 秒。
 
 ## Orpheus との接続（受け渡し）
 

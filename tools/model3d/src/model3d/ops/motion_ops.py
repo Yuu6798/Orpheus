@@ -185,3 +185,65 @@ def edit_keypoints(inputs, parameters, outputs, context):
     return StepResult(observations=[{"kind": "edit_keypoints", "edits": [{k: v for k, v in a.items()
                                                                           if k in ("kind", "start", "end", "changed_frames")}
                                                                          for a in applied]}])
+
+
+RETARGET_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "retarget.py"
+RETARGET_PARAMETERS = {"blender", "frames", "bone_prefix", "pitch0_deg", "foot_yaw", "resolve", "smooth_arms", "check", "fps",
+                       "timeout"}
+
+
+@register("motion.retarget", inputs=("points", "character", "skip_vertices", "head_dpitch"), outputs=("blend", "pose", "report"),
+          cacheable=False,
+          summary="整えた 70 点（points）を、Mixamo 式の骨のキャラ（character の .blend）へ Blender の中で移す。骨を点へ向け、脚は IK、"
+                  "接地中は足を平らに。resolve で手・前腕の胴への刺さりを直し、smooth_arms でその前後をならす。出力は動きを打った .blend・"
+                  "コマごとの骨の行列（pose の npz）・報告。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def retarget(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    require(inputs, ("points", "character"), "motion.retarget")
+    unknown = set(parameters) - RETARGET_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.retarget の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(RETARGET_PARAMETERS)}）")
+    missing = [name for name in ("blend", "pose", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"motion.retarget には outputs の {', '.join(missing)} が要ります")
+    blender = parameters.get("blender") or (getattr(context, "tools", None) or {}).get("blender")
+    if not blender:
+        raise ToolError("motion.retarget には Blender の実行ファイル（パラメーター blender か --tool blender=PATH）が要ります")
+    foot_yaw = parameters.get("foot_yaw", "toes")
+    if foot_yaw not in ("toes", "heel"):
+        raise ToolError(f"foot_yaw は toes か heel: {foot_yaw!r}")
+    frames = parameters.get("frames", "")
+    if not isinstance(frames, str) or (frames and not all(part.strip().lstrip("-").isdigit() for part in frames.replace(",", ":").split(":"))):
+        raise ToolError(f"frames は a:b[:step] か 0,5,9 の文字列にしてください: {frames!r}")
+    prefix = parameters.get("bone_prefix", "mixamorig:")
+    if not isinstance(prefix, str):
+        raise ToolError(f"bone_prefix は文字列にしてください: {prefix!r}")
+    args = ["--points", inputs["points"], "--character", inputs["character"], "--out-blend", outputs["blend"],
+            "--pose", outputs["pose"], "--report", outputs["report"], "--bone-prefix", prefix, "--foot-yaw", foot_yaw,
+            "--fps", str(number(parameters, "fps", 30, minimum=1, integer=True))]
+    if frames:
+        args += ["--frames", frames]
+    if parameters.get("pitch0_deg") is not None:
+        args += ["--pitch0", repr(float(number(parameters, "pitch0_deg")))]
+    for name, flag in (("skip_vertices", "--skip-vertices"), ("head_dpitch", "--head-dpitch")):
+        if name in inputs:
+            args += [flag, inputs[name]]
+    for name, flag in (("resolve", "--resolve"), ("smooth_arms", "--smooth-arms"), ("check", "--check")):
+        value = parameters.get(name, False)
+        if not isinstance(value, bool):
+            raise ToolError(f"{name} は true か false: {value!r}")
+        if value:
+            args.append(flag)
+    timeout = parameters.get("timeout")
+    record = launcher.run_blender(blender, RETARGET_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=None if timeout is None else number(parameters, "timeout", minimum=0, exclusive=True))
+    report = read_json(outputs["report"])
+    info = report.get("info", {})
+    observation = {"kind": "retarget", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": info.get("frames"), "scale": info.get("scale"),
+                   "leg_scale": info.get("leg_scale"), "pitch0_deg": info.get("pitch0_deg"),
+                   "resolved_frames": (info.get("resolve") or {}).get("frames_fixed")}
+    if report.get("check"):
+        observation["check_summary"] = report["check"]["summary"]
+    return StepResult(observations=[observation])
