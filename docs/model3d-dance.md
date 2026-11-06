@@ -31,6 +31,10 @@ worker 用 Python は model3d と別環境にする。確認に使う worker の
 numpy 1.26.4、scipy 1.17.1、Pillow 10.1.0、opencv-python-headless 4.11.0.86。
 Blender 4.5.15 LTS、ffmpeg と ffprobe も必要。生成器や有料 API は呼ばない。
 
+worker が再利用する採用済みのファイル（部品の重み・法線・連鎖、atlas、動きの blend など）は、worker 一式の preset の
+`reused` に `upstream/models/mv` からの相対パスで並べる（必須。名前は非公開の一式のもので、このリポジトリには書かない）。
+どれも `upstream/models/mv` の中のファイルでなければならず、入力一覧にハッシュ付きで載る。
+
 worker が呼ぶ動画ツールは、worker 一式の preset の `video_tools` で宣言できる（既定は `["ffmpeg", "ffprobe"]`）。
 ffprobe を呼ばない worker なら `["ffmpeg"]` とし、接続は宣言したツールだけが PATH にあることを確かめて版を記録する。
 worker の Python は UTF-8 モード（`PYTHONUTF8=1`）で動かす。encoding を指定しない JSON・テキストの読み込みが、
@@ -74,9 +78,9 @@ model3d の操作で設定画の顔を写す。再構築・質感の適用・描
 |---|---|---|
 | `face_mesh` | `mesh.import_parts` | 再構築した部品形状・法線の NPZ から、`part_name` の部品を読む |
 | `face_mask` | `texture.draw_mask` | `mask` の図形を参照画像の大きさで描く（`mask` が無ければこの工程は無い） |
-| `face_projection` | `texture.project_reference` | `reference` を `projection` の視点と目印で合わせ、採用済みの atlas（`upstream/models/mv/basecolor_fix3.png`）へ写す。`overlay` で位置合わせを確かめる |
+| `face_projection` | `texture.project_reference` | `reference` を `projection` の視点と目印で合わせ、採用済みの atlas（preset の `face_atlas`）へ写す。`overlay` で位置合わせを確かめる |
 
-塗る atlas は、`apply_texture` が置き換える採用済みの `basecolor_fix3.png` に固定する（顔の外の画素は採用済みのまま残る）。
+塗る atlas は、`apply_texture` が置き換える採用済みの画像で、worker 一式の preset の `face_atlas` で名前を指す（`reused` に並べたものの 1 つ。顔の外の画素は採用済みのまま残る）。顔の設定の側では atlas を選べない。
 `reference` は worker 一式の中のファイル。どちらも入力一覧にハッシュ付きで載り、recipe の入力 `face_atlas`・`face_reference` になる。
 `apply_texture` は `face_projection` の出力を受け取る（従来の設定では `project_reference` の出力）。
 部品名・画像・マスク・目印の値はキャラごとの非公開の設定に置き、Git には入れない。値の例（作り物）:
