@@ -8,7 +8,7 @@
 
 | ID | Title | Priority | Notes |
 |---|---|---|---|
-| TOOLKIT-0 | 計画の段 0（土台）: `mv fx legacy` にコマ番号で区間を渡す口、`dance_recipe.py` に残る作業用バンドルの固有名を preset のキーへ、Blender の起動（factory-startup・UTF-8）、資料のずれ（`docs/dependencies.md` の opencv の版が pyproject と違う）、Windows で `tests/test_io.py::test_success_returns_stdout_and_preserves_full_log` が落ちる（テストの子の Python がパイプへ cp932 で書き、`run` は UTF-8 で読む。Linux の CI は通る） | P1 | `docs/roadmap.md` の「ツールキットの計画」。どれも小さな PR |
+| TOOLKIT-0 | 計画の段 0（土台）: `mv fx legacy` にコマ番号で区間を渡す口、`dance_recipe.py` に残る作業用バンドルの固有名を preset のキーへ、Blender の起動（factory-startup・UTF-8） | P1 | `docs/roadmap.md` の「ツールキットの計画」。どれも小さな PR。済み: 資料の opencv の版（この PR）、Windows で子の Python の出力が化ける件（#34） |
 | TOOLKIT-1 | 計画の段 1（3D 動画の道具を model3d へ）: 点の下ごしらえ → 動きの検査 → 点の手直し → ねじれ・手・床 → 移し替え → 二次の動き → ステージ描画とまとめ | P1 | リポジトリ外の 32 秒の手順が元。推定の癖の知見（床の傾き・上体の前傾・接地など）は最初の PR の資料に書く |
 | TOOLKIT-2 | 計画の段 2（3D 初期モデルの道具を model3d へ） | P2 | 部品ラベルの移し・穴ふさぎ・法線・GLB・輪郭線・比較・投影の遮りと色合わせ |
 | TOOLKIT-3 | 計画の段 3（2D 動画の道具を fx / dance へ） | P2 | fx-timeline/0.1 ほか。FX-PIVOT-1・FX-LYRIC-1・FX-SYNC-1 を含む。fx が Remotion と同じことをできたら Remotion を外す（別の PR） |

@@ -15,7 +15,7 @@
 | numba / llvmlite | 0.63.1 / 0.46.0（Windows実行確認済みの組合せ） |
 | imageio-ffmpeg | 0.6.0 |
 | Pillow | 13.0.0 |
-| opencv-python-headless（fx extra） | 4.14.0.94（Apache-2.0。実験的な演出エンジン fx だけが使う。公開 2026-07-28、NumPy 2.3.5・Python 3.11〜3.13 で pytest 通過） |
+| opencv-python-headless（fx extra） | 5.0.0.93（Apache-2.0。実験的な fx と dance が使う。2026-10-24 に Dependabot で 4.14.0.94 から上げた。Windows の 5.0.0 は色のタグを見ずに BT.601 で読むので、dance は bt709 の動画を ffmpeg で読む。`docs/dance.md` の制限を参照） |
 | pytest（dev） | 9.0.3 |
 | pip-audit（audit group） | 2.10.1 |
 | JSON Schema | Draft 2020-12 / jsonschema 4.26.0 |
@@ -35,7 +35,7 @@
 
 ## 2026-10-24 更新（fx）
 
-- **opencv-python-headless 4.14.0.94**（`fx` extra・Apache-2.0）：実験的な演出エンジン `mv fx …` だけが使い、既存コマンドは入れなくても動きます。公開2026-07-28、cp37-abi3 の wheel、NumPy 2.3.5・Python 3.11〜3.13 で pytest 通過。導入は `uv sync --locked --extra fx`。
+- **opencv-python-headless 4.14.0.94**（`fx` extra・Apache-2.0）：実験的な演出エンジン `mv fx …` だけが使い、既存コマンドは入れなくても動きます。公開2026-07-28、cp37-abi3 の wheel、NumPy 2.3.5・Python 3.11〜3.13 で pytest 通過。導入は `uv sync --locked --extra fx`。（同じ日に Dependabot で 5.0.0.93 に上げた。今の版は上の表）
 - **fx は ffmpeg だけを使い、ffprobe に依存しません**：構造検査（technical_pass）は `ffmpeg -i` と `ffmpeg -progress` で行います。ffmpeg は PATH のもの、なければ imageio-ffmpeg 同梱版を使います（PATH に ffprobe が無い環境でも動きます）。`ORPHEUS_FFMPEG` で差し替えられます。
 - CI の python job は `--extra fx` で同期し、pytest の後に合成素材（320x180・2秒）で `mv fx demo → mv fx render` の technical_pass を確認します。
 
