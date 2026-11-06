@@ -1,12 +1,12 @@
-"""motion.prepare_keypoints と check.motion: 合成の 70 点（SAM 3D Body と同じ並び）で、整える手順の各段と、動きの数の測り方を
-確かめる。実際の推定の精度や、動きの良し悪しは見ない。"""
+"""motion.prepare_keypoints・check.motion・motion.edit_keypoints: 合成の 70 点（SAM 3D Body と同じ並び）で、整える手順の各段、
+動きの数の測り方、点の手直しを確かめる。実際の推定の精度や、動きの良し悪しは見ない。"""
 import json
 import math
 
 import numpy as np
 import pytest
 
-from model3d import checks, motion
+from model3d import checks, motion, motion_edit
 from model3d.io import ToolError, atomic_json
 
 
@@ -406,3 +406,120 @@ def test_the_motion_check_operation_rejects_unknown_parameters(tmp_path):
         get("check.motion").function({"points": tmp_path / "points.npz"}, {"max_wobble": 1}, {}, None)
     with pytest.raises(ToolError, match="frames"):
         get("check.motion").function({"points": tmp_path / "points.npz"}, {"frames": "0:5"}, {}, None)
+
+
+def test_window_weight_rises_holds_and_falls_smoothly():
+    weight = {t: motion_edit.window_weight(t, 10, 20, 4, 2, 40) for t in range(4, 24)}   # 全部効かせるのは 10〜19
+    assert weight[5] == weight[6] == 0.0 and weight[8] == pytest.approx(0.5)          # 6 から 4 コマで上がる
+    assert all(weight[t] == 1.0 for t in range(10, 20))
+    assert weight[20] == pytest.approx(0.5) and weight[21] == weight[22] == 0.0       # 19 から 2 コマで下がる
+    assert motion_edit.window_weight(1, 2, 5, 4, 0, 10) == pytest.approx(0.5)          # クリップの端では出入りを詰める
+
+
+def test_head_turn_rotates_only_the_head_about_the_ears():
+    points = skeleton(40)
+    turned, report = motion_edit.head_turn(points, 30.0, 10, 20, fade_in=4, fade_out=2)
+    for t in range(10, 20):
+        assert motion_edit.face_azimuth(turned[t]) - motion_edit.face_azimuth(points[t]) == pytest.approx(30.0)
+    ears = points[:, list(motion_edit.EARS)].mean(axis=1)
+    for i in motion_edit.HEAD:
+        assert np.allclose(np.linalg.norm(turned[:, i] - ears, axis=1), np.linalg.norm(points[:, i] - ears, axis=1))
+    others = [i for i in range(70) if i not in motion_edit.HEAD]
+    assert np.array_equal(turned[:, others], points[:, others])
+    assert np.array_equal(turned[:7], points[:7]) and np.array_equal(turned[21:], points[21:])
+    assert motion_edit.face_azimuth(turned[8]) - motion_edit.face_azimuth(points[8]) == pytest.approx(15.0)   # 出入りの途中
+    assert report["changed_frames"] == 14                                     # 7〜9 と 10〜19 と 20
+
+
+def test_fist_curls_one_hands_fingers_in_its_own_frame():
+    points = skeleton(30)
+    hand = motion_edit.HANDS["right"]
+    fisted, report = motion_edit.fist(points, "right", 10, 20, fade=3)
+    length = report["hand_length_m"]
+    fingers = [hand["fingers"][f] + j for f in hand["fingers"] for j in range(4)]
+    for t in range(10, 20):
+        spread = np.linalg.norm(fisted[t, fingers] - fisted[t, hand["wrist"]], axis=1)
+        assert spread.max() < 1.25 * length                                   # 指はみな握りの中に
+    assert np.array_equal(fisted[:, hand["wrist"]], points[:, hand["wrist"]])   # 手首は推定のまま
+    left = motion_edit.HANDS["left"]
+    left_points = [left["wrist"]] + [left["fingers"][f] + j for f in left["fingers"] for j in range(4)]
+    assert np.array_equal(fisted[:, left_points], points[:, left_points])
+    assert np.array_equal(fisted[:8], points[:8]) and report["changed_frames"] == 14   # 8・9 と 10〜19 と 20・21
+
+
+@pytest.mark.parametrize("elbows", ["fixed", "ik"])
+def test_forearm_roll_keeps_arm_lengths_and_fixed_elbows_stay_on_the_chest(elbows):
+    points = skeleton(60)
+    rolled, report = motion_edit.forearm_roll(points, 20, 40, stack=19, half=6.0, fade=4, elbows=elbows, palm="in")
+    upper, lower = report["arm_lengths_m"]["right"]
+    for side, hand in motion_edit.HANDS.items():
+        forearm = np.linalg.norm(rolled[20:40, hand["wrist"]] - rolled[20:40, hand["elbow"]], axis=1)
+        assert np.allclose(forearm, report["arm_lengths_m"][side][1], atol=1e-4)
+        if elbows == "ik":
+            arm = np.linalg.norm(rolled[20:40, hand["elbow"]] - rolled[20:40, hand["shoulder"]], axis=1)
+            assert np.allclose(arm, report["arm_lengths_m"][side][0], atol=1e-4)
+    if elbows == "fixed":
+        assert max(report["elbow_spread_m"].values()) < 1e-3                  # 肘は胸に対して止まる
+        assert 0 < max(report["forearm_swing_max_deg"].values()) < 90
+    moved = np.linalg.norm(rolled[20:40, 41] - points[20:40, 41], axis=1)
+    assert moved.max() > 0.01 and np.array_equal(rolled[:16], points[:16]) and np.array_equal(rolled[44:], points[44:])
+    assert upper > 0 and lower > 0
+
+
+def write_points(path, frames=48):
+    keypoints, translation = to_camera(skeleton(frames))
+    points, stance, _ = motion.prepare(keypoints, translation, contact="relative", step_split=0.06)
+    np.savez(path, points=points.astype(np.float32), stance=stance.astype(np.float32), focal=np.float64(1200.0))
+    return path
+
+
+def test_edit_keypoints_runs_in_a_recipe_and_carries_stance(tmp_path):
+    from model3d import executor
+    write_points(tmp_path / "points.npz")
+    edits = [{"kind": "head_turn", "frames": [10, 20], "degrees": -20, "fade_in": 3},
+             {"kind": "fist", "frames": [5, 15], "side": "left"},
+             {"kind": "forearm_roll", "frames": [20, 36], "stack": 19, "elbows": "fixed", "palm": "in"}]
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "edit",
+                                           "inputs": {"points": {"path": "points.npz"}},
+                                           "steps": [{"id": "edit", "operation": "motion.edit_keypoints",
+                                                      "inputs": {"points": "$inputs.points"}, "parameters": {"edits": edits},
+                                                      "outputs": {"points": "edited.npz", "report": "edits.json"}}]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "succeeded"
+    step = result["steps"]["edit"]
+    with np.load(step["artifacts"]["points"], allow_pickle=False) as edited, np.load(tmp_path / "points.npz") as original:
+        assert edited["points"].shape == original["points"].shape and np.array_equal(edited["stance"], original["stance"])
+        assert float(edited["focal"]) == 1200.0 and not np.array_equal(edited["points"], original["points"])
+    report = json.loads(open(step["artifacts"]["report"], encoding="utf-8").read())
+    assert report["schema_version"] == "model3d-edited-keypoints/0.1"
+    assert [e["kind"] for e in report["edits"]] == ["head_turn", "fist", "forearm_roll"]
+    assert report["edits"][2]["elbows"] == "fixed" and report["edits"][2]["half"] == 7.1
+
+
+@pytest.mark.parametrize("edit, message", [
+    ({"kind": "wave", "frames": [0, 5]}, "kind"),
+    ({"kind": "fist", "frames": [0, 5], "side": "left", "grip": 1}, "知らないキー"),
+    ({"kind": "fist", "frames": [5, 5], "side": "left"}, "frames"),
+    ({"kind": "fist", "frames": [0, 99], "side": "left"}, "frames"),
+    ({"kind": "fist", "frames": [0, 5]}, "side"),
+    ({"kind": "fist", "frames": [0, 5], "side": "middle"}, "side"),
+    ({"kind": "head_turn", "frames": [0, 5]}, "degrees"),
+    ({"kind": "head_turn", "frames": [0, 5], "degrees": 200}, "±180"),
+    ({"kind": "head_turn", "frames": [0, 5], "degrees": 10, "fade_in": 1.5}, "整数"),
+    ({"kind": "forearm_roll", "frames": [0, 5]}, "stack"),
+    ({"kind": "forearm_roll", "frames": [0, 5], "stack": 0, "palm": "up"}, "palm"),
+    ({"kind": "forearm_roll", "frames": [0, 5], "stack": 0, "half": 0}, "half"),
+])
+def test_edit_keypoints_rejects_bad_edits(tmp_path, edit, message):
+    from model3d.ops import get
+    write_points(tmp_path / "points.npz", frames=12)
+    with pytest.raises(ToolError, match=message):
+        get("motion.edit_keypoints").function({"points": tmp_path / "points.npz"}, {"edits": [edit]}, {}, None)
+
+
+def test_edit_keypoints_needs_a_list_of_edits(tmp_path):
+    from model3d.ops import get
+    write_points(tmp_path / "points.npz", frames=12)
+    for parameters in ({}, {"edits": []}, {"edits": "fist"}, {"edits": [], "extra": 1}):
+        with pytest.raises(ToolError):
+            get("motion.edit_keypoints").function({"points": tmp_path / "points.npz"}, parameters, {}, None)

@@ -190,6 +190,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `texture.draw_mask` | [like] → mask | 多角形・楕円（`angle` で傾ける）を `value` で順に塗った灰色の画像。大きさは `size` か入力 `like` の画像。`feather` で縁をぼかす。知らないパラメーターは止める |
 | `texture.project_reference` | mesh, texture, reference [, mask] → texture [, weights, report, overlay] | 参照画像を、目印で合わせた視点からテクスチャの画素へ写す（[設定画をテクスチャへ写す](#設定画をテクスチャへ写す)）。工程の `select` で役割の面だけを塗る。1 画素も写らないとき・任意の `review_note` があるときは `needs_review`。知らないパラメーターは止める |
 | `motion.prepare_keypoints` | keypoints → points [, report] | SAM 3D Body の 70 点（npz の `pred_keypoints_3d` + `pred_cam_t`）を整える。1 コマの跳ねの除去、平滑化（奥行きは窓を広く）、床の水平化（`pitch_deg` で上書き可）、上体を起こす（`torso_back_deg`）、接地の区間で足を止める（`contact`・`step_split`）。points は x 右・y 奥・z 上・m・床 z=0 の npz（[推定した 3D の点を整える](#推定した-3d-の点を整える)）。知らないパラメーターは止める |
+| `motion.edit_keypoints` | points → points [, report] | 整えた 70 点を区間ごとに手直しする（[点を手直しする](#点を手直しする)）。`edits` に順に並べる: `head_turn`（顔の向きを足す）・`fist`（片手を握りに）・`forearm_roll`（両の拳が胸の前で回り合う動きを作り直す）。`stance` と `focal` は引き継ぐ。知らないキーは止める |
 | `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
 | `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
@@ -422,6 +423,48 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   | 床へのめり込み | 最大 5.5 cm |
   | 1 コマの手首の移動 | 最大 27 cm |
   | 前腕の長さのぶれ | 13〜27% |
+
+## 点を手直しする
+
+`motion.edit_keypoints` は、推定が届かない動きを、整えた 70 点の上で作り直す。
+- 対象は、真横まで振り向く顔、画面の端や体の陰で開いた指、速い拳の回しなど。
+- 値は recipe で決める。この工程は、決めた量の処理だけを行う。
+- `edits` に手直しを順に並べると、前の手直しの結果に次の手直しを当てる（先に全部の形を確かめてから直す）。
+
+区間は `frames: [開始, 終了)`（終了のコマは含まない）。その前後の出入りのコマ（`fade`、顔は `fade_in`・`fade_out`）で、重みが smoothstep で 0 から 1 へ上がり、また下がる。クリップの端では出入りを詰める。
+
+| kind | 中身 | キー（既定） |
+|---|---|---|
+| `head_turn` | 頭の点（鼻・両目・両耳）を、両耳の中点を通る鉛直の軸のまわりに `degrees` 回す。+ は上から見て反時計回りで、顔が +x の方へ向く。移し替えは頭の向きを鼻と両耳から決めるので、首と頭が付いてくる | `degrees`（必須、±180）、`fade_in`（0）、`fade_out`（0） |
+| `fist` | 片手（`side`: `left`・`right`）の指を握りの形にする。手首の位置と手の向き（手首 → 中指の付け根、人差し指と小指の付け根）は推定のまま | `side`（必須）、`fade`（3） |
+| `forearm_roll` | 両の拳が胸の前で回り合う動きを作り直す。詳しくは下 | `stack`（必須）、ほかは下 |
+
+`forearm_roll` の中身:
+- **胸の座標**: 肩の中点を原点に、前・体の左・上の 3 つの向きを取る。
+- **回る中心**: 推定の両手首の中点の前と上を `sigma`（5）コマでならしたもの。横は `lateral`（−0.06 m）に置き、`forward_add`・`up_add`（0）を足す。
+- **両の拳**: 中心のまわりの縦長の輪に、反対向きに置く。
+  - 輪の大きさは、上下 `radius`（0.06 m）・横 `radius_lat`（0.035 m）。前へ `tilt_deg`（25°）傾ける。
+  - 半周を `half`（7.1）コマで回す。`stack` のコマで右の拳が下に来る。`direction`（1 か −1）で回る向きを決める。
+- **`elbows`（`ik`）**:
+  - `ik`: 肩から拳までを腕の長さで毎コマ解く（腕全体が動く）。
+  - `fixed`: 肘を、手が回る中心にあるときの位置に止める（胸に対して動かない。中心は胸の座標で一定）。前腕だけを肘のまわりに回す。
+- **`palm`（`down`）**:
+  - `down`: 手のひらを下と内向きにする。
+  - `in`: 内向きで親指が上の縦の拳にし、`palm_down_deg`（20°）だけ下へ傾ける。
+- **長さ**: 腕と手の長さは、クリップ全体の中央値。
+- **報告**: `fixed` では、肘のぶれと前腕の振りの最大も報告に残す。
+
+**確かめたこと**:
+- 合成の 70 点で、次を確かめた（`tests/test_m3d_motion.py`）。
+  - 出入りの重み
+  - 顔の向き: 全部効かせるコマで 30°、途中で 15°。頭の点の両耳からの距離は保たれ、ほかの点は動かない。
+  - 握り: 指はみな手の長さの 1.25 倍の中に入り、手首と反対の手は動かない。
+  - 拳の回し: 前腕の長さが保たれ、`ik` では上腕も保たれ、`fixed` では肘のぶれが 1 mm 未満。
+  - recipe での実行、悪い手直しの拒否
+- リポジトリ外の 32 秒の試作で、1 クリップに 3 つの手直しを当てた結果が、試作の点と一致した（285 コマ、差の最大 0.0002 mm）。
+  - 拳の回し: 肘を止め、縦の拳、輪 7.2 × 4.5 cm を 20° 傾ける
+  - 顔の向き: −22°
+  - 握り: 右手
 
 ## Orpheus との接続（受け渡し）
 

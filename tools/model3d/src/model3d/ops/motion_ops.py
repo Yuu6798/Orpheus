@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import motion
+from .. import motion, motion_edit
 from ..io import ToolError, atomic_json
 from . import StepResult, number, register, require
 
@@ -100,3 +100,88 @@ def prepare_keypoints(inputs, parameters, outputs, context):
                    "torso_back_deg": report["torso_back_deg"], "locked_frames": contact_report["locked_frames"],
                    "max_ankle_step_m": report["max_ankle_step_m"], **notes}
     return StepResult(observations=[observation])
+
+
+# 手直しの種類ごとのパラメーター: 名前 → (既定、検査)。None の既定は必須
+_EDITS = {
+    "head_turn": {"degrees": (None, "angle"), "fade_in": (0, "count"), "fade_out": (0, "count")},
+    "fist": {"side": (None, "side"), "fade": (3, "count")},
+    "forearm_roll": {"stack": (None, "number"), "half": (7.1, "positive"), "fade": (4, "count"), "radius": (0.06, "positive"),
+                     "radius_lat": (0.035, "nonnegative"), "tilt_deg": (25.0, "angle"), "lateral": (-0.06, "number"),
+                     "forward_add": (0.0, "number"), "up_add": (0.0, "number"), "sigma": (5.0, "positive"),
+                     "direction": (1, "direction"), "palm": ("down", "palm"), "palm_down_deg": (20.0, "angle"),
+                     "elbows": ("ik", "elbows")},
+}
+_CHOICES = {"side": motion_edit.SIDES, "direction": (1, -1), "palm": ("down", "in"), "elbows": ("ik", "fixed")}
+
+
+def _edit_settings(edit, number_of_frames, position):
+    label = f"edits[{position}]"
+    if not isinstance(edit, dict) or edit.get("kind") not in _EDITS:
+        raise ToolError(f"{label}: kind は {sorted(_EDITS)} のどれかにしてください: {edit!r}")
+    kind, spec = edit["kind"], _EDITS[edit["kind"]]
+    unknown = set(edit) - set(spec) - {"kind", "frames"}
+    if unknown:
+        raise ToolError(f"{label}（{kind}）の知らないキー: {sorted(unknown)}（使えるのは {sorted(spec)} と frames）")
+    frames = edit.get("frames")
+    if not (isinstance(frames, list) and len(frames) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in frames)
+            and 0 <= frames[0] < frames[1] <= number_of_frames):
+        raise ToolError(f"{label}: frames は 0 以上 {number_of_frames} 以下の [開始, 終了) の整数 2 つにしてください: {frames!r}")
+    settings = {"start": frames[0], "end": frames[1]}
+    for key, (default, rule) in spec.items():
+        value = edit.get(key, default)
+        if value is None:
+            raise ToolError(f"{label}（{kind}）に {key} が要ります")
+        if rule in _CHOICES:
+            if value not in _CHOICES[rule]:
+                raise ToolError(f"{label}: {key} は {_CHOICES[rule]} のどれか: {value!r}")
+        else:
+            value = number({key: value}, key, minimum=0 if rule in ("count", "nonnegative", "positive") else None,
+                           exclusive=rule == "positive", integer=rule == "count")
+            if rule == "angle" and abs(value) > 180:
+                raise ToolError(f"{label}: {key} は ±180 の中にしてください: {value!r}")
+        settings[key] = value
+    return kind, settings
+
+
+@register("motion.edit_keypoints", inputs=("points",), outputs=("points", "report"),
+          summary="整えた 70 点（motion.prepare_keypoints の points）を区間ごとに手直しする。edits に順に並べる: head_turn（顔の向きを足す）、"
+                  "fist（片手を握りに）、forearm_roll（両の拳が胸の前で回り合う動きを作り直す。elbows fixed で上腕を止める）。"
+                  "区間は frames [開始, 終了) と前後の fade。stance と focal はそのまま引き継ぐ")
+def edit_keypoints(inputs, parameters, outputs, context):
+    require(inputs, ("points",), "motion.edit_keypoints")
+    unknown = set(parameters) - {"edits"}
+    if unknown:
+        raise ToolError(f"motion.edit_keypoints の知らないパラメーター: {sorted(unknown)}（使えるのは edits）")
+    edits = parameters.get("edits")
+    if not isinstance(edits, list) or not edits:
+        raise ToolError("motion.edit_keypoints には edits（手直しの一覧）が要ります")
+    try:
+        with np.load(inputs["points"], allow_pickle=False) as data:
+            points = data["points"].astype(np.float64)
+            carried = {key: data[key] for key in data.files if key != "points"}
+    except (OSError, KeyError, ValueError) as error:
+        raise ToolError(f"points の npz を読めません（points が要ります）: {error}") from error
+    if points.ndim != 3 or points.shape[1:] != (motion.N_POINTS, 3) or not np.isfinite(points).all():
+        raise ToolError(f"points は有限の (コマ, {motion.N_POINTS}, 3) にしてください: {points.shape}")
+    plan = [_edit_settings(edit, len(points), position) for position, edit in enumerate(edits)]   # 全部確かめてから直す
+    applied = []
+    for kind, settings in plan:
+        if kind == "head_turn":
+            points, result = motion_edit.head_turn(points, settings["degrees"], settings["start"], settings["end"],
+                                                   settings["fade_in"], settings["fade_out"])
+        elif kind == "fist":
+            points, result = motion_edit.fist(points, settings["side"], settings["start"], settings["end"], settings["fade"])
+        else:
+            points, result = motion_edit.forearm_roll(points, **settings)
+        applied.append({"kind": kind, **settings, **result})
+    if not np.isfinite(points).all():
+        raise ToolError("motion.edit_keypoints: 手直しした点に NaN・無限大が出ました")
+    report = {"schema_version": "model3d-edited-keypoints/0.1", "frames": int(len(points)), "edits": applied}
+    if "points" in outputs:
+        _save_npz(outputs["points"], points=points.astype(np.float32), **carried)
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "edit_keypoints", "edits": [{k: v for k, v in a.items()
+                                                                          if k in ("kind", "start", "end", "changed_frames")}
+                                                                         for a in applied]}])
