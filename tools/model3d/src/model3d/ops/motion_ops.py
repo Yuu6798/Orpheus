@@ -304,3 +304,53 @@ def twist_split(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "frames": report.get("frames"), "sides": report.get("sides"),
                    "unchanged": {name: round(float(value), 4) for name, value in unchanged.items()}}
     return StepResult(observations=[observation])
+
+
+GROUND_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "ground_feet.py"
+GROUND_PARAMETERS = {"blender", "bone_prefix", "foot_objects", "first_points_frame", "smooth_sigma_frames", "allow_sink_mm",
+                     "timeout"}
+# 腰を動かした量と、足の一番低い点が動いた量の差の許容。単精度の誤差（0.001 mm ほど）より十分大きく、目に見える差より十分小さい
+GROUND_TOLERANCE_MM = 0.1
+
+
+@register("motion.ground_feet", inputs=("blend", "points"), outputs=("blend", "report"), cacheable=False,
+          summary="骨へ移した動き（blend）で、接地のコマ（points の stance）に足の一番低い点が床（z=0）に着くよう、腰の高さを足す"
+                  "（Blender の中で）。足の点は foot_objects のメッシュか、足の骨の重みがいちばん大きい頂点。接地の無いコマは前後から"
+                  "つなぎ、ガウスでならす。直した後に測り直し、腰を動かした量だけ足が動かなければ止まる。Blender は外部の実行ファイル"
+                  "なので再利用しない（毎回実行）")
+def ground_feet(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    require(inputs, ("blend", "points"), "motion.ground_feet")
+    unknown = set(parameters) - GROUND_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.ground_feet の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(GROUND_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"motion.ground_feet には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "motion.ground_feet")
+    args = ["--blend", inputs["blend"], "--points", inputs["points"], "--out-blend", outputs["blend"],
+            "--report", outputs["report"], "--bone-prefix", _bone_prefix(parameters),
+            "--sigma", repr(float(number(parameters, "smooth_sigma_frames", 1.5, minimum=0, exclusive=True))),
+            "--allow-sink-mm", repr(float(number(parameters, "allow_sink_mm", 3, minimum=0)))]
+    foot_objects = parameters.get("foot_objects")
+    if foot_objects is not None:
+        if not isinstance(foot_objects, list) or not foot_objects or not all(isinstance(n, str) and n for n in foot_objects):
+            raise ToolError(f"foot_objects は足のメッシュの名前（空でない文字列）の配列にしてください: {foot_objects!r}")
+        for name in foot_objects:
+            args += ["--foot-object", name]
+    if parameters.get("first_points_frame") is not None:
+        args += ["--first-points-frame", str(number(parameters, "first_points_frame", minimum=0, integer=True))]
+    record = launcher.run_blender(blender, GROUND_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    check = report.get("lift_check_mm")
+    if isinstance(check, bool) or not isinstance(check, (int, float)) or not check <= GROUND_TOLERANCE_MM:
+        raise ToolError(f"motion.ground_feet で、腰を動かした量だけ足が動きませんでした（差 {check} mm、許容 {GROUND_TOLERANCE_MM} mm）。"
+                        "足が腰の子でない・脚に IK などの拘束が掛かっているリグは扱えません")
+    observation = {"kind": "ground_feet", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": report.get("frames"),
+                   "points_frames": report.get("points_frames"), "feet_from": (report.get("feet") or {}).get("from"),
+                   "stance_frames": report.get("stance_frames"), "lift_mm": report.get("lift_mm"),
+                   "lowest_point": report.get("lowest_point"), "lift_check_mm": round(float(check), 4)}
+    return StepResult(observations=[observation])
