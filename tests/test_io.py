@@ -99,6 +99,16 @@ def test_success_returns_stdout_and_preserves_full_log(tmp_path):
     assert log.read_text(encoding="utf-8") == stdout + stderr
 
 
+def test_python_children_write_utf8_unless_the_user_chose_an_encoding(monkeypatch):
+    probe = [sys.executable, "-c", "import os, sys; sys.stdout.write(os.environ.get('PYTHONIOENCODING', ''))"]
+
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    assert run(probe) == "utf-8"
+
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8:strict")
+    assert run(probe) == "utf-8:strict"
+
+
 @pytest.mark.parametrize("operation", ["mkdir", "write_text"])
 def test_log_failure_does_not_mask_original_render_failure(tmp_path, monkeypatch, operation):
     log = tmp_path / "run" / "render.log"
