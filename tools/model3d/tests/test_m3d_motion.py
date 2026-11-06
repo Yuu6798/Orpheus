@@ -179,6 +179,28 @@ def test_a_straight_leg_bends_somewhere_finite_whatever_way_it_points(along):
         assert knee[1] < hip[1]          # 下へ伸ばした脚は従来どおりカメラの方（膝が前）へ
 
 
+def test_floor_fit_keeps_the_last_plane_when_trimming_leaves_too_few_points():
+    # 1 点が 10 回重なり、ほか 2 点。3 点を通る平面 z = 0.2 y にぴったり乗るので残差がそろい、外すと 2 点以下しか残らない
+    feet = np.array([[0.0, 0.0, 0.0]] * 10 + [[1.0, 0.0, 0.0], [0.0, 1.0, 0.2]])
+    assert np.allclose(motion.fit_floor(feet), [0.0, 0.2, 0.0], atol=1e-9)
+    assert motion.fit_floor(feet[:10]) is None                      # 1 点だけでは決まらない
+    line = np.array([[x, 0.5, 0.1 * x] for x in np.linspace(-1, 1, 9)])
+    assert motion.fit_floor(line) is None                           # 1 本の直線の上
+    assert np.allclose(motion.fit_floor(line, 0.0), [0.1, 0.0, 0.0], atol=1e-9)   # 前後の傾きを決めれば左右は当たる
+
+
+def test_a_standing_still_dancer_needs_the_pitch_and_gets_only_the_roll_measured():
+    points = skeleton(30, sway=False)                               # 足の最下点が 2 か所だけ（同じ奥行き）
+    keypoints, translation = to_camera(points)
+    with pytest.raises(ValueError, match="pitch_deg"):
+        motion.prepare(keypoints, translation)
+    prepared, _, report = motion.prepare(keypoints, translation, pitch_deg=0.0)
+    assert report["floor"]["measured_pitch_deg"] is None and report["floor"]["applied_pitch_deg"] == 0.0
+    assert abs(report["floor"]["measured_roll_deg"]) < 1e-6
+    upper = list(motion.UPPER)
+    assert np.abs(prepared[:, upper] - points[:, upper]).max() < 2e-3
+
+
 def test_prepare_refuses_to_return_nan_points(monkeypatch):
     monkeypatch.setattr(motion, "leg_ik", lambda *args: np.full(3, np.nan))   # 膝の解が壊れたとき
     keypoints, translation = to_camera(skeleton(20))

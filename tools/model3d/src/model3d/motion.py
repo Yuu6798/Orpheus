@@ -94,26 +94,54 @@ def _lowest_foot_points(points):
     return np.vstack(picked)
 
 
-def floor_plane(points):
-    """足の最下点に平面 z = a x + b y + c を当てる（高い方の点を外しながら 8 回）。(a, b, c) を返す。"""
-    feet = _lowest_foot_points(points)
+def fit_floor(feet, slope_y=None):
+    """点に平面 z = a x + b y + c を当てる（高い方の点を外しながら 8 回）。(a, b, c) を返し、決まらなければ None。
+
+    外すのは、毎回すべての点の残差の 45 パーセンタイル以上。残した点で平面が決まらなくなったら（点が足りない、
+    1 本の直線の上にしかない、残差がそろって 1 点も残らない）外すのをやめ、直前の当てはめを使う。
+    slope_y を渡すと、前後の傾き b をその値に決めて a と c だけを当てる。
+    """
     keep = np.ones(len(feet), bool)
+    plane = None
     for _ in range(8):
-        design = np.c_[feet[keep, 0], feet[keep, 1], np.ones(keep.sum())]
-        plane = np.linalg.lstsq(design, feet[keep, 2], rcond=None)[0]
+        columns = [feet[keep, 0]] + ([] if slope_y is not None else [feet[keep, 1]]) + [np.ones(keep.sum())]
+        design = np.stack(columns, axis=1)
+        if len(design) < design.shape[1] or np.linalg.matrix_rank(design) < design.shape[1]:
+            break
+        target = feet[keep, 2] - (0.0 if slope_y is None else slope_y * feet[keep, 1])
+        fit = np.linalg.lstsq(design, target, rcond=None)[0]
+        plane = fit if slope_y is None else np.array([fit[0], slope_y, fit[1]])
         residual = feet[:, 2] - (plane[0] * feet[:, 0] + plane[1] * feet[:, 1] + plane[2])
         keep = residual < np.percentile(residual, 45)
     return plane
 
 
+def floor_plane(points, pitch_deg=None):
+    """足の最下点に床の平面を当てる。返り値: (a, b, c) と、前後の傾き b を測れたか。
+
+    足が止まっていて、足の点が 1 本の直線の上にしかないと、前後の傾きは決まらない。そのとき pitch_deg があれば
+    その傾きに決めて左右の傾きと高さだけを当て、無ければ止める（でたらめな傾きで回さない）。
+    """
+    feet = _lowest_foot_points(points)
+    plane = fit_floor(feet)
+    if plane is not None:
+        return plane, True
+    if pitch_deg is not None:
+        plane = fit_floor(feet, math.tan(math.radians(pitch_deg)))
+        if plane is not None:
+            return plane, False
+    raise ValueError("足の点が 1 本の直線の上にしかなく、床の平面を決められません"
+                     + ("" if pitch_deg is not None else "。pitch_deg を渡すと、左右の傾きと高さだけを当てます"))
+
+
 def level(points, pitch_deg=None):
     """床が水平になるよう全体を回し、床を z = 0 に置く。
 
-    返り値: 回した点、測った傾き（roll, pitch の度）、使った傾き、床に合わせて下げた量（m）。
+    返り値: 回した点、測った傾き（roll, pitch の度。pitch を測れなければ None）、使った傾き、床に合わせて下げた量（m）。
     pitch_deg を渡すと、前後の傾きは平面の値ではなくその値を使う（奥行きにあまり動かない踊りでは平面の pitch が定まらない）。
     """
-    plane = floor_plane(points)
-    measured = np.degrees(np.arctan(plane[:2]))
+    plane, pitch_measured = floor_plane(points, pitch_deg)
+    measured = (float(np.degrees(np.arctan(plane[0]))), float(np.degrees(np.arctan(plane[1]))) if pitch_measured else None)
     if pitch_deg is not None:
         plane = plane.copy()
         plane[1] = math.tan(math.radians(pitch_deg))
@@ -305,7 +333,8 @@ def prepare(keypoints, translation, depth_window=11, spike=0.03, pitch_deg=None,
     report = {
         "frames": int(len(keypoints)), "points": N_POINTS, "frame": "x right, y away from the camera, z up; metres; floor z = 0",
         "smoothing": {"spike_m": spike, "replaced_points": replaced, "window": 5, "depth_window": depth_window},
-        "floor": {"measured_roll_deg": round(float(measured[0]), 3), "measured_pitch_deg": round(float(measured[1]), 3),
+        "floor": {"measured_roll_deg": round(measured[0], 3),
+                  "measured_pitch_deg": None if measured[1] is None else round(measured[1], 3),
                   "applied_pitch_deg": round(float(applied[1]), 3), "pitch_overridden": pitch_deg is not None,
                   "lowered_m": round(floor, 5)},
         "torso_back_deg": float(torso_back_deg),
