@@ -2,6 +2,10 @@
 
     [python, renderer, config, "seg", start, end, out.mp4]
 
+start・end は既定で秒（end = start + duration）。units="frames" のときはフレーム番号の整数で、
+start = round(start秒×fps)、end = start + round(duration×fps)（end のフレームは含まない。range(start, end) を描く形）。
+実制作レンダラの多くはこの形で受け取る。フレーム番号に直すので fps が要る。
+
 レンダラのコードも設定も**リポジトリに取り込まない**。fx が行うのは、その呼び出しと、sha256・argv・終了コード・
 所要時間の記録、出力の構造検査（technical_pass）だけで、絵の良し悪しは判定しない。
 
@@ -59,9 +63,25 @@ def _expected_frames(duration, fps_given, observed_fps):
     return (max(1, n - 2), n)
 
 
+UNITS = ("seconds", "frames")
+
+
+def _bounds(start, duration, fps, units):
+    """argv に渡す区間（start, end）の 2 つの文字列と、フレーム番号の範囲（units="frames" のときだけ）。"""
+    if units == "frames":
+        first = round(start * fps)
+        frame_range = [first, first + timeline.frame_count(duration, fps)]
+        return [str(n) for n in frame_range], frame_range
+    return [_number(start), _number(start + duration)], None
+
+
 def run_legacy(renderer, config, start, duration, python=None, width=None, height=None, fps=None, out=None,
-               timeout=None, cwd=None, progress=None):
+               timeout=None, cwd=None, progress=None, units="seconds"):
     began = time.monotonic()
+    if units not in UNITS:
+        raise PipelineError(f"--units は {' か '.join(UNITS)} にしてください: {units!r}")
+    if units == "frames" and fps is None:
+        raise PipelineError("--units frames には --fps が要ります（秒の区間をフレーム番号に直すため）")
     say = progress or (lambda message: None)
     renderer, config = Path(renderer).resolve(), Path(config).resolve()
     for label, path in (("--renderer", renderer), ("--config", config)):
@@ -79,21 +99,24 @@ def run_legacy(renderer, config, start, duration, python=None, width=None, heigh
         raise PipelineError(f"--cwd のディレクトリが見つかりません: {work_dir}")
     out = (Path(out) if out else config.parent / "fx_runs").resolve()
     renderer_sha, config_sha = sha256(renderer), sha256(config)
+    bounds, frame_range = _bounds(start, duration, fps, units)
     key = content_key_for("legacy", {"renderer": renderer_sha, "config": config_sha, "start": start,
-                                     "duration": duration, "width": width, "height": height, "fps": fps})
+                                     "duration": duration, "width": width, "height": height, "fps": fps,
+                                     **({"units": units} if units != "seconds" else {})})
     with project_lock(out):
         close_orphans(out)
         run = Run(out, key, "legacy", "legacy.log")
         partial = run.dir / "legacy.part.mp4"
         final = run.dir / "legacy.mp4"
-        argv = [str(python), str(renderer), str(config), "seg", _number(start), _number(start + duration), str(partial)]
+        argv = [str(python), str(renderer), str(config), "seg", *bounds, str(partial)]
         try:
             run.manifest.update(
                 legacy={"renderer": {"name": renderer.name, "sha256": renderer_sha},
                         "config": {"name": config.name, "sha256": config_sha}, "argv": argv,
                         "cwd": str(work_dir), "timeout_s": timeout, "exit_code": None, "seconds": None,
                         "cacheable": False},
-                interval={"start": start, "duration": duration, "fps": fps, "frames": None},
+                interval={"start": start, "duration": duration, "fps": fps, "frames": None, "units": units,
+                          **({"frame_range": frame_range} if frame_range else {})},
                 variants={}, grid=None, warnings=[])
             run.save()
             run.log("$ " + " ".join(argv))

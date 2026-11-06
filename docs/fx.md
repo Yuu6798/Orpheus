@@ -297,6 +297,13 @@ stdout は短い JSON、進捗は stderr に 1 版 1 行、詳細は run の `re
 実制作レンダラ（例: 手元の `renderer.py CONFIG seg START END out.mp4` の形のスクリプト）を**リポジトリに入れずに**呼ぶ。
 argv は `[python, renderer, config, "seg", start, end, out]`（`end = start + duration`、`out` は run 内の一時名）。
 
+- **区間の単位**（`--units`）:
+  - 既定の `seconds` は、秒で渡す。
+  - `--units frames --fps N` は、フレーム番号の整数で渡す。`start = round(start秒×N)`、`end = start + round(duration×N)` で、
+    `end` のフレームは含まない（`range(start, end)` を描く形）。
+  - 実制作レンダラの多くはこちらの形で受け取る。`--fps` が無いと拒否する。
+  - manifest の `interval` に `units` と、フレームのときは `frame_range` が残る。
+
 - 記録: renderer と config の sha256、argv、終了コード、所要時間、作業ディレクトリ（既定はレンダラのあるディレクトリ。`--cwd` で変更）。
 - ログ: 子の標準出力・標準エラーを描画中に逐次 `legacy.log` へ書く（子の Python は `PYTHONUNBUFFERED=1`）。
 - 検査: フレーム数は `round(D×fps)` から**最大 2 少ないまで**許容（実務の `-shortest`）、多いのは不合格。寸法・fps は `--width/--height/--fps` を指定したときだけ照合

@@ -36,7 +36,10 @@ FAKE = textwrap.dedent('''
         sys.exit(cfg["exit"])
     if cfg.get("no_output"):
         sys.exit(0)
-    frames = round((float(end) - float(start)) * fps) + cfg.get("extra", 0)
+    if cfg.get("units") == "frames":   # 実制作レンダラと同じく、フレーム番号を int で読み range(start, end) を描く
+        frames = int(end) - int(start) + cfg.get("extra", 0)
+    else:
+        frames = round((float(end) - float(start)) * fps) + cfg.get("extra", 0)
     command = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                "-s", "%dx%d" % (width, height), "-framerate", str(fps), "-i", "pipe:0",
                "-c:v", "libx264", "-pix_fmt", "yuv420p", out]
@@ -299,6 +302,25 @@ def test_bad_arguments_and_unrunnable_python_are_reported(work, tmp_path):
     assert code == 1
     with pytest.raises(PipelineError):
         legacy.run_legacy(studio / "render_fake.py", studio / "config.json", 0, 1, cwd=tmp_path / "no-such-dir")
+
+
+def test_frame_units_pass_integer_frame_numbers_with_the_end_excluded(work):
+    studio, config = work
+    config(fps=12, sleep=0, units="frames")
+    code, result, err = legacy_cli(studio, "--start", "0.5", "--fps", "12", "--units", "frames")
+    assert code == 0, err
+    manifest = read_json(studio / "runs" / result["run_id"] / "manifest.json")
+    assert manifest["legacy"]["argv"][3:6] == ["seg", "6", "18"]                 # 0.5 秒 = 6、1 秒 = 12 フレーム
+    assert manifest["interval"]["units"] == "frames" and manifest["interval"]["frame_range"] == [6, 18]
+    assert manifest["technical_pass"] is True and result["frames"] == 12
+
+
+def test_frame_units_need_fps(work):
+    studio, _ = work
+    code, _, err = legacy_cli(studio, "--units", "frames")
+    assert code == 1 and "--fps" in err
+    with pytest.raises(PipelineError, match="units"):
+        legacy.run_legacy(studio / "render_fake.py", studio / "config.json", 0, 1, fps=12, units="minutes")
 
 
 def test_numbers_are_passed_without_float_noise():
