@@ -147,14 +147,24 @@ def torso_back(points, degrees):
     return out
 
 
+POLE_FALLBACKS = ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0))   # カメラの方（膝が前）、それも脚と平行なら上
+
+
 def leg_ik(hip, ankle, upper, lower, pole_hint):
-    """股関節と足首から膝の位置を解く（脚の長さは upper・lower、曲がる向きは pole_hint）。"""
+    """股関節と足首から膝の位置を解く（脚の長さは upper・lower、曲がる向きは pole_hint）。
+
+    脚がまっすぐで pole_hint が脚と平行なら、POLE_FALLBACKS の順に、脚と平行でない向きへ曲げる
+    （脚がカメラの奥行きに沿う、座って脚を前へ伸ばした姿勢などでも NaN にしない）。
+    """
     v = ankle - hip
     length = min(max(np.linalg.norm(v), abs(upper - lower) + 1e-4), upper + lower - 1e-4)
     direction = v / np.linalg.norm(v)
     pole = pole_hint - direction * pole_hint.dot(direction)
-    if np.linalg.norm(pole) < 1e-4:
-        pole = np.array([0.0, -1.0, 0.0]) - direction * (-direction[1])
+    for fallback in POLE_FALLBACKS:
+        if np.linalg.norm(pole) >= 1e-4:
+            break
+        axis = np.array(fallback)
+        pole = axis - direction * direction.dot(axis)
     pole /= np.linalg.norm(pole)
     along = (upper * upper - lower * lower + length * length) / (2 * length)
     return hip + direction * along + pole * math.sqrt(max(upper * upper - along * along, 0.0))
@@ -286,6 +296,9 @@ def prepare(keypoints, translation, depth_window=11, spike=0.03, pitch_deg=None,
     levelled, measured, applied, floor = level(smooth, pitch_deg)
     upright = torso_back(levelled, torso_back_deg)
     locked, spans, stance, pulled = stance_lock(upright, contact, contact_height, step_split, blend, min_span)
+    if not np.isfinite(locked).all():   # NaN を黙って出力に書かない
+        bad = sorted({int(i) for i in np.argwhere(~np.isfinite(locked))[:, 0]})
+        raise ValueError(f"整えた点に NaN・無限大が出ました（コマ {bad[:10]}）")
     relative = locked - locked[:, list(HIPS)].mean(axis=1)[:, None]
     steps = {side: float(np.linalg.norm(np.diff(relative[:, ankle], axis=0), axis=1).max())
              for side, (_, _, ankle, _) in zip(SIDES, LEGS)}

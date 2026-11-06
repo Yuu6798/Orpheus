@@ -165,6 +165,27 @@ def test_a_planted_foot_out_of_the_legs_reach_keeps_both_bone_lengths():
         assert np.abs(after[0] - before[0]).max() < 2e-3 and np.abs(after[1] - before[1]).max() < 2e-3
 
 
+@pytest.mark.parametrize("along", [(0.0, -0.8, 0.0), (0.0, 0.0, -0.8)], ids=["toward the camera", "straight down"])
+def test_a_straight_leg_bends_somewhere_finite_whatever_way_it_points(along):
+    # 脚がまっすぐで膝の手がかりが脚と平行（0 に射影される）。奥行きに沿う脚では、1 つ目の予備の向きも脚と平行になる
+    hip = np.array([0.0, 0.0, 0.9])
+    ankle = hip + np.array(along)
+    knee = motion.leg_ik(hip, ankle, 0.45, 0.4, (ankle - hip) * 0.3)
+    assert np.isfinite(knee).all()
+    assert np.linalg.norm(knee - hip) == pytest.approx(0.45) and np.linalg.norm(ankle - knee) == pytest.approx(0.4)
+    if along[1]:
+        assert knee[2] > hip[2]          # カメラの方へ伸ばした脚は上へ曲げる
+    else:
+        assert knee[1] < hip[1]          # 下へ伸ばした脚は従来どおりカメラの方（膝が前）へ
+
+
+def test_prepare_refuses_to_return_nan_points(monkeypatch):
+    monkeypatch.setattr(motion, "leg_ik", lambda *args: np.full(3, np.nan))   # 膝の解が壊れたとき
+    keypoints, translation = to_camera(skeleton(20))
+    with pytest.raises(ValueError, match="NaN"):
+        motion.prepare(keypoints, translation)
+
+
 def test_prepare_rejects_bad_shapes():
     keypoints, translation = to_camera(skeleton(10))
     with pytest.raises(ValueError, match="70"):
