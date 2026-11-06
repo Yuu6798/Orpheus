@@ -99,6 +99,13 @@ def push_vector(gap_now, normals, index, distance, gap, reach, cap):
     return toward * min(required, cap), float((gap - gap_now[m]).max())
 
 
+def around(body, points, reach):
+    """手の点の囲み（各軸の最小〜最大）を広げた中にある体の点の印。広げる幅は reach 以上（既定の 40 mm では試作と同じ
+    5 cm）なので、どれかの手の点から reach より近い体の点は落とさない（いちばん近い点の探し方も変わらない）。"""
+    pad = max(0.05, reach)
+    return np.all((body > points.min(0) - pad) & (body < points.max(0) + pad), axis=1)
+
+
 def inside(gap_now, distance, reach):
     """体の面の内側へ INSIDE より深く入った手の点の数と、いちばん深い深さ（m）。"""
     hit = (gap_now < -INSIDE) & (distance < reach)
@@ -231,7 +238,7 @@ def measure(frames, body, hands, gap, reach, cap):
         bn_all = np.vstack([nr if index is None else nr[index] for (_, nr), index in parts])
         for side, chosen in hands.items():
             p = np.vstack([evaluated(name, dg, cache)[0][index] for name, index in chosen])
-            near = np.all((bc_all > p.min(0) - 0.05) & (bc_all < p.max(0) + 0.05), axis=1)   # 手のまわりだけで木を作る
+            near = around(bc_all, p, reach)              # 手のまわりだけで木を作る
             bc, bn = bc_all[near], bn_all[near]
             if len(bc) == 0:
                 continue

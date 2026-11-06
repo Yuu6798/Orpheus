@@ -128,6 +128,18 @@ def test_a_few_points_or_far_points_do_not_move_the_arm():
     assert push_hands.push_vector(push_hands.signed_gap(p, bc, bn, i), bn, i, d, 0.006, 0.04, 0.04) == (None, 0.0)
 
 
+def test_the_search_box_keeps_every_body_point_within_reach():
+    hand = np.zeros((1, 3))
+    body = np.array([[0.03, 0, 0], [0.055, 0, 0], [0.07, 0, 0], [0.09, 0, 0]])
+    assert push_hands.around(body, hand, 0.04).tolist() == [True, False, False, False]   # 既定は試作と同じ 5 cm
+    assert push_hands.around(body, hand, 0.08).tolist() == [True, True, True, False]     # reach が 5 cm を超えたら広げる
+    rng = np.random.default_rng(5)
+    for reach in (0.02, 0.04, 0.08, 0.15):
+        hand, body = rng.normal(0, 0.03, (40, 3)), rng.normal(0, 0.1, (400, 3))
+        distance = np.linalg.norm(body[:, None] - hand[None], axis=2).min(1)
+        assert (distance < reach).any() and push_hands.around(body, hand, reach)[distance < reach].all()
+
+
 def test_inside_counts_points_deeper_than_two_millimetres():
     count, deepest = push_hands.inside(np.array([-0.01, -0.001, 0.003, -0.02]), np.array([0.01, 0.01, 0.01, 0.05]), 0.04)
     assert count == 1 and deepest == pytest.approx(0.01)
