@@ -160,6 +160,22 @@ def leg_ik(hip, ankle, upper, lower, pole_hint):
     return hip + direction * along + pole * math.sqrt(max(upper * upper - along * along, 0.0))
 
 
+def within_reach(hip, ankle, longest, shortest=0.0):
+    """足首を、股関節から shortest 以上 longest 以下の距離に収めた位置（収まっていればそのまま）。
+
+    外れていれば、股関節を通る直線に沿って、いちばん近い届く位置へ動かす（動きが最小。届かない分だけ動く）。
+    脚の 2 本の骨の長さを保ったまま膝を解けるようにするため（届かない位置に足首を残すと、膝の計算だけが縮んで
+    脛が伸びる）。床に沿って水平に寄せる方法は、脚がほぼまっすぐなとき数 mm 縮めるのに数 cm 動き、足が滑るので採らない。
+    """
+    d = ankle - hip
+    distance = np.linalg.norm(d)
+    if shortest <= distance <= longest:
+        return ankle
+    if distance < 1e-9:
+        return hip + np.array([0.0, 0.0, -shortest])
+    return hip + d / distance * min(max(distance, shortest), longest)
+
+
 def _contact(points, foot, lowest, mode, height):
     low = points[:, list(foot), 2].min(axis=1)
     contact = (low - lowest) < height if mode == "relative" else low < height
@@ -197,11 +213,14 @@ def _runs(contact, centre, step_split):
 
 
 def stance_lock(points, mode="absolute", height=0.05, step_split=None, blend=4, min_span=4):
-    """接地の区間で足を横に止める。返り値: 点、足ごとの区間 [[開始, 終了), …]、足ごとの接地の重み (n, 2)。
+    """接地の区間で足を横に止める。
 
+    返り値: 点、足ごとの区間 [[開始, 終了), …]、足ごとの接地の重み (n, 2)、足ごとの引き寄せ（コマ数と最大の距離 m）。
     absolute: 足の最下点が床から height 未満を接地とする。relative: 低い方の足より height 未満を接地とする
     （立っているだけの所で推定が体ごと上下しても、低い方の足を着いたままにする）。
     重みは、step_split を使うときは床に着いている（上下の判定）コマが 1、使わないときは止めた区間のコマが 1。
+    止めた足首が脚の届く長さを超える（腰が動いた）コマでは、足全体を within_reach の位置へ動かしてから膝を解く。
+    動かした距離が大きいときは、止める区間が長すぎる（step_split で一歩ごとに止め直す）。
     """
     if mode not in CONTACT_MODES:
         raise ValueError(f"接地の決め方は {CONTACT_MODES} のどれか: {mode!r}")
@@ -209,8 +228,9 @@ def stance_lock(points, mode="absolute", height=0.05, step_split=None, blend=4, 
     n = len(points)
     frames = np.arange(n)
     lowest = np.minimum(*(points[:, list(foot), 2].min(axis=1) for foot in FEET))
-    spans, weights = {}, []
+    spans, weights, pulled = {}, [], {}
     for side, (hip_i, knee_i, ankle_i, foot) in zip(SIDES, LEGS):
+        pulled[side] = {"frames": 0, "max_m": 0.0}
         ground = _contact(points, foot, lowest, mode, height)
         centre = points[:, list(foot), :2].mean(axis=1)
         target = np.full((n, 2), np.nan)
@@ -238,9 +258,15 @@ def stance_lock(points, mode="absolute", height=0.05, step_split=None, blend=4, 
         out[:, list(foot), :2] = points[:, list(foot), :2] + (whole * weight[:, None])[:, None, :]
         for i in np.flatnonzero(weight > 0):
             hip, knee, ankle = points[i, hip_i], points[i, knee_i], points[i, ankle_i]
-            out[i, knee_i] = leg_ik(out[i, hip_i], out[i, ankle_i], np.linalg.norm(knee - hip), np.linalg.norm(ankle - knee),
-                                    knee - (hip + ankle) / 2)
-    return out, spans, np.stack(weights, axis=1)
+            upper, lower = np.linalg.norm(knee - hip), np.linalg.norm(ankle - knee)
+            placed = out[i, ankle_i].copy()
+            reachable = within_reach(out[i, hip_i], placed, upper + lower - 1e-4, abs(upper - lower) + 1e-4)
+            if not np.array_equal(reachable, placed):
+                out[i, list(foot)] += reachable - placed   # 足首と足の点をいっしょに動かす（足の形を保つ）
+                pulled[side]["frames"] += 1
+                pulled[side]["max_m"] = max(pulled[side]["max_m"], round(float(np.linalg.norm(reachable - placed)), 5))
+            out[i, knee_i] = leg_ik(out[i, hip_i], out[i, ankle_i], upper, lower, knee - (hip + ankle) / 2)
+    return out, spans, np.stack(weights, axis=1), pulled
 
 
 def prepare(keypoints, translation, depth_window=11, spike=0.03, pitch_deg=None, torso_back_deg=0.0,
@@ -259,7 +285,7 @@ def prepare(keypoints, translation, depth_window=11, spike=0.03, pitch_deg=None,
     smooth, replaced = clean(raw, depth_window, spike)
     levelled, measured, applied, floor = level(smooth, pitch_deg)
     upright = torso_back(levelled, torso_back_deg)
-    locked, spans, stance = stance_lock(upright, contact, contact_height, step_split, blend, min_span)
+    locked, spans, stance, pulled = stance_lock(upright, contact, contact_height, step_split, blend, min_span)
     relative = locked - locked[:, list(HIPS)].mean(axis=1)[:, None]
     steps = {side: float(np.linalg.norm(np.diff(relative[:, ankle], axis=0), axis=1).max())
              for side, (_, _, ankle, _) in zip(SIDES, LEGS)}
@@ -272,7 +298,8 @@ def prepare(keypoints, translation, depth_window=11, spike=0.03, pitch_deg=None,
         "torso_back_deg": float(torso_back_deg),
         "contact": {"mode": contact, "height_m": contact_height, "step_split_m": step_split, "blend_frames": blend,
                     "min_span_frames": min_span, "spans": spans,
-                    "locked_frames": {side: int(sum(u - t for t, u in spans[side])) for side in SIDES}},
+                    "locked_frames": {side: int(sum(u - t for t, u in spans[side])) for side in SIDES},
+                    "pulled_in": pulled},
         "max_ankle_step_m": {side: round(value, 5) for side, value in steps.items()},
     }
     return locked, stance, report

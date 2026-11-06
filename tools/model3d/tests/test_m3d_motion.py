@@ -78,7 +78,8 @@ def test_a_tilted_floor_is_levelled_back():
     assert np.abs(prepared[:, upper] - points[:, upper]).max() < 2e-3
     assert abs(report["floor"]["measured_roll_deg"]) > 1 and abs(report["floor"]["measured_pitch_deg"]) > 1
     assert report["floor"]["pitch_overridden"] is False and abs(report["floor"]["lowered_m"]) < 2e-3
-    lowest = np.minimum(*(prepared[:, list(foot), 2].min(axis=1) for foot in motion.FEET))
+    levelled = motion.level(motion.clean(motion.from_camera(keypoints, translation))[0])[0]   # 足を止める前の床
+    lowest = np.minimum(*(levelled[:, list(foot), 2].min(axis=1) for foot in motion.FEET))
     assert np.abs(lowest).max() < 2e-3 and stance.shape == (len(points), 2)
 
 
@@ -126,6 +127,42 @@ def test_step_split_relocks_a_foot_that_moves_while_on_the_floor():
     one = motion.prepare(keypoints, translation, pitch_deg=0.0)[2]["contact"]["spans"]["left"]
     split = motion.prepare(keypoints, translation, pitch_deg=0.0, step_split=0.06)[2]["contact"]["spans"]["left"]
     assert len(one) == 1 and len(split) >= 2
+
+
+def test_within_reach_moves_an_out_of_reach_ankle_the_least_and_keeps_others():
+    hip = np.array([0.0, 0.0, 1.0])
+    near = np.array([0.1, 0.0, 0.2])
+    assert np.array_equal(motion.within_reach(hip, near, 1.0), near)
+    far = np.array([0.6, 0.0, 0.1])                                         # 0.9 下・0.6 横は 1.08 m で届かない
+    pulled = motion.within_reach(hip, far, 1.0)
+    assert np.linalg.norm(pulled - hip) == pytest.approx(1.0)
+    assert np.linalg.norm(pulled - far) == pytest.approx(math.hypot(0.6, 0.9) - 1.0)   # 届かない分だけ動く（最小）
+    assert np.allclose(np.cross(pulled - hip, far - hip), 0.0)               # 股関節を通る直線の上
+    pushed = motion.within_reach(hip, np.array([0.0, 0.0, 0.98]), 1.0, 0.1)  # 近すぎる: まっすぐ離す
+    assert np.linalg.norm(pushed - hip) == pytest.approx(0.1)
+
+
+def test_a_planted_foot_out_of_the_legs_reach_keeps_both_bone_lengths():
+    # 例: 0.5 m の骨 2 本、足首が 1 m 下・0.4 m 横。足首を残したまま膝だけ縮めると脛が約 0.577 m に伸びる
+    hip, knee, ankle = np.array([0.0, 0.0, 1.0]), np.array([0.0, -0.05, 0.5]), np.array([0.4, 0.0, 0.0])
+    upper, lower = 0.5, 0.5
+    kept = motion.within_reach(hip, ankle, upper + lower - 1e-4, 1e-4)
+    solved = motion.leg_ik(hip, kept, upper, lower, knee - (hip + kept) / 2)
+    assert np.linalg.norm(solved - hip) == pytest.approx(upper, abs=1e-6)
+    assert np.linalg.norm(kept - solved) == pytest.approx(lower, abs=1e-6)
+    # 通しで: 足は床に着いたまま、体ごと 0.4 m 横へ流れる（推定では足も流れる）。止めた足首は腰から離れる
+    points = skeleton(40, sway=False)
+    points[..., 0] += np.linspace(-0.2, 0.2, 40)[:, None]
+    keypoints, translation = to_camera(points)
+    prepared, _, report = motion.prepare(keypoints, translation, pitch_deg=0.0)
+    pulled = report["contact"]["pulled_in"]["left"]
+    assert pulled["frames"] > 0 and 0 < pulled["max_m"] < 0.05
+    for hip_i, knee_i, ankle_i, _ in motion.LEGS:
+        before = (np.linalg.norm(points[:, knee_i] - points[:, hip_i], axis=1),
+                  np.linalg.norm(points[:, ankle_i] - points[:, knee_i], axis=1))
+        after = (np.linalg.norm(prepared[:, knee_i] - prepared[:, hip_i], axis=1),
+                 np.linalg.norm(prepared[:, ankle_i] - prepared[:, knee_i], axis=1))
+        assert np.abs(after[0] - before[0]).max() < 2e-3 and np.abs(after[1] - before[1]).max() < 2e-3
 
 
 def test_prepare_rejects_bad_shapes():
