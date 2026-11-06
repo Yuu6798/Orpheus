@@ -6,7 +6,8 @@ from . import StepResult, register
 
 
 @register("blender.run_script", cacheable=False,
-          summary="blender --background [blend] --python script -- args… を呼ぶ。{入力名}・{出力名}・{work} を置き換える。再利用しない（毎回実行）")
+          summary="blender --background --factory-startup [blend] --python script -- args… を呼ぶ。{入力名}・{出力名}・{work} を置き換える。"
+                  "利用者の設定・アドオンが要るときだけ factory_startup: false。再利用しない（毎回実行）")
 def blender_run_script(inputs, parameters, outputs, context):
     blender = parameters.get("blender") or context.tools.get("blender")
     if not blender:
@@ -21,5 +22,6 @@ def blender_run_script(inputs, parameters, outputs, context):
     args = process.substitute([str(a) for a in parameters.get("args", [])], placeholders)
     record = launcher.run_blender(blender, script, blend, args, log=context.step_dir / "blender.log",
                                   timeout=parameters.get("timeout"), cwd=parameters.get("cwd"),
-                                  background=parameters.get("background", True))
+                                  background=parameters.get("background", True),
+                                  factory_startup=parameters.get("factory_startup", True))
     return StepResult(observations=[{"kind": "blender", **record}])
