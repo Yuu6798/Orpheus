@@ -145,6 +145,20 @@ def test_a_collider_keeps_the_chain_out_of_it():
     assert hits > 0 and closest(held) > closest(free)
 
 
+def test_a_collider_on_one_bone_is_a_sphere_and_still_pushes():
+    nodes, targets = hanging_chains(chains=1, swing=0.15)
+    centre = [0.1, 0.0, 1.2]
+    free, _ = spring_bones.simulate(nodes, targets)
+    held, hits = spring_bones.simulate(nodes, targets, [capsule(len(targets), centre, centre, 0.05)])   # from と to が同じ
+    assert np.isfinite(held).all() and hits > 0
+
+    def closest(sim):
+        return np.linalg.norm(sim[:, 0, 1:] - centre, axis=-1).min()
+    assert closest(held) > closest(free)
+    assert spring_bones.along_axis(np.zeros((4, 3)), np.ones(3), np.zeros(3)).tolist() == [0.0] * 4
+    assert np.isfinite(spring_bones.rest_limit(nodes, capsule(1, centre, centre, 0.05))).all()
+
+
 def test_links_keep_neighbouring_chains_together():
     nodes, targets = hanging_chains(chains=2, swing=0.0)
     targets = targets.copy()

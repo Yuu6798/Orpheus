@@ -6,7 +6,8 @@
 settings.json（motion.spring_bones が書く）:
 - chains: 鎖の根元の骨の名前の並び。根元から、子が 1 本の間を毛先までたどる（枝分かれは止める）。根元より下の骨は
   親につながっている（head が親の tail）こと。どの鎖も同じ骨の数。
-- colliders: 当たりのカプセル [{"from": 骨, "to": 骨, "radius_mm": 半径}]（2 本の骨の head を結ぶ）。
+- colliders: 当たりのカプセル [{"from": 骨, "to": 骨, "radius_mm": 半径}]（2 本の骨の head を結ぶ。同じ骨か、head が重なる
+  骨にすると、その head を中心にした球）。
 - links: 離れすぎないようにする鎖の組 [[i, j], ...]（chains の番号）。
 - f_root_hz・f_tip_hz（根元・毛先のばねの固有振動数）、damping（減衰比）、bend（曲がりのならし）、substeps（1 コマを分ける数）、
   push（当たりで 1 刻みに押し出す割合）、settle_s（踊りの前に最初の形で落ち着かせる秒数）。
@@ -47,10 +48,18 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
+def along_axis(points, a, ab):
+    """点を、a から a + ab への軸に投げた位置（0〜1）。軸の長さが 0（両端が同じ骨・重なる head）なら、a を中心にした球として 0。"""
+    length2 = ab @ ab
+    if length2 <= 1e-12:
+        return np.zeros(np.shape(points)[:-1])
+    return np.clip(((points - a) @ ab) / length2, 0, 1)
+
+
 def rest_limit(nodes, collider):
     """静止で当たりに近い節は、その近さまでを許す（最初から押し出さないように）。"""
     ab = collider["qb"] - collider["qa"]
-    t = np.clip(((nodes - collider["qa"]) @ ab) / (ab @ ab), 0, 1)
+    t = along_axis(nodes, collider["qa"], ab)
     return np.linalg.norm(nodes - (collider["qa"] + t[..., None] * ab), axis=-1)
 
 
@@ -95,7 +104,7 @@ def simulate(nodes, targets, colliders=(), links=(), fps=30, substeps=8, f_root=
         hits = 0
         for c, dcap in zip(colliders, rest_cap):
             a0, ab = c["pa"][f], c["pb"][f] - c["pa"][f]
-            t = np.clip(((x - a0) @ ab) / (ab @ ab), 0, 1)
+            t = along_axis(x, a0, ab)
             q = a0 + t[..., None] * ab
             rc = 0.98 * np.minimum(c["ra"] + t * (c["rb"] - c["ra"]), dcap)
             d = x - q
