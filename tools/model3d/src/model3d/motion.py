@@ -24,6 +24,11 @@ FEET = tuple(foot for *_, foot in LEGS)
 UPPER = tuple(range(0, 9)) + tuple(range(21, 70))   # 腰・脚・足（9〜20）以外
 SIDES = ("left", "right")
 CONTACT_MODES = ("absolute", "relative")
+# 検査で使う MHR70 の点（SAM 3D Body の並び。5・6 肩、7・8 肘、41 右手首、62 左手首、0 鼻）
+SWIVEL_LEGS = ((9, 11, 13, (15, 16), 17), (10, 12, 14, (18, 19), 20))   # (股関節, 膝, 足首, つま先 2 点, かかと) 左・右
+TRACKED = {"left_ankle": 13, "right_ankle": 14, "left_wrist": 62, "right_wrist": 41, "nose": 0}
+SEGMENTS = {"left_thigh": (9, 11), "right_thigh": (10, 12), "left_shin": (11, 13), "right_shin": (12, 14),
+            "left_upper_arm": (5, 7), "right_upper_arm": (6, 8), "left_forearm": (7, 62), "right_forearm": (8, 41)}
 
 
 def from_camera(keypoints, translation):

@@ -69,3 +69,39 @@ def check_continuity(inputs, parameters, outputs, context):
     if report.get("jumps"):
         report["failures"] = [f"コマ {j['frame']}（t={j['t']}）で {j['max_move']:.4g} 動いています" for j in report["jumps"]]
     return _finish(report, outputs, parameters, "連続性の検査")
+
+
+MOTION_PARAMETERS = {"fps", "bend_min_deg", "contact_height", "skate_speed", "floor_tolerance", "frames", "top",
+                     "strict", "report_only", *checks.MOTION_THRESHOLDS}
+
+
+@register("check.motion", inputs=("points",), outputs=("report",),
+          summary="motion.prepare_keypoints の points（npz）の動きを数で測る: 膝とつま先の食い違い・接地中の足の滑り・"
+                  "床へのめり込み・1 コマの移動・骨の長さのぶれ。しきい値（max_swivel_deg など）を渡したときだけ合否を出す。好みは判定しない")
+def check_motion(inputs, parameters, outputs, context):
+    require(inputs, ("points",), "check.motion")
+    import numpy as np
+    from . import number
+    unknown = set(parameters) - MOTION_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.motion の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(MOTION_PARAMETERS)}）")
+    try:
+        with np.load(inputs["points"], allow_pickle=False) as data:
+            points = data["points"]
+            stance = data["stance"] if "stance" in data.files else None
+    except (OSError, KeyError, ValueError) as error:
+        raise ToolError(f"points の npz を読めません（points が要ります）: {error}") from error
+    frames = parameters.get("frames")
+    if frames is not None:
+        if not (isinstance(frames, list) and len(frames) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in frames)):
+            raise ToolError(f"frames は [開始, 終了) の整数 2 つにしてください: {frames!r}")
+        frames = tuple(frames)
+    thresholds = {key: number(parameters, key, minimum=0) for key in checks.MOTION_THRESHOLDS if parameters.get(key) is not None}
+    report = checks.motion(points, stance, fps=number(parameters, "fps", 30.0, minimum=0, exclusive=True),
+                           bend_min_deg=number(parameters, "bend_min_deg", 25.0, minimum=0),
+                           contact_height=number(parameters, "contact_height", 0.03, minimum=0, exclusive=True),
+                           skate_speed=number(parameters, "skate_speed", 0.2, minimum=0, exclusive=True),
+                           floor_tolerance=number(parameters, "floor_tolerance", 0.005, minimum=0),
+                           thresholds=thresholds, frames=frames, top=number(parameters, "top", 8, minimum=1, integer=True))
+    return _finish(report, outputs, parameters, "動きの検査")
