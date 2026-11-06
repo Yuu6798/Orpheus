@@ -164,10 +164,11 @@ def main(argv=None):
     src_leg = float(np.median(np.linalg.norm(B[:, 11] - B[:, 9], axis=1) + np.linalg.norm(B[:, 13] - B[:, 11], axis=1)))
     SL = (THIGH["Left"] + SHIN["Left"]) / src_leg
     CHAR_ANKLE = float(bw("LeftFoot").z)            # 足首の床からの高さ
-    if STANCE is not None:                          # 接地中の足首の高さの差を引く（踊り手の靴のかかとなど）
-        ANKLE_Z0 = SL * float(np.median(np.r_[B[STANCE[:, 0] > 0.5, 13, 2], B[STANCE[:, 1] > 0.5, 14, 2]])) - CHAR_ANKLE
-    else:
-        ANKLE_Z0 = 0.0
+    # 接地中の足首の高さの差を引く（踊り手の靴のかかとなど）。stance があっても接地のコマが 1 つも無ければ、
+    # 中央値が NaN になって全部の位置を壊すので、接地なしと同じく足の骨の高さで床を決める（下の dz）
+    contact_z = (np.r_[B[STANCE[:, 0] > 0.5, 13, 2], B[STANCE[:, 1] > 0.5, 14, 2]] if STANCE is not None else np.zeros(0))
+    HAS_CONTACT = len(contact_z) > 0
+    ANKLE_Z0 = SL * float(np.median(contact_z)) - CHAR_ANKLE if HAS_CONTACT else 0.0
 
     def to_char(v):
         return Vector((rest_hips.x + SL * (v.x - HM_REF.x), rest_hips.y + SL * (v.y - HM_REF.y), SL * v.z - ANKLE_Z0))
@@ -184,9 +185,11 @@ def main(argv=None):
         return out
 
     OBS = meshes
-    DOM = {ob.name: dom_groups(ob) for ob in OBS}
-    skipped = {}
-    if a.skip_vertices:
+    COLLISION = a.resolve or a.check                # 刺さりの準備は、直すか検査するときだけ（重いので）
+    DOM, skipped, ARMV, SURF_FACES, REST_CO, YR = {}, {}, {}, {}, {}, {}
+    if COLLISION:
+        DOM = {ob.name: dom_groups(ob) for ob in OBS}
+    if COLLISION and a.skip_vertices:
         with np.load(a.skip_vertices, allow_pickle=False) as data:
             masks = [data[k].astype(bool) for k in data.files if data[k].dtype == bool]
         if masks:
@@ -195,14 +198,18 @@ def main(argv=None):
                 if len(skip) == len(DOM[ob.name]):
                     DOM[ob.name] = ["" if skip[i] else g for i, g in enumerate(DOM[ob.name])]
                     skipped[ob.name] = int(skip.sum())
-    ARMV = {}
-    for ob in OBS[:2]:
+    for ob in (OBS[:2] if COLLISION else []):
         lst = [(i, "L" if g.startswith("Left") else "R", "forearm" if "ForeArm" in g else "hand")
                for i, g in enumerate(DOM[ob.name]) if ("ForeArm" in g or "Hand" in g)]
         ARMV[ob.name] = dict(idx=np.array([x[0] for x in lst], dtype=int), side=np.array([x[1] for x in lst]),
                              kind=np.array([x[2] for x in lst]))
-    SURF_FACES = {ob.name: [list(p.vertices) for p in ob.data.polygons if all(DOM[ob.name][i] in PARTS_B for i in p.vertices)]
-                  for ob in OBS}
+    if COLLISION:
+        SURF_FACES = {ob.name: [list(p.vertices) for p in ob.data.polygons if all(DOM[ob.name][i] in PARTS_B for i in p.vertices)]
+                      for ob in OBS}
+
+    def hand_end(side):
+        """手の先: 中指の 3 本目の骨の先。指の骨が無いリグでは手の骨の先"""
+        return bw(side + "HandMiddle3", "tail") if N(side + "HandMiddle3") in pb else bw(side + "Hand", "tail")
 
     def eval_co(ob):
         dg = bpy.context.evaluated_depsgraph_get()
@@ -215,7 +222,8 @@ def main(argv=None):
     def bone_frame(n):
         return np.array(cur_rot(n)), np.array(bw(n))
 
-    REST_CO = {ob.name: eval_co(ob) for ob in OBS}
+    if COLLISION:
+        REST_CO = {ob.name: eval_co(ob) for ob in OBS}
 
     def _seg(p, s, e):
         s, e = np.array(s), np.array(e)
@@ -223,7 +231,7 @@ def main(argv=None):
         u = np.clip(((p - s) @ ab) / (ab @ ab), 0, 1)
         return np.linalg.norm(p - (s + u[:, None] * ab), axis=1)
 
-    for ob in OBS[:2]:                # 袖の布は前腕の骨に付いていても腕ではないので、検査は腕そのものの頂点だけにする
+    for ob in (OBS[:2] if COLLISION else []):   # 袖の布は前腕の骨に付いていても腕ではないので、検査は腕そのものの頂点だけにする
         A_ = ARMV[ob.name]
         if not len(A_["idx"]):
             continue
@@ -231,11 +239,10 @@ def main(argv=None):
         keep_ = np.zeros(len(P_), bool)
         for s_, side in (("L", "Left"), ("R", "Right")):
             near_ = (_seg(P_, bw(side + "ForeArm"), bw(side + "Hand")) < 0.06) | \
-                    (_seg(P_, bw(side + "Hand"), bw(side + "HandMiddle3", "tail")) < 0.09)
+                    (_seg(P_, bw(side + "Hand"), hand_end(side)) < 0.09)
             keep_ |= (A_["side"] == s_) & near_
         ARMV[ob.name] = {k_: v_[keep_] for k_, v_ in A_.items()}
-    YR = {}
-    for n in PARTS_B:
+    for n in (PARTS_B if COLLISION else []):
         R, o = bone_frame(n)
         pts = [REST_CO[ob.name][[i for i, g in enumerate(DOM[ob.name]) if g == n]] for ob in OBS]
         pts = [p_ for p_ in pts if len(p_)]
@@ -403,11 +410,13 @@ def main(argv=None):
             b.keyframe_insert("rotation_quaternion", frame=k)
         pb[N("Hips")].keyframe_insert("location", frame=k)
 
-    def foot_low():
-        return min(bw("LeftToeBase").z - 0.010, bw("RightToeBase").z - 0.010, bw("LeftToe_End").z - 0.013,
-                   bw("RightToe_End").z - 0.013, bw("LeftFoot").z - 0.085, bw("RightFoot").z - 0.085)
+    FLOOR_BONES = (("LeftToeBase", 0.010), ("RightToeBase", 0.010), ("LeftToe_End", 0.013), ("RightToe_End", 0.013),
+                   ("LeftFoot", 0.085), ("RightFoot", 0.085))   # 骨の高さから床までの目安（人の足）。無い骨は飛ばす
 
-    if STANCE is not None:
+    def foot_low():
+        return min(bw(n).z - offset for n, offset in FLOOR_BONES if N(n) in pb)
+
+    if HAS_CONTACT:
         dz = 0.0                                    # 接地があるときは足首の高さで床に合わせ済み
     else:
         lows = []
@@ -428,7 +437,7 @@ def main(argv=None):
         for m in o.modifiers:
             m.show_viewport = True
     info = dict(frames=len(fr), first_frame=fr[0] if fr else None, focal=focal, pitch0_deg=PITCH0, scale=S, leg_scale=SL,
-                floor_shift=dz, skipped_vertices=skipped)
+                floor_shift=dz, floor_from="stance" if HAS_CONTACT else "foot_bones", skipped_vertices=skipped)
 
     def counts(P):
         return {s_: {k_: int(sum(1 for d_, _ in P[s_][k_] if d_ > 0.02)) for k_ in ("hand", "forearm")} for s_ in ("L", "R")}
