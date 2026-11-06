@@ -128,6 +128,21 @@ def test_a_few_points_or_far_points_do_not_move_the_arm():
     assert push_hands.push_vector(push_hands.signed_gap(p, bc, bn, i), bn, i, d, 0.006, 0.04, 0.04) == (None, 0.0)
 
 
+def test_the_swing_uses_only_the_part_of_the_move_across_the_arm():
+    arm = (0.0, 0.0, -0.5)                                            # 肩から真下へ 0.5 m
+    assert push_hands.swing(arm, (0.04, 0.0, 0.0)) == pytest.approx(np.arcsin(0.08))   # 腕に垂直なら試作と同じ
+    assert push_hands.swing(arm, (0.0, 0.0, -0.04)) == 0.0          # 腕に沿う押しは回して直せない
+    assert push_hands.swing(arm, (0.03, 0.0, -0.04)) == pytest.approx(np.arcsin(0.06))
+    assert push_hands.swing(arm, (0.4, 0.0, 0.0)) == pytest.approx(np.arcsin(0.5))     # 30° まで
+
+
+def test_a_push_along_the_arm_does_not_swing_the_wrist_when_its_tiny_side_part_flips():
+    arm = (0.0, 0.0, -0.5)
+    for side in (0.00004, -0.00004):                                 # 腕に沿う 40 mm と、向きが入れ替わる 0.04 mm の横の分
+        angle = push_hands.swing(arm, (side, 0.0, -0.04))
+        assert 0.5 * np.sin(angle) == pytest.approx(0.00004, rel=1e-6)   # 手首は 0.04 mm だけ動く（試作は約 40 mm 振った）
+
+
 def test_the_search_box_keeps_every_body_point_within_reach():
     hand = np.zeros((1, 3))
     body = np.array([[0.03, 0, 0], [0.055, 0, 0], [0.07, 0, 0], [0.09, 0, 0]])

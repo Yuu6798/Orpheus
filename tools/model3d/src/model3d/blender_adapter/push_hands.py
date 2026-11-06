@@ -11,10 +11,13 @@
   （reach より遠い点は数えない）。2 mm より足りない点が 15 未満なら、手のひらの丸みの誤差とみなして動かさない。
 - 足りない量で重みをつけた法線の平均の向きに、足りない量（向きの傾きで割り増し）の 98% 点だけ手首を動かす（1 回に cap まで）。
 - コマの前後でならす: 前後 3 コマでいちばん大きい量を広げてから、σ 1.5 コマのガウス（±3σ）でならす。
-- 二の腕の骨を肩のまわりに回して、手首がその量だけ動くようにする（肘から先の曲げと手の形は変えない）。
+- 二の腕の骨を肩のまわりに回して、手首をその量の腕に垂直な分だけ動かす（肘から先の曲げと手の形は変えない）。
+  回しても手首は腕に沿っては動かないので、腕に沿う分は除いて角度を決める（試作は量の長さ全部で角度を決めていたので、
+  腕に沿う押しのわずかな横の分の向きに、手首を大きく振ることがあった）。
 - これを --passes 回くり返し、最後に測り直す。体の面の内側へ 2 mm より深く入った手の点を、直す前・後で数えて報告に残す。
 コマは .blend のシーンの開始〜終了。骨の名前は --bone-prefix + Mixamo の名前。
-**検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じ点から同じ量と同じ骨の行列になることを確かめた（docs/model3d.md）。
+**検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じ点から、同じ動かす量になることを確かめた。骨の回し方は、
+腕に沿う分を除くところだけ試作と違う（docs/model3d.md）。
 """
 import argparse
 import json
@@ -110,6 +113,16 @@ def inside(gap_now, distance, reach):
     """体の面の内側へ INSIDE より深く入った手の点の数と、いちばん深い深さ（m）。"""
     hit = (gap_now < -INSIDE) & (distance < reach)
     return int(hit.sum()), float(-gap_now[hit].min()) if hit.any() else 0.0
+
+
+def swing(arm, move, limit=0.5):
+    """肩 → 手首の向き arm の手首を move だけ動かしたいときの、肩のまわりに回す角度（ラジアン）。
+    回すと手首は腕に垂直な向きにしか動かないので、move の腕に沿う分を除いた長さで角度を決める（腕に沿う押しで、わずかな
+    横の分の向きに大きく振らない。試作は move の長さ全部で決めていた）。sin(角度) は limit まで（試作と同じ 30°）。"""
+    length2 = sum(a * a for a in arm)
+    along = sum(m * a for m, a in zip(move, arm)) / length2
+    across = math.sqrt(sum((m - along * a) ** 2 for m, a in zip(move, arm)))
+    return math.asin(min(across / math.sqrt(length2), limit))
 
 
 def summary(frames, count, deepest):
@@ -275,8 +288,8 @@ def rotate_arms(arm, prefix, frames, moves):
                 S, W = upper.head.copy(), hand.head.copy()
                 r = W - S
                 ax = r.cross(dv)
-                angle = math.asin(min(dv.length / r.length, 0.5))
-                if ax.length > 1e-9:
+                angle = swing(tuple(r), tuple(dv))
+                if ax.length > 1e-9 and angle > 0:
                     R = Matrix.Rotation(angle, 4, ax.normalized())
                     upper.matrix = Matrix.Translation(S) @ R @ Matrix.Translation(-S) @ upper.matrix
                     vl.update()
