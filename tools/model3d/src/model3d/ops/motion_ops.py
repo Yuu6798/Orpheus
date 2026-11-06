@@ -354,3 +354,45 @@ def ground_feet(inputs, parameters, outputs, context):
                    "stance_frames": report.get("stance_frames"), "lift_mm": report.get("lift_mm"),
                    "lowest_point": report.get("lowest_point"), "lift_check_mm": round(float(check), 4)}
     return StepResult(observations=[observation])
+
+
+PUSH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "push_hands.py"
+PUSH_PARAMETERS = {"blender", "bone_prefix", "body_objects", "passes", "gap_mm", "reach_mm", "cap_mm", "timeout"}
+
+
+@register("motion.push_hands", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="骨へ移した動き（blend）で、手が体（胴・腰まわり・脚）に沈むコマに、二の腕を肩のまわりに少し回して、手を体の面から"
+                  "浮かせる（Blender の中で）。肘から先の曲げと手の形は変えない。手と体の点は骨の重みで選ぶ（体は body_objects でも）。"
+                  "passes 回くり返し、体の面の内側に入った手の点を直す前・後で数えて報告に残す。Blender は外部の実行ファイルなので"
+                  "再利用しない（毎回実行）")
+def push_hands(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    require(inputs, ("blend",), "motion.push_hands")
+    unknown = set(parameters) - PUSH_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.push_hands の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(PUSH_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"motion.push_hands には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "motion.push_hands")
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--bone-prefix", _bone_prefix(parameters),
+            "--passes", str(number(parameters, "passes", 2, minimum=1, integer=True)),
+            "--gap-mm", repr(float(number(parameters, "gap_mm", 6, minimum=0))),
+            "--reach-mm", repr(float(number(parameters, "reach_mm", 40, minimum=0, exclusive=True))),
+            "--cap-mm", repr(float(number(parameters, "cap_mm", 40, minimum=0, exclusive=True)))]
+    body_objects = parameters.get("body_objects")
+    if body_objects is not None:
+        if not isinstance(body_objects, list) or not body_objects or not all(isinstance(n, str) and n for n in body_objects):
+            raise ToolError(f"body_objects は体のメッシュの名前（空でない文字列）の配列にしてください: {body_objects!r}")
+        for name in body_objects:
+            args += ["--body-object", name]
+    record = launcher.run_blender(blender, PUSH_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    observation = {"kind": "push_hands", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": report.get("frames"),
+                   "body_from": (report.get("selection") or {}).get("body_from"), "passes": report.get("passes"),
+                   "inside": report.get("inside")}
+    return StepResult(observations=[observation])

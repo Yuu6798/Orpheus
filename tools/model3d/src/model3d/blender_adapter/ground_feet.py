@@ -6,7 +6,7 @@
 
 骨へ移した動きでは、足首の高さで床に合わせても、靴の底やかかとの厚みのぶんだけ足が床に沈む・浮くことがある。
 - 足の点: --foot-object で選んだメッシュの全頂点。無ければ、足の骨（Foot・ToeBase・Toe_End）の重みがいちばん大きい頂点と、
-  足の骨に親子付けしたメッシュの全頂点。
+  足の骨に親子付けしたメッシュの全頂点（レンダーに出すメッシュだけ）。
 - 接地のコマ（points の stance でどちらかの足が 0.5 より大きいコマ）では、足の一番低い点を床へ合わせる高さを求める。
   接地の無いコマ（跳んでいる所）は、前後の接地のコマからつなぐ。
 - 急に上下しないように、±2.5σ で打ち切ったガウスでならす。ならした後も allow_sink_mm より深く沈むコマは、
@@ -136,7 +136,7 @@ def main(argv=None):
     else:
         feet, bones = {a.bone_prefix + n for n in FEET}, set(arm.data.bones.keys())
         for o in bpy.data.objects:
-            if o.type != "MESH":
+            if o.type != "MESH" or o.hide_render:       # レンダーに出さないメッシュ（当たりの写しなど）は選ばない
                 continue
             if o.parent == arm and o.parent_type == "BONE" and o.parent_bone in feet:
                 picks[o.name] = None
