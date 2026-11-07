@@ -207,6 +207,14 @@ def test_the_thigh_blend_matches_the_prototype():
     np.testing.assert_allclose(sb.lower_weights([1.0, 0.985, 0.86, 0.7], 0.6, 0.985, 0.25), [0, 0, 0.3, 0.6])
 
 
+def test_uniform_scale_reads_one_factor_or_refuses_uneven_scale():
+    assert sb.uniform_scale(np.eye(4)) == 1.0
+    turned = np.eye(4)
+    turned[:3, :3] = np.array([[0.0, -1, 0], [1, 0, 0], [0, 0, 1]]) * 0.01   # 回転と、FBX によくある 0.01 倍
+    assert sb.uniform_scale(turned) == pytest.approx(0.01)
+    assert sb.uniform_scale(np.diag([1.0, 2.0, 1.0, 1.0])) is None
+
+
 def test_hip_axes_turn_with_the_hips():
     turn = np.array([[[0.0, -1, 0], [1, 0, 0], [0, 0, 1]]])             # 上から見て 90° 回る
     axes = sb.hip_axes(turn)

@@ -234,6 +234,12 @@ def fit_capsules(vertices, heads, slices, extend_first=True, half_width=0.05, mi
     return out
 
 
+def uniform_scale(matrix):
+    """行列（4, 4）の拡大が軸ごとに同じならその倍率、違えば None（カプセルの太さが決まらない）。"""
+    scales = np.linalg.norm(np.asarray(matrix, float)[:3, :3], axis=0)
+    return float(scales.mean()) if np.allclose(scales, scales[0], rtol=1e-6, atol=0) else None
+
+
 def capsules_from_fit(points, moves, margin):
     """fit_capsules の点の並びをつないだカプセル。両端は、その点の骨の静止から今への変換 moves[骨]（コマ, 4, 4）で動かす。"""
     out = []
@@ -532,12 +538,15 @@ def main(argv=None):
         return np.vstack(out)
 
     fitted = []
+    scale = uniform_scale(world0)                        # 輪切りはアーマチュアの中の単位で測るので、半径を世界の単位に直す
+    if settings.get("fitted") and scale is None:
+        raise SystemExit("拡大が軸ごとに違うアーマチュアでは、メッシュの輪切りから当たりを作れません（拡大をそろえてください）")
     for spec in settings.get("fitted", []):
         points = fit_capsules(fitted_vertices(spec), [np.array(bones[b].head_local) for b in spec["bones"]], spec["slices"],
                               spec.get("extend_first", True))
         if len(points) < 2:
             raise SystemExit(f"当たりを作れる輪切りが 2 つ未満です: {spec['bones']}")
-        fitted.append((spec, points))
+        fitted.append((spec, [(j, point, radius * scale) for j, point, radius in points]))
 
     # コマごとに読む（変形は止めて速くする。保存の前に戻す）
     original_view = {(o.name, m.name): m.show_viewport for o in bpy.data.objects if o.type == "MESH" for m in o.modifiers}
@@ -622,7 +631,8 @@ def main(argv=None):
             ribbons.append({"root": chains[i][0], "motion": motion_stats(sim, to_world(targets)),
                             "clearance_mm": {"min": round(float(clear.min()) * 1000, 1) if np.isfinite(clear.min()) else None,
                                              "frames_under_3mm": int((clear.min(axis=(1, 2)) < -0.003).sum())}})
-        extra_report = {"ribbons": ribbons, "colliders": len(colliders)}
+        extra_report = {"ribbons": ribbons, "colliders": len(colliders),
+                        "fitted_radii_mm": [[round(radius * 1000, 1) for _, _, radius in points] for _, points in fitted]}
 
     # 骨にする
     to_armature = np.linalg.inv(world0)
