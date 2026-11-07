@@ -1,11 +1,12 @@
-"""Blender の中で動かす: 鎖の骨（髪など）を、ばねで体の動きに遅れて揺らし、回転のキーに焼き付ける。
+"""Blender の中で動かす: 鎖の骨（髪・帯の垂れ）を、ばねで体の動きに遅れて揺らし、回転のキーに焼き付ける。
 
     blender --background --factory-startup --python spring_bones.py -- --blend in.blend --out-blend out.blend \
         --report report.json --settings settings.json
 
-settings.json（motion.spring_bones が書く）:
+settings.json（motion.spring_bones か motion.ribbon_bones が書く）:
+- model: hair（既定。髪のばね）か ribbon（帯の垂れ。下の「帯の物理」）。
 - chains: 鎖の根元の骨の名前の並び。根元から、子が 1 本の間を毛先までたどる（枝分かれは止める）。根元より下の骨は
-  親につながっている（head が親の tail）こと。どの鎖も同じ骨の数。
+  親につながっている（head が親の tail）こと。hair では、どの鎖も同じ骨の数（ribbon は 1 本ずつ計算するので違ってよい）。
 - colliders: 当たりのカプセル [{"from": 骨, "to": 骨, "radius_mm": 半径}]（2 本の骨の head を結ぶ。同じ骨か、head が重なる
   骨にすると、その head を中心にした球）。
 - links: 離れすぎないようにする鎖の組 [[i, j], ...]（chains の番号）。
@@ -14,6 +15,10 @@ settings.json（motion.spring_bones が書く）:
 - target: rest（既定。鎖が親の骨に固く付いて動いたときの形へ引く）か animation（鎖の骨にすでにある動きへ引く）。
 - follow: rest のときの付いて行き方を、骨と静止の高さの並び [{"bone": 骨, "height_m": 高さ}] にする。各節は、静止の高さで
   前後の骨の動きを線形に混ぜて付いて行く（いちばん上より上・いちばん下より下は端の骨に固く付く）。背中に沿う長い髪に使う。
+- thigh: follow に、下ほど決まった骨（太もも）の動きを混ぜる {"bone", "weight", "from_height_m", "span_m"}（帯に使う）。
+- fitted: 骨の並びに沿ってメッシュを輪切りにして測る、太さの変わるカプセル [{"bones", "slices", "objects", "extend_first"}]
+  と、その半径に足す fit_margin_mm。
+- ribbon だけ: hips（押す向きを寄せる腰の骨）、gravity、lane、over、root_move_mm、inelastic、interp。
 
 ばねの計算（リポジトリ外の試作の手順）:
 - 節（骨の head と、毛先の骨の tail）を、狙いの位置へばねで引く。根元ほどばねが強く、毛先ほど弱い（固有振動数を根元から
@@ -24,8 +29,11 @@ settings.json（motion.spring_bones が書く）:
 head をばねの根元の節に置く位置のキーも打つ。焼き付けた後にコマごとに骨を測り直し、骨の向きがばねの節の向きと、根元の
 head が根元の節と合うかを報告に残す。節の間の長さは、鎖のつなぎと当たりが節を動かすぶん伸び縮みするが、骨は長さを保つ。
 その伸び縮みと、その先の節の位置の差も報告に残す。
+帯の物理（ribbon。リポジトリ外の試作の手順、simulate_ribbon）: 各節を、ひとつ上の節から狙いの形の向きへ元の長さだけ下へ
+ばねで引き、重力で下げる。当たりの中の節は、腰の左右の成分を減らし、前と上へ寄せた向きに面まで押し出し、押した分は速さから
+除く。節の間の長さは毎回戻すので伸び縮みしない。
 コマは .blend のシーンの開始〜終了、1 秒あたりのコマはシーンの値。
-**検証**: ばねの計算は、リポジトリ外の試作と同じ入力から同じ節の位置になることを確かめた（docs/model3d.md）。
+**検証**: 髪のばねと帯の物理は、リポジトリ外の試作と同じ入力から同じ節の位置になることを確かめた（docs/model3d.md）。
 """
 import argparse
 import json
@@ -183,13 +191,172 @@ def height_weights(heights, anchors):
                      for j in range(len(anchors))], -1)
 
 
-def blend_follow(moves, weights, points):
+def blend_follow(moves, weights, points, extra=None, extra_weights=None):
     """骨ごとの静止から今への変換 moves（コマ, 骨, 4, 4）を重み（n, 骨）で混ぜて、点（n, 3）の今の位置（コマ, n, 3）と
-    回り（混ぜた回転を直交に戻したもの。コマ, n, 3, 3）を返す。"""
+    回り（混ぜた回転を直交に戻したもの。コマ, n, 3, 3）を返す。extra（コマ, 4, 4）があれば、点ごとに extra_weights（n）の
+    割合でその骨の動きを後から混ぜる（帯の下ほど太ももに付いて行く。リポジトリ外の試作と同じ順の計算）。"""
     m = np.einsum("fbij,nb->fnij", moves, weights)
+    if extra is not None:
+        w = np.asarray(extra_weights, float)
+        m = m * (1 - w)[None, :, None, None] + extra[:, None] * w[None, :, None, None]
     x = np.einsum("fnij,nj->fni", m, np.c_[points, np.ones(len(points))])[..., :3]
     u, _, vt = np.linalg.svd(m[..., :3, :3])
     return x, u @ vt
+
+
+def lower_weights(heights, weight, from_height, span):
+    """静止の高さ（n）ごとの、後から混ぜる骨の割合: from_height から span 下がるまでに 0 から weight へ増える。"""
+    return np.clip((from_height - np.asarray(heights, float)) / span, 0, 1) * weight
+
+
+def fit_capsules(vertices, heads, slices, extend_first=True, half_width=0.05, min_points=50, percentile=98):
+    """骨の並び（静止の head の並び heads、骨の数 + 1）に沿って、メッシュの静止の頂点 vertices を輪切りにし、断面の中心と
+    半径（中心からの距離の percentile 点）を測る。slices[j] は j 本目の骨の上の輪切りの位置（0〜1）。輪切りの頂点が
+    min_points より少なければ飛ばす。extend_first なら、最初の骨の最初の輪切りの太さを付け根（0）まで伸ばす（脚の部品は
+    付け根の近くが切れていて、輪切りの形が測れないため）。戻り: [(骨の番号, 静止の点, 半径)]（つなぐとカプセルの並び）"""
+    c = np.asarray(vertices, float)
+    out = []
+    for j, ts in enumerate(slices):
+        h, t = np.asarray(heads[j], float), np.asarray(heads[j + 1], float)
+        length = np.linalg.norm(t - h)
+        ax = (t - h) / length
+        u = (c - h) @ ax / length
+        for t0 in ts:
+            m = np.abs(u - t0) < half_width
+            if m.sum() < min_points:
+                continue
+            off = (c[m] - h) - ((c[m] - h) @ ax)[:, None] * ax
+            centre = off.mean(0)
+            radius = float(np.percentile(np.linalg.norm(off - centre, axis=1), percentile))
+            if extend_first and j == 0 and t0 == ts[0]:
+                out.append((j, h + centre, radius))
+            out.append((j, h + t0 * length * ax + centre, radius))
+    return out
+
+
+def capsules_from_fit(points, moves, margin):
+    """fit_capsules の点の並びをつないだカプセル。両端は、その点の骨の静止から今への変換 moves[骨]（コマ, 4, 4）で動かす。"""
+    out = []
+    for (j1, p1, r1), (j2, p2, r2) in zip(points[:-1], points[1:]):
+        m1, m2 = moves[j1], moves[j2]
+        out.append({"pa": m1[:, :3, :3] @ p1 + m1[:, :3, 3], "pb": m2[:, :3, :3] @ p2 + m2[:, :3, 3], "ra": r1 + margin,
+                    "rb": r2 + margin, "qa": p1, "qb": p2})
+    return out
+
+
+def hip_axes(turn):
+    """腰の静止から今への回転 turn（コマ, 3, 3）で回した、腰の左右（x）・前（-y）・上（z）の向き。"""
+    return {"x": np.einsum("fij,j->fi", turn, np.array([1.0, 0.0, 0.0])),
+            "fwd": np.einsum("fij,j->fi", turn, np.array([0.0, -1.0, 0.0])),
+            "up": np.einsum("fij,j->fi", turn, np.array([0.0, 0.0, 1.0]))}
+
+
+def simulate_ribbon(nodes, targets, colliders, hips, fps=30, substeps=8, f_root=4.0, f_tip=1.8, damping=0.35, gravity=1.0,
+                    lane=0.8, over=0.5, root_move=0.025, inelastic=1.0, interp=True, settle=1.0):
+    """帯の垂れ（リポジトリ外の試作の手順）。各節は「ひとつ上の節から、狙いの形の向きへ、元の長さだけ下」へばねで引かれ、
+    重力で下がる（点に引くと、太ももが前に出たとき引く先が太ももの中に入り、押し出しと引き合って帯がよじれた）。
+    当たりの中の節は、腰の左右の成分を lane の割合だけ減らし、腰の前と上の側へ over の強さで寄せた向きに、面まで押し出す。
+    押し出した分は inelastic の割合だけ次の速さから除く（弾まない）。根元も root_move（m）まで当たりから逃がす。
+    nodes（鎖, 節, 3）・targets（コマ, 鎖, 節, 3）・colliders（simulate と同じ形）・hips（hip_axes の向き）。"""
+    nodes, targets = np.asarray(nodes, float), np.asarray(targets, float)
+    frames = len(targets)
+    count = nodes.shape[1]
+    dt = 1.0 / (fps * substeps)
+    lengths = np.linalg.norm(np.diff(nodes, axis=1), axis=2)              # 鎖, 節 - 1
+    dirs = np.diff(targets, axis=2)
+    dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True)                   # 狙いの形の向き
+    rest_cap = [rest_limit(nodes, c) for c in colliders]
+    s = np.linspace(0, 1, count)[1:]
+    w0 = 2 * np.pi * f_root * (f_tip / f_root) ** s
+    kk, drag = w0 ** 2, 2 * damping * w0 * dt
+    grav = np.array([0.0, 0.0, -9.8 * gravity])
+
+    def col_at(c, f_lo, f_hi, u):
+        a0 = c["pa"][f_lo] + (c["pa"][f_hi] - c["pa"][f_lo]) * u
+        return a0, c["pb"][f_lo] + (c["pb"][f_hi] - c["pb"][f_lo]) * u - a0
+
+    def collide(x, i, geo, hx, hf, hu):
+        for (a0, ab), dcap, c in zip(geo, rest_cap, colliders):
+            t = along_axis(x, a0, ab)
+            q = a0 + t[:, None] * ab
+            rc = 0.98 * np.minimum(c["ra"] + t * (c["rb"] - c["ra"]), dcap[:, i])
+            d = x - q
+            ln = np.linalg.norm(d, axis=1)
+            m = ln < rc
+            if not m.any():
+                continue
+            u = d / np.maximum(ln[:, None], 1e-6)
+            u = u - (u @ hx)[:, None] * hx * lane                          # 腰の左右の向きの成分を減らす
+            sphere = np.linalg.norm(ab) <= 1e-6                            # 長さ 0 の軸（球）は、軸の向きを除かない
+            axn = np.zeros(3) if sphere else ab / np.linalg.norm(ab)
+            pref = (hf + hu) - ((hf + hu) @ axn) * axn                     # 軸に直角な、腰の前と上の側
+            pref /= max(np.linalg.norm(pref), 1e-9)
+            u = u - (u @ axn)[:, None] * axn
+            u /= np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-9)
+            u = u + over * pref
+            u = u - (u @ axn)[:, None] * axn
+            u /= np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-9)
+            dpar = d if sphere else d - (d @ (ab / np.linalg.norm(ab)))[:, None] * (ab / np.linalg.norm(ab))
+            b_ = (dpar * u).sum(1)                                         # 出す向きに沿って、面までの距離を解く
+            c_ = (dpar * dpar).sum(1) - rc * rc
+            s_ = -b_ + np.sqrt(np.maximum(b_ * b_ - c_, 0))
+            x[m] = x[m] + u[m] * s_[m, None]
+        return x
+
+    def advance(x, xo, f_lo, f_hi, u):
+        root = targets[f_lo, :, 0] + (targets[f_hi, :, 0] - targets[f_lo, :, 0]) * u
+        dr = dirs[f_lo] + (dirs[f_hi] - dirs[f_lo]) * u
+        dr /= np.linalg.norm(dr, axis=-1, keepdims=True)
+        geo = [col_at(c, f_lo, f_hi, u if interp else 1.0) for c in colliders]
+        hx = hips["x"][f_lo] + (hips["x"][f_hi] - hips["x"][f_lo]) * u
+        hx /= np.linalg.norm(hx)
+        hf = hips["fwd"][f_lo] + (hips["fwd"][f_hi] - hips["fwd"][f_lo]) * u
+        hf /= np.linalg.norm(hf)
+        hu = hips["up"][f_lo] + (hips["up"][f_hi] - hips["up"][f_lo]) * u
+        hu /= np.linalg.norm(hu)
+        xn = x.copy()
+        prev = x.copy()
+        pushed = collide(root.copy(), 0, geo, hx, hf, hu)                  # 根元も、当たりから少しだけ逃がす
+        mv = pushed - root
+        ln_ = np.linalg.norm(mv, axis=1, keepdims=True)
+        xn[:, 0] = root + mv * np.minimum(1.0, root_move / np.maximum(ln_, 1e-9))
+        for i in range(1, count):
+            want = xn[:, i - 1] + lengths[:, i - 1, None] * dr[:, i - 1]
+            p = x[:, i] + (x[:, i] - xo[:, i]) * (1 - drag[i - 1]) + dt * dt * (kk[i - 1] * (want - x[:, i]) + grav)
+            dd = p - xn[:, i - 1]
+            p = xn[:, i - 1] + dd * (lengths[:, i - 1, None] / np.maximum(np.linalg.norm(dd, axis=1, keepdims=True), 1e-9))
+            p0 = p.copy()
+            for _ in range(3):                                             # 当たりの外へ出してから、長さを戻す
+                p = collide(p, i, geo, hx, hf, hu)
+                dd = p - xn[:, i - 1]
+                p = xn[:, i - 1] + dd * (lengths[:, i - 1, None] / np.maximum(np.linalg.norm(dd, axis=1, keepdims=True), 1e-9))
+            xn[:, i] = p
+            prev[:, i] = x[:, i] + (p - p0) * inelastic                    # 押し出した分は次の速さに入れない
+        return xn, prev
+
+    x = targets[0].copy()
+    xo = x.copy()
+    for _ in range(int(round(settle * fps * substeps))):                   # 最初の形で落ち着かせる
+        x, xo = advance(x, xo, 0, 0, 0.0)
+    sim = np.zeros((frames,) + nodes.shape)
+    sim[0] = x
+    for f in range(1, frames):
+        for k in range(substeps):
+            x, xo = advance(x, xo, f - 1, f, (k + 1) / substeps)
+        sim[f] = x
+    return sim
+
+
+def surface_clear(sim, colliders):
+    """節（コマ, 鎖, 節, 3）から当たりの面までの距離（負なら中。コマ, 鎖, 節）。"""
+    out = np.full(sim.shape[:3], np.inf)
+    for c in colliders:
+        a0 = c["pa"][:, None, None]
+        ab = c["pb"][:, None, None] - a0
+        length2 = (ab * ab).sum(-1)
+        t = np.where(length2 > 1e-12, np.clip(((sim - a0) * ab).sum(-1) / np.maximum(length2, 1e-12), 0, 1), 0.0)
+        out = np.minimum(out, np.linalg.norm(sim - (a0 + t[..., None] * ab), axis=-1) - (c["ra"] + t * (c["rb"] - c["ra"])))
+    return out
 
 
 def root_location(parent_follow, rest_root, heads):
@@ -252,13 +419,16 @@ def chain_basis(parent_rotation, rest_relation, target_rotation, directions):
 
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
-    from mathutils import Matrix, Quaternion
+    from mathutils import Matrix
 
     if argv is None:
         argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     a = parse_args(argv)
     with open(a.settings, encoding="utf-8") as stream:
         settings = {**DEFAULTS, **json.load(stream)}
+    model = settings.get("model", "hair")
+    if model not in ("hair", "ribbon"):
+        raise SystemExit(f"model は hair か ribbon: {model!r}")
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
     sc, vl = bpy.context.scene, bpy.context.view_layer
     armatures = [o for o in bpy.data.objects if o.type == "ARMATURE"]
@@ -299,28 +469,75 @@ def main(argv=None):
             if not bones[name].use_inherit_rotation or bones[name].inherit_scale != "FULL":
                 raise SystemExit(f"{name} は親の回転と拡大をそのまま受け継ぐ骨にしてください")
         chains.append(chain)
-    if len({len(c) for c in chains}) != 1:
+    if model == "hair" and len({len(c) for c in chains}) != 1:
         raise SystemExit("どの鎖も同じ骨の数にしてください（違う長さの鎖は別の工程に分ける）: "
                          + ", ".join(f"{c[0]} {len(c)}" for c in chains))
     for c0, c1 in settings["links"]:
         if not (0 <= c0 < len(chains) and 0 <= c1 < len(chains)) or c0 == c1:
             raise SystemExit(f"links の鎖の番号が違います: {[c0, c1]}")
-    for c in settings["colliders"]:
-        for key in ("from", "to"):
-            if c[key] not in bones:
-                raise SystemExit(f"当たりの骨がありません: {c[key]}")
-    for anchor in settings["follow"]:
-        if anchor["bone"] not in bones:
-            raise SystemExit(f"付いて行く骨がありません: {anchor['bone']}")
+    thigh = settings.get("thigh")
+    needed = ([c[key] for c in settings["colliders"] for key in ("from", "to")] + [x["bone"] for x in settings["follow"]]
+              + ([thigh["bone"]] if thigh else []) + ([settings["hips"]] if model == "ribbon" else [])
+              + [b for spec in settings.get("fitted", []) for b in spec["bones"]])
+    for name in needed:
+        if name not in bones:
+            raise SystemExit(f"骨がありません: {name}")
     parents = [bones[c[0]].parent.name for c in chains]
+    world0 = np.array(arm.matrix_world)
 
     def rest(name):
         return np.array(bones[name].matrix_local)
 
-    # 静止の節と、骨どうしの静止での回転
-    rest_nodes = np.array([[np.array(bones[n].head_local) for n in c] + [np.array(bones[c[-1]].tail_local)] for c in chains])
-    relation = np.array([[rotation_part(np.linalg.inv(rest(p if j == 0 else c[j - 1])) @ rest(n)) for j, n in enumerate(c)]
-                         for c, p in zip(chains, parents)])
+    # 静止の節と、骨どうしの静止での回転（鎖ごと）
+    rest_nodes = [np.array([np.array(bones[n].head_local) for n in c] + [np.array(bones[c[-1]].tail_local)]) for c in chains]
+    relation = [np.array([rotation_part(np.linalg.inv(rest(p if j == 0 else c[j - 1])) @ rest(n)) for j, n in enumerate(c)])
+                for c, p in zip(chains, parents)]
+
+    def fitted_vertices(spec):
+        """当たりを作るメッシュの静止の頂点（アーマチュアの空間）: objects の全頂点か、骨の重みがいちばん大きい骨が spec の骨の頂点"""
+        to_arm = np.linalg.inv(world0)
+        out = []
+        if spec.get("objects"):
+            for name in spec["objects"]:
+                o = bpy.data.objects.get(name)
+                if o is None or o.type != "MESH":
+                    raise SystemExit(f"当たりを作るメッシュがありません: {name}")
+                co = np.zeros(len(o.data.vertices) * 3)
+                o.data.vertices.foreach_get("co", co)
+                m = to_arm @ np.array(o.matrix_world)
+                out.append(co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3])
+        else:
+            wanted = set(spec["bones"])
+            for o in bpy.data.objects:
+                if o.type != "MESH" or o.hide_render:
+                    continue
+                groups = {g.index: g.name for g in o.vertex_groups if g.name in bones}
+                if not groups:
+                    continue
+                pick = []
+                for v in o.data.vertices:
+                    best, which = 0.0, None
+                    for g in v.groups:
+                        if g.group in groups and g.weight > best:
+                            best, which = g.weight, groups[g.group]
+                    if which in wanted:
+                        pick.append(v.index)
+                if pick:
+                    co = np.zeros(len(o.data.vertices) * 3)
+                    o.data.vertices.foreach_get("co", co)
+                    m = to_arm @ np.array(o.matrix_world)
+                    out.append(co.reshape(-1, 3)[pick] @ m[:3, :3].T + m[:3, 3])
+        if not out:
+            raise SystemExit(f"当たりを作る頂点がありません（objects を渡すか、骨の重みを確かめてください）: {spec['bones']}")
+        return np.vstack(out)
+
+    fitted = []
+    for spec in settings.get("fitted", []):
+        points = fit_capsules(fitted_vertices(spec), [np.array(bones[b].head_local) for b in spec["bones"]], spec["slices"],
+                              spec.get("extend_first", True))
+        if len(points) < 2:
+            raise SystemExit(f"当たりを作れる輪切りが 2 つ未満です: {spec['bones']}")
+        fitted.append((spec, points))
 
     # コマごとに読む（変形は止めて速くする。保存の前に戻す）
     original_view = {(o.name, m.name): m.show_viewport for o in bpy.data.objects if o.type == "MESH" for m in o.modifiers}
@@ -328,74 +545,102 @@ def main(argv=None):
         if o.type == "MESH":
             for m in o.modifiers:
                 m.show_viewport = False
-    world0 = np.array(arm.matrix_world)
-    parent_pose = np.zeros((len(frames), len(chains), 4, 4))
-    chain_pose = np.zeros((len(frames), len(chains), len(chains[0]), 4, 4))
-    chain_nodes = np.zeros((len(frames),) + rest_nodes.shape)
-    ends = {}
-    follow_pose = np.zeros((len(frames), len(settings["follow"]), 4, 4))
+    tracked = sorted(set(parents) | {n for c in chains for n in c} | set(needed))
+    poses = {n: np.zeros((len(frames), 4, 4)) for n in tracked}
+    heads = {n: np.zeros((len(frames), 3)) for n in tracked}
+    tips = {c[-1]: np.zeros((len(frames), 3)) for c in chains}
     for k, f in enumerate(frames):
         sc.frame_set(f)
         if not np.allclose(np.array(arm.matrix_world), world0):
             raise SystemExit("アーマチュアの物体が動いている .blend はまだ扱えません（骨の動きにしてください）")
-        for i, (c, p) in enumerate(zip(chains, parents)):
-            parent_pose[k, i] = np.array(pb[p].matrix)
-            for j, n in enumerate(c):
-                chain_pose[k, i, j] = np.array(pb[n].matrix)
-                chain_nodes[k, i, j] = np.array(pb[n].head)
-            chain_nodes[k, i, -1] = np.array(pb[c[-1]].tail)
-        for c in settings["colliders"]:
-            for key in ("from", "to"):
-                ends.setdefault(c[key], np.zeros((len(frames), 3)))[k] = np.array(pb[c[key]].head)
-        for j, anchor in enumerate(settings["follow"]):
-            follow_pose[k, j] = np.array(pb[anchor["bone"]].matrix)
-    chain_rest = np.array([[rest(n) for n in c] for c in chains])
-    if settings["target"] == "rest" and settings["follow"]:   # 骨と高さの並びで混ぜて付いて行く（リポジトリ外の試作と同じ）
-        moves = np.stack([follow_pose[:, j] @ np.linalg.inv(rest(anchor["bone"])) for j, anchor in enumerate(settings["follow"])], 1)
-        flat = rest_nodes.reshape(-1, 3)
-        x, turn = blend_follow(moves, height_weights(flat[:, 2], [anchor["height_m"] for anchor in settings["follow"]]), flat)
-        targets = x.reshape((len(frames),) + rest_nodes.shape)
-        turn = turn.reshape((len(frames),) + rest_nodes.shape[:2] + (3, 3))
-        target_rot = rotation_part(0.5 * (turn[:, :, :-1] + turn[:, :, 1:])) @ rotation_part(chain_rest)   # 骨の両端の回りの平均
-    elif settings["target"] == "rest":                   # 鎖が親に固く付いて動いたとき（鎖の骨の回転と根元の位置は 0）
-        follow = np.array([parent_pose[:, i] @ np.linalg.inv(rest(p)) for i, p in enumerate(parents)]).swapaxes(0, 1)
-        homogeneous = np.concatenate([rest_nodes, np.ones(rest_nodes.shape[:2] + (1,))], -1)
-        targets = np.einsum("fcij,cnj->fcni", follow, homogeneous)[..., :3]
-        target_rot = rotation_part(np.einsum("fcij,cnjk->fcnik", follow, chain_rest))
-    elif settings["target"] == "animation":
-        targets, target_rot = chain_nodes, rotation_part(chain_pose)
-    else:
+        for n in tracked:
+            poses[n][k] = np.array(pb[n].matrix)
+            heads[n][k] = np.array(pb[n].head)
+        for c in chains:
+            tips[c[-1]][k] = np.array(pb[c[-1]].tail)
+    parent_pose = [poses[p] for p in parents]
+    chain_pose = [np.stack([poses[n] for n in c], 1) for c in chains]                                   # 鎖ごと（コマ, 骨, 4, 4）
+    chain_nodes = [np.concatenate([np.stack([heads[n] for n in c], 1), tips[c[-1]][:, None]], 1) for c in chains]
+
+    def targets_for(idx):
+        """鎖の番号の並び idx（同じ節の数）の、静止の節（鎖, 節, 3）・狙いの位置（コマ, 鎖, 節, 3）・狙いの骨の回転"""
+        nodes = np.array([rest_nodes[i] for i in idx])
+        chain_rest = np.array([[rest(n) for n in chains[i]] for i in idx])
+        if settings["target"] == "rest" and settings["follow"]:   # 骨と高さの並びで混ぜて付いて行く（リポジトリ外の試作と同じ）
+            moves = np.stack([poses[x["bone"]] @ np.linalg.inv(rest(x["bone"])) for x in settings["follow"]], 1)
+            flat = nodes.reshape(-1, 3)
+            extra = poses[thigh["bone"]] @ np.linalg.inv(rest(thigh["bone"])) if thigh else None
+            extra_w = lower_weights(flat[:, 2], thigh["weight"], thigh["from_height_m"], thigh["span_m"]) if thigh else None
+            x, turn = blend_follow(moves, height_weights(flat[:, 2], [x["height_m"] for x in settings["follow"]]), flat, extra, extra_w)
+            turn = turn.reshape((len(frames),) + nodes.shape[:2] + (3, 3))
+            return (nodes, x.reshape((len(frames),) + nodes.shape),
+                    rotation_part(0.5 * (turn[:, :, :-1] + turn[:, :, 1:])) @ rotation_part(chain_rest))   # 骨の両端の回りの平均
+        if settings["target"] == "rest":                 # 鎖が親に固く付いて動いたとき（鎖の骨の回転と根元の位置は 0）
+            follow = np.array([parent_pose[i] @ np.linalg.inv(rest(parents[i])) for i in idx]).swapaxes(0, 1)
+            homogeneous = np.concatenate([nodes, np.ones(nodes.shape[:2] + (1,))], -1)
+            return (nodes, np.einsum("fcij,cnj->fcni", follow, homogeneous)[..., :3],
+                    rotation_part(np.einsum("fcij,cnjk->fcnik", follow, chain_rest)))
+        if settings["target"] == "animation":
+            return (nodes, np.array([chain_nodes[i] for i in idx]).swapaxes(0, 1),
+                    rotation_part(np.array([chain_pose[i] for i in idx]).swapaxes(0, 1)))
         raise SystemExit(f"target は rest か animation: {settings['target']!r}")
 
     def to_world(points):
         return points @ world0[:3, :3].T + world0[:3, 3]
 
-    colliders = [{"pa": to_world(ends[c["from"]]), "pb": to_world(ends[c["to"]]), "ra": c["radius_mm"] / 1000,
+    colliders = [{"pa": to_world(heads[c["from"]]), "pb": to_world(heads[c["to"]]), "ra": c["radius_mm"] / 1000,
                   "rb": c["radius_mm"] / 1000, "qa": to_world(np.array(bones[c["from"]].head_local)),
                   "qb": to_world(np.array(bones[c["to"]].head_local))} for c in settings["colliders"]]
-    sim, hits = simulate(to_world(rest_nodes), to_world(targets), colliders, [tuple(x) for x in settings["links"]], fps,
-                         int(settings["substeps"]), settings["f_root_hz"], settings["f_tip_hz"], settings["damping"],
-                         settings["bend"], settings["push"], settings["settle_s"])
+    for spec, points in fitted:                          # メッシュの輪切りから作った、太さの変わるカプセル
+        moves = [poses[b] @ np.linalg.inv(rest(b)) for b in spec["bones"][:-1]]
+        for c in capsules_from_fit(points, moves, settings.get("fit_margin_mm", 0.0) / 1000):
+            colliders.append({"pa": to_world(c["pa"]), "pb": to_world(c["pb"]), "ra": c["ra"], "rb": c["rb"],
+                              "qa": to_world(c["qa"]), "qb": to_world(c["qb"])})
+
+    sims, target_rots, extra_report = [], [], {}
+    if model == "hair":
+        idx = list(range(len(chains)))
+        nodes, targets, target_rot = targets_for(idx)
+        sim, hits = simulate(to_world(nodes), to_world(targets), colliders, [tuple(x) for x in settings["links"]], fps,
+                             int(settings["substeps"]), settings["f_root_hz"], settings["f_tip_hz"], settings["damping"],
+                             settings["bend"], settings["push"], settings["settle_s"])
+        sims, target_rots = [sim[:, i] for i in idx], [target_rot[:, i] for i in idx]
+        extra_report = {"collision_pushes": hits, "motion": motion_stats(sim, to_world(targets))}
+    else:
+        turn = poses[settings["hips"]][:, :3, :3] @ np.linalg.inv(rest(settings["hips"])[:3, :3])
+        hips = hip_axes(np.einsum("ij,fjk->fik", world0[:3, :3], turn))
+        ribbons = []
+        for i in range(len(chains)):                      # 帯は 1 本ずつ（長さが違ってもよい）
+            nodes, targets, target_rot = targets_for([i])
+            sim = simulate_ribbon(to_world(nodes), to_world(targets), colliders, hips, fps, int(settings["substeps"]),
+                                  settings["f_root_hz"], settings["f_tip_hz"], settings["damping"], settings["gravity"],
+                                  settings["lane"], settings["over"], settings["root_move_mm"] / 1000, settings["inelastic"],
+                                  settings["interp"], settings["settle_s"])
+            sims.append(sim[:, 0])
+            target_rots.append(target_rot[:, 0])
+            clear = surface_clear(sim, colliders)[:, :, 1:] if colliders else np.full((len(frames), 1, 1), np.inf)
+            ribbons.append({"root": chains[i][0], "motion": motion_stats(sim, to_world(targets)),
+                            "clearance_mm": {"min": round(float(clear.min()) * 1000, 1) if np.isfinite(clear.min()) else None,
+                                             "frames_under_3mm": int((clear.min(axis=(1, 2)) < -0.003).sum())}})
+        extra_report = {"ribbons": ribbons, "colliders": len(colliders)}
 
     # 骨にする
     to_armature = np.linalg.inv(world0)
-    sim_armature = sim @ to_armature[:3, :3].T + to_armature[:3, 3]
-    basis = np.array([chain_basis(rotation_part(parent_pose[:, i]), relation[i], target_rot[:, i],
-                                  np.diff(sim_armature[:, i], axis=1)) for i in range(len(chains))])   # 鎖, コマ, 骨, 3, 3
-    root_keys = [root_location(parent_pose[:, i] @ np.linalg.inv(rest(p)), rest(c[0]), sim_armature[:, i, 0])
-                 for i, (c, p) in enumerate(zip(chains, parents))]
     for i, c in enumerate(chains):
+        sim_armature = sims[i] @ to_armature[:3, :3].T + to_armature[:3, 3]
+        basis = chain_basis(rotation_part(parent_pose[i]), relation[i], target_rots[i], np.diff(sim_armature, axis=1))
+        root_keys = root_location(parent_pose[i] @ np.linalg.inv(rest(parents[i])), rest(c[0]), sim_armature[:, 0])
         for j, n in enumerate(c):
             prev = None
             for k, f in enumerate(frames):
-                q = Matrix(basis[i, k, j].tolist()).to_quaternion()
+                q = Matrix(basis[k, j].tolist()).to_quaternion()
                 if prev is not None and q.dot(prev) < 0:
                     q = -q
                 prev = q
                 pb[n].rotation_quaternion = q
                 pb[n].keyframe_insert("rotation_quaternion", frame=f)
                 if j == 0:                               # 根元の head を、ばねの根元の節に置く
-                    pb[n].location = root_keys[i][k].tolist()
+                    pb[n].location = root_keys[k].tolist()
                     pb[n].keyframe_insert("location", frame=f)
     # 確かめ: 焼き付けた骨の向きがばねの節の向きと、根元の head がばねの根元の節と合うこと。節の間の長さは、ばねの計算で
     # 鎖のつなぎと当たりが節を動かすぶん伸び縮みするが、骨は長さを保つので、その先の節の位置の差は別に数える
@@ -405,29 +650,32 @@ def main(argv=None):
         vl.update()
         for i, c in enumerate(chains):
             got = to_world(np.array([np.array(pb[n].head) for n in c] + [np.array(pb[c[-1]].tail)]))
-            have, want = np.diff(got, axis=0), np.diff(sim[k, i], axis=0)
+            have, want = np.diff(got, axis=0), np.diff(sims[i][k], axis=0)
             angle = np.arctan2(np.linalg.norm(np.cross(have, want), axis=1), np.sum(have * want, axis=1))
             worst["direction_deg"] = max(worst["direction_deg"], float(np.degrees(angle.max())))
-            worst["root_mm"] = max(worst["root_mm"], float(np.linalg.norm(got[0] - sim[k, i, 0])) * 1000)
-            worst["nodes_mm"] = max(worst["nodes_mm"], float(np.linalg.norm(got - sim[k, i], axis=1).max()) * 1000)
-    stretch = (np.linalg.norm(np.diff(sim, axis=2), axis=3) - np.linalg.norm(np.diff(to_world(rest_nodes), axis=1), axis=2)[None]) * 1000
+            worst["root_mm"] = max(worst["root_mm"], float(np.linalg.norm(got[0] - sims[i][k, 0])) * 1000)
+            worst["nodes_mm"] = max(worst["nodes_mm"], float(np.linalg.norm(got - sims[i][k], axis=1).max()) * 1000)
+    stretch = np.concatenate([(np.linalg.norm(np.diff(sims[i], axis=1), axis=2)
+                               - np.linalg.norm(np.diff(to_world(rest_nodes[i]), axis=0), axis=1)[None]).ravel()
+                              for i in range(len(chains))]) * 1000
     for o in bpy.data.objects:
         if o.type == "MESH":
             for m in o.modifiers:
                 m.show_viewport = original_view[(o.name, m.name)]
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
+    keys = ["model", "target", "follow", "f_root_hz", "f_tip_hz", "damping", "substeps", "settle_s", "colliders"]
+    keys += (["bend", "push", "links"] if model == "hair" else
+             ["thigh", "fitted", "fit_margin_mm", "hips", "gravity", "lane", "over", "root_move_mm", "inelastic", "interp"])
     report = {"schema_version": "model3d-spring-bones/0.1", "blender": bpy.app.version_string,
               "frames": [frames[0], frames[-1]], "fps": fps,
               "chains": [{"root": c[0], "bones": len(c), "parent": p} for c, p in zip(chains, parents)],
-              "settings": {k: settings[k] for k in ("target", "follow", "f_root_hz", "f_tip_hz", "damping", "bend", "substeps",
-                                                   "push", "settle_s", "links", "colliders")},
-              "collision_pushes": hits, "motion": motion_stats(sim, to_world(targets)),
+              "settings": {k: settings.get(k, model if k == "model" else None) for k in keys}, **extra_report,
               "spring_stretch_mm": {"max": round(float(stretch.max()), 2), "min": round(float(stretch.min()), 2)},
               "bake_check": {"direction_deg": worst["direction_deg"], "root_mm": worst["root_mm"]},   # 丸めない（許容と比べる）
               "bones_vs_springs_mm": round(worst["nodes_mm"], 2)}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
-    print(json.dumps({"chains": len(chains), "frames": len(frames), "collision_pushes": hits,
+    print(json.dumps({"model": model, "chains": len(chains), "frames": len(frames),
                       "bake_check": {k: round(v, 5) for k, v in report["bake_check"].items()}}))
 
 
