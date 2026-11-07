@@ -434,6 +434,20 @@ def chain_basis(parent_rotation, rest_relation, target_rotation, directions):
     return out
 
 
+def rendered(ob, view_layers):
+    """ob がレンダーに出るか。物体の hide_render と、ob の入ったコレクションまでたどる道（どれか 1 つ）の、コレクションの
+    hide_render とビューレイヤーでの除外を見る。使うビューレイヤーのどれかで出れば出る"""
+    if ob.hide_render:
+        return False
+
+    def walk(layer):
+        if layer.exclude or layer.collection.hide_render:
+            return False
+        return ob.name in layer.collection.objects or any(walk(child) for child in layer.children)
+
+    return any(walk(vl.layer_collection) for vl in view_layers if vl.use)
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Matrix
@@ -526,7 +540,7 @@ def main(argv=None):
         else:
             wanted = set(spec["bones"])
             for o in bpy.data.objects:
-                if o.type != "MESH" or o.hide_render:
+                if o.type != "MESH" or not rendered(o, sc.view_layers):   # レンダーに出さないメッシュ（コレクションで隠した衣装など）は選ばない
                     continue
                 groups = {g.index: g.name for g in o.vertex_groups if g.name in bones}
                 if not groups:

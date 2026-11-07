@@ -6,7 +6,7 @@
 - 手の点: 手の骨（Hand）とその先の骨（指）の重みがいちばん大きい頂点（左右別）。
 - 体の点: 腰の骨から下がる骨のうち、首・肩・足から先を除いた骨（腰・背骨・太もも・すねと、その下に足した骨）の重みが
   いちばん大きい頂点。--body-object で選んだメッシュの全頂点にもできる。重みは骨の名前の頂点グループだけを見る。
-  骨の重みで選ぶときは、レンダーに出すメッシュ（hide_render でないもの）だけを見る。
+  骨の重みで選ぶときは、レンダーに出すメッシュだけを見る（物体とコレクションの hide_render、ビューレイヤーでの除外を見る）。
 - コマごとに、手の点にいちばん近い体の点を探し、体の面の法線の向きに測った距離が gap より小さい点の足りない量を測る
   （reach より遠い点は数えない）。2 mm より足りない点が 15 未満なら、手のひらの丸みの誤差とみなして動かさない。
 - 足りない量で重みをつけた法線の平均の向きに、足りない量（向きの傾きで割り増し）の 98% 点だけ手首を動かす（1 回に cap まで）。
@@ -131,6 +131,20 @@ def summary(frames, count, deepest):
             for s in count}
 
 
+def rendered(ob, view_layers):
+    """ob がレンダーに出るか。物体の hide_render と、ob の入ったコレクションまでたどる道（どれか 1 つ）の、コレクションの
+    hide_render とビューレイヤーでの除外を見る。使うビューレイヤーのどれかで出れば出る"""
+    if ob.hide_render:
+        return False
+
+    def walk(layer):
+        if layer.exclude or layer.collection.hide_render:
+            return False
+        return ob.name in layer.collection.objects or any(walk(child) for child in layer.children)
+
+    return any(walk(vl.layer_collection) for vl in view_layers if vl.use)
+
+
 # ---------- ここから下は Blender の中でだけ動く ----------
 
 def select_by_weight(arm, prefix, body_objects=()):
@@ -140,8 +154,9 @@ def select_by_weight(arm, prefix, body_objects=()):
     hand_bones = {side: subtree(parents, prefix + side + "Hand") for side in SIDES}
     body_bones = subtree(parents, prefix + "Hips", stop={prefix + n for n in BODY_STOP})
     hands, body = {side: [] for side in SIDES}, []
+    layers = bpy.context.scene.view_layers
     for o in bpy.data.objects:
-        if o.type != "MESH" or o.hide_render:           # レンダーに出さないメッシュ（当たりの写しなど）は選ばない
+        if o.type != "MESH" or not rendered(o, layers):   # レンダーに出さないメッシュ（当たりの写し、コレクションで隠した衣装など）は選ばない
             continue
         groups = {g.index: g.name for g in o.vertex_groups if g.name in parents}   # 骨の名前の重みだけを見る
         if not groups:
