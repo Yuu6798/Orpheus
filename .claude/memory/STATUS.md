@@ -31,7 +31,7 @@
 | GATE-1 | `mv gate check` で 0 秒ちょうどの問題のコマに静止画が付かない | P3 | PR #12 の Codex の指摘で、ユーザーの判断で見送り（スレッドは開いたまま）。合否と問題の一覧には影響しない。書き出し検査の問題が t=0 を「コマなし」の印に使っているので、直すならそこも分ける |
 | FX-PIVOT-1 | 深度視差の軸（動かない基準の深度）を spec で指定できるようにする | P2 | 段階 1 の課題。公開版は 0.35 相当、fx は 0.5 固定 |
 | FX-SYNC-1 | 解析した音の強打から光の強さのキーを作る | P2 | 段階 1 の課題。稲光の明滅を手で強打に合わせた。ダンスの試作で書いた帯域ごとの音の強さの処理が土台になる（効き方は区間で差があった） |
-| FX-LYRIC-1 | 歌詞テロップ（透過連番）を fx の出力に合成する | P2 | 段階 1 の課題。実際の MV に使うには要る |
+| FX-LYRIC-1 | 歌詞テロップ（透過連番）を fx の出力に合成する | P2 | 段階 1 の課題。実際の MV に使うには要る。`mv overlay`（透過連番・アルファつき動画を土台に重ねる）が入口として入った（合成素材で確認。Remotion の実際の連番では未確認）。fx の run の出力に直接つなぐ口（spec からの指定）は未着手 |
 | DOC-2 | 実素材向けの初期値の目安（照り返し・霧など）を docs/fx.md に書く | P3 | 段階 1 でデモ基準の値が強すぎた（照り返し 0.7→0.3、霧 0.18→0.08） |
 | MASK-1 | 既存の切り抜きマスクの欠けを補う手間を減らす | P3 | 段階 1 で刃先・足元を手で補った。道具化するかは回数を見て決める |
 | STATE-1 | 失敗 render が成功記録を消す・preview/final のキャッシュ外れ | P2 | 並行トラック。契約不変。内訳: 描画後段の失敗で current_run_id が動画の無い run に付け替わり前回成功の outputs が消える／render の stage が 1 枠で profile を交互に回すと毎回再描画／stale 印が内容ハッシュの命中より優先される／assets・analysis の stage が waiting_input のまま残る。修正方針: render の stage を profile ごとに分け、last_good_run_id を別に持つ。再現手順はリポジトリに保存していないので作り直す |
@@ -49,6 +49,7 @@ Date は UTC（日本時間では #2・#6 は 2026-10-25 未明）。
 | PR | Title | Date | Phase |
 |---|---|---|---|
 | （この PR） | `mv gate timeline`: 透過の連番から、字が見えているコマと箱を α で実測して dance-timeline/0.1 を書き、宣言（props）との差を行ごとに出す（行ごとの連番か hints の箱で切り分け。Remotion のテロップのデモで timeline を手で書くしかなかったことから） | 2026-11-08 | 検査 |
+| #72 | `mv overlay`: 透過の連番・アルファつき動画を土台に重ねて fx の共通の書き出しで H.264 にする（straight α・sRGB で混ぜる。コマ数・fps・寸法の食い違いはエラー。各コマの sha256 と設定を run と台帳に記録、fx-overlay/0.1 で検証、technical_pass）。FX-LYRIC-1 の入口（Remotion のテロップのデモで ffmpeg の引数を fx から写すしかなかったことから） | 2026-11-08 | fx |
 | #71 | `mv export remotion-props`: analysis / storyboard からコマ番号だけの props.json（remotion-props/0.1）を書く。丸めは `validate.frame_span` / `frame_at` に 1 か所化し、`mv render` の字幕と共有。TS の型 `renderer/src/lyric-props.ts`（Remotion のテロップのデモで秒→コマの丸めを TS に書き直す必要があったことから） | 2026-11-08 | Remotion 連携 |
 | #70 | `mv gate demo`: 正解の分かっている試験素材（声の代役・宣言した行の時刻・timeline・拍の格子・expected.json）と CI の smoke（demo → lines → check → 照合）。`gate lines` の歌い出しの推定の偏り（約 −20 ms。窓の掛かり始め）を docs/gate.md に表で記録（補正は入れず、ユウ判断）。WAV は soundfile 無しで読める（Remotion のテロップのデモから） | 2026-11-08 | 検査 |
 | #69 | 字の重なりの検査がフェードアウトを数える（手書きの timeline は `[start, end + fade_out_s]`。dance の timeline は `lyric_fade: inside` を書き `[start, end]`。`box_intersects` を添え、`overlap_mode: time_and_box` で箱が交わるときだけ数える。Remotion のテロップのデモから） | 2026-11-08 | 検査 |
