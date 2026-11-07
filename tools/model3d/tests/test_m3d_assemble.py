@@ -18,9 +18,10 @@ def test_seconds_are_written_short_and_exact_enough():
 def test_fades_are_written_in_window_seconds_and_shifted_to_the_first_frame():
     out = {"start": 31.4, "duration": 0.6}
     assert asm.fade_filters(None, out, 1, 30) == ["fade=t=out:st=31.4:d=0.6"]
-    assert asm.fade_filters({"start": 0.0, "duration": 0.5}, out, 843, 30) == ["fade=t=in:st=-28.066667:d=0.5",
-                                                                              "fade=t=out:st=3.333333:d=0.6"]
-    assert asm.fade_filters(None, None, 1, 30) == []
+    # 後ろの範囲は、時刻を 842 コマ進めて窓の秒のまま掛け、戻して、コマの長さを付け直す（fade の st は負にできない）
+    assert asm.fade_filters({"start": 0.0, "duration": 0.5}, out, 843, 30) == [
+        "setpts=PTS+842", "fade=t=in:st=0:d=0.5", "fade=t=out:st=31.4:d=0.6", "setpts=PTS-842", "fps=30"]
+    assert asm.fade_filters(None, None, 1, 30) == [] and asm.fade_filters(None, None, 843, 30) == []
 
 
 def test_the_ffmpeg_arguments_follow_the_bt709_recipe():
@@ -151,3 +152,32 @@ def test_the_operation_needs_a_video_output_and_one_frame_source(tmp_path):
                                            "resolution": [32, 48], "frames": [], "missing": []})
     with pytest.raises(ToolError, match="一緒に使えません"):
         call(tmp_path, {"range": [1, 3]}, {"frames": tmp_path / "frames.json"})
+
+
+def _decoded(video, size=(32, 48)):
+    """動画のコマを RGB に戻した明るさの平均（コマごと）。"""
+    import imageio_ffmpeg
+    import numpy as np
+    import subprocess
+    raw = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                         capture_output=True, check=True).stdout
+    frames = np.frombuffer(raw, np.uint8).reshape(-1, size[1], size[0], 3)
+    return frames.reshape(len(frames), -1).mean(axis=1)
+
+
+@pytest.mark.parametrize("fade_in, first_level", [({"start": 0.0, "duration": 0.5}, 0.6),    # 範囲の頭（0.3 秒）はフェードの途中
+                                                  ({"start": 0.0, "duration": 0.2}, 1.0),    # 範囲より前に終わったフェード
+                                                  ({"start": 0.5, "duration": 0.2}, 0.0)])   # 範囲の後で始まるフェード
+def test_a_later_range_keeps_the_fade_of_the_window(tmp_path, fade_in, first_level):
+    pytest.importorskip("imageio_ffmpeg")
+    from PIL import Image
+    from model3d import executor
+    (tmp_path / "frames").mkdir()
+    for T in range(1, 11):
+        Image.new("RGB", (32, 48), (255, 255, 255)).save(tmp_path / "frames" / f"f{T:04d}.png")
+    result = executor.run_recipe(_recipe(tmp_path, {"frames_dir": "frames", "range": [4, 10], "fps": 10, "fade_in": fade_in}),
+                                 tmp_path / "runs")
+    assert result["status"] == "succeeded"                         # 前は fade の st が負（-0.3）になり、ffmpeg が止まった
+    levels = _decoded(result["steps"]["assemble"]["artifacts"]["video"])
+    assert len(levels) == 7 and levels[-1] > 240                   # T 10 は窓の 0.9 秒で、フェードは終わっている
+    assert levels[0] / levels[-1] == pytest.approx(first_level, abs=0.05)

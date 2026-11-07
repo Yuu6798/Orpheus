@@ -27,13 +27,17 @@ def seconds(value):
 
 
 def fade_filters(fade_in, fade_out, first, fps):
-    """窓の秒（T = 1 が 0 秒）で書いたフェードを、まとめる最初のコマ（T = first）からの秒に直した ffmpeg の fade の並び。"""
-    shift = (first - 1) / fps
+    """窓の秒（T = 1 が 0 秒）で書いたフェードの、ffmpeg の fade の並び。まとめる最初のコマが T = first（> 1）なら、時刻を
+    first - 1 コマぶん進めてから窓の秒のままフェードを掛け、元に戻す（コマの列の時刻は 1 コマに 1 ずつ進む）。fade の st は
+    負にできないので、範囲より前に始まったフェードも、こうすると途中の濃さから続く（終わったフェードは何もしない）。
+    setpts はコマの長さを 0 にし、最後のコマが落ちるので、戻した後に fps で長さを付け直す。"""
     out = []
     if fade_in:
-        out.append(f"fade=t=in:st={seconds(fade_in['start'] - shift)}:d={seconds(fade_in['duration'])}")
+        out.append(f"fade=t=in:st={seconds(fade_in['start'])}:d={seconds(fade_in['duration'])}")
     if fade_out:
-        out.append(f"fade=t=out:st={seconds(fade_out['start'] - shift)}:d={seconds(fade_out['duration'])}")
+        out.append(f"fade=t=out:st={seconds(fade_out['start'])}:d={seconds(fade_out['duration'])}")
+    if out and first > 1:
+        out = [f"setpts=PTS+{first - 1}", *out, f"setpts=PTS-{first - 1}", f"fps={seconds(fps)}"]
     return out
 
 
@@ -110,7 +114,7 @@ def _fade(value, key):
 @register("render.assemble", inputs=("frames", "audio"), outputs=("video", "report"), cacheable=False,
           summary="描いたコマ（frames の model3d-frames/0.1 か、frames_dir と range の T）と曲の音（audio）を、1 本の動画にする（ffmpeg）。"
                   "色は BT.709 の式で YUV（4:2:0・TV の範囲）にして BT.709 の印を付け、H.264（crf・preset）と AAC で書く。"
-                  "音とフェードは窓の秒（T = 1 が 0 秒）で書き、まとめる最初のコマに合わせてずらす。抜けたコマ・とびのある T は止める。"
+                  "音とフェードは窓の秒（T = 1 が 0 秒）で書き、まとめる最初のコマに合わせてずらす（範囲より前に始まったフェードは途中の濃さから）。抜けたコマ・とびのある T は止める。"
                   "ffmpeg は外部の実行ファイルなので再利用しない（毎回実行）")
 def assemble(inputs, parameters, outputs, context):
     from .. import contracts
