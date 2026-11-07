@@ -81,10 +81,11 @@ def _scoped(timeline):
     first, last = _window(timeline)
     fade = _lyric_fade(timeline)
     # 区間に出るかは、見えている終わり（after ならフェードアウト込み）で決める。区間の初めにフェードアウト中の行も残す
+    # measured: false の行（mv gate timeline で見えているコマが無かった行）は画面に出ていないので、見た目の検査からは外す
     lyrics = [{**ln, "start": max(ln["start"], first), "end": min(max(ln["end"], first), last),
                "stable": [max(_stable(ln, fade)[0], first), min(_stable(ln, fade)[1], last)],
                "visible_until": min(_visible_end(ln, fade), last)}
-              for ln in timeline["lyrics"] if ln["start"] < last and _visible_end(ln, fade) > first]
+              for ln in timeline["lyrics"] if ln["start"] < last and _visible_end(ln, fade) > first and ln.get("measured") is not False]
     inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
     within = {key: [item for item in timeline[key] if first <= item["t"] < last] for key in ("seam_info", "flash_info") if key in timeline}
     return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", [])), **within}
@@ -138,7 +139,8 @@ def check_lyric_time(timeline, measured, layers, th, confirmed=None):
     shown = [(line, sung) for line, sung in zip(lines, measured) if line["start"] < last and line["end"] > first]
     if not shown:
         return result(name, "pass", "描いた区間に照合する行がありません")
-    pairs = [(line, sung) for line, sung in shown if sung.get("method") not in UNMEASURED]
+    # 字の側が実測でない行（mv gate timeline で見えているコマが無く、宣言の時刻のまま残した行）も照合しない
+    pairs = [(line, sung) for line, sung in shown if sung.get("method") not in UNMEASURED and line.get("measured") is not False]
     if not pairs:
         return skip(name, "実測した行（どの行も推定のまま）")
     problems, settled = [], 0
@@ -151,11 +153,12 @@ def check_lyric_time(timeline, measured, layers, th, confirmed=None):
                 detail = f"要確認（試聴で確定済み）: {detail}"
             problems.append({"t": line["start"], "text": line["text"], "detail": detail})
     unverified = len(shown) - len(pairs)
+    unseen = sum(1 for line, _ in shown if line.get("measured") is False)
     summary = f"{len(pairs)} 行を照合、外れ {len(problems)} 行"
     if settled:
         summary += f"（うち確定済み {settled} 行）"
     if unverified:
-        summary += f"（実測できず見ていない行 {unverified}）"
+        summary += f"（実測できず見ていない行 {unverified}" + (f"。うち字が見えなかった行 {unseen}" if unseen else "") + "）"
     return result(name, "fail" if len(problems) > settled else "warn" if problems or unverified else "pass", summary, problems)
 
 
