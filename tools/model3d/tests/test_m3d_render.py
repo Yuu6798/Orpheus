@@ -479,7 +479,7 @@ class AxisBox:
         return bool(np.all((p > self.lo) & (p < self.hi)))
 
     def nearest(self, p):
-        if not self.inside(p):
+        if not np.all((p >= self.lo) & (p <= self.hi)):     # 外（面の上は中と同じく、いちばん近い面とその外向き）
             q = np.clip(p, self.lo, self.hi)
             d = np.linalg.norm(p - q)
             return q, (p - q) / max(d, 1e-12), d
@@ -504,3 +504,16 @@ def test_a_vertex_inside_two_colliders_is_pushed_out_of_both():
     single, again = stage_render.vertex_need(np.array([-0.001, 0.5, 0.0]), 0.004, [left, low], tol=1e-7)
     assert not again and single == pytest.approx([0.005, 0.0, 0.0])   # 1 つで足りれば試作と同じ（いちばん長い直しだけ）
     assert stage_render.vertex_need(np.array([0.5, 0.5, 0.0]), 0.004, [left, low]) == (pytest.approx(np.zeros(3)), False)
+
+
+def test_a_vertex_exactly_on_the_collider_surface_is_pushed_along_the_outward_normal():
+    up = np.array([0.0, 0.0, 1.0])
+    q = np.array([0.0, 0.0, 1.0])
+    assert stage_render.push_correction(q, q, 0.0, 0.004, False, up) == pytest.approx([0, 0, 0.004])
+    assert stage_render.push_correction(q, q, 0.0, 0.004, True, up) == pytest.approx([0, 0, 0.004])
+    noisy = q + [3e-9, -2e-9, 1e-9]                        # BVH の float32 の丸めで、面から 4e-9 だけずれた点
+    assert stage_render.push_correction(noisy, q, 4e-9, 0.004, False, up, surface=1e-6) == pytest.approx(q + [0, 0, 0.004] - noisy)
+    box = AxisBox([-1, -1, -1], [1, 1, 1])
+    on_top = np.array([0.2, 0.3, 1.0])                       # ちょうど上の面の上
+    need, _ = stage_render.vertex_need(on_top, 0.004, [box], tol=1e-7, surface=1e-6)
+    assert need == pytest.approx([0, 0, 0.004])

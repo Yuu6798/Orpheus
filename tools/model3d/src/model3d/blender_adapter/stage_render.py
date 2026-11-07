@@ -177,15 +177,18 @@ def clearly_outside(p, q, normal, dist, offset):
     return dist > offset and (p - q) @ normal / max(dist, 1e-9) > 0.5
 
 
-def push_correction(p, q, dist, offset, inside):
+def push_correction(p, q, dist, offset, inside, normal=None, surface=1e-9):
     """頂点 p を、当たりの面のいちばん近い点 q から offset だけ外へ出す動き。中なら面を越えて外へ、外でも offset より近ければ
-    離す。どちらでもなければ None。"""
-    if inside:
-        u = (q - p) / max(dist, 1e-9)
-    elif dist < offset:
-        u = (p - q) / max(dist, 1e-9)
-    else:
+    離す。どちらでもなければ None。面からの距離が surface より小さい（面の上の）頂点は、p と q の差では向きが決まらない
+    （0 か、BVH の float32 の丸めの向き）ので、面の外向き normal の向きに離す。"""
+    if not inside and dist >= offset:
         return None
+    if dist < surface and normal is not None:
+        u = np.asarray(normal, float) / max(float(np.linalg.norm(normal)), 1e-12)
+    elif inside:
+        u = (q - p) / max(dist, 1e-9)
+    else:
+        u = (p - q) / max(dist, 1e-9)
     return q + u * offset - p
 
 
@@ -247,11 +250,13 @@ def unsupported_modifiers(modifiers):
 PUSH_COND_MAX = 1e12      # これより条件数の大きい骨の動きは、潰れていて逆にできないとみなす
 PUSH_PASSES = 4           # 直した位置で当たりを調べ直す回数の上限
 PUSH_TOL_M = 1e-7         # 調べ直しで、離す量にこれだけ足りなくても足りているとみなす（丸めで直し続けないように）
+PUSH_SURFACE_M = 1e-6     # 面からこれより近い頂点は面の上とみなし、面の外向きに離す
 
 
-def collider_correction(collider, p, offset, tol=0.0):
+def collider_correction(collider, p, offset, tol=0.0, surface=1e-9):
     """当たり 1 つについて、頂点 p を外へ出す動き（要らなければ None）。collider は box(p)（広げた箱の中か）・nearest(p)
-    （面のいちばん近い点・その面の外向き・距離。無ければ None）・inside(p) を持つ。tol は「足りている」とみなす幅。"""
+    （面のいちばん近い点・その面の外向き・距離。無ければ None）・inside(p) を持つ。tol は「足りている」とみなす幅、surface は
+    面の上とみなす距離（その頂点は面の外向きに離す）。"""
     if not collider.box(p):
         return None
     hit = collider.nearest(p)
@@ -263,16 +268,16 @@ def collider_correction(collider, p, offset, tol=0.0):
     inside = collider.inside(p)
     if not inside and dist >= offset - tol:
         return None
-    return push_correction(p, q, dist, offset, inside)
+    return push_correction(p, q, dist, offset, inside, normal, surface)
 
 
-def vertex_need(p, offset, colliders, passes=PUSH_PASSES, tol=0.0):
+def vertex_need(p, offset, colliders, passes=PUSH_PASSES, tol=0.0, surface=1e-9):
     """頂点 p を、どの当たりからも offset だけ離す動き。まず当たりごとの直しのうちいちばん長いものを選び（リポジトリ外の
     試作と同じ）、直した位置で全部の当たりを調べ直して、まだ中にあるか近すぎる分を足す（passes 回まで）。2 つの当たりに
     違う向きで入った頂点を、片方に入ったまま残さないため。戻り: (動き, 調べ直しで足したか)。"""
     need = np.zeros(3)
     for collider in colliders:
-        v = collider_correction(collider, p, offset)
+        v = collider_correction(collider, p, offset, surface=surface)
         if v is not None and np.linalg.norm(v) > np.linalg.norm(need):
             need = v
     if not need.any():
@@ -281,7 +286,7 @@ def vertex_need(p, offset, colliders, passes=PUSH_PASSES, tol=0.0):
     for _ in range(passes):
         more = False
         for collider in colliders:
-            v = collider_correction(collider, p + need, offset, tol)
+            v = collider_correction(collider, p + need, offset, tol, surface)
             if v is not None:
                 need = need + v
                 more = added = True
@@ -813,7 +818,8 @@ class Push:
                 near |= np.all((p > c.lo) & (p < c.hi), axis=1)
             added = 0
             for k in np.where(near)[0]:
-                need[k], more = vertex_need(p[k], t.off[k], colliders, passes=self.passes, tol=PUSH_TOL_M / unit)
+                need[k], more = vertex_need(p[k], t.off[k], colliders, passes=self.passes, tol=PUSH_TOL_M / unit,
+                                            surface=PUSH_SURFACE_M / unit)
                 added += more
             if added:
                 self.rechecked[t.ob.name] = int(added)
