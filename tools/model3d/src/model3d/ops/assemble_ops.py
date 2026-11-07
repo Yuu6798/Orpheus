@@ -42,8 +42,10 @@ def fade_filters(fade_in, fade_out, first, fps):
 
 
 def assemble_command(ffmpeg, frames_dir, first, count, fps, out, audio=None, audio_offset=0.0, fade_in=None, fade_out=None,
-                     crf=18, preset="medium", audio_bitrate="192k"):
-    """コマ f<first>.png から count コマと、音（audio を audio_offset 秒から）を、1 本の動画にする ffmpeg の引数。"""
+                     crf=18, preset="medium", audio_bitrate="192k", pad_audio=False):
+    """コマ f<first>.png から count コマと、音（audio を audio_offset 秒から）を、1 本の動画にする ffmpeg の引数。
+    -shortest は短い方の流れで書き終えるので、音が映像より短いときは pad_audio で音の後ろを映像の長さまで無音で足す（映像のコマを
+    落とさない）。ただの apad は終わりが無く、ffmpeg 7 では -shortest でも音が映像の後ろまで続いたので、whole_dur で長さを決める。"""
     argv = [str(ffmpeg), "-y", "-v", "error", "-framerate", seconds(fps), "-start_number", str(first),
             "-i", str(Path(frames_dir) / "f%04d.png")]
     if audio is not None:
@@ -53,6 +55,8 @@ def assemble_command(ffmpeg, frames_dir, first, count, fps, out, audio=None, aud
     argv += ["-vf", ",".join(fade_filters(fade_in, fade_out, first, fps) + [YUV]), *TAGS,
              "-c:v", "libx264", "-crf", str(crf), "-preset", preset, "-frames:v", str(count)]
     if audio is not None:
+        if pad_audio:
+            argv += ["-af", f"apad=whole_dur={seconds(count / fps)}"]
         argv += ["-c:a", "aac", "-b:a", audio_bitrate, "-shortest"]
     return argv + [str(out)]
 
@@ -101,6 +105,18 @@ def probe(ffmpeg, path):
     lines = [line.strip() for line in run.stderr.splitlines()]
     duration = next((m.group(1) for line in lines if (m := re.search(r"Duration: ([0-9:.]+)", line))), None)
     return {"duration": duration, "streams": [line for line in lines if line.startswith("Stream #")]}
+
+
+def seconds_of(duration):
+    """ffmpeg の Duration の表示（HH:MM:SS.xx）の秒。読めなければ None。"""
+    m = re.fullmatch(r"(\d+):(\d+):(\d+(?:\.\d+)?)", duration or "")
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
+
+
+def needs_padding(audio_seconds, offset, count, fps):
+    """音（offset 秒から）が映像（count / fps 秒）より短いか。長さが読めなければ短いとみなす（足しても映像の長さで切る）。
+    Duration の表示は 0.01 秒きざみなので、0.005 秒より短いときだけ足す（同じ長さの音は今までどおり）。"""
+    return audio_seconds is None or audio_seconds - offset < count / fps - 0.005
 
 
 def _fade(value, key):
@@ -171,8 +187,10 @@ def assemble(inputs, parameters, outputs, context):
             raise ToolError(f"描いたコマの一覧と、今のファイルが違います（T: {changed[:10]}）。描き直したなら一覧も作り直してください")
     audio = inputs.get("audio")
     offset = audio_start + (first - 1) / fps if audio is not None else 0.0
+    audio_seconds = seconds_of(probe(ffmpeg, audio)["duration"]) if audio is not None else None
+    padded = audio is not None and needs_padding(audio_seconds, offset, len(files), fps)
     argv = assemble_command(ffmpeg, frames_dir, first, len(files), fps, outputs["video"], audio, offset, fade_in, fade_out, crf,
-                            preset, audio_bitrate)
+                            preset, audio_bitrate, pad_audio=padded)
     timeout = None if parameters.get("timeout") is None else number(parameters, "timeout", minimum=0, exclusive=True)
     began = time.monotonic()
     try:
@@ -192,7 +210,8 @@ def assemble(inputs, parameters, outputs, context):
               "frames": {"directory": str(Path(frames_dir).resolve()), "first": first, "last": last, "count": len(files),
                          "sha256": digest.hexdigest()},
               "fps": fps, "seconds": len(files) / fps,
-              "audio": ({"file": str(audio), "sha256": sha256(audio), "start": audio_start, "offset": offset} if audio is not None else None),
+              "audio": ({"file": str(audio), "sha256": sha256(audio), "start": audio_start, "offset": offset, "seconds": audio_seconds,
+                         "padded": padded} if audio is not None else None),
               "fade_in": fade_in, "fade_out": fade_out,
               "encode": {"ffmpeg": str(ffmpeg), "version": version[0] if version else None, "video": "libx264", "crf": crf,
                          "preset": preset, "audio": "aac" if audio is not None else None,
@@ -203,6 +222,7 @@ def assemble(inputs, parameters, outputs, context):
     if "report" in outputs:
         atomic_json(outputs["report"], report)
     observation = {"kind": "assemble", "frames": len(files), "first": first, "last": last, "fps": fps,
-                   "seconds": round(len(files) / fps, 3), "audio": audio is not None, "video_bytes": report["video"]["bytes"],
+                   "seconds": round(len(files) / fps, 3), "audio": audio is not None, "audio_padded": padded,
+                   "video_bytes": report["video"]["bytes"],
                    "probe_duration": report["probe"]["duration"], "seconds_to_encode": elapsed}
     return StepResult(observations=[observation])

@@ -181,3 +181,28 @@ def test_a_later_range_keeps_the_fade_of_the_window(tmp_path, fade_in, first_lev
     levels = _decoded(result["steps"]["assemble"]["artifacts"]["video"])
     assert len(levels) == 7 and levels[-1] > 240                   # T 10 は窓の 0.9 秒で、フェードは終わっている
     assert levels[0] / levels[-1] == pytest.approx(first_level, abs=0.05)
+
+
+def test_short_audio_is_padded_with_silence_instead_of_cutting_the_video():
+    assert asm.seconds_of("00:00:32.00") == 32.0 and asm.seconds_of("01:02:03.50") == 3723.5 and asm.seconds_of("N/A") is None
+    assert not asm.needs_padding(32.0, 0.0, 960, 30)                 # 同じ長さの音は今までどおり（試作と同じ引数）
+    assert not asm.needs_padding(32.0, 28.066666666666666, 118, 30)  # 後ろの範囲も、音が足りていれば足さない
+    assert asm.needs_padding(31.99, 0.0, 960, 30) and asm.needs_padding(None, 0.0, 10, 10)
+    padded = asm.assemble_command("ffmpeg", "frames", 1, 10, 10, "o.mp4", audio="song.wav", pad_audio=True)
+    assert padded[padded.index("-af") + 1] == "apad=whole_dur=1" and padded.index("-af") < padded.index("-c:a")   # 映像の 1 秒まで
+    assert "-af" not in asm.assemble_command("ffmpeg", "frames", 1, 10, 10, "o.mp4", audio="song.wav")
+
+
+def test_an_audio_shorter_than_the_frames_keeps_every_frame(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+    from model3d import executor
+    _frames(tmp_path / "frames", count=10)
+    _wav(tmp_path / "song.wav", seconds_=0.5)                          # 映像は 1.0 秒
+    result = executor.run_recipe(_recipe(tmp_path, {"frames_dir": "frames", "range": [1, 10], "fps": 10},
+                                         {"song": {"path": "song.wav"}}, {"audio": "$inputs.song"}), tmp_path / "runs")
+    assert result["status"] == "succeeded"
+    step = result["steps"]["assemble"]
+    assert len(_decoded(step["artifacts"]["video"])) == 10             # 前は -shortest で 0.5 秒（5 コマ）に切れた
+    report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["audio"]["padded"] is True and report["audio"]["seconds"] == 0.5 and step["observations"][0]["audio_padded"]
+    assert asm.seconds_of(report["probe"]["duration"]) == pytest.approx(1.0, abs=0.05)
