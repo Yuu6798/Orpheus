@@ -217,7 +217,31 @@ def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
     when = f"コマ {frame} で、" if frame is not None else ""
     return (f"push: {when}{name} のモディファイア（{', '.join(modifiers) or 'なし'}）で頂点の数が変わります（{base} → {evaluated}）。"
             "押し出しは頂点の並びが変わらないメッシュにだけ使えます。Mask・Decimate・Subdivision などは、先に適用するか、"
-            "ビューポートで切ってください（測るのはビューポートの形）")
+            "切ってください")
+
+
+PUSH_SAFE_MODIFIERS = {"ARMATURE", "TRIANGULATE", "UV_PROJECT", "UV_WARP", "NORMAL_EDIT", "WEIGHTED_NORMAL"}
+FLIP_GROUP = "model3d_flip_faces"          # look.toon が輪郭線の写しに付ける、面を裏返すだけのジオメトリノード
+
+
+def unsupported_modifiers(modifiers):
+    """押し出しの直しを骨で動かす前の差に戻すときに扱えないモディファイア（ビューポートか描画で効いているもの）の
+    「名前（種類）」。modifiers は (名前, 種類, 効いているか, テクスチャが頂点の位置で変わるか, ノードグループの名前) の並び。
+    扱えるのは、Armature（直しを戻す）、位置で変わらない Displace（テクスチャが無いか UV で読む。決まった量だけ足すので、
+    直しはそのまま通る。輪郭線の太らせ）、面を裏返すだけの
+    look.toon のジオメトリノード、頂点を動かさないもの（Triangulate・UV・法線）だけ。ほかの頂点を動かすもの（Simple
+    Deform・Lattice・Smooth など）を通ると、直しの向きが変わる。頂点の組の重みを書き換えるもの（Vertex Weight・Data
+    Transfer）も、骨の動きの戻し方が変わるので扱えない。"""
+    out = []
+    for name, kind, enabled, has_texture, group in modifiers:
+        if not enabled or kind in PUSH_SAFE_MODIFIERS:
+            continue
+        if kind == "DISPLACE" and not has_texture:
+            continue
+        if kind == "NODES" and group and group.split(".")[0] == FLIP_GROUP:
+            continue
+        out.append(f"{name}（{kind}）")
+    return out
 
 
 PUSH_COND_MAX = 1e12      # これより条件数の大きい骨の動きは、潰れていて逆にできないとみなす
@@ -800,6 +824,15 @@ def make_pushes(bpy, specs, unit):
                 # 動かす。描く間だけ、この物体だけのデータにする（.blend は保存しない）
                 o.data = o.data.copy()
                 separated.append(o.name)
+            bad = unsupported_modifiers([(m.name, m.type, m.show_viewport or m.show_render,
+                                          getattr(m, "texture", None) is not None and getattr(m, "texture_coords", "UV") != "UV",
+                                          m.node_group.name if getattr(m, "node_group", None) is not None else None)
+                                         for m in o.modifiers])
+            if bad:                                       # 直しを戻すときに扱えない形の変え方は、描き始める前に止める
+                raise SystemExit(f"push: {o.name} のモディファイア {', '.join(bad)} は、押し出しの直しを骨で動かす前の差に"
+                                 "戻すときに扱えません（直しの向きが変わります）。押し出しは、Armature・位置で変わらない Displace・"
+                                 "look.toon の面の裏返し・頂点を動かさないもの（Triangulate・UV・法線）だけのメッシュに使えます。"
+                                 "先に適用するか、切ってください")
             problem = vertex_count_problem(o.name, len(o.data.vertices), len(evaluated_points(bpy, o)[0]),
                                            viewport_modifiers(o))
             if problem:                                   # 描き始める前に止める

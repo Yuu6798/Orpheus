@@ -452,3 +452,14 @@ def test_only_vertices_that_need_a_correction_are_inverted():
     assert not rest[1].any()                                 # 直しが 0 なら、潰れていても止めない
     assert not rest[3].any() and flat == 1                   # 直しが要るのに潰れている頂点は直さず、数を返す
     assert stage_render.rest_offsets(np.zeros((2, 3)), np.zeros((2, 3, 3))) == (pytest.approx(np.zeros((2, 3))), 0)
+
+
+def test_only_modifiers_the_correction_can_pass_through_are_allowed():
+    ok = [("armature", "ARMATURE", True, False, None), ("flip", "NODES", True, False, "model3d_flip_faces.001"),
+          ("out", "DISPLACE", True, False, None), ("tri", "TRIANGULATE", True, False, None), ("normals", "WEIGHTED_NORMAL", True, False, None)]
+    assert stage_render.unsupported_modifiers(ok) == []                  # 本番の輪郭線の写しと同じ並び
+    bad = [("twist", "SIMPLE_DEFORM", True, False, None), ("noise", "DISPLACE", True, True, None),
+           ("gn", "NODES", True, False, "my_waves"), ("weights", "VERTEX_WEIGHT_EDIT", True, False, None),
+           ("off", "LATTICE", False, False, None), ("subsurf", "SUBSURF", True, False, None)]
+    assert stage_render.unsupported_modifiers(bad) == ["twist（SIMPLE_DEFORM）", "noise（DISPLACE）", "gn（NODES）",
+                                                       "weights（VERTEX_WEIGHT_EDIT）", "subsurf（SUBSURF）"]
