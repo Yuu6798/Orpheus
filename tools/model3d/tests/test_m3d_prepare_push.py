@@ -196,3 +196,13 @@ def test_the_operation_needs_blender_both_outputs_and_known_parameters(tmp_path)
         call(tmp_path, {"blender": blender, "groups": [GROUP], "push": []})
     with pytest.raises(ToolError, match="colliders"):              # 設定の誤りは Blender を起こす前に止まる
         call(tmp_path, {"blender": blender})
+
+
+def test_the_weld_distance_is_turned_into_the_objects_own_units():
+    assert pp.local_distance(np.eye(4), 2e-5) == 2e-5
+    assert pp.local_distance(np.diag([100.0, 100.0, 100.0, 1.0]), 2e-5) == pytest.approx(2e-7)   # 100 倍の物体の中では 1/100
+    assert pp.local_distance(np.diag([1.0, 2.0, 4.0, 1.0]), 2e-5) == pytest.approx(5e-6)          # 軸ごとに違えば、いちばん大きい拡大で
+    turn = np.eye(4)
+    turn[:3, :3] = [[0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]]                            # 回して 2 倍
+    assert pp.local_distance(turn, 2e-5) == pytest.approx(1e-5)
+    assert "vertex_group" in pp.ARMATURE_KEYS and "invert_vertex_group" in pp.ARMATURE_KEYS

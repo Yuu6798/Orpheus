@@ -10,10 +10,11 @@ settings.json（render.prepare_push が書く。長さは m で、シーンの s
   "weld": つながりを見るときに同じ点とみなす格子, "front": 前を向く頂点の組の名前, "back": 後ろの組の名前}]
 
 当たりの写し（リポジトリ外の試作の手順）:
-- 元のメッシュを写し（モディファイアは外す）、weld 以内の頂点をまとめ、穴（付け根や口）をふさぎ、面の向きをそろえる。
+- 元のメッシュを写し（モディファイアは外す）、世界で weld 以内の頂点をまとめ（物体の拡大で直した中の距離。軸ごとに拡大が違えば
+  いちばん大きい拡大で割る）、穴（付け根や口）をふさぎ、面の向きをそろえる。
   体積が負（内向き）なら裏返して外向きにする。筒のままだと、穴のふちの面の向きで中か外かを読み違えるため。
 - 面を decimate の割合に減らし、すべての面をなめらかにする（ふさいだ口の平らな面のふちで、向きが混ざるように）。
-- 元の Armature モディファイアと同じアーマチュアで動かす（親と変換は元のまま）。カメラ・影・反射などには写さない
+- 元の Armature モディファイアと同じアーマチュア・設定（頂点の組の絞りと反転も）で動かす（親と変換は元のまま）。カメラ・影・反射などには写さない
   （透明な材質も付ける）。
 押し出す頂点の組（試作の帯の印と同じ手順）:
 - 種は、bones の骨とその子孫の骨に重みのある頂点。高さ top より下で、種とつながった部分（同じ位置の頂点はつながる）を選ぶ。
@@ -108,6 +109,16 @@ def group_levels(z, normals_y, top, fade):
     return levels, np.asarray(normals_y) < 0
 
 
+def local_distance(world, distance):
+    """世界の距離 distance を、変換 world（4×4）の物体の中の距離に直す。軸ごとに拡大が違えば、いちばん大きい拡大で割る
+    （どの向きでも、世界で distance を超えない）。"""
+    scale = float(np.linalg.norm(np.asarray(world, float)[:3, :3], axis=0).max())
+    return distance / scale if scale > 0 else distance
+
+
+ARMATURE_KEYS = ("use_deform_preserve_volume", "use_vertex_groups", "use_bone_envelopes", "vertex_group", "invert_vertex_group")
+
+
 def signed_volume_bmesh(bm):
     """bmesh の面の並びの向きでの体積（外向きなら正）。"""
     return sum(t[0].vert.co.dot(t[1].vert.co.cross(t[2].vert.co)) for t in bm.calc_loop_triangles()) / 6
@@ -147,7 +158,8 @@ def make_collider(bpy, bmesh, spec, material):
     bpy.context.scene.collection.objects.link(px)
     bm = bmesh.new()
     bm.from_mesh(px.data)
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=spec["weld"])
+    weld = local_distance(np.array(src.matrix_world), spec["weld"])   # bmesh は物体の中の座標なので、物体の拡大で直す
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=weld)
     holes = [e for e in bm.edges if e.is_boundary]
     bmesh.ops.holes_fill(bm, edges=holes, sides=0)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
@@ -169,14 +181,14 @@ def make_collider(bpy, bmesh, spec, material):
     if source_armature is not None:
         m = px.modifiers.new("armature", "ARMATURE")
         m.object = source_armature.object
-        for key in ("use_deform_preserve_volume", "use_vertex_groups", "use_bone_envelopes"):
+        for key in ARMATURE_KEYS:                       # 頂点の組の絞り（反転も）まで元と同じにして、元と同じに動かす
             setattr(m, key, getattr(source_armature, key))
     for key in ("visible_camera", "visible_shadow", "visible_diffuse", "visible_glossy", "visible_transmission",
                 "visible_volume_scatter"):
         setattr(px, key, False)
     return {"name": px.name, "from": src.name, "armature": source_armature.object.name if source_armature else None,
             "filled_edges": len(holes), "open_edges": open_left, "volume_l": round(abs(volume) * 1000, 3),
-            "flipped": bool(volume < 0), "vertices": len(px.data.vertices), "faces": len(px.data.polygons)}
+            "flipped": bool(volume < 0), "vertices": len(px.data.vertices), "faces": len(px.data.polygons), "weld_local": weld}
 
 
 def make_groups(bpy, spec, fallback_armature):
