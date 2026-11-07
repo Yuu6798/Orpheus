@@ -6,10 +6,13 @@
 - 色の差: ΔE（Lab の距離）。陰影で明るさが変わりやすいので、明るさの差は半分に数える。
 - コマごと: 人物の内側の画素が、どの設定画の色に何割入るか（coverage）、どの色からも遠い画素の割合（extra）、
   設定画の割合との重なり Σ min(coverage, 設定画の割合)（overlap。1 = 同じ配分）。
+- 設定画が複数（正面・側面・背面など）なら、欠けと余りはそのコマをいちばんよく説明する 1 枚と比べる（explaining）。
+  同じ衣装の向き違いは色の配分がほぼ同じで、重なりの大きさだけで選ぶとコマごとに入れ替わり、背中を向いたコマを正面と比べてしまう。
 
 数値は測った値で、配色の違いが異常かどうか（陰影・向き・意図した衣装替え）は人が見て決める。
 """
 import math
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -130,14 +133,31 @@ def prepare(entry):
         share = (np.median(where) - top) / max(1, bottom - top) if len(where) else 0.5
         bands.append(next(k for k, (_, upper) in enumerate(detect.BANDS) if share < upper or k == len(detect.BANDS) - 1))
     thumb_scale = min(1.0, 240 / max(rgb.shape[:2]))
-    thumb = cv2.resize(rgb, (max(2, int(rgb.shape[1] * thumb_scale)), max(2, int(rgb.shape[0] * thumb_scale))), interpolation=cv2.INTER_AREA)
-    return {"rel": entry["rel"], "view": entry.get("view"), "method": method, "colors": colors, "weights": weights,
-            "hex": [lab_to_hex(c) for c in colors], "bands": bands, "thumb": thumb, "foreground_share": round(float(mask.mean()), 4)}
+    thumb_size = (max(2, int(rgb.shape[1] * thumb_scale)), max(2, int(rgb.shape[0] * thumb_scale)))
+    thumb = cv2.resize(rgb, thumb_size, interpolation=cv2.INTER_AREA)
+    kept = cv2.resize(mask.astype(np.uint8), thumb_size, interpolation=cv2.INTER_NEAREST) > 0
+    yy, xx = np.mgrid[:thumb.shape[0], :thumb.shape[1]]
+    checker = np.where(((yy // 8 + xx // 8) % 2 == 0)[..., None], 205, 235).astype(np.uint8)
+    view = entry.get("view")
+    return {"rel": entry["rel"], "view": view, "box": entry.get("box"), "label": entry["rel"] + (f"（{view}）" if view else ""),
+            "method": method, "colors": colors, "weights": weights, "hex": [lab_to_hex(c) for c in colors], "bands": bands, "thumb": thumb,
+            "cutout": np.where(kept[..., None], thumb, checker).astype(np.uint8), "foreground_share": round(float(mask.mean()), 4)}
 
 
-def describe(palette):
-    """報告に書く設定画の要約（配列は書かない）。"""
-    return {"path": palette["rel"], "view": palette["view"], "method": palette["method"], "estimated": palette["method"] == "border",
+def prepare_all(entries):
+    """設定画を全部用意し、報告で見分けられる名前（label）を付ける。同じファイルを向き（view）なしで何度も使えば #番号 を足す。"""
+    palettes = [prepare(entry) for entry in entries]
+    counts = Counter(p["label"] for p in palettes)
+    for number, palette in enumerate(palettes, 1):
+        if counts[palette["label"]] > 1:
+            palette["label"] += f"#{number}"
+    return palettes
+
+
+def describe(palette, cutout=None):
+    """報告に書く設定画の要約（配列は書かない）。cutout は切り抜きの確認画像の出力先からのパス。"""
+    return {"path": palette["rel"], "view": palette["view"], "label": palette["label"], "box": palette["box"], "method": palette["method"],
+            "estimated": palette["method"] == "border", "foreground_share": palette["foreground_share"], "cutout": cutout,
             "colors": [{"hex": h, "share": round(float(w), 4), "band": ("head", "upper", "lower")[b]}
                        for h, w, b in zip(palette["hex"], palette["weights"], palette["bands"])]}
 
@@ -166,14 +186,34 @@ def frame_stats(rgb, inner, palettes, thresholds):
 
 
 def best(stats):
-    """そのコマでいちばん重なる設定画の番号。人物がいなければ None。"""
+    """そのコマでいちばん重なる設定画の番号（重なりの記録用。欠けと余りは explaining で選ぶ）。人物がいなければ None。"""
     if not stats:
         return None
     return int(np.argmax([s["overlap"] for s in stats]))
 
 
+def missing_colors(stats, palette, th):
+    """そのコマで、設定画の主な色（割合 ref_min_weight 以上）のうち欠けた色の番号。"""
+    return [c for c, weight in enumerate(palette["weights"])
+            if weight >= th["ref_min_weight"] and stats["coverage"][c] < th["ref_missing_ratio"] * weight]
+
+
+def explaining(stats, palettes, th):
+    """そのコマをいちばんよく説明する設定画 → (欠けの比べ先, その欠けた色の番号, 余りの比べ先)。人物がいなければ None。
+
+    欠け: 欠けた主な色の割合の和がいちばん小さい設定画（同じなら重なりの大きい方）。どれか 1 枚で欠けなく説明できれば欠けにしない。
+    余り: 設定画に無い色の割合がいちばん小さい設定画。どの設定画でも説明できない色だけを余りにする。"""
+    if not stats:
+        return None
+    missing = [missing_colors(s, p, th) for s, p in zip(stats, palettes)]
+    order = range(len(palettes))
+    r_missing = min(order, key=lambda r: (sum(float(palettes[r]["weights"][c]) for c in missing[r]), -stats[r]["overlap"], r))
+    r_extra = min(order, key=lambda r: (stats[r]["extra"], -stats[r]["overlap"], r))
+    return r_missing, missing[r_missing], r_extra
+
+
 def summary(features, palettes):
-    """クリップの設定画との重なりの中央値・最小とそのコマ・使った設定画の内訳。"""
+    """クリップの設定画との重なりの中央値・最小とそのコマ・いちばん重なった設定画の内訳。"""
     values = [(i, stats[best(stats)]["overlap"], best(stats)) for i, stats in enumerate(features.ref) if stats]
     if not values:
         return {"frames": 0}
@@ -182,41 +222,51 @@ def summary(features, palettes):
     used = np.bincount([r for _, _, r in values], minlength=len(palettes))
     return {"frames": len(values), "overlap_median": round(float(np.median(overlaps)), 4), "overlap_min": round(float(worst[1]), 4),
             "overlap_min_frame": features.frame(worst[0]),
-            "best_reference": [{"path": palettes[r]["rel"], "frames": int(used[r])} for r in range(len(palettes))]}
+            "best_reference": [{"path": palettes[r]["rel"], "view": palettes[r]["view"], "label": palettes[r]["label"], "frames": int(used[r])}
+                               for r in range(len(palettes))]}
 
 
 def signals(features, palettes, th, fps):
-    """設定画の色の欠け（reference_missing）と設定画に無い色（reference_extra）の区間の信号。"""
-    n = features.count
+    """設定画の色の欠け（reference_missing）と設定画に無い色（reference_extra）の区間の信号。
+
+    コマごとに explaining で比べる設定画を選ぶので、区間の中で比べる設定画が入れ替わってもよい。
+    書く色は、区間でいちばん多く欠けた（設定画, 色）。同じ設定画でほかにも半分以上のコマで欠けた色があれば添える。"""
     minimum = max(1, int(round(th["min_segment_s"] * fps)))
-    choice = [best(stats) for stats in features.ref]
+    picks = [explaining(stats, palettes, th) for stats in features.ref]
     out = []
-    for r, palette in enumerate(palettes):
-        for c, (weight, hex_color) in enumerate(zip(palette["weights"], palette["hex"])):
-            if weight < th["ref_min_weight"]:
-                continue
-            flagged = np.array([choice[i] == r and features.ref[i][r]["coverage"][c] < th["ref_missing_ratio"] * weight for i in range(n)])
-            for a, b in detect.runs(flagged, minimum, gap=1):
-                covered = [features.ref[i][r]["coverage"][c] for i in range(a, b) if choice[i] == r]
-                peak = a + int(np.argmin([features.ref[i][r]["coverage"][c] if choice[i] == r else 1.0 for i in range(a, b)]))
-                band = palette["bands"][c]
-                out.append(detect.make_signal(
-                    "reference_missing", "costume", features, a, b, "segment", peak, value=float(np.median(covered)),
-                    baseline=float(weight), threshold=th["ref_missing_ratio"] * float(weight), unit="割合",
-                    region=detect.band_box(features, peak, band),
-                    detail=f"設定画の色 {hex_color}（設定画の {weight:.0%}・{('頭', '上半身', '下半身')[band]}）が {np.median(covered):.1%} しかありません"
-                           f"（{palette['rel']} と照合）", extra={"color": hex_color, "reference": palette["rel"]}))
-        flagged = np.array([choice[i] == r and features.ref[i][r]["extra"] >= th["ref_extra_min"] for i in range(n)])
-        for a, b in detect.runs(flagged, minimum, gap=1):
-            shares = [features.ref[i][r]["extra"] for i in range(a, b) if choice[i] == r]
-            peak = a + int(np.argmax([features.ref[i][r]["extra"] if choice[i] == r else 0.0 for i in range(a, b)]))
-            colors = [features.ref[i][r]["extra_lab"] for i in range(a, b) if choice[i] == r and features.ref[i][r]["extra_lab"] is not None]
-            hex_color = lab_to_hex(np.median(np.array(colors), axis=0)) if colors else None
-            out.append(detect.make_signal(
-                "reference_extra", "costume", features, a, b, "segment", peak, value=float(np.median(shares)), baseline=0.0,
-                threshold=th["ref_extra_min"], unit="割合", region=features.ref[peak][r]["extra_box"],
-                detail=f"設定画に無い色 {hex_color} が人物の {np.median(shares):.0%} あります（{palette['rel']} と照合）",
-                extra={"color": hex_color, "reference": palette["rel"]}))
+    flagged = np.array([bool(pick and pick[1]) for pick in picks])
+    for a, b in detect.runs(flagged, minimum, gap=1):
+        counts = Counter((picks[i][0], c) for i in range(a, b) if picks[i] for c in picks[i][1])
+        r, c = max(counts, key=lambda pair: (counts[pair], float(palettes[pair[0]]["weights"][pair[1]]), -pair[0], -pair[1]))
+        palette, weight, hex_color, band = palettes[r], float(palettes[r]["weights"][c]), palettes[r]["hex"][c], palettes[r]["bands"][c]
+        compared = [i for i in range(a, b) if picks[i] and picks[i][0] == r]
+        covered = [features.ref[i][r]["coverage"][c] for i in compared]
+        peak = min(compared, key=lambda i: (features.ref[i][r]["coverage"][c], i))
+        others = [palette["hex"][k] for (q, k), count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+                  if q == r and k != c and count * 2 >= len(compared)][:2]
+        out.append(detect.make_signal(
+            "reference_missing", "costume", features, a, b, "segment", peak, value=float(np.median(covered)),
+            baseline=weight, threshold=th["ref_missing_ratio"] * weight, unit="割合", region=detect.band_box(features, peak, band),
+            detail=f"設定画の色 {hex_color}（設定画の {weight:.0%}・{('頭', '上半身', '下半身')[band]}）が {np.median(covered):.1%} しかありません"
+                   + (f"。ほかに {'・'.join(others)} も少ない" if others else "")
+                   + f"（{palette['label']} と照合{'。ほかの設定画でも欠けなく説明できないコマ' if len(palettes) > 1 else ''}）",
+            extra={"color": hex_color, "colors": [hex_color, *others], "reference": palette["label"], "view": palette["view"]}))
+    flagged = np.array([bool(pick) and features.ref[i][pick[2]]["extra"] >= th["ref_extra_min"] for i, pick in enumerate(picks)])
+    for a, b in detect.runs(flagged, minimum, gap=1):
+        counts = Counter(picks[i][2] for i in range(a, b) if flagged[i])
+        r = max(counts, key=lambda q: (counts[q], -q))
+        palette = palettes[r]
+        compared = [i for i in range(a, b) if picks[i] and picks[i][2] == r]
+        shares = [features.ref[i][r]["extra"] for i in compared]
+        peak = max(compared, key=lambda i: (features.ref[i][r]["extra"], -i))
+        colors = [features.ref[i][r]["extra_lab"] for i in compared if features.ref[i][r]["extra_lab"] is not None]
+        hex_color = lab_to_hex(np.median(np.array(colors), axis=0)) if colors else None
+        out.append(detect.make_signal(
+            "reference_extra", "costume", features, a, b, "segment", peak, value=float(np.median(shares)), baseline=0.0,
+            threshold=th["ref_extra_min"], unit="割合", region=features.ref[peak][r]["extra_box"],
+            detail=f"設定画に無い色 {hex_color} が人物の {np.median(shares):.0%} あります"
+                   f"（{palette['label']} と照合{'。ほかの設定画にも無い色' if len(palettes) > 1 else ''}）",
+            extra={"color": hex_color, "reference": palette["label"], "view": palette["view"]}))
     return out
 
 

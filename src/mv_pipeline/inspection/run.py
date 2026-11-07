@@ -4,6 +4,7 @@
 
 出力先は既定で設定の隣の inspect_report/:
     inspect_report.json / inspect_report.md / fix_plan.json / stills/<出来事>.jpg / anchors/<クリップ>_f<コマ>.png / metrics/<クリップ>.csv
+    references/NN.png（設定画ごとの切り抜きの確かめ。設定画があるときだけ）
     vlm/（request.json・frames/・reference/・response.json・adapter.log。VLM を使ったときだけ）
 
 overall は review（要確認の出来事か復号のエラーがある）/ clean_with_skips（見つけた所は無いが、見ていない検査がある）/ clean。
@@ -179,19 +180,19 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
         response_bytes = source.read_bytes()
     out = Path(out).resolve() if out else cfg.base / "inspect_report"
     out.mkdir(parents=True, exist_ok=True)
-    stale = [out / name for name in ("stills", "anchors", "metrics", "vlm") if (out / name).exists()]
+    stale = [out / name for name in ("stills", "anchors", "metrics", "references", "vlm") if (out / name).exists()]
     if stale and not (out / MARKER).is_file():
         raise PipelineError(f"出力先 {out} に、inspect の出力ではない {', '.join(p.name for p in stale)} があります。"
                             "上書きしないので、別の --out を指定してください")
-    (out / MARKER).write_text("mv inspect の出力先。stills/・anchors/・metrics/・vlm/ は実行のたびに作り直す\n", encoding="utf-8")
+    (out / MARKER).write_text("mv inspect の出力先。stills/・anchors/・metrics/・references/・vlm/ は実行のたびに作り直す\n", encoding="utf-8")
     for folder in stale:                                         # 前の実行の静止画を今回のものと取り違えない
         shutil.rmtree(folder)
-    palettes = [reference.prepare(entry) for entry in cfg.references]
+    palettes = reference.prepare_all(cfg.references)
     clips = _clips_from_dance(cfg) if cfg.dance_spec else _clips_from_config(cfg)
     skipped, events, unused = [], [], []
     for clip in clips:
         found, signals = _measure(clip, cfg, palettes, skipped, say)
-        report.write_metrics(out / "metrics" / f"{clip['id']}.csv", found, clip["fps"])
+        report.write_metrics(out / "metrics" / f"{clip['id']}.csv", found, clip["fps"], palettes, cfg.thresholds)
         number = 0
         for event in detect.events(signals, clip["id"], clip["fps"]):
             number += 1
@@ -242,6 +243,7 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
     grabbed = {clip["id"]: video.grab(clip["path"], wanted.get(clip["id"], ()), clip["info"], total=clip["frames_total"])
                for clip in clips if clip["id"] in wanted}
     report.write_stills(out, events, grabbed, palettes)
+    cutouts = report.write_references(out, palettes)
     report.write_anchors(out, plan, grabbed)
     problems = [clip for clip in clips if not clip["decode"]["ok"]]
     overall = "review" if events or problems else "clean_with_skips" if skipped else "clean"
@@ -252,7 +254,7 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
         "schema_version": REPORT_SCHEMA, "overall": overall, "config": str(cfg.path), "config_sha256": cfg.sha256,
         "engine": {"name": "inspect", "version": VERSION, "fingerprint": fingerprint(), "libraries": _libraries()},
         "thresholds": cfg.thresholds, "checks": list(cfg.checks),
-        "references": [reference.describe(p) for p in palettes],
+        "references": [reference.describe(p, cutout) for p, cutout in zip(palettes, cutouts)],
         "clips": [_clip_report(c, [e for e in events if e["clip"] == c["id"]], [e for e in unused if e["clip"] == c["id"]]) for c in clips],
         "summary": {"events": len(events), "by_category": by_category, "unused": len(unused)},
         "events": events, "unused": unused, "skipped": skipped, "notes": cfg.notes, "vlm": vlm_state, "fix_plan": "fix_plan.json",
