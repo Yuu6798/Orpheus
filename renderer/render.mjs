@@ -2,18 +2,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {describeError} from './errors.mjs';
 import {bundle} from '@remotion/bundler';
 import {renderMedia, selectComposition} from '@remotion/renderer';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
-function describeError(error, seen = new Set()) {
-  if (error === null || typeof error !== 'object') return {message: String(error)};
-  if (seen.has(error)) return {message: '[Circular cause]'};
-  seen.add(error);
-  return {name: error.name, message: error.message ?? String(error), code: error.code,
-    stack: error.stack, cause: error.cause === undefined ? undefined : describeError(error.cause, seen)};
-}
 
 async function diskSpace(directory) {
   try {

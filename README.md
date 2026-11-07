@@ -25,6 +25,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv workflow` | 用途別（歌詞つき MV / ダンス編集）に必要な工程を並べ、現在のファイルから完了を確認する | 本体 | [workflow](docs/workflow.md) |
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
 | `mv export remotion-props` | analysis / storyboard から、Remotion 側が秒を扱わずに済むコマ番号だけの props.json を書く | 実験的 | [remotion-props](docs/remotion-props.md) |
+| `mv layer render` | Remotion の透過レイヤーの描画を工程として包み、版・sha256・ブラウザー・描画時間・決定論の確認を台帳に残す | 実験的 | [remotion-props › 台帳](docs/remotion-props.md#描画を台帳に載せるmv-layer-render) |
 | `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
 | `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |

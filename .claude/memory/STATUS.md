@@ -48,7 +48,8 @@ Date は UTC（日本時間では #2・#6 は 2026-10-25 未明）。
 
 | PR | Title | Date | Phase |
 |---|---|---|---|
-| （この PR） | `mv sheet`: 動画か透過の連番から、指定した時刻か timeline の出来事のコマを 1 枚に並べ、コマ番号・秒・出来事を書き込む（透過は白・黒・灰の上に置いた版。合否なしの閲覧用。隣に sheet.json）。AI が動画を見ずに確かめる入口 | 2026-11-08 | 閲覧 |
+| （この PR） | `mv layer render`: Remotion の透過 PNG 連番の描画（renderer/render-frames.mjs・最小の `LyricLayer`）を run と台帳に載せる（Remotion の版・エントリ/props/public の sha256・ブラウザーの実行ファイルと版・連番の manifest の sha256・描画時間、`--twice` で全コマの一致を記録）。Remotion の利用条件を確認日つきで docs/dependencies.md に | 2026-11-08 | Remotion 連携 |
+| #74 | `mv sheet`: 動画か透過の連番から、指定した時刻か timeline の出来事のコマを 1 枚に並べ、コマ番号・秒・出来事を書き込む（透過は白・黒・灰の上に置いた版。合否なしの閲覧用。隣に sheet.json）。AI が動画を見ずに確かめる入口 | 2026-11-08 | 閲覧 |
 | #73 | `mv gate timeline`: 透過の連番から、字が見えているコマと箱を α で実測して dance-timeline/0.1 を書き、宣言（props）との差を行ごとに出す（行ごとの連番か hints の箱で切り分け。Remotion のテロップのデモで timeline を手で書くしかなかったことから） | 2026-11-08 | 検査 |
 | #72 | `mv overlay`: 透過の連番・アルファつき動画を土台に重ねて fx の共通の書き出しで H.264 にする（straight α・sRGB で混ぜる。コマ数・fps・寸法の食い違いはエラー。各コマの sha256 と設定を run と台帳に記録、fx-overlay/0.1 で検証、technical_pass）。FX-LYRIC-1 の入口（Remotion のテロップのデモで ffmpeg の引数を fx から写すしかなかったことから） | 2026-11-08 | fx |
 | #71 | `mv export remotion-props`: analysis / storyboard からコマ番号だけの props.json（remotion-props/0.1）を書く。丸めは `validate.frame_span` / `frame_at` に 1 か所化し、`mv render` の字幕と共有。TS の型 `renderer/src/lyric-props.ts`（Remotion のテロップのデモで秒→コマの丸めを TS に書き直す必要があったことから） | 2026-11-08 | Remotion 連携 |
