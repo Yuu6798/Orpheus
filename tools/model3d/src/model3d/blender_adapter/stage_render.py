@@ -14,6 +14,11 @@ settings.json（render.stage が書く）:
 - stage: enabled（舞台・光・空を作る）、stripe_floor（壁の暗い帯の明るさ。明るい帯の色に掛ける）、stripe_soft（帯の境の幅）
 - background: 省くと舞台の空か .blend の空。"transparent" は透けの RGBA の PNG、{"color": [R, G, B]}（0〜255）はその色の背景
   （緑抜き用。透けで描いて合成で敷くので、背景の色で人物を照らさない。ディザーは 0）。どちらも stage.enabled を false にする
+- push: 描く直前の押し出しの並び。各要素は meshes（動かすメッシュ。outlines が true なら、その輪郭線の写しも）、colliders
+  （当たり。閉じたメッシュ）、groups（動かす頂点の組の名前と離す量 offset_mm。並べた順で最初に重みのある組の量）、smooth
+  （動かす量をならす回数）。コマごとに、組の頂点のうち当たりの中か近くにある所を、当たりの面から offset_mm だけ外へ出す。
+  中か外かは 5 本の光線が当たりの面と奇数回交わる向きの多さで決める。動かす量は面のつながりでならし、組の重みを掛け、骨で
+  動かす前の差に直してシェイプキー model3d_push に書く（リポジトリ外の試作の帯の直しと同じ手順）
 - only: 描くコマの T（省くと全部）
 track.json（model3d-stage-track/0.1）: 描くコマの並びと、コマごとのカメラ・舞台・光・塗りの値。省くと、.blend のシーンの
 全コマを T = 1 から順に、既定のカメラと動かない光で描く。
@@ -51,12 +56,18 @@ DEFAULTS = {
     "outline": {"line_px": 2.4, "reference_height": 1920, "scale": {}},
     "stage": {"enabled": True, "stripe_floor": 0.02, "stripe_soft": 0.0},
     "background": None,
+    "push": [],
     "only": None,
 }
 TONE = "model3d_stage_tone"
 WAVE = {"led": ("X", 1.5, 1.6), "led_diag": ("DIAGONAL", 6.0, 3.0), "void": ("X", 1.5, 1.6)}   # 帯の向き・Distortion・Scale
 VIOLET, PINK = (0.30, 0.09, 1.0), (1.0, 0.05, 0.45)       # 塗りの共有グループが無いときの、既定の縁の色
 BEAMS = 8
+PUSH_RAYS = ((1, 0.13, 0.07), (-0.11, 1, 0.05), (0.06, -0.09, 1), (-1, -0.08, -0.12), (0.1, -1, -0.07))   # 中か外かを調べる光線
+PUSH_MARGIN_M = 0.02      # 当たりの箱をこれだけ（離す量がもっと大きければ、その量だけ）広げた中の頂点だけを調べる
+PUSH_STEP_M = 1e-5        # 光線が面を越えて次の面を探すときに進める長さ
+PUSH_MOVED_M = 0.001      # 報告で「動かした」と数える量
+PUSH_KEY = "model3d_push"
 
 
 def parse_args(argv):
@@ -150,6 +161,281 @@ def frame_values(spec, static, stripe_floor):
     out["rims"] = [{**s, **t} for s, t in zip(static["rims"], spec.get("rims", [{}, {}]))]
     out["beams"] = {**static["beams"], **spec.get("beams", {})}
     return out
+
+
+def push_weights(vertex_groups, groups):
+    """頂点の {組の名前: 重み} と、組の並び [(名前, 離す量), ...] から (動かす割合, 離す量)。割合は組の重みの最大、離す量は
+    並べた順で最初に重みのある組の量。どの組にも重みが無ければ None。"""
+    w = max(vertex_groups.get(name, 0.0) for name, _ in groups)
+    if w <= 0:
+        return None
+    return w, next(offset for name, offset in groups if vertex_groups.get(name, 0.0) > 0)
+
+
+def clearly_outside(p, q, normal, dist, offset):
+    """当たりの面のいちばん近い点 q から、面の外側の向きにはっきり離れている頂点 p（光線で調べなくてよい）。"""
+    return dist > offset and (p - q) @ normal / max(dist, 1e-9) > 0.5
+
+
+def push_correction(p, q, dist, offset, inside, normal=None, surface=1e-9):
+    """頂点 p を、当たりの面のいちばん近い点 q から offset だけ外へ出す動き。中なら面を越えて外へ、外でも offset より近ければ
+    離す。どちらでもなければ None。面からの距離が surface より小さい（面の上の）頂点は、p と q の差では向きが決まらない
+    （0 か、BVH の float32 の丸めの向き）ので、面の外向き normal の向きに離す。"""
+    if not inside and dist >= offset:
+        return None
+    if dist < surface and normal is not None:
+        u = np.asarray(normal, float) / max(float(np.linalg.norm(normal)), 1e-12)
+    elif inside:
+        u = (q - p) / max(dist, 1e-9)
+    else:
+        u = (p - q) / max(dist, 1e-9)
+    return q + u * offset - p
+
+
+def spread_push(need, edges, iterations):
+    """動かす量を、面のつながり（edges は頂点の組の番号の対）でならす。iterations 回、隣の平均と半々に混ぜ、各頂点の要る
+    向きの量は下回らないようにする。戻り: (ならした動き, 要った量の大きさ)。"""
+    need = np.asarray(need, float)
+    mag = np.linalg.norm(need, axis=1)
+    dirs = need / np.maximum(mag[:, None], 1e-9)
+    d = need.copy()
+    if len(edges) and mag.max(initial=0.0) > 0:
+        deg = np.bincount(edges.ravel(), minlength=len(need)).astype(float)
+        for _ in range(iterations):
+            acc = np.zeros_like(d)
+            np.add.at(acc, edges[:, 0], d[edges[:, 1]])
+            np.add.at(acc, edges[:, 1], d[edges[:, 0]])
+            avg = np.where(deg[:, None] > 0, acc / np.maximum(deg[:, None], 1), d)
+            d = 0.5 * d + 0.5 * avg
+            short = np.maximum(mag - (d * dirs).sum(1), 0)
+            d = d + dirs * short[:, None]
+    return d, mag
+
+
+def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
+    """押し出しは、元のメッシュの頂点の番号で、評価した（モディファイアをかけた）形の頂点を読む。頂点の数が変わると
+    番号がずれるので、そのときの説明（変わらなければ None）。modifiers はビューポートで効いているモディファイアの名前。"""
+    if base == evaluated:
+        return None
+    when = f"コマ {frame} で、" if frame is not None else ""
+    return (f"push: {when}{name} のモディファイア（{', '.join(modifiers) or 'なし'}）で頂点の数が変わります（{base} → {evaluated}）。"
+            "押し出しは頂点の並びが変わらないメッシュにだけ使えます。Mask・Decimate・Subdivision などは、先に適用するか、"
+            "切ってください")
+
+
+PUSH_SAFE_MODIFIERS = {"ARMATURE", "TRIANGULATE", "UV_PROJECT", "UV_WARP", "NORMAL_EDIT", "WEIGHTED_NORMAL"}
+FLIP_GROUP = "model3d_flip_faces"          # look.toon が輪郭線の写しに付ける、面を裏返すだけのジオメトリノード
+
+
+def unsupported_modifiers(modifiers):
+    """押し出しの直しを骨で動かす前の差に戻すときに扱えないモディファイア（ビューポートか描画で効いているもの）の
+    「名前（種類）」。modifiers は (名前, 種類, 効いているか, テクスチャが頂点の位置で変わるか, ノードグループの名前) の並び。
+    扱えるのは、Armature（直しを戻す）、位置で変わらない Displace（テクスチャが無いか UV で読む。決まった量だけ足すので、
+    直しはそのまま通る。輪郭線の太らせ）、面を裏返すだけの
+    look.toon のジオメトリノード、頂点を動かさないもの（Triangulate・UV・法線）だけ。ほかの頂点を動かすもの（Simple
+    Deform・Lattice・Smooth など）を通ると、直しの向きが変わる。頂点の組の重みを書き換えるもの（Vertex Weight・Data
+    Transfer）も、骨の動きの戻し方が変わるので扱えない。"""
+    out = []
+    for name, kind, enabled, has_texture, group in modifiers:
+        if not enabled or kind in PUSH_SAFE_MODIFIERS:
+            continue
+        if kind == "DISPLACE" and not has_texture:
+            continue
+        if kind == "NODES" and group and group.split(".")[0] == FLIP_GROUP:
+            continue
+        out.append(f"{name}（{kind}）")
+    return out
+
+
+PUSH_COND_MAX = 1e12      # これより条件数の大きい骨の動きは、潰れていて逆にできないとみなす
+PUSH_PASSES = 4           # 直した位置で当たりを調べ直す回数の上限
+PUSH_TOL_M = 1e-7         # 調べ直しで、離す量にこれだけ足りなくても足りているとみなす（丸めで直し続けないように）
+PUSH_SURFACE_M = 1e-6     # 面からこれより近い頂点は面の上とみなし、面の外向きに離す
+PUSH_DRIFT_PASSES = 4     # 法線の Displace のずれを打ち消す回数の上限
+PUSH_DRIFT_STEP = 0.5     # 1 回に打ち消す割合（面の向きの変わり方で効きすぎないように）
+
+
+def drift_step(current, residual, rot):
+    """描く形のずれ residual（世界、頂点ごと）を、骨で動かす前の差でいくらか（PUSH_DRIFT_STEP）打ち消した次の差。"""
+    fix, _ = rest_offsets(-PUSH_DRIFT_STEP * np.asarray(residual, float), rot)
+    return current + fix
+
+
+def settle_drift(bpy, target, want, rest, rot, unit):
+    """法線の向きに太らせる Displace のあるメッシュで、描く形の組の頂点が want（測った位置 + 直し）に来るよう、直しを
+    少しずつ足す。いちばんずれの小さかった直し（組の頂点の平均で比べる）を書いて終える（はじめの直しより悪くはしない）。
+    戻り: [はじめのずれの最大, 平均, 残ったずれの最大, 平均]（mm）。"""
+    best, best_rest, first, current, best_max = None, rest, None, rest, None
+    for i in range(PUSH_DRIFT_PASSES + 1):
+        bpy.context.view_layer.update()
+        got = evaluated_points(bpy, target.ob)[0][target.idx]
+        residual = got - want
+        size = np.linalg.norm(residual, axis=1)
+        worst, mean = float(size.max(initial=0.0)), float(size.mean()) if len(size) else 0.0
+        first = (worst, mean) if first is None else first
+        if best is None or mean < best:
+            best, best_rest, best_max = mean, current, worst
+        if i == PUSH_DRIFT_PASSES or worst < PUSH_TOL_M / unit:
+            break
+        current = drift_step(current, residual, rot)
+        target.write(current)
+    target.write(best_rest)
+    mm = unit * 1000
+    return [round(first[0] * mm, 3), round(first[1] * mm, 4), round(best_max * mm, 3), round(best * mm, 4)]
+
+
+def collider_correction(collider, p, offset, tol=0.0, surface=1e-9):
+    """当たり 1 つについて、頂点 p を外へ出す動き（要らなければ None）。collider は box(p)（広げた箱の中か）・nearest(p)
+    （面のいちばん近い点・その面の外向き・距離。無ければ None）・inside(p) を持つ。tol は「足りている」とみなす幅、surface は
+    面の上とみなす距離（その頂点は面の外向きに離す）。"""
+    if not collider.box(p):
+        return None
+    hit = collider.nearest(p)
+    if hit is None:
+        return None
+    q, normal, dist = hit
+    if clearly_outside(p, q, normal, dist, offset):
+        return None
+    inside = collider.inside(p)
+    if not inside and dist >= offset - tol:
+        return None
+    return push_correction(p, q, dist, offset, inside, normal, surface)
+
+
+def vertex_need(p, offset, colliders, passes=PUSH_PASSES, tol=0.0, surface=1e-9):
+    """頂点 p を、どの当たりからも offset だけ離す動き。まず当たりごとの直しのうちいちばん長いものを選び（リポジトリ外の
+    試作と同じ）、直した位置で全部の当たりを調べ直して、まだ中にあるか近すぎる分を足す（passes 回まで）。2 つの当たりに
+    違う向きで入った頂点を、片方に入ったまま残さないため。戻り: (動き, 調べ直しで足したか)。"""
+    need = np.zeros(3)
+    for collider in colliders:
+        v = collider_correction(collider, p, offset, surface=surface)
+        if v is not None and np.linalg.norm(v) > np.linalg.norm(need):
+            need = v
+    if not need.any():
+        return need, False
+    added = False
+    for _ in range(passes):
+        more = False
+        for collider in colliders:
+            v = collider_correction(collider, p + need, offset, tol, surface)
+            if v is not None:
+                need = need + v
+                more = added = True
+        if not more:
+            break
+    return need, added
+
+
+def rest_offsets(d, rot):
+    """世界の直し d（頂点ごと）を、頂点ごとの 3×3 の動き rot の逆で、骨で動かす前の差に戻す。直しが 0 の頂点は逆の行列を
+    作らない（骨の拡大が 0 などで潰れていても止めない）。直しが要るのに骨の動きが潰れて逆にできない頂点は 0 のままにし、
+    その数を返す。戻り: (戻した差, 戻せなかった頂点の数)。"""
+    d = np.asarray(d, float)
+    rest = np.zeros_like(d)
+    moving = np.linalg.norm(d, axis=1) > 0
+    if not moving.any():
+        return rest, 0
+    rots = np.asarray(rot, float)[moving]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ok = np.linalg.cond(rots) < PUSH_COND_MAX
+    part = np.zeros((int(moving.sum()), 3))
+    if ok.any():
+        part[ok] = np.einsum("vij,vj->vi", np.linalg.inv(rots[ok]), d[moving][ok])
+    rest[moving] = part
+    return rest, int((~ok).sum())
+
+
+def signed_volume(points, polys):
+    """閉じたメッシュの、面の並びの向きでの体積（外向きなら正）。面は扇に三角に分ける。"""
+    tris = [(p[0], p[i], p[i + 1]) for p in polys for i in range(1, len(p) - 1)]
+    if not tris:
+        return 0.0
+    points, t = np.asarray(points, float), np.asarray(tris)
+    return float(np.einsum("ij,ij->i", points[t[:, 0]], np.cross(points[t[:, 1]], points[t[:, 2]])).sum() / 6.0)
+
+
+def outward_polygons(points, polys):
+    """当たりの面の並びを、体積が正（面が外向き）になる向きにそろえる。鏡に映した変換（行列の向きが裏返る）や裏返った
+    メッシュでは面の向きが内向きになり、clearly_outside の近道が、深く入った頂点を外と読み違えるため。戻り: (面, 裏返したか)。"""
+    if signed_volume(points, polys) >= 0:
+        return polys, False
+    return [tuple(reversed(p)) for p in polys], True
+
+
+def push_margin(offsets, unit):
+    """当たりの箱を広げる幅（Blender 単位）: PUSH_MARGIN_M と、いちばん大きい離す量（offsets は動かすメッシュごとの
+    頂点の離す量の並び、Blender 単位）の大きい方。箱の外でも、離す量より近い頂点は直すので、それより狭くしない。"""
+    largest = max((float(np.max(off)) for off in offsets if len(off)), default=0.0)
+    return max(PUSH_MARGIN_M / unit, largest)
+
+
+def shape_key_problem(name, use_relative):
+    """押し出しは、相対のシェイプキー model3d_push の値（0 と 1）で直しを入れ切りする。絶対のシェイプキー（Relative の
+    チェックなし）は値でなく時間（eval_time）で形を選ぶので、直しが当たらず、キーを足すと今の動きの補間も変わる。
+    そのときの説明（相対かキーが無ければ None）。"""
+    if use_relative:
+        return None
+    return (f"push: {name} のシェイプキーは絶対（Relative のチェックなし）で、時間で形を選びます。押し出しはキーの値で直しを"
+            "入れ切りするので、相対のシェイプキーのメッシュ（またはシェイプキーの無いメッシュ）にだけ使えます")
+
+
+def push_overlap(entries):
+    """押し出しの並び [(動かすメッシュの名前の並び, 当たりの名前の並び), ...]（輪郭線の写しを足し、組の重みの無い写しを
+    除いた後）の重なりの説明（無ければ None）。1 つのメッシュを 2 つの押し出しで動かすと、同じシェイプキーを書き合い、
+    後の押し出しが前の直しを打ち消す。同じ押し出しの中で、動かすメッシュと当たりの両方にも入れられない。"""
+    owner = {}
+    for n, (targets, colliders) in enumerate(entries):
+        both = sorted(set(targets) & set(colliders))
+        if both:
+            return f"push[{n}]: {', '.join(both)} は、動かすメッシュ（輪郭線の写しも数える）と当たりの両方に入っています"
+        for name in targets:
+            if name in owner:
+                return (f"push[{n}]: {name} は push[{owner[name]}] でも動かします（輪郭線の写しも数える）。1 つのメッシュは "
+                        "1 つの押し出しにだけ入れてください（同じシェイプキーを書き合い、後の押し出しが前の直しを打ち消すため）")
+            owner[name] = n
+    return None
+
+
+def armature_influence(vertex_groups, mask, invert, mask_exists):
+    """Armature モディファイアの頂点の組の絞り（mask。invert で反転）での、その頂点への骨の効き（0〜1）。絞りが無いか、
+    その名前の組がメッシュに無ければ 1（Blender と同じく、絞らない）。"""
+    if not mask or not mask_exists:
+        return 1.0
+    w = vertex_groups.get(mask, 0.0)
+    return 1.0 - w if invert else w
+
+
+def masked_rotation(full, rest, influence):
+    """骨の効き s で混ぜた、頂点ごとの 3×3: (1 - s) × rest + s × full（Armature の絞りは、骨で動かした形と動かす前の形を
+    s で混ぜる）。どの頂点も s が 1 なら full のまま。"""
+    s = np.asarray(influence, float)[:, None, None]
+    if np.all(s == 1.0):
+        return full
+    return (1.0 - s) * rest + s * full
+
+
+def blend_bone_rotations(weights, bone_rots):
+    """頂点ごとの骨の重み（行の和が 1。骨の重みの無い頂点は 0 の行）と、骨ごとの 3×3 の動きから、頂点ごとの 3×3（重みで
+    混ぜた線形の骨の動き）。骨の重みの無い頂点と、骨の無いときは、骨で動かないので単位行列にする。"""
+    weights = np.asarray(weights, float)
+    out = np.tile(np.eye(3), (len(weights), 1, 1))
+    if len(weights) and len(bone_rots):
+        rigged = weights.sum(1) > 0
+        out[rigged] = np.einsum("vb,bij->vij", weights[rigged], np.asarray(bone_rots, float))
+    return out
+
+
+def weld_groups(points, tol=1e-5):
+    """同じ位置の頂点（UV の継ぎ目で分かれた頂点）の組の番号。"""
+    _, inverse = np.unique(np.round(np.asarray(points, float) / tol).astype(np.int64), axis=0, return_inverse=True)
+    return inverse.ravel()
+
+
+def weld_mean(d, groups):
+    """同じ位置の頂点の動きを、その組の平均にそろえる（継ぎ目で裂けないように）。"""
+    acc = np.zeros((groups.max() + 1, 3))
+    np.add.at(acc, groups, d)
+    return (acc / np.bincount(groups).astype(float)[:, None])[groups]
 
 
 # ---------- ここから下は Blender の中でだけ動く ----------
@@ -393,6 +679,328 @@ def hip_path(bpy, arm, hips, frames, sigma):
     return {f: p for f, p in zip(frames, gauss_smooth(points, sigma))}
 
 
+def sync_to_render(ob):
+    """押し出しが測るのはビューポートの形（評価した depsgraph）で、描くのは描画の形。モディファイアの効き方が両方で違うと、
+    測った形と描いた形がずれるので、描く間だけ、ビューポートの効き方を描画の効き方にそろえる（.blend は保存しない）。
+    戻り: そろえたモディファイアの「物体/名前」。"""
+    changed = []
+    for m in ob.modifiers:
+        if m.show_viewport != m.show_render:
+            m.show_viewport = m.show_render
+            changed.append(f"{ob.name}/{m.name}")
+    return changed
+
+
+def viewport_modifiers(ob):
+    """ビューポートで効いているモディファイアの「名前（種類）」。"""
+    return [f"{m.name}（{m.type}）" for m in ob.modifiers if m.show_viewport]
+
+
+def evaluated_points(bpy, ob):
+    """評価した（モディファイアをかけた）メッシュの頂点の世界の座標と、面の頂点の並び。"""
+    ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    me = ev.to_mesh()
+    co = np.zeros(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    polys = [tuple(p.vertices) for p in me.polygons]
+    ev.to_mesh_clear()
+    M = np.array(ob.matrix_world)
+    return co.reshape(-1, 3) @ M[:3, :3].T + M[:3, 3], polys
+
+
+def inside_mesh(tree, p, rays, step):
+    """点 p が閉じたメッシュ（BVH の tree）の中か。光線ごとに面と交わる数を数え、奇数の向きが 3 本以上なら中。"""
+    from mathutils import Vector
+    votes = 0
+    for d in rays:
+        hits, o = 0, Vector(p)
+        for _ in range(12):
+            loc, _, _, _ = tree.ray_cast(o, d)
+            if loc is None:
+                break
+            hits += 1
+            o = loc + d * step
+        votes += hits % 2
+    return votes >= 3
+
+
+def open_edges(ob):
+    """面 1 枚にしか使われない辺の数（0 なら閉じている）。"""
+    count = {}
+    for poly in ob.data.polygons:
+        for key in poly.edge_keys:
+            count[key] = count.get(key, 0) + 1
+    return sum(1 for v in count.values() if v == 1)
+
+
+class PushTarget:
+    """押し出すメッシュ 1 つ: 組に重みのある頂点、その割合と離す量（Blender 単位）、骨の重み、面のつながり、継ぎ目の組、
+    シェイプキー。armature はメッシュを動かす Armature モディファイア（無ければ None。骨で動かない）。その頂点の組の絞りの
+    効きも、頂点ごとに持つ。"""
+
+    def __init__(self, ob, armature, groups, key):
+        self.ob, self.arm = ob, (armature.object if armature is not None else None)
+        arm = self.arm
+        mask = armature.vertex_group if armature is not None else ""
+        invert = bool(armature.invert_vertex_group) if armature is not None else False
+        mask_exists = bool(mask) and mask in ob.vertex_groups
+        influence = []
+        me = ob.data
+        names = {vg.index: vg.name for vg in ob.vertex_groups}
+        deform = {b.name for b in arm.data.bones if b.use_deform} if arm is not None else set()
+        idx, wt, off, dw = [], [], [], []
+        for v in me.vertices:
+            gs = {names[g.group]: g.weight for g in v.groups}
+            picked = push_weights(gs, groups)
+            if picked is None:
+                continue
+            idx.append(v.index)
+            wt.append(picked[0])
+            off.append(picked[1])
+            dw.append({k: x for k, x in gs.items() if k in deform and x > 0})
+            influence.append(armature_influence(gs, mask, invert, mask_exists))
+        self.idx, self.w, self.off = np.array(idx, int), np.array(wt), np.array(off)
+        self.influence = np.array(influence, float)
+        # 法線の向きに太らせる Displace（輪郭線の写し）: 直しで面の向きが変わると、描く形が直しからずれる
+        self.normal_displace = any(m.type == "DISPLACE" and m.show_render and m.direction in ("NORMAL", "CUSTOM_NORMAL")
+                                   for m in ob.modifiers)
+        self.bones = sorted({b for d in dw for b in d})
+        column = {b: i for i, b in enumerate(self.bones)}
+        self.W = np.zeros((len(idx), len(self.bones)))
+        for r, d in enumerate(dw):
+            for b, x in d.items():
+                self.W[r, column[b]] = x
+        self.W /= np.maximum(self.W.sum(1, keepdims=True), 1e-9)
+        pos = {v: i for i, v in enumerate(idx)}
+        edges = [(pos[a], pos[b]) for a, b in (tuple(e.vertices) for e in me.edges) if a in pos and b in pos]
+        self.edges = np.array(edges) if edges else np.zeros((0, 2), int)
+        co = np.zeros(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", co)
+        self.basis = co.reshape(-1, 3)
+        self.weld = weld_groups(self.basis[self.idx]) if len(idx) else np.zeros(0, int)
+        self.key = None
+        if not len(idx):                                 # 動かす頂点が無ければ、シェイプキーも足さない
+            return
+        problem = shape_key_problem(ob.name, me.shape_keys.use_relative if me.shape_keys is not None else True)
+        if problem:                                       # キーを足す前に止める（絶対のキーの並びを変えない）
+            raise SystemExit(problem)
+        if me.shape_keys is None:
+            ob.shape_key_add(name="Basis", from_mix=False)
+        blocks = me.shape_keys.key_blocks
+        self.key = blocks[key] if key in blocks else ob.shape_key_add(name=key, from_mix=False)
+        # 前からあるキーを使い直すときも、値の 0 と 1 で直しを入れ切りできるようにする
+        self.key.mute, self.key.vertex_group, self.key.relative_key = False, "", me.shape_keys.reference_key
+        self.key.slider_min, self.key.slider_max = 0.0, 1.0
+        self.key.value = 1.0
+
+    def write(self, rest):
+        """組の頂点の、骨で動かす前の差 rest をシェイプキーに書き、効かせる。"""
+        kco = self.basis.copy()
+        kco[self.idx] += rest
+        self.key.data.foreach_set("co", kco.ravel())
+        self.key.value = 1.0
+
+    def deform_rot(self):
+        """頂点ごとに、骨で動かす前の形の差を、動かした後の世界の差に直す 3×3 行列（骨の重みで混ぜた骨の動き）。骨の重みの
+        無い頂点と、アーマチュアで動かないメッシュは、物体の行列だけ。"""
+        O = np.array(self.ob.matrix_world)[:3, :3]
+        if self.arm is None or not self.bones:
+            return np.tile(O, (len(self.idx), 1, 1))
+        A = np.array(self.arm.matrix_world)[:3, :3]
+        if np.linalg.cond(A) >= PUSH_COND_MAX:           # アーマチュアの物体そのものが潰れている: どの頂点も戻せない
+            return np.zeros((len(self.idx), 3, 3))
+        Mb = np.array([np.array(self.arm.pose.bones[b].matrix @ self.arm.data.bones[b].matrix_local.inverted())[:3, :3]
+                       for b in self.bones])
+        full = A @ blend_bone_rotations(self.W, Mb) @ np.linalg.inv(A) @ O
+        return masked_rotation(full, np.tile(O, (len(self.idx), 1, 1)), self.influence)
+
+
+class BlenderCollider:
+    """当たり 1 つ（BVH と、広げた箱）。vertex_need が使う box・nearest・inside。"""
+
+    def __init__(self, tree, lo, hi, rays, step):
+        self.tree, self.lo, self.hi, self.rays, self.step = tree, lo, hi, rays, step
+
+    def box(self, p):
+        return bool(np.all((p > self.lo) & (p < self.hi)))
+
+    def nearest(self, p):
+        from mathutils import Vector
+        q, n, _, dist = self.tree.find_nearest(Vector(p))
+        return None if q is None else (np.array(q), np.array(n), dist)
+
+    def inside(self, p):
+        return inside_mesh(self.tree, p, self.rays, self.step)
+
+
+class Push:
+    """押し出し 1 つ（当たりと、動かすメッシュの並び）。apply() で今のコマを直す。"""
+
+    def __init__(self, bpy, targets, colliders, smooth, unit, recheck=True):
+        self.passes = PUSH_PASSES if recheck else 0       # false なら試作と同じく、いちばん長い直しだけ
+        from mathutils import Vector
+        self.bpy, self.targets, self.colliders, self.smooth, self.unit = bpy, targets, colliders, smooth, unit
+        self.rays = [Vector(d).normalized() for d in PUSH_RAYS]
+        self.unconverted = {}                             # 前の apply で、骨の動きが潰れて戻せなかった頂点の数（メッシュごと）
+        self.rechecked = {}                               # 前の apply で、直した位置で調べ直して直しを足した頂点の数
+        self.drift = {}                                   # 前の apply で、法線の Displace のずれ（mm: 打ち消す前, 後）
+
+    def apply(self, reset=True):
+        """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。reset が false なら、直す前の形へ戻すのは呼ぶ側
+        （apply_pushes）がすでにした。骨の動きが潰れて戻せなかった頂点の数は self.unconverted に残す。"""
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        bpy, unit = self.bpy, self.unit
+        self.unconverted = {}
+        if reset:
+            reset_pushes(bpy, [self])                     # 直す前の形で測る
+        margin, step = push_margin([t.off for t in self.targets], unit), PUSH_STEP_M / unit
+        colliders = []
+        for collider in self.colliders:
+            co, polys = evaluated_points(bpy, collider)
+            polys, _ = outward_polygons(co, polys)       # 面は外向きにそろえて使う（鏡に映した当たり・裏返った当たり）
+            colliders.append(BlenderCollider(BVHTree.FromPolygons([tuple(c) for c in co], polys), co.min(0) - margin,
+                                             co.max(0) + margin, self.rays, step))
+        stats = {}
+        self.rechecked, self.drift = {}, {}
+        for t in self.targets:
+            co, _ = evaluated_points(bpy, t.ob)
+            problem = vertex_count_problem(t.ob.name, len(t.basis), len(co), viewport_modifiers(t.ob),
+                                           bpy.context.scene.frame_current)
+            if problem:                                   # 頂点の番号がずれたまま測らない（コマごとに変わることもある）
+                raise SystemExit(problem)
+            p = co[t.idx]
+            need = np.zeros_like(p)
+            near = np.zeros(len(p), bool)                # どれかの当たりの箱の中の頂点だけを調べる
+            for c in colliders:
+                near |= np.all((p > c.lo) & (p < c.hi), axis=1)
+            added = 0
+            for k in np.where(near)[0]:
+                need[k], more = vertex_need(p[k], t.off[k], colliders, passes=self.passes, tol=PUSH_TOL_M / unit,
+                                            surface=PUSH_SURFACE_M / unit)
+                added += more
+            if added:
+                self.rechecked[t.ob.name] = int(added)
+            d, mag = spread_push(need, t.edges, self.smooth)
+            d = weld_mean(d, t.weld) * t.w[:, None]
+            rot = t.deform_rot()
+            rest, flat = rest_offsets(d, rot)              # 直しの要る頂点だけを戻す（潰れた骨の頂点で止めない）
+            if flat:
+                self.unconverted[t.ob.name] = flat
+            t.write(rest)
+            if self.passes and t.normal_displace:
+                # 法線の向きに太らせる Displace（輪郭線の写し）は、直しで面の向きが変わると太らせる向きも変わり、描く形が
+                # 「測った位置 + 直し」からずれる。描く形を測り直し、ずれを打ち消す直しを半分ずつ足す（いちばんずれの小さい直しを使う）
+                self.drift[t.ob.name] = settle_drift(bpy, t, p + d, rest, rot, unit)
+            stats[t.ob.name] = (int((mag > PUSH_MOVED_M / unit).sum()), round(float(mag.max(initial=0.0) * unit * 1000), 1))
+        bpy.context.view_layer.update()
+        return stats
+
+
+def push_armature(ob):
+    """押し出しの直しを骨で動かす前の差に戻すときの、メッシュを動かす Armature モディファイア（効いているもの。無ければ
+    None）。頂点の組の重みで動かす形（線形、組の絞りも扱う）だけを扱い、骨の包み（envelope）で動かすもの・Armature が
+    2 つ以上のものは止める。頂点の組を使わず包みも使わない Armature は骨で動かさないので None。"""
+    active = [m for m in ob.modifiers if m.type == "ARMATURE" and m.object is not None and m.show_render]   # 効き方は描画にそろえてある
+    if len(active) > 1:
+        raise SystemExit(f"push: {ob.name} に効いている Armature モディファイアが {len(active)} つあります（"
+                         f"{', '.join(m.name for m in active)}）。押し出しは 1 つの Armature で動くメッシュにだけ使えます")
+    if not active:
+        return None
+    m = active[0]
+    if m.use_bone_envelopes:
+        raise SystemExit(f"push: {ob.name} の Armature モディファイア {m.name} は骨の包み（Bone Envelopes）で動かします。"
+                         "押し出しは頂点の組の重みで動かす Armature にだけ使えます")
+    return m if m.use_vertex_groups else None
+
+
+def reset_pushes(bpy, pushes):
+    """押し出しのシェイプキーを全部 0 にして、直す前の形に戻す。"""
+    for push in pushes:
+        for t in push.targets:
+            t.key.value = 0.0
+    bpy.context.view_layer.update()
+
+
+def apply_pushes(bpy, pushes):
+    """今のコマの押し出し: 先に全部の押し出しを直す前の形に戻し（ある押し出しの当たりが別の押し出しで動かすメッシュでも、
+    前のコマの直しで測らない）、並べた順に当てる。戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。"""
+    reset_pushes(bpy, pushes)
+    moved = {}
+    for push in pushes:
+        moved.update(push.apply(reset=False))
+    return moved
+
+
+def make_pushes(bpy, specs, unit):
+    """設定の push から、押し出しの並びと、報告に載せる中身。動かすメッシュの骨の動きは、その Armature モディファイアの
+    アーマチュア（無ければ骨で動かない）で直す。"""
+    pushes, notes = [], []
+    for n, spec in enumerate(specs):
+        groups = [(g["name"], g["offset_mm"] / 1000.0 / unit) for g in spec["groups"]]
+        group_names = [name for name, _ in groups]
+        colliders = []
+        for name in spec["colliders"]:
+            ob = bpy.data.objects.get(name)
+            if ob is None or ob.type != "MESH":
+                raise SystemExit(f"push[{n}] の当たりのメッシュがありません: {name}")
+            colliders.append(ob)
+        synced = [s for c in colliders for s in sync_to_render(c)]   # 測る形を描く形にそろえる
+        chosen = {}                                      # 名前 → [物体, 名指しか]。同じ押し出しの中の重なりは 1 つにまとめる
+        for name in spec["meshes"]:
+            ob = bpy.data.objects.get(name)
+            if ob is None or ob.type != "MESH":
+                raise SystemExit(f"push[{n}] の動かすメッシュがありません: {name}")
+            objects = [(ob, True)]
+            if spec.get("outlines", True):
+                objects += [(o, False) for o in bpy.data.objects if o.type == "MESH" and o.get("model3d_outline") == name]
+            for o, named in objects:
+                if o.name in chosen:
+                    chosen[o.name][1] = chosen[o.name][1] or named
+                else:
+                    chosen[o.name] = [o, named]
+        targets, skipped, separated = [], [], []
+        for o, named in chosen.values():
+            synced += sync_to_render(o)
+            if sum(1 for x in bpy.data.objects if x.data == o.data) > 1:
+                # メッシュのデータを別の物体と分け合う（リンク複製）と、シェイプキーも分け合い、片方の直しがもう片方も
+                # 動かす。描く間だけ、この物体だけのデータにする（.blend は保存しない）
+                o.data = o.data.copy()
+                separated.append(o.name)
+            bad = unsupported_modifiers([(m.name, m.type, m.show_viewport or m.show_render,
+                                          getattr(m, "texture", None) is not None and getattr(m, "texture_coords", "UV") != "UV",
+                                          m.node_group.name if getattr(m, "node_group", None) is not None else None)
+                                         for m in o.modifiers])
+            if bad:                                       # 直しを戻すときに扱えない形の変え方は、描き始める前に止める
+                raise SystemExit(f"push: {o.name} のモディファイア {', '.join(bad)} は、押し出しの直しを骨で動かす前の差に"
+                                 "戻すときに扱えません（直しの向きが変わります）。押し出しは、Armature・位置で変わらない Displace・"
+                                 "look.toon の面の裏返し・頂点を動かさないもの（Triangulate・UV・法線）だけのメッシュに使えます。"
+                                 "先に適用するか、切ってください")
+            problem = vertex_count_problem(o.name, len(o.data.vertices), len(evaluated_points(bpy, o)[0]),
+                                           viewport_modifiers(o))
+            if problem:                                   # 描き始める前に止める
+                raise SystemExit(problem)
+            target = PushTarget(o, push_armature(o), groups, PUSH_KEY)
+            if not len(target.idx):
+                if named:
+                    raise SystemExit(f"push[{n}]: {o.name} に、{group_names} の組の重みのある頂点がありません")
+                skipped.append(o.name)
+                continue
+            targets.append(target)
+        pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit, bool(spec.get("recheck", True))))
+        notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx)), "armature": t.arm.name if t.arm else None,
+                                   "without_bones": int((t.W.sum(1) <= 0).sum()) if t.arm else int(len(t.idx))}
+                                  for t in targets], "skipped": skipped, "separated": separated, "synced": synced,
+                      "colliders": [{"object": c.name, "open_edges": open_edges(c),
+                                     "reversed": outward_polygons(*evaluated_points(bpy, c))[1]} for c in colliders],
+                      "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
+                      "smooth": int(spec.get("smooth", 6)), "recheck": bool(spec.get("recheck", True))})
+    problem = push_overlap([([t.ob.name for t in p.targets], [c.name for c in p.colliders]) for p in pushes])
+    if problem:                                           # 輪郭線の写しを足した後の重なりは、描き始める前に止める
+        raise SystemExit(problem)
+    return pushes, notes
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
@@ -453,6 +1061,8 @@ def main(argv=None):
             if mod is not None:
                 hulls.append((o, mod, float(o.get("model3d_outline_m_per_local", 1.0)),
                               float(line["scale"].get(o["model3d_outline"], 1.0))))
+    pushes, push_notes = make_pushes(bpy, settings["push"], unit) if settings["push"] else ([], [])
+    push_frames = []
     only = set(settings["only"]) if settings["only"] else None
     os.makedirs(a.frames_dir, exist_ok=True)
     res_y = settings["resolution"][1]
@@ -495,6 +1105,20 @@ def main(argv=None):
             for _, mod, per, scale in hulls:
                 mod.strength = hull_strength(wid, unit, per, scale)
         bpy.context.view_layer.update()
+        if pushes:                                       # 描く直前に押し出す（輪郭線の太さを入れた後の形で測る）
+            moved = apply_pushes(bpy, pushes)
+            entry = {"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}}
+            drift = {k: list(v) for push in pushes for k, v in push.drift.items()}
+            if drift:                                    # 法線の Displace のずれ（mm: 打ち消す前, 後）
+                entry["drift_mm"] = drift
+            again = {k: n for push in pushes for k, n in push.rechecked.items()}
+            if again:                                    # 直した位置で調べ直して、ほかの当たりの分も足した頂点
+                entry["rechecked"] = again
+            flat = {k: n for push in pushes for k, n in push.unconverted.items()}
+            if flat:                                     # 骨の動きが潰れて直せなかった頂点（直さずに描く）
+                entry["unconverted"] = flat
+                print(f"PUSH T {T} f {f}: 骨の動きが潰れて直せなかった頂点 {flat}", flush=True)
+            push_frames.append(entry)
         sc.render.filepath = file
         bpy.ops.render.render(write_still=True)
         rendered.append(T)
@@ -513,6 +1137,9 @@ def main(argv=None):
                         "display": sc.display_settings.display_device},
               "camera": {"from_track": from_track, "default": len(rendered) - from_track, "distance_to_hips_m": span(distances)},
               "outline": {"hulls": len(hulls), "width_mm": span(widths, 1000.0)},
+              "push": ({"pushes": push_notes, "frames": push_frames,
+                        "max_mm": {name: max(fr["objects"][name][1] for fr in push_frames)
+                                   for name in (push_frames[0]["objects"] if push_frames else {})}} if pushes else None),
               "stage": bool(stage["enabled"]), "background": settings.get("background"), "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:

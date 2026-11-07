@@ -277,3 +277,259 @@ def test_the_operation_needs_blender_and_both_outputs(tmp_path):
         call(tmp_path, {})
     with pytest.raises(ToolError, match="report"):
         call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN))}, {"frames": "frames.json"})
+
+
+# ---------- 描く直前の押し出し（push）----------
+
+def test_push_weights_take_the_largest_weight_and_the_first_listed_groups_offset():
+    groups = [("front", 0.007), ("back", 0.004)]
+    assert stage_render.push_weights({"front": 0.5, "back": 1.0}, groups) == (1.0, 0.007)
+    assert stage_render.push_weights({"back": 0.3, "spine": 1.0}, groups) == (0.3, 0.004)
+    assert stage_render.push_weights({}, groups) is None and stage_render.push_weights({"front": 0.0}, groups) is None
+
+
+def test_push_correction_moves_inside_points_out_and_near_points_away():
+    q = np.array([0.0, 0.0, 0.01])                                       # 当たりの面のいちばん近い点
+    inside = stage_render.push_correction(np.zeros(3), q, 0.01, 0.004, True)
+    assert inside == pytest.approx([0, 0, 0.014])                        # 面を越えて 4 mm 外へ
+    near = stage_render.push_correction(np.array([0, 0, 0.012]), q, 0.002, 0.004, False)
+    assert near == pytest.approx([0, 0, 0.002])                          # 外でも 4 mm より近いので離す
+    assert stage_render.push_correction(np.array([0, 0, 0.02]), q, 0.01, 0.004, False) is None
+    up = np.array([0.0, 0.0, 1.0])
+    assert stage_render.clearly_outside(np.array([0, 0, 0.02]), q, up, 0.01, 0.004)
+    assert not stage_render.clearly_outside(np.array([0.01, 0, 0.01]), q, up, 0.01, 0.004)   # 横に離れている点は光線で調べる
+    assert not stage_render.clearly_outside(np.array([0, 0, 0.012]), q, up, 0.002, 0.004)
+
+
+def test_spread_push_smooths_along_the_surface_but_keeps_each_need():
+    need = np.array([[0, 0, 0.01], [0, 0, 0], [0, 0, 0]], float)
+    edges = np.array([[0, 1], [1, 2]])
+    d, mag = stage_render.spread_push(need, edges, 6)
+    assert mag == pytest.approx([0.01, 0, 0]) and d[0, 2] >= 0.01 - 1e-12 and 0 < d[2, 2] < d[1, 2] < d[0, 2]
+    assert np.array_equal(stage_render.spread_push(need, edges, 0)[0], need)
+    assert np.array_equal(stage_render.spread_push(need, np.zeros((0, 2), int), 6)[0], need)
+    assert not stage_render.spread_push(np.zeros((3, 3)), edges, 6)[0].any()
+
+
+def test_weld_keeps_split_seam_vertices_together():
+    groups = stage_render.weld_groups([[0, 0, 0], [1, 0, 0], [0, 0, 0.000001]])
+    assert groups[0] == groups[2] != groups[1]
+    d = stage_render.weld_mean(np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]), groups)
+    assert d[0] == pytest.approx([0.5, 0, 0.5]) and d[2] == pytest.approx([0.5, 0, 0.5]) and d[1] == pytest.approx([0, 1, 0])
+
+
+PUSH = {"meshes": ["cloth"], "colliders": ["leg_l", "leg_r"],
+        "groups": [{"name": "sash_front", "offset_mm": 7}, {"name": "sash_back", "offset_mm": 4}], "smooth": 6}
+
+
+def test_the_operation_passes_the_push_to_the_script(tmp_path):
+    from model3d import executor
+    params = {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "push": [PUSH, {**PUSH, "meshes": ["skirt"],
+                                                                                               "outlines": False}]}
+    result = executor.run_recipe(_recipe(tmp_path, params), tmp_path / "runs")
+    report = json.loads(Path(result["steps"]["render"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["settings"]["push"] == [
+        {"meshes": ["cloth"], "colliders": ["leg_l", "leg_r"],
+         "groups": [{"name": "sash_front", "offset_mm": 7.0}, {"name": "sash_back", "offset_mm": 4.0}], "smooth": 6},
+        {"meshes": ["skirt"], "colliders": ["leg_l", "leg_r"],
+         "groups": [{"name": "sash_front", "offset_mm": 7.0}, {"name": "sash_back", "offset_mm": 4.0}], "smooth": 6,
+         "outlines": False}]
+    assert stage_render.merged({})["push"] == []
+
+
+@pytest.mark.parametrize("push, message", [
+    ({"meshes": ["cloth"]}, "並び"),
+    ([], "並び"),
+    ([{**PUSH, "glue": 1}], "知らない鍵"),
+    ([{"meshes": ["cloth"], "colliders": ["leg"]}], "groups が要ります"),
+    ([{**PUSH, "meshes": []}], "meshes"),
+    ([{**PUSH, "colliders": ["cloth"]}], "同じメッシュ"),
+    ([PUSH, PUSH], "重なっています"),
+    ([{**PUSH, "groups": [{"name": "sash_front"}]}], "groups"),
+    ([{**PUSH, "groups": [{"name": "a", "offset_mm": 7}, {"name": "a", "offset_mm": 4}]}], "groups"),
+    ([{**PUSH, "groups": [{"name": "a", "offset_mm": 0}]}], "offset_mm"),
+    ([{**PUSH, "smooth": -1}], "smooth"),
+    ([{**PUSH, "smooth": 1.5}], "smooth"),
+    ([{**PUSH, "outlines": "yes"}], "outlines"),
+    ([{**PUSH, "recheck": 1}], "recheck"),
+])
+def test_the_operation_rejects_bad_push_settings(tmp_path, push, message):
+    with pytest.raises(ToolError, match=message):
+        call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "push": push})
+
+
+def test_vertices_without_bone_weights_keep_the_identity_bone_motion():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    weights = np.array([[1.0, 0.0], [0.5, 0.5], [0.0, 0.0]])
+    out = stage_render.blend_bone_rotations(weights, np.array([np.eye(3), turn]))
+    assert out[0] == pytest.approx(np.eye(3)) and out[1] == pytest.approx(0.5 * (np.eye(3) + turn))
+    assert out[2] == pytest.approx(np.eye(3))                            # 骨の重みが無い頂点は骨で動かない
+    assert np.linalg.matrix_rank(out[2]) == 3
+    no_bones = stage_render.blend_bone_rotations(np.zeros((2, 0)), np.zeros((0, 3, 3)))
+    assert no_bones == pytest.approx(np.tile(np.eye(3), (2, 1, 1)))
+    assert stage_render.blend_bone_rotations(np.zeros((0, 2)), np.array([np.eye(3), turn])).shape == (0, 3, 3)
+
+
+def test_every_push_is_reset_before_any_push_measures():
+    from types import SimpleNamespace
+    log = []
+
+    class FakePush:
+        def __init__(self, name, keys):
+            self.name, self.targets = name, [SimpleNamespace(key=SimpleNamespace(value=1.0)) for _ in range(keys)]
+
+        def apply(self, reset=True):
+            log.append((self.name, reset, [t.key.value for p in pushes for t in p.targets]))
+            for t in self.targets:
+                t.key.value = 1.0
+            return {self.name: (1, 2.0)}
+
+    bpy = SimpleNamespace(context=SimpleNamespace(view_layer=SimpleNamespace(update=lambda: log.append("update"))))
+    pushes = [FakePush("first", 1), FakePush("second", 2)]
+    moved = stage_render.apply_pushes(bpy, pushes)
+    assert moved == {"first": (1, 2.0), "second": (1, 2.0)}
+    # 前のコマの直し（値 1）は、最初の押し出しが測る前に、後の押し出しの分も 0 に戻っている
+    assert log == ["update", ("first", False, [0.0, 0.0, 0.0]), ("second", False, [1.0, 0.0, 0.0])]
+
+
+def test_a_modifier_that_changes_the_vertex_count_stops_the_push():
+    assert stage_render.vertex_count_problem("cloth", 100, 100, ["Armature（ARMATURE）"]) is None
+    message = stage_render.vertex_count_problem("cloth", 100, 52, ["Armature（ARMATURE）", "Decimate（DECIMATE）"], frame=17)
+    assert "コマ 17 で、cloth" in message and "100 → 52" in message and "Decimate（DECIMATE）" in message
+    assert "（なし）" in stage_render.vertex_count_problem("cloth", 100, 99, [])
+
+
+def test_one_mesh_belongs_to_one_push_after_adding_the_outline_copies():
+    assert stage_render.push_overlap([(["cloth", "hull_cloth"], ["leg"]), (["skirt"], ["leg"])]) is None
+    message = stage_render.push_overlap([(["cloth", "hull_cloth"], ["leg"]), (["hull_cloth"], ["leg"])])
+    assert message.startswith("push[1]: hull_cloth は push[0] でも動かします")
+    both = stage_render.push_overlap([(["cloth", "hull_cloth"], ["hull_cloth", "leg"])])
+    assert both.startswith("push[0]: hull_cloth は、動かすメッシュ") and "当たりの両方" in both
+
+
+def test_the_collider_box_is_widened_by_the_largest_offset():
+    assert stage_render.push_margin([np.array([0.007, 0.004]), np.array([0.004])], 1.0) == 0.02     # 本番の量では 2 cm のまま
+    assert stage_render.push_margin([np.array([0.007, 0.03])], 1.0) == 0.03                          # 3 cm 離すなら 3 cm 広げる
+    assert stage_render.push_margin([np.array([3.0])], 0.01) == pytest.approx(3.0)                  # 1 単位 = 1 cm の 30 mm
+    assert stage_render.push_margin([np.array([0.5])], 0.01) == pytest.approx(2.0)
+    assert stage_render.push_margin([], 1.0) == 0.02 and stage_render.push_margin([np.zeros(0)], 1.0) == 0.02
+
+
+def test_the_armature_vertex_group_mask_blends_the_bone_motion_per_vertex():
+    assert stage_render.armature_influence({"mask": 0.25}, "mask", False, True) == 0.25
+    assert stage_render.armature_influence({"mask": 0.25}, "mask", True, True) == 0.75          # 反転
+    assert stage_render.armature_influence({}, "mask", False, True) == 0.0                      # 組に入っていない頂点は動かない
+    assert stage_render.armature_influence({}, "mask", True, True) == 1.0
+    assert stage_render.armature_influence({}, "mask", False, False) == 1.0                     # その名前の組が無ければ絞らない
+    assert stage_render.armature_influence({"mask": 0.0}, "", False, False) == 1.0
+    turn = np.array([[[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]] * 3)
+    rest = np.tile(np.eye(3), (3, 1, 1))
+    out = stage_render.masked_rotation(turn, rest, [1.0, 0.0, 0.5])
+    assert out[0] == pytest.approx(turn[0]) and out[1] == pytest.approx(np.eye(3))
+    assert out[2] == pytest.approx(0.5 * (np.eye(3) + turn[0]))
+    assert stage_render.masked_rotation(turn, rest, [1.0, 1.0, 1.0]) is turn                   # 絞りが無ければそのまま
+
+
+def test_collider_faces_are_turned_outward_for_mirrored_or_inside_out_meshes():
+    cube = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]     # 外向き
+    assert stage_render.signed_volume(cube, faces) == pytest.approx(1.0)
+    assert stage_render.outward_polygons(cube, faces) == (faces, False)
+    mirrored = cube * [-1, 1, 1]                                         # 鏡に映すと、同じ並びで体積が負になる
+    assert stage_render.signed_volume(mirrored, faces) == pytest.approx(-1.0)
+    turned, flipped = stage_render.outward_polygons(mirrored, faces)
+    assert flipped and stage_render.signed_volume(mirrored, turned) == pytest.approx(1.0)
+    inside_out = [tuple(reversed(f)) for f in faces]
+    assert stage_render.outward_polygons(cube, inside_out) == (faces, True)
+    assert stage_render.signed_volume(cube, []) == 0.0
+
+
+def test_only_vertices_that_need_a_correction_are_inverted():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    rot = np.array([np.eye(3), np.zeros((3, 3)), turn, np.zeros((3, 3))])        # 2 つは骨の拡大が 0 で潰れている
+    d = np.array([[0.0, 0.0, 0.01], [0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [0.0, 0.01, 0.0]])
+    rest, flat = stage_render.rest_offsets(d, rot)
+    assert rest[0] == pytest.approx([0, 0, 0.01]) and rest[2] == pytest.approx([0, -0.01, 0])     # 回した分を戻す
+    assert not rest[1].any()                                 # 直しが 0 なら、潰れていても止めない
+    assert not rest[3].any() and flat == 1                   # 直しが要るのに潰れている頂点は直さず、数を返す
+    assert stage_render.rest_offsets(np.zeros((2, 3)), np.zeros((2, 3, 3))) == (pytest.approx(np.zeros((2, 3))), 0)
+
+
+def test_only_modifiers_the_correction_can_pass_through_are_allowed():
+    ok = [("armature", "ARMATURE", True, False, None), ("flip", "NODES", True, False, "model3d_flip_faces.001"),
+          ("out", "DISPLACE", True, False, None), ("tri", "TRIANGULATE", True, False, None), ("normals", "WEIGHTED_NORMAL", True, False, None)]
+    assert stage_render.unsupported_modifiers(ok) == []                  # 本番の輪郭線の写しと同じ並び
+    bad = [("twist", "SIMPLE_DEFORM", True, False, None), ("noise", "DISPLACE", True, True, None),
+           ("gn", "NODES", True, False, "my_waves"), ("weights", "VERTEX_WEIGHT_EDIT", True, False, None),
+           ("off", "LATTICE", False, False, None), ("subsurf", "SUBSURF", True, False, None)]
+    assert stage_render.unsupported_modifiers(bad) == ["twist（SIMPLE_DEFORM）", "noise（DISPLACE）", "gn（NODES）",
+                                                       "weights（VERTEX_WEIGHT_EDIT）", "subsurf（SUBSURF）"]
+
+
+class AxisBox:
+    """当たりの代わりの、軸にそろった箱（面のいちばん近い点・外向き・中か外か）。"""
+
+    def __init__(self, lo, hi, margin=0.02):
+        self.lo, self.hi, self.margin = np.array(lo, float), np.array(hi, float), margin
+
+    def box(self, p):
+        return bool(np.all((p > self.lo - self.margin) & (p < self.hi + self.margin)))
+
+    def inside(self, p):
+        return bool(np.all((p > self.lo) & (p < self.hi)))
+
+    def nearest(self, p):
+        if not np.all((p >= self.lo) & (p <= self.hi)):     # 外（面の上は中と同じく、いちばん近い面とその外向き）
+            q = np.clip(p, self.lo, self.hi)
+            d = np.linalg.norm(p - q)
+            return q, (p - q) / max(d, 1e-12), d
+        gaps = np.r_[p - self.lo, self.hi - p]
+        k = int(np.argmin(gaps))
+        axis, side = k % 3, (-1.0 if k < 3 else 1.0)
+        q = p.copy()
+        q[axis] = self.lo[axis] if k < 3 else self.hi[axis]
+        n = np.zeros(3)
+        n[axis] = side
+        return q, n, float(gaps[k])
+
+
+def test_a_vertex_inside_two_colliders_is_pushed_out_of_both():
+    left = AxisBox([-1, -1, -1], [0, 1, 1])                  # x = 0 で終わる箱
+    low = AxisBox([-1, -1, -1], [1, 0, 1])                   # y = 0 で終わる箱
+    p = np.array([-0.001, -0.002, 0.0])
+    need, added = stage_render.vertex_need(p, 0.004, [left, low], tol=1e-7)
+    assert added and need == pytest.approx([0.005, 0.006, 0.0])       # 長い方（y）だけでなく、x の分も足す
+    out = p + need
+    assert not left.inside(out) and not low.inside(out)
+    single, again = stage_render.vertex_need(np.array([-0.001, 0.5, 0.0]), 0.004, [left, low], tol=1e-7)
+    assert not again and single == pytest.approx([0.005, 0.0, 0.0])   # 1 つで足りれば試作と同じ（いちばん長い直しだけ）
+    assert stage_render.vertex_need(np.array([0.5, 0.5, 0.0]), 0.004, [left, low]) == (pytest.approx(np.zeros(3)), False)
+
+
+def test_a_vertex_exactly_on_the_collider_surface_is_pushed_along_the_outward_normal():
+    up = np.array([0.0, 0.0, 1.0])
+    q = np.array([0.0, 0.0, 1.0])
+    assert stage_render.push_correction(q, q, 0.0, 0.004, False, up) == pytest.approx([0, 0, 0.004])
+    assert stage_render.push_correction(q, q, 0.0, 0.004, True, up) == pytest.approx([0, 0, 0.004])
+    noisy = q + [3e-9, -2e-9, 1e-9]                        # BVH の float32 の丸めで、面から 4e-9 だけずれた点
+    assert stage_render.push_correction(noisy, q, 4e-9, 0.004, False, up, surface=1e-6) == pytest.approx(q + [0, 0, 0.004] - noisy)
+    box = AxisBox([-1, -1, -1], [1, 1, 1])
+    on_top = np.array([0.2, 0.3, 1.0])                       # ちょうど上の面の上
+    need, _ = stage_render.vertex_need(on_top, 0.004, [box], tol=1e-7, surface=1e-6)
+    assert need == pytest.approx([0, 0, 0.004])
+
+
+def test_absolute_shape_keys_stop_the_push():
+    assert stage_render.shape_key_problem("cloth", True) is None
+    message = stage_render.shape_key_problem("cloth", False)
+    assert message.startswith("push: cloth のシェイプキーは絶対") and "相対" in message
+
+
+def test_the_outline_drift_is_cancelled_a_step_at_a_time():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    rest = np.zeros((2, 3))
+    residual = np.array([[0.0, 0.0, 0.002], [0.002, 0.0, 0.0]])          # 描く形が、狙いより上と +x へずれた
+    out = stage_render.drift_step(rest, residual, np.array([np.eye(3), turn]))
+    assert out[0] == pytest.approx([0, 0, -0.001])                       # 半分だけ打ち消す
+    assert out[1] == pytest.approx(np.linalg.inv(turn) @ [-0.001, 0, 0])  # 骨で回る頂点は、回す前の差に戻して足す
+    assert not stage_render.drift_step(rest, np.zeros((2, 3)), np.array([np.eye(3), turn])).any()

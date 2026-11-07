@@ -6,7 +6,8 @@ from . import StepResult, number, register, require
 
 RENDER_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "stage_render.py"
 RENDER_PARAMETERS = {"blender", "resolution", "samples", "raytracing", "bloom", "bone_prefix", "fps", "camera", "outline", "stage",
-                     "background", "frames_dir", "only", "timeout"}
+                     "background", "push", "frames_dir", "only", "timeout"}
+PUSH_KEYS = {"meshes", "colliders", "groups", "smooth", "outlines", "recheck"}
 CAMERA_KEYS = {"sensor_height", "lens", "az", "dist", "height", "aim", "follow", "follow_sigma"}
 OUTLINE_KEYS = {"line_px", "reference_height", "scale"}
 STAGE_KEYS = {"enabled", "stripe_floor", "stripe_soft"}
@@ -89,6 +90,8 @@ def _render_settings(parameters):
         if st.get("enabled", True):
             raise ToolError("background を使うときは stage.enabled を false にしてください（舞台の床や壁が背景を隠す）")
         s["background"] = background
+    if parameters.get("push") is not None:
+        s["push"] = _push_settings(parameters["push"])
     only = parameters.get("only")
     if only is not None:
         if (not isinstance(only, list) or not only or len(set(only)) != len(only)
@@ -96,6 +99,51 @@ def _render_settings(parameters):
             raise ToolError(f"only は描くコマの T（1 以上の整数、重ならない）の並びにしてください: {only!r}")
         s["only"] = only
     return {**s, "camera": c, "outline": o, "stage": st}
+
+
+def _names(value, key):
+    if not isinstance(value, list) or not value or not all(isinstance(n, str) and n for n in value) or len(set(value)) != len(value):
+        raise ToolError(f"{key} は名前（空でない・重ならない文字列）の並びにしてください: {value!r}")
+    return value
+
+
+def _push_settings(push):
+    """描く直前の押し出しの並び（meshes・colliders・groups・smooth・outlines）を確かめる。"""
+    if not isinstance(push, list) or not push:
+        raise ToolError(f"push は押し出しの並び（1 つ以上）にしてください: {push!r}")
+    out, used = [], set()
+    for n, spec in enumerate(push):
+        where = f"push[{n}]"
+        if not isinstance(spec, dict):
+            raise ToolError(f"{where} は辞書にしてください: {spec!r}")
+        unknown = set(spec) - PUSH_KEYS
+        if unknown:
+            raise ToolError(f"{where} の知らない鍵: {sorted(unknown)}（使えるのは {sorted(PUSH_KEYS)}）")
+        missing = [k for k in ("meshes", "colliders", "groups") if k not in spec]
+        if missing:
+            raise ToolError(f"{where} には {', '.join(missing)} が要ります")
+        meshes, colliders = _names(spec["meshes"], f"{where}.meshes"), _names(spec["colliders"], f"{where}.colliders")
+        if set(meshes) & set(colliders):
+            raise ToolError(f"{where} の meshes と colliders に同じメッシュがあります: {sorted(set(meshes) & set(colliders))}")
+        if set(meshes) & used:
+            raise ToolError(f"{where} の meshes が前の押し出しと重なっています: {sorted(set(meshes) & used)}")
+        used |= set(meshes)
+        groups = spec["groups"]
+        if (not isinstance(groups, list) or not groups or not all(isinstance(g, dict) and set(g) == {"name", "offset_mm"}
+                                                                  and isinstance(g["name"], str) and g["name"] for g in groups)
+                or len({g["name"] for g in groups}) != len(groups)):
+            raise ToolError(f"{where}.groups は [{{\"name\": 頂点の組の名前, \"offset_mm\": 離す量}}, …]（名前は重ならない）にしてください: "
+                            f"{groups!r}")
+        entry = {"meshes": meshes, "colliders": colliders,
+                 "groups": [{"name": g["name"], "offset_mm": float(number(g, "offset_mm", minimum=0, exclusive=True))}
+                            for g in groups]}
+        if "smooth" in spec:
+            entry["smooth"] = int(number(spec, "smooth", minimum=0, integer=True))
+        for key in ("outlines", "recheck"):
+            if key in spec:
+                entry[key] = _flag(spec, key, f"{where}.{key}")
+        out.append(entry)
+    return out
 
 
 def _track(path):
@@ -130,7 +178,8 @@ def frames_manifest(report, frames_dir):
           summary="塗りと輪郭線を付けたキャラ（blend）を、舞台（床・LED の壁・トラス・光の柱）と 4 つのスポットの中で、コマごとに "
                   "PNG に描く（Blender の EEVEE）。トラック（model3d-stage-track/0.1）があれば、そのコマの並びとカメラ・舞台・光・"
                   "塗りの値で、無ければシーンの全コマを腰を追う正面のカメラと動かない光で描く。輪郭線の太さはカメラの距離で"
-                  "画面の上の太さにそろえる。舞台を切って background で緑背景か透けにも描ける。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（model3d-frames/0.1）。"
+                  "画面の上の太さにそろえる。舞台を切って background で緑背景か透けにも描ける。push で、描く直前に帯などの頂点を"
+                  "当たり（閉じたメッシュ）の外へ出す。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（model3d-frames/0.1）。"
                   "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def stage_render(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
@@ -167,4 +216,6 @@ def stage_render(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "planned": len(report["planned"]),
                    "rendered": len(report.get("rendered") or []), "skipped_existing": len(report.get("skipped_existing") or []),
                    "frames": len(manifest["frames"]), "missing": len(manifest["missing"])}
+    if report.get("push"):
+        observation["push_max_mm"] = report["push"].get("max_mm")
     return StepResult(observations=[observation])
