@@ -6,7 +6,7 @@ from . import StepResult, number, register, require
 
 RENDER_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "stage_render.py"
 RENDER_PARAMETERS = {"blender", "resolution", "samples", "raytracing", "bloom", "bone_prefix", "fps", "camera", "outline", "stage",
-                     "frames_dir", "only", "timeout"}
+                     "background", "frames_dir", "only", "timeout"}
 CAMERA_KEYS = {"sensor_height", "lens", "az", "dist", "height", "aim", "follow", "follow_sigma"}
 OUTLINE_KEYS = {"line_px", "reference_height", "scale"}
 STAGE_KEYS = {"enabled", "stripe_floor", "stripe_soft"}
@@ -80,6 +80,15 @@ def _render_settings(parameters):
             st[key] = float(number(stage, key, minimum=0))
     if st.get("stripe_soft", 0.0) >= 0.05:
         raise ToolError("stage.stripe_soft は 0.05 より小さくしてください（帯の境 0.66〜0.76 が入れ替わる）")
+    background = parameters.get("background")
+    if background is not None:
+        color = background.get("color") if isinstance(background, dict) and set(background) == {"color"} else None
+        if background != "transparent" and not (isinstance(color, list) and len(color) == 3 and all(
+                isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255 for v in color)):
+            raise ToolError(f"background は \"transparent\" か {{\"color\": [R, G, B]}}（0〜255 の整数）にしてください: {background!r}")
+        if st.get("enabled", True):
+            raise ToolError("background を使うときは stage.enabled を false にしてください（舞台の床や壁が背景を隠す）")
+        s["background"] = background
     only = parameters.get("only")
     if only is not None:
         if (not isinstance(only, list) or not only or len(set(only)) != len(only)
@@ -121,7 +130,7 @@ def frames_manifest(report, frames_dir):
           summary="塗りと輪郭線を付けたキャラ（blend）を、舞台（床・LED の壁・トラス・光の柱）と 4 つのスポットの中で、コマごとに "
                   "PNG に描く（Blender の EEVEE）。トラック（model3d-stage-track/0.1）があれば、そのコマの並びとカメラ・舞台・光・"
                   "塗りの値で、無ければシーンの全コマを腰を追う正面のカメラと動かない光で描く。輪郭線の太さはカメラの距離で"
-                  "画面の上の太さにそろえる。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（model3d-frames/0.1）。"
+                  "画面の上の太さにそろえる。舞台を切って background で緑背景か透けにも描ける。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（model3d-frames/0.1）。"
                   "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def stage_render(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher

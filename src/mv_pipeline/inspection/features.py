@@ -27,7 +27,7 @@ BINS = GRAY_BINS + HUE_BINS * SAT_BINS * VAL_BINS
 HUE_SHIFT = 6             # 赤（色相 0）が色相の箱の中央に来るようにずらす（OpenCV の色相は 0..179）
 MIN_PRESENT = 0.004       # 人物がいるとみなす面積（画面の割合）
 SPECK = 0.0005            # これより小さい塊は雑音として捨てる（画面の割合）
-COMPONENT = (0.0015, 0.02)  # 数える塊: 画面の 0.15% 以上で、いちばん大きい塊の 2% 以上（離れた手ほどの大きさ）
+COMPONENT = (0.0015, 0.01)  # 数える塊: 画面の 0.15% 以上で、いちばん大きい塊の 1% 以上（離れた手ほどの大きさ。全身が画面の 2 割ほどの描画で、拳は体の 1〜1.5%）
 
 
 def color_bins(hsv):
@@ -299,7 +299,9 @@ def extract(path, info, size, foreground, start, end, palettes=(), thresholds=No
                 both = (half_mask | previous_half_mask).astype(np.uint8)
                 region = cv2.dilate(both, np.ones((3, 3), np.uint8)) > 0 if both.any() else None
             scale_px = (rows["body"][-1] if present else 1.0) * flow_size[1]
-            if region is None and half_mask is not None:
+            # 人物が前後のどちらかにしかいないコマは、動きではなく出入りを測ってしまう（消失は連続性の出来事で見る）
+            appears = half_mask is not None and (half_mask.any() != previous_half_mask.any())
+            if (region is None and half_mask is not None) or appears:
                 rows["flow"].append(math.nan)
                 rows["flow_vec"].append([0.0, 0.0])
                 rows["flow_box"].append(None)

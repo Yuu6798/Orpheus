@@ -426,6 +426,32 @@ def test_a_clip_wide_duplicate_cadence_does_not_swallow_a_glitch_inside_it():
     assert sorted(e["label"] for e in events) == ["数コマだけの乱れ", "重複コマの周期"]
 
 
+def test_a_hand_sized_piece_beside_a_large_body_is_counted():
+    """全身が画面の 2 割ほどの描画で、体から離れた拳ほどの塊（体の 1.5%・画面の 0.3%）を塊として数える（Blender の描画で確かめた大きさ）。"""
+    from mv_pipeline.inspection import features
+    mask = np.zeros((568, 320), bool)
+    mask[60:520, 110:200] = True                              # 体: 画面の 22.8%
+    mask[120:134, 30:70] = True                               # 離れた塊: 画面の 0.31%・体の 1.35%
+    assert features.silhouette(mask).components == 2
+    mask[120:134, 30:70] = False
+    mask[120:124, 30:40] = True                               # 雑音ほどの粒は数えない
+    assert features.silhouette(mask).components == 1
+
+
+def test_the_frames_where_the_person_vanishes_and_comes_back_are_not_a_motion_change(tmp_path):
+    """人物の消えたコマと戻ったコマの動きは、出入りを測るだけなので測らない（消失は連続性の出来事 1 つ）。"""
+    from mv_pipeline.fx import render as fxrender
+
+    frames = [demo.draw_character(216, 384, 0.5 + 0.05 * np.sin(i / 5), 0.94, np.sin(i / 4)) for i in range(72)]
+    for i in range(36, 40):
+        frames[i] = np.full_like(frames[i], (0, 255, 0))
+    fxrender.write_video(tmp_path / "vanish.mp4", iter(frames), (216, 384), 24, 12, 72)
+    (tmp_path / "inspect.json").write_text(json.dumps({"schema_version": "inspect/0.1", "clips": [{"path": "vanish.mp4"}],
+                                                       "foreground": {"key": {"color": [0, 255, 0]}}}), encoding="utf-8")
+    result, _ = run.run(tmp_path / "inspect.json")
+    assert [(e["category"], e["frames"]) for e in result["events"]] == [("continuity", [36, 40])],         [(e["frames"], e["label"]) for e in result["events"]]
+
+
 def test_duplicate_frames_every_fifth_frame_are_one_cadence_finding(tmp_path):
     """24 コマの絵を 30fps に水増しした素材（5 コマに 1 コマが前と同じ）。"""
     from mv_pipeline.fx import render as fxrender

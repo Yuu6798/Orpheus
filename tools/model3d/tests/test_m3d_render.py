@@ -22,6 +22,24 @@ def test_merged_fills_defaults_and_keeps_each_section_key():
     assert settings["stage"]["enabled"] is True and stage_render.DEFAULTS["camera"]["lens"] == 35.0
 
 
+def test_srgb_to_linear_round_trips_the_key_color():
+    assert stage_render.srgb_to_linear([0, 255, 0]) == (0.0, 1.0, 0.0)
+    for v in (1, 10, 64, 128, 177, 254):
+        lin = stage_render.srgb_to_linear([v, v, v])[0]
+        back = 12.92 * lin if lin <= 0.0031308 else 1.055 * lin ** (1 / 2.4) - 0.055
+        assert round(back * 255) == v
+
+
+def test_the_operation_passes_the_background(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    for background in ({"color": [0, 177, 64]}, "transparent"):
+        params = {"blender": blender, "stage": {"enabled": False}, "background": background}
+        result = executor.run_recipe(_recipe(tmp_path, params), tmp_path / "runs")
+        report = json.loads(Path(result["steps"]["render"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+        assert report["settings"]["background"] == background and report["settings"]["stage"] == {"enabled": False}
+
+
 def test_frame_plan_follows_the_track_or_the_scene():
     track = {"frames": [{"T": 5, "f": 12}, {"T": 6, "f": 12, "stage": "void"}, {"T": 7, "f": 10}]}
     plan = stage_render.frame_plan(track, 1, 100)
@@ -234,6 +252,12 @@ def call(tmp_path, parameters, outputs=None, track=None):
     ({"only": [1, 1]}, "only"),
     ({"only": []}, "only"),
     ({"camera": "front"}, "camera"),
+    ({"background": "green", "stage": {"enabled": False}}, "background"),
+    ({"background": {"color": [0, 256, 0]}, "stage": {"enabled": False}}, "background"),
+    ({"background": {"color": [0, 255]}, "stage": {"enabled": False}}, "background"),
+    ({"background": {"color": [0, 255, 0], "alpha": 1}, "stage": {"enabled": False}}, "background"),
+    ({"background": {"color": [0, 255, 0]}}, "stage.enabled"),
+    ({"background": "transparent", "stage": {"enabled": True}}, "stage.enabled"),
 ])
 def test_the_operation_rejects_bad_settings(tmp_path, parameters, message):
     with pytest.raises(ToolError, match=message):
