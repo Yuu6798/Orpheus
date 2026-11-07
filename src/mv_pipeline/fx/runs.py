@@ -22,11 +22,13 @@ import os
 import shutil
 import time
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
 
 from ..io import PipelineError, atomic_json, read_json, safe_path, sha256
 from ..runner import now, project_lock
-from . import SCHEMA_VERSION, VARIANTS, VERSION, fingerprint, probe, timeline
+from .. import fx
+from . import VARIANTS, fingerprint, probe, timeline
 from . import spec as fxspec
 
 RUN_SCHEMA = "fx-run/0.1"
@@ -91,6 +93,30 @@ def resolve_look(sp, no_look=False):
     return (fxspec.without_look(sp), "disabled") if no_look else (sp, "applied")
 
 
+def resolve_times(sp, times):
+    """stills の --times を float の list にする。空や、ショットの長さ（0〜duration_s 秒）の外の時刻は止める。"""
+    times = [float(t) for t in times]
+    total = sp.data["duration_s"]
+    if not times:
+        raise PipelineError("--times に 1 つ以上の時刻（秒）を指定してください")
+    bad = [t for t in times if not 0 <= t <= total]
+    if bad:
+        raise PipelineError(f"時刻がショットの長さ 0〜{total:g} 秒の外です: {bad}")
+    return times
+
+
+def spec_record(sp):
+    """manifest の spec の欄。写しのファイル名と、元ファイル・正規化した内容の sha256。"""
+    return {"file": "spec.json", "sha256": sp.sha256,
+            "normalized_sha256": hashlib.sha256(fxspec.canonical_json(sp.data).encode("utf-8")).hexdigest()}
+
+
+def engine_record(package, name):
+    """manifest の engine の欄。package は VERSION / SCHEMA_VERSION / fingerprint() を持つ fx か dance。"""
+    return {"name": name, "version": package.VERSION, "schema_version": package.SCHEMA_VERSION,
+            "fingerprint": package.fingerprint()}
+
+
 # ---- run ---------------------------------------------------------------------
 
 class Run:
@@ -134,14 +160,15 @@ class Run:
         self.save()
 
     def fail(self, error):
+        """例外で途中で終わった run を failed にする。記録（log・manifest）に失敗しても、元の例外を隠さない。"""
         text = str(error) if isinstance(error, PipelineError) else f"{type(error).__name__}: {error}"
-        if not isinstance(error, PipelineError):
-            self.log(traceback.format_exc())
-        self.log(f"failed: {text}")
         self.manifest.update(status="failed", error=text[:3000], finished_at=now())
         try:
+            if not isinstance(error, PipelineError):
+                self.log("".join(traceback.format_exception(error)))
+            self.log(f"failed: {text}")
             self.save()
-        except OSError:  # 失敗の記録に失敗しても、元の例外を隠さない
+        except OSError:
             pass
 
 
@@ -193,6 +220,63 @@ def reusable(out, index, key):
     return manifest
 
 
+class Session:
+    """<out> をロックし、同じ key の成功 run があれば再利用、無ければ新しい run を開く。fx / dance / legacy の run で共通。
+
+        with Session(out, key, "render", "render.log", say=say, tag="[fx]", force=force) as session:
+            if session.reused:                       # 再利用できる成功 run の manifest（dir は session.reused_dir）
+                return summarize(session.reused_dir, session.reused, reused=True)
+            run = session.run                        # status=running の Run。manifest を埋めて描く
+            ...
+            session.succeed()                        # run を succeeded にして index.json に登録
+
+    with を抜けるまで <out> のロックを持つ。本体が例外で抜けたら、running のままの run を failed にして例外をそのまま通す。
+    技術検査に落ちた run は本体が run.finish(False, message) で閉じてから PipelineError を投げる。
+    cache=False は index.json を読まず書かず、再利用もしない（legacy のようにキャッシュしない run）。
+    """
+
+    def __init__(self, out, key, kind, log_name, *, say, tag, force=False, cache=True):
+        self.out, self.key, self.kind, self.log_name = Path(out), key, kind, log_name
+        self.say, self.tag, self.force, self.cache = say, tag, force, cache
+        self.index = self.run = self.reused = self.reused_dir = None
+        self._stack = ExitStack()
+
+    def __enter__(self):
+        self._stack.__enter__()
+        try:
+            self._stack.enter_context(project_lock(self.out))
+            close_orphans(self.out)
+            manifest = None
+            if self.cache:
+                self.index = load_index(self.out)
+                manifest = None if self.force else reusable(self.out, self.index, self.key)
+            if manifest:
+                self.say(f"{self.tag} 同じ入力の成功 run を再利用します: {manifest['run_id']}（作り直すには --force）")
+                self.reused, self.reused_dir = manifest, self.out / manifest["run_id"]
+            else:
+                self.run = Run(self.out, self.key, self.kind, self.log_name)
+        except BaseException:
+            self._stack.close()
+            raise
+        return self
+
+    def __exit__(self, exc_type, error, tb):
+        try:
+            if error is not None and self.run is not None and self.run.manifest["status"] == "running":
+                self.run.fail(error)
+        finally:
+            self._stack.__exit__(exc_type, error, tb)
+        return False
+
+    def succeed(self):
+        """run を succeeded で閉じ、cache なら index.json に key -> run_id を登録する。"""
+        self.run.finish(True)
+        if self.cache:
+            self.index["runs"][self.key] = {"run_id": self.run.run_id, "finished_at": self.run.manifest["finished_at"]}
+            self.index["schema_version"] = INDEX_SCHEMA
+            atomic_json(self.out / "index.json", self.index)
+
+
 def summarize(run_dir, manifest, reused):
     """CLI が stdout に出す短い要約。詳細は manifest.json と render.log。"""
     run_dir = Path(run_dir)
@@ -226,81 +310,65 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
     fps = sp.data["output"]["fps"]
     key = render_key(sp, assets, variants, start, duration, n_frames, size, scale, grid, libraries)
     out = (Path(out) if out else default_out(sp)).resolve()
-    with project_lock(out):
-        close_orphans(out)
-        index = load_index(out)
-        if not force:
-            manifest = reusable(out, index, key)
-            if manifest:
-                say(f"[fx] 同じ入力の成功 run を再利用します: {manifest['run_id']}（作り直すには --force）")
-                # 再利用した run の manifest.look は作ったときの呼び出しの状態。この呼び出しの状態（映像は同じ）を返す
-                return {**summarize(out / manifest["run_id"], manifest, reused=True), "look": look_state}
-        run = Run(out, key, "render", "render.log")
-        try:
-            shutil.copyfile(sp.path, run.dir / "spec.json")
-            run.manifest.update(
-                spec={"file": "spec.json", "sha256": sp.sha256,
-                      "normalized_sha256": hashlib.sha256(fxspec.canonical_json(sp.data).encode("utf-8")).hexdigest()},
-                assets=assets,
-                engine={"name": "fx", "version": VERSION, "schema_version": SCHEMA_VERSION, "fingerprint": fingerprint()},
-                libraries=libraries, seed=sp.data["seed"], look=look_state,
-                interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
-                output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
-                variants={}, grid=None, warnings=[])
+    with Session(out, key, "render", "render.log", say=say, tag="[fx]", force=force) as session:
+        if session.reused:
+            # 再利用した run の manifest.look は作ったときの呼び出しの状態。この呼び出しの状態（映像は同じ）を返す
+            return {**summarize(session.reused_dir, session.reused, reused=True), "look": look_state}
+        run = session.run
+        shutil.copyfile(sp.path, run.dir / "spec.json")
+        run.manifest.update(
+            spec=spec_record(sp), assets=assets, engine=engine_record(fx, "fx"), libraries=libraries,
+            seed=sp.data["seed"], look=look_state,
+            interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
+            output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
+            variants={}, grid=None, warnings=[])
+        run.save()
+        run.log(f"render start key={key} variants={','.join(variants)} start={start:g} duration={duration:g} "
+                f"frames={n_frames} size={size[0]}x{size[1]} look={look_state}")
+        if look_state == "disabled":
+            say("[fx] --no-look: spec の look を外して描きます")
+        ctx = render.prepare(sp, scale)
+        run.manifest["warnings"] = list(ctx.warnings)
+        for warning in ctx.warnings:
+            run.log(f"warning: {warning}")
+        notes = ctx.variant_notes()
+        has_audio = ctx.audio_path() is not None
+        expect = {"width": size[0], "height": size[1], "fps": fps, "frames": n_frames, "audio": has_audio,
+                  "audio_s": n_frames / fps if has_audio else None, "bt709": True}
+        for variant in variants:
+            path = run.dir / f"{variant}.mp4"
+            result = render.render_variant(ctx, variant, path, start, duration, log_path=run.log_path)
+            checks = probe.check_video(path, **expect)
+            run.manifest["variants"][variant] = {
+                "path": path.name, "frames": checks["frames"], "sha256": sha256(path),
+                "technical_pass": checks["pass"], "checks": checks, "render_seconds": result["seconds"],
+                "features": notes[variant]["features"], "empty": notes[variant]["empty"],
+                **({"note": notes[variant]["note"]} if "note" in notes[variant] else {})}
             run.save()
-            run.log(f"render start key={key} variants={','.join(variants)} start={start:g} duration={duration:g} "
-                    f"frames={n_frames} size={size[0]}x{size[1]} look={look_state}")
-            if look_state == "disabled":
-                say("[fx] --no-look: spec の look を外して描きます")
-            ctx = render.prepare(sp, scale)
-            run.manifest["warnings"] = list(ctx.warnings)
-            for warning in ctx.warnings:
-                run.log(f"warning: {warning}")
-            notes = ctx.variant_notes()
-            has_audio = ctx.audio_path() is not None
-            expect = {"width": size[0], "height": size[1], "fps": fps, "frames": n_frames, "audio": has_audio,
-                      "audio_s": n_frames / fps if has_audio else None, "bt709": True}
-            for variant in variants:
-                path = run.dir / f"{variant}.mp4"
-                result = render.render_variant(ctx, variant, path, start, duration, log_path=run.log_path)
-                checks = probe.check_video(path, **expect)
-                run.manifest["variants"][variant] = {
-                    "path": path.name, "frames": checks["frames"], "sha256": sha256(path),
-                    "technical_pass": checks["pass"], "checks": checks, "render_seconds": result["seconds"],
-                    "features": notes[variant]["features"], "empty": notes[variant]["empty"],
-                    **({"note": notes[variant]["note"]} if "note" in notes[variant] else {})}
-                run.save()
-                run.log(f"{variant}: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
-                say(f"[fx] {variant}: {checks['frames']} フレーム（{result['seconds']:.1f} 秒）technical_pass={checks['pass']}")
-            if grid:
-                path = run.dir / "grid.mp4"
-                sources = {v: run.dir / f"{v}.mp4" for v in variants}
-                result = compare.write_grid(path, sources, notes, size, fps, ctx.crf, n_frames,
-                                            render.audio_for(ctx, start, n_frames), run.log_path)
-                checks = probe.check_video(path, **expect)
-                run.manifest["grid"] = {"path": path.name, "frames": checks["frames"], "sha256": sha256(path),
-                                        "technical_pass": checks["pass"], "checks": checks,
-                                        "variants": list(variants), "render_seconds": result["seconds"]}
-                run.save()
-                run.log(f"grid: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
-                say(f"[fx] grid: {checks['frames']} フレーム technical_pass={checks['pass']}")
-            items = {**run.manifest["variants"], **({"grid": run.manifest["grid"]} if run.manifest["grid"] else {})}
-            passed = all(item["technical_pass"] for item in items.values())
-            if not passed:
-                bad = {name: item["checks"]["failures"] for name, item in items.items() if not item["technical_pass"]}
-                message = (f"技術検査に失敗しました（{json.dumps(bad, ensure_ascii=False)[:800]}）。"
-                           f"詳細: {run.dir / 'manifest.json'}")
-                run.finish(False, message)
-                raise PipelineError(message)
-            run.finish(True)
-            index["runs"][key] = {"run_id": run.run_id, "finished_at": run.manifest["finished_at"]}
-            index["schema_version"] = INDEX_SCHEMA
-            atomic_json(out / "index.json", index)
-            run.log(f"render done in {time.monotonic() - began:.1f}s")
-        except BaseException as error:
-            if run.manifest["status"] == "running":
-                run.fail(error)
-            raise
+            run.log(f"{variant}: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
+            say(f"[fx] {variant}: {checks['frames']} フレーム（{result['seconds']:.1f} 秒）technical_pass={checks['pass']}")
+        if grid:
+            path = run.dir / "grid.mp4"
+            sources = {v: run.dir / f"{v}.mp4" for v in variants}
+            result = compare.write_grid(path, sources, notes, size, fps, ctx.crf, n_frames,
+                                        render.audio_for(ctx, start, n_frames), run.log_path)
+            checks = probe.check_video(path, **expect)
+            run.manifest["grid"] = {"path": path.name, "frames": checks["frames"], "sha256": sha256(path),
+                                    "technical_pass": checks["pass"], "checks": checks,
+                                    "variants": list(variants), "render_seconds": result["seconds"]}
+            run.save()
+            run.log(f"grid: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
+            say(f"[fx] grid: {checks['frames']} フレーム technical_pass={checks['pass']}")
+        items = {**run.manifest["variants"], **({"grid": run.manifest["grid"]} if run.manifest["grid"] else {})}
+        passed = all(item["technical_pass"] for item in items.values())
+        if not passed:
+            bad = {name: item["checks"]["failures"] for name, item in items.items() if not item["technical_pass"]}
+            message = (f"技術検査に失敗しました（{json.dumps(bad, ensure_ascii=False)[:800]}）。"
+                       f"詳細: {run.dir / 'manifest.json'}")
+            run.finish(False, message)
+            raise PipelineError(message)
+        session.succeed()
+        run.log(f"render done in {time.monotonic() - began:.1f}s")
     result = summarize(run.dir, run.manifest, reused=False)
     result["seconds"] = round(time.monotonic() - began, 1)
     return result
@@ -317,13 +385,7 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False):
     began = time.monotonic()
     sp, look_state = resolve_look(fxspec.load_spec(spec_path), no_look)
     variants = parse_variants(variants)
-    times = [float(t) for t in times]
-    total = sp.data["duration_s"]
-    if not times:
-        raise PipelineError("--times に 1 つ以上の時刻（秒）を指定してください")
-    bad = [t for t in times if not 0 <= t <= total]
-    if bad:
-        raise PipelineError(f"時刻がショットの長さ 0〜{total:g} 秒の外です: {bad}")
+    times = resolve_times(sp, times)
     size = render.scaled_size(sp, scale)
     assets = fxassets.describe(sp)
     key = content_key("stills", sp, assets, {"variants": list(variants), "times": times, "size": list(size),

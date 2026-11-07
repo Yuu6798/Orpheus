@@ -118,6 +118,46 @@ def update_lyrics(root, path):
     runner.stale("alignment", "storyboard", "render", "verify")
 
 
+def run_adapter(root, config_path, kind):
+    """argv JSON（docs/adapters.md）で指定した既存の同期器・分離器を呼び、出力と来歴を work/ に記録する。
+
+    kind は alignment（work/alignment.adapter.json を作って取り込む）か separation（work/vocals.wav）。
+    同じ音源・歌詞・設定なら Runner のキャッシュで再実行しない。設定の argv はシェルを通さずそのまま渡す。
+    """
+    from .adapters.external import invoke
+
+    validate.require(kind in {"alignment", "separation"}, f"Unsupported adapter kind: {kind}")
+    config = read_json(config_path)
+    a = read_json(root / "analysis.json")
+    validate.analysis(a, root)
+    adapter_audio = safe_path(root, config.get("input_audio", a["audio"]["path"]))
+    validate.require(adapter_audio.is_file(), "Adapter audio is missing")
+    if config.get("input_audio"):
+        validate.require(sha256(adapter_audio) == config.get("input_sha256"), "Adapter input audio hash mismatch")
+    output = root / "work" / ("alignment.adapter.json" if kind == "alignment" else "vocals.wav")
+
+    def action():
+        temporary = output.with_name("pending-" + output.name)
+        # A stale temporary file must never pass as a new adapter result.
+        temporary.unlink(missing_ok=True)
+        invoke(config, audio=adapter_audio, lyrics=root / "inputs/lyrics.txt", output=temporary,
+               log=root / "work/adapter.log", analysis=root / "work/analysis.raw.json")
+        if kind == "alignment":
+            validate.analysis(alignment(read_json(root / "work/analysis.raw.json"), read_json(temporary)), root)
+        else:
+            validate.require(any(s["codec_type"] == "audio" for s in media.probe(temporary)["streams"]), "Separator produced no audio")
+            validate.require(isinstance(config.get("offset_s"), (int, float)), "Separator must declare offset_s")
+        temporary.replace(output)
+        atomic_json(root / "work" / f"{kind}.provenance.json", {"audio_sha256": a["audio"]["sha256"], "config": config})
+        return [output.relative_to(root).as_posix(), f"work/{kind}.provenance.json"]
+
+    key = cache_key(kind, [a["audio"]["sha256"], sha256(adapter_audio), sha256(root / "inputs/lyrics.txt")], config)
+    Runner(root).execute(kind, key, action)
+    if kind == "alignment":
+        import_alignment(root, output)
+    return output
+
+
 def import_storyboard(root, path):
     data = read_json(path)
     a = read_json(root / "analysis.json")

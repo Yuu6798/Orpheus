@@ -8,16 +8,15 @@
     <out>/stills-<key8>.png
     <out>/analysis/       fit の解析のキャッシュ（内容のハッシュの名前。fit.py）
 """
-import hashlib
 import shutil
 import time
 from pathlib import Path
 
+from .. import dance
 from ..fx import runs as fxruns
 from ..fx import probe, timeline
 from ..io import PipelineError, atomic_json, sha256
-from ..runner import project_lock
-from . import SCHEMA_VERSION, VARIANT, VERSION, fingerprint
+from . import VARIANT, fingerprint
 from . import spec as dancespec
 from .hooks import Hooks
 
@@ -108,29 +107,20 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
     key = _key("dance-render", sp, assets, {"start": start, "duration": duration, "frames": n_frames, "size": list(size),
                                             "scale": float(scale), "libraries": libraries, "hooks": finish and finish["sha256"]})
     out = (Path(out) if out else default_out(sp)).resolve()
-    with project_lock(out):
-        fxruns.close_orphans(out)
-        index = fxruns.load_index(out)
-        if not force:
-            manifest = fxruns.reusable(out, index, key)
-            if manifest:
-                say(f"[dance] 同じ入力の成功 run を再利用します: {manifest['run_id']}（作り直すには --force）")
-                return fxruns.summarize(out / manifest["run_id"], manifest, reused=True)
-        run = fxruns.Run(out, key, "dance-render", "render.log")
-        ctx = None
+    with fxruns.Session(out, key, "dance-render", "render.log", say=say, tag="[dance]", force=force) as session:
+        if session.reused:
+            return fxruns.summarize(session.reused_dir, session.reused, reused=True)
+        run = session.run
+        shutil.copyfile(sp.path, run.dir / "spec.json")
+        run.manifest.update(
+            spec=fxruns.spec_record(sp), assets=assets, engine=fxruns.engine_record(dance, "dance"), libraries=libraries,
+            interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
+            output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
+            variants={}, grid=None, warnings=[], hooks=finish)
+        run.save()
+        run.log(f"render start key={key} start={start:g} duration={duration:g} frames={n_frames} size={size[0]}x{size[1]}")
+        ctx = compose.prepare(sp, scale, out, None if hooks is None else Hooks(hooks))
         try:
-            shutil.copyfile(sp.path, run.dir / "spec.json")
-            run.manifest.update(
-                spec={"file": "spec.json", "sha256": sp.sha256,
-                      "normalized_sha256": hashlib.sha256(dancespec.canonical_json(sp.data).encode("utf-8")).hexdigest()},
-                assets=assets, engine={"name": "dance", "version": VERSION, "schema_version": SCHEMA_VERSION,
-                                       "fingerprint": fingerprint()},
-                libraries=libraries, interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
-                output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
-                variants={}, grid=None, warnings=[], hooks=finish)
-            run.save()
-            run.log(f"render start key={key} start={start:g} duration={duration:g} frames={n_frames} size={size[0]}x{size[1]}")
-            ctx = compose.prepare(sp, scale, out, None if hooks is None else Hooks(hooks))
             run.manifest["warnings"] = list(ctx.warnings)
             run.manifest["analysis"] = [{"path": item["file"], "sha256": item["sha256"]} for item in ctx.analysis]
             for warning in ctx.warnings:
@@ -146,29 +136,21 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
 
             path = run.dir / f"{VARIANT}.mp4"
             result = fxrender.write_video(path, frames(), size, fps, ctx.crf, n_frames, audio, run.log_path)
-            checks = probe.check_video(path, width=size[0], height=size[1], fps=fps, frames=n_frames, audio=audio is not None,
-                                       audio_s=n_frames / fps if audio else None, bt709=True)
-            run.manifest["variants"][VARIANT] = {"path": path.name, "frames": checks["frames"], "sha256": sha256(path),
-                                                 "technical_pass": checks["pass"], "checks": checks,
-                                                 "render_seconds": result["seconds"]}
-            run.save()
-            run.log(f"{VARIANT}: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
-            say(f"[dance] {checks['frames']} フレーム（{result['seconds']:.1f} 秒）technical_pass={checks['pass']}")
-            if not checks["pass"]:
-                message = f"技術検査に失敗しました（{checks['failures']}）。詳細: {run.dir / 'manifest.json'}"
-                run.finish(False, message)
-                raise PipelineError(message)
-            run.finish(True)
-            index["runs"][key] = {"run_id": run.run_id, "finished_at": run.manifest["finished_at"]}
-            index["schema_version"] = fxruns.INDEX_SCHEMA
-            atomic_json(out / "index.json", index)
-        except BaseException as error:
-            if run.manifest["status"] == "running":
-                run.fail(error)
-            raise
         finally:
-            if ctx is not None:
-                ctx.close()
+            ctx.close()
+        checks = probe.check_video(path, width=size[0], height=size[1], fps=fps, frames=n_frames, audio=audio is not None,
+                                   audio_s=n_frames / fps if audio else None, bt709=True)
+        run.manifest["variants"][VARIANT] = {"path": path.name, "frames": checks["frames"], "sha256": sha256(path),
+                                             "technical_pass": checks["pass"], "checks": checks,
+                                             "render_seconds": result["seconds"]}
+        run.save()
+        run.log(f"{VARIANT}: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
+        say(f"[dance] {checks['frames']} フレーム（{result['seconds']:.1f} 秒）technical_pass={checks['pass']}")
+        if not checks["pass"]:
+            message = f"技術検査に失敗しました（{checks['failures']}）。詳細: {run.dir / 'manifest.json'}"
+            run.finish(False, message)
+            raise PipelineError(message)
+        session.succeed()
     result = fxruns.summarize(run.dir, run.manifest, reused=False)
     result["timeline"] = str(run.dir / "timeline.json")
     result["seconds"] = round(time.monotonic() - began, 1)
@@ -240,12 +222,7 @@ def stills(spec_path, times, out=None, scale=1.0, guides=None, columns=4, layers
 
     began = time.monotonic()
     sp = dancespec.load_spec(spec_path)
-    times = [float(t) for t in times]
-    if not times:
-        raise PipelineError("--times に 1 つ以上の時刻（秒）を指定してください")
-    bad = [t for t in times if not 0 <= t <= sp.data["duration_s"]]
-    if bad:
-        raise PipelineError(f"時刻がショットの長さ 0〜{sp.data['duration_s']:g} 秒の外です: {bad}")
+    times = fxruns.resolve_times(sp, times)
     size = compose.scaled_size(sp, scale)
     assets = describe_assets(sp)
     finish = _hooks_record(hooks)

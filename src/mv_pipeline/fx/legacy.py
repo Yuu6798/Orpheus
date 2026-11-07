@@ -28,9 +28,8 @@ import time
 from pathlib import Path
 
 from ..io import PipelineError, sha256
-from ..runner import project_lock
 from . import probe, timeline
-from .runs import Run, close_orphans, content_key_for
+from .runs import Session, content_key_for
 
 
 def default_timeout(duration):
@@ -103,9 +102,8 @@ def run_legacy(renderer, config, start, duration, python=None, width=None, heigh
     key = content_key_for("legacy", {"renderer": renderer_sha, "config": config_sha, "start": start,
                                      "duration": duration, "width": width, "height": height, "fps": fps,
                                      **({"units": units} if units != "seconds" else {})})
-    with project_lock(out):
-        close_orphans(out)
-        run = Run(out, key, "legacy", "legacy.log")
+    with Session(out, key, "legacy", "legacy.log", say=say, tag="[fx]", cache=False) as session:
+        run = session.run
         partial = run.dir / "legacy.part.mp4"
         final = run.dir / "legacy.mp4"
         argv = [str(python), str(renderer), str(config), "seg", *bounds, str(partial)]
@@ -148,17 +146,14 @@ def run_legacy(renderer, config, start, duration, python=None, width=None, heigh
                 "sha256": sha256(final if checks["pass"] else partial), "technical_pass": checks["pass"],
                 "checks": checks}
             run.log(f"legacy: {checks['frames']} frames technical_pass={checks['pass']} {checks['failures']}")
-            if checks["pass"]:
-                run.finish(True)
-            else:
+            if not checks["pass"]:
                 partial.unlink(missing_ok=True)
                 message = f"技術検査に失敗しました（{'; '.join(checks['failures'])[:800]}）。詳細: {run.dir / 'manifest.json'}"
                 run.finish(False, message)
                 raise PipelineError(message)
-        except BaseException as error:
-            if run.manifest["status"] == "running":
-                run.fail(error)
-            partial.unlink(missing_ok=True)
+            session.succeed()
+        except BaseException:
+            partial.unlink(missing_ok=True)   # 途中までの出力を残さない。run を failed にするのは Session
             raise
     item = run.manifest["variants"]["legacy"]
     return {"run_id": run.run_id, "run_dir": str(run.dir), "status": run.manifest["status"],

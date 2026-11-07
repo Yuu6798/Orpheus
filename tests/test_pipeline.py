@@ -121,3 +121,34 @@ def test_image_change_requires_reregistration(project):
     image.write_bytes(image.read_bytes() + b"changed")
     with pytest.raises(PipelineError, match="Image hash mismatch"):
         validate.bundle(project)
+
+
+def test_run_adapter_alignment_imports_model_timings_and_caches(project, tmp_path):
+    """run-adapter は argv JSON の同期器を呼び、出力を取り込み、同じ入力ではキャッシュで再実行しない（cli.py から pipeline へ移した経路）。"""
+    import sys
+    calls = tmp_path / "calls.txt"
+    script = tmp_path / "aligner.py"
+    script.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "analysis = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "with Path(sys.argv[3]).open('a') as calls: calls.write('x')\n"
+        "Path(sys.argv[2]).write_text(json.dumps({'audio_sha256': analysis['audio']['sha256'], 'offset_s': 0.5,\n"
+        "    'tool': {'name': 'fixture-aligner', 'version': '1'},\n"
+        "    'lyrics': [{'id': l['id'], 'text': l['text'], 'start_s': i * 2.0, 'end_s': i * 2.0 + 1.5}\n"
+        "               for i, l in enumerate(analysis['lyrics'])]}))\n", encoding="utf-8")
+    config = tmp_path / "aligner.json"
+    atomic_json(config, {"tool": "fixture-aligner", "version": "1",
+                         "argv": [sys.executable, str(script), "{analysis}", "{output}", str(calls)]})
+    output = pipeline.run_adapter(project, config, "alignment")
+    assert output == project / "work/alignment.adapter.json" and output.is_file()
+    assert read_json(project / "work/alignment.provenance.json")["config"]["tool"] == "fixture-aligner"
+    a = read_json(project / "analysis.json")
+    # 手修正（edits/timings.json）は保持され、モデル時刻は手修正の無い行にだけ入る。デモは全行が手修正済みなので model は増えない。
+    assert all(line["timing_source"] == "manual" for line in a["lyrics"])
+    assert any(p["tool"] == "fixture-aligner" for p in a["provenance"])
+    assert read_json(project / "job.json")["stages"]["alignment"]["status"] == "succeeded"
+    pipeline.run_adapter(project, config, "alignment")
+    assert calls.read_text() == "x"
+    with pytest.raises(PipelineError, match="Unsupported adapter kind"):
+        pipeline.run_adapter(project, config, "vocals")

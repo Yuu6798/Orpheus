@@ -9,7 +9,7 @@ Claude Code 固有の運用だけをここに置く（詳細は docs/ へ）。
 
 ```sh
 uv sync --locked --extra analysis --extra fx --extra model3d && pnpm install --frozen-lockfile   # fx の E2E は --extra fx 必須。model3d のテストは --extra model3d 必須
-uv run pytest                  # 約 50 秒。fx / model3d のテストは各 extra で同期した環境でだけ走る（無いと黙って skip される）
+uv run pytest                  # 数分（model3d のテストを含む）。fx / model3d のテストは各 extra で同期した環境でだけ走る（無いと黙って skip される）
 pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv verify projects/demo
 uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md。--extra fx が前提）
