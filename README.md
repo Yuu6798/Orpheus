@@ -27,6 +27,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv export remotion-props` | analysis / storyboard から、Remotion 側が秒を扱わずに済むコマ番号だけの props.json を書く | 実験的 | [remotion-props](docs/remotion-props.md) |
 | `mv layer render` | Remotion の透過レイヤーの描画を工程として包み、版・sha256・ブラウザー・描画時間・決定論の確認を台帳に残す | 実験的 | [remotion-props › 台帳](docs/remotion-props.md#描画を台帳に載せるmv-layer-render) |
 | `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
+| `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
 | `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）と、歌詞の行・秒の確認表 | 実験的 | [gate](docs/gate.md) |
 | `mv inspect` | 生成動画の異常候補をコマと秒で見つけ、分類し、設定画と照合して修正計画を書く | 実験的 | [inspect](docs/inspect.md) |
