@@ -5,7 +5,7 @@
 
 settings.json（look.toon が書く）:
 - meshes: セル調にするメッシュの名前（既定: アーマチュアで動く、レンダーに出すメッシュ全部。物体とコレクションの hide_render と
-  ビューレイヤーでの除外を見る。faces に入れたものは除く）。
+  ビューレイヤーでの除外を見る。faces に入れたものと、render.prepare_push の当たりの写し（model3d_collider の印）は除く）。
 - faces: 顔の塗り（光を少し受け、絵の色を直接出す）にするメッシュの名前（既定なし）。
 - toon: セル調の数。light（光の向き。面の向きとの内積で影を決める）、threshold・soft（影の境と、そのぼかし）、shade（影の色。
   元の色に掛ける）、skin_shade（肌の影の色。省くと shade と同じ）、tint（影の色に舞台の色を混ぜる割合）、lit（光の当たる側の
@@ -69,6 +69,7 @@ DEFAULTS = {
                 "hand_line": 0.45},
 }
 TONE = "model3d_stage_tone"
+COLLIDER_MARK = "model3d_collider"                      # render.prepare_push が当たりの写しに付ける印
 SKIN_ATTRIBUTE = "model3d_skin"                          # skin_meshes に付ける頂点の属性（1 で肌の部品）
 
 
@@ -651,6 +652,12 @@ def outline_hull(bpy, ob, o):
     return new
 
 
+def is_collider(ob):
+    """当たりの写し（render.prepare_push が COLLIDER_MARK の印を付けたもの）か。カメラには写らないが hide_render は付けないので、
+    既定のメッシュ選びから印で外す（透明な材質で、塗りの材質に要る Principled BSDF が無いため）。"""
+    return bool(ob.get(COLLIDER_MARK))
+
+
 def rendered(ob, view_layers):
     """ob がレンダーに出るか。物体の hide_render と、ob の入ったコレクションまでたどる道（どれか 1 つ）の、コレクションの
     hide_render とビューレイヤーでの除外を見る。使うビューレイヤーのどれかで出れば出る"""
@@ -687,7 +694,8 @@ def main(argv=None):
     faces = list(settings["faces"])
     if settings["meshes"] is None:
         layers = bpy.context.scene.view_layers           # コレクションでレンダーから隠したメッシュ（着替えの衣装など）は選ばない
-        meshes = [o.name for o in bpy.data.objects if deformed(o) and rendered(o, layers) and o.name not in faces]
+        meshes = [o.name for o in bpy.data.objects
+                  if deformed(o) and rendered(o, layers) and not is_collider(o) and o.name not in faces]
     else:
         meshes = list(settings["meshes"])
     for name in meshes + faces:

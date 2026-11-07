@@ -5,6 +5,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -1020,6 +1021,79 @@ def test_a_publish_stopped_halfway_is_rolled_back_to_the_last_good_result(small_
     assert _snapshot(out) == before and not (out / "vlm").exists()   # 前の結果に戻り、途中まで入れた新しい結果は消える
     assert not (out / run.JOURNAL).exists() and not backup.exists() and not (out / ".staging-halfway").exists()
     assert any("halfway" in note for note in notes)
+
+
+def _locked(out, phase, error):
+    """入れ替えの途中で 1 つだけ動かせない os.replace（ほかのアプリが開いている静止画・Ctrl+C など）。
+    phase が old なら前の stills/ を外す所で、new なら新しい metrics/ を置く所で止まる。"""
+    real = os.replace
+
+    def replace(source, target):
+        source = Path(source)
+        if (phase == "old" and source == out / "stills") or (
+                phase == "new" and source.name == "metrics" and source.parent.name.startswith(run.STAGING)):
+            raise error("開かれていて動かせない")
+        return real(source, target)
+    return replace
+
+
+@pytest.mark.parametrize("phase, error", [("old", PermissionError), ("new", PermissionError), ("new", KeyboardInterrupt)])
+def test_a_publish_that_fails_is_rolled_back_at_once(small_demo, tmp_path, monkeypatch, phase, error):
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    monkeypatch.setattr(run.time, "sleep", lambda seconds: None)     # 開かれたままのファイル: _replace が待ってやり直しても動かせない
+    monkeypatch.setattr(run.os, "replace", _locked(out, phase, error))
+    with pytest.raises(error):
+        run.run(small_demo / "inspect.json", out)
+    monkeypatch.undo()
+    assert (out / "inspect_report.json").is_file() and _snapshot(out) == before   # 次の実行を待たずに、前の結果が公開の場所に戻る
+    assert not (out / run.JOURNAL).exists() and not list(out.glob(".staging-*")) and not list(out.glob(".previous-*"))
+    assert [r["status"] for r in run.runs(out)] == ["succeeded", "failed"]
+
+
+def test_a_publish_that_cannot_be_rolled_back_keeps_the_backup_for_the_next_run(small_demo, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    real_rollback = run._rollback
+
+    def stuck(out):                                                   # 戻す跡（控え）があるときだけ戻せない（実行の初めの recover は本物）
+        if (Path(out) / run.JOURNAL).is_file():
+            raise PermissionError("戻す所も開かれている")
+        return real_rollback(out)
+    monkeypatch.setattr(run.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(run.os, "replace", _locked(out, "new", PermissionError))
+    monkeypatch.setattr(run, "_rollback", stuck)
+    with pytest.raises(PermissionError) as caught:
+        run.run(small_demo / "inspect.json", out)
+    monkeypatch.undo()
+    assert str(caught.value) == "開かれていて動かせない"                            # 元の失敗のまま止まり、戻せなかったことは注に書く
+    assert "前の結果へ戻せませんでした" in caught.value.__notes__[0]
+    assert (out / run.JOURNAL).is_file() and len(list(out.glob(".previous-*"))) == 1   # 前の結果は控えと一緒に残す
+    assert "前の結果へ戻せませんでした" in run.runs(out)[-1]["error"]
+    notes = run.recover(out)                                                       # 次の実行の初めに戻す
+    assert _snapshot(out) == before and any("入れ替えの途中" in note for note in notes)
+
+
+def test_a_second_run_on_the_same_output_leaves_a_run_in_progress_alone(small_demo, tmp_path):
+    from mv_pipeline.runner import project_lock
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    active = "20261107T000000Z-live"                                  # 測っている途中の実行（出力先のロックを持っている）
+    (out / f".staging-{active}" / "metrics").mkdir(parents=True)
+    run._record_run(out, {"run_id": active, "status": "running", "started_at": "2026-11-07T00:00:00+00:00"})
+    with project_lock(out):
+        with pytest.raises(PipelineError, match="ほかの mv inspect の実行が使っています"):
+            run.run(small_demo / "inspect.json", out)
+        code, _, err = run_cli("inspect", "check", small_demo / "inspect.json", "--out", out, "--quiet")
+        assert code == 1 and "ほかの mv inspect の実行が使っています" in err
+    assert (out / f".staging-{active}" / "metrics").is_dir() and _snapshot(out) == before   # 作業用フォルダーも前の結果もそのまま
+    assert [r["status"] for r in run.runs(out)] == ["succeeded", "running"]               # 動いている実行を止まった扱いにしない
+    run.run(small_demo / "inspect.json", out)                         # ロックが外れた後なら、止まった実行の跡として片付ける
+    assert next(r for r in run.runs(out) if r["run_id"] == active)["status"] == "failed"
+    assert not (out / f".staging-{active}").exists()
 
 
 def test_a_vlm_response_without_the_request_hash_needs_the_legacy_flag(small_demo, tmp_path):
