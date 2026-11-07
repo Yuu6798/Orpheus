@@ -1,13 +1,13 @@
-"""骨の重みでメッシュを選ぶ工程（床に足を付ける・手を押し出す・揺れ物の当たり）の、レンダーに出るメッシュの見分け方。
+"""メッシュを選ぶ工程（床に足を付ける・手を押し出す・揺れ物の当たり・セル調の塗り）の、レンダーに出るメッシュの見分け方。
 台本は 1 本ずつ Blender で動くので同じ関数を写して持つ。写しが同じであることと、コレクションの隠しを見ることを確かめる。"""
 import inspect
 from types import SimpleNamespace as M
 
 import pytest
 
-from model3d.blender_adapter import ground_feet, push_hands, spring_bones
+from model3d.blender_adapter import ground_feet, push_hands, spring_bones, toon_look
 
-SCRIPTS = (ground_feet, push_hands, spring_bones)
+SCRIPTS = (ground_feet, push_hands, spring_bones, toon_look)
 
 
 def test_every_script_carries_the_same_rule():

@@ -27,6 +27,8 @@ SCHEMAS = {
     "preset": "model3d-preset/0.1",
     "handoff": "model3d-handoff/0.1",
     "initial-model": "model3d-initial-model/0.1",
+    "stage-track": "model3d-stage-track/0.1",
+    "frames": "model3d-frames/0.1",
 }
 
 

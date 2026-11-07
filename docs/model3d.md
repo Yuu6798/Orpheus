@@ -76,6 +76,8 @@ uv run model3d run projects/model3d-demo/recipe_generate.json   # 合成の設�
 | mesh `model3d-mesh/0.1` | 頂点・面（多角形）・頂点ごとの uv・面の集合 parts・頂点の selection・単位・軸。OBJ と相互変換（`model3d mesh convert`）。面積・体積・衝突のための三角形化は、凸な面は扇形、凹んだ四角形は凹んだ頂点を通る対角線、凹んだ n 角形は耳切り |
 | rig `model3d-rig/0.1` | 骨（名前・親・head/tail・レスト行列）と頂点ウェイト（骨ごとの [頂点番号, 重み]）。weights.topology_sha256 は任意だが、メッシュとの整合検査・結合時のウェイト移し替えでは必須 |
 | preset `model3d-preset/0.1` | キャラごとの対応表と値（`tools/model3d/presets/README.md`） |
+| stage track `model3d-stage-track/0.1` | `render.stage` が描くコマの並び（書き出す T と動きのコマ f）と、コマごとのカメラ（位置・狙う点・レンズ）・舞台の模様・壁・輪郭光・光の柱・塗りの共有グループの値 |
+| frames `model3d-frames/0.1` | 描いたコマのフォルダとファイル（T・f・sha256・大きさ）、fps・解像度、描いていない T |
 | handoff `model3d-handoff/0.1` | Orpheus へ渡す成果物 1 つの控え（run・レシピ・成果物の sha256） |
 | initial model `model3d-initial-model/0.1` | 設定画から生成した初期モデルの記録: 入力のハッシュ、前処理の条件、生成器の素性（版・重みの sha256・ライセンス・実行ファイルの sha256）、パラメーター、生成物のハッシュ、幾何と構造の検査。review は常に needs_review |
 
@@ -199,6 +201,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `motion.sleeve_bones` | blend → blend, report | 袖口の骨（`sleeves` の `bone`）を、関節（`follow`。前腕など）の曲げの `ratio` 倍に、減衰つきのばねで少し遅れて付いて行かせる（[袖口を曲げに遅れて付いて行かせる](#袖口を曲げに遅れて付いて行かせる)）。ねじれは入れない。焼き付けた向きを確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `motion.ribbon_bones` | blend → blend, report | 帯の垂れの鎖の骨（`chains`。長さは鎖ごとに違ってよい）を、重力で垂れて太ももの上を前へ乗り越えるように揺らす（[帯の垂れを揺らす](#帯の垂れを揺らす)）。狙いは `follow` に `thigh`（下ほど太もも）を混ぜられる。当たりは `colliders` と、メッシュの輪切りから作る `fitted`。押す向きは腰（`hips`）の前と上へ寄せる。焼き付けた骨を確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `look.toon` | blend → blend, report | キャラに描く前のセル調の塗りと輪郭線を付ける（[セル調の塗りと輪郭線を付ける](#セル調の塗りと輪郭線を付ける)）。体は決まった向きの光で影を 2 段に分け、舞台の色と縁の光を足して Emission で出す。顔（`faces`）は光を少し受けて絵の色を出す。輪郭線は反転ハル。舞台の色と縁の強さは共有のノードグループ `model3d_stage_tone`。Blender が要り、再利用しない（毎回実行） |
+| `render.stage` | blend, track → frames, report | キャラを舞台と光の中でコマごとに PNG に描く（[舞台で描く](#舞台で描く)）。床・LED の壁・トラス・光の柱とスポット 4 つ、EEVEE と光のにじみ。トラック（`model3d-stage-track/0.1`）のコマの並びとカメラ・光・塗りの値で描き、無ければ腰を追う正面のカメラと動かない光。輪郭線の太さはカメラの距離で画面の上にそろえる。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（`model3d-frames/0.1`）。Blender が要り、再利用しない（毎回実行） |
 | `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
 | `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
@@ -869,6 +872,42 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
     - 右半分が透けた絵の板と、Alpha 0.5 の箱で、透けを確かめた。
       - セル調と線の材質は、元の透けを Transparent BSDF と混ぜて残した。
       - 緑の背景の上で描くと、透けた所に背景が見えた（直す前は、黒い板が描かれた）。
+
+## 舞台で描く
+
+`render.stage` は、塗りと輪郭線を付けたキャラ（`look.toon` の blend）を、舞台と光の中で、コマごとに PNG に描く。リポジトリ外の試作で 32 秒の本番を描いた舞台と光の組み方を移した。コマごとのカメラと光の値は、トラック（`model3d-stage-track/0.1`）で受け取る。曲に合わせてトラックを作る段取りの道具は、次の工程。
+- **入力**: `blend`（必須）と `track`（任意）。
+- **舞台**（`stage.enabled`、既定 true）:
+  - 床（40 m の暗い板。EEVEE の画面の反射を受ける）、背面の LED の壁（帯の模様を Emission で出す）、上のトラスと両脇の塔、光の柱 8 本（発光する半透明の円錐）、ほぼ黒の空。
+  - 壁の暗い帯は、明るい帯の色の `stripe_floor`（既定 0.02）倍。`stripe_soft` で帯の境を広げる。
+  - スポット 4 つ: 主光（影をやわらかく）、補助光（影なし）、左右の色つきの輪郭光。
+- **描き方**: EEVEE（`samples` 既定 64、`raytracing` で画面の光線追跡）、色の変換は Standard（Look なし）、`bloom` で合成の Glare の Bloom、`resolution` 既定 1080×1920、PNG（RGB・8 bit）。
+- **コマ**:
+  - トラックがあれば、その並びで描く（T は書き出す番号、f は動きのコマ。同じ f を続ければ止まり、とばせば速くなる）。無ければ、シーンの全コマを T = 1 から描く。
+  - ファイルは `f<T>.png`。`only` で T を選ぶ。すでにあるファイルはとばすので、続きから描ける（描き直すときはファイルを消す）。
+  - `frames_dir`（既定は工程のフォルダの `frames`）に書く。
+- **コマごとの値**（トラック。省いた所は動かない既定の値）:
+  - `camera`: 位置と狙う点（世界の座標、m）とレンズ。
+    - 省くと、腰の通り道を `camera.follow_sigma`（既定 6）コマのガウスでならし、その `follow`（既定 0.6）倍の所の高さ `aim` を狙う。
+    - そのときの置き場所は、方位 `az`・距離 `dist`・高さ `height`（既定は正面の 3.6 m・1.1 m、レンズ 35 mm）。
+  - `stage`（led・led_diag・void）、`wall`（明るさ・明るい帯と暗い帯の色・模様のずれ）、`rims`（左右の輪郭光のエネルギーと色）、`beams`（光の柱の明るさ・向き・色）。
+  - `tone`: 塗りの共有グループ `model3d_stage_tone` の a・b・gain。
+- **輪郭線**: 写し（`look.toon` の印）の Displace の強さを、カメラから腰までの距離で書き換える。
+  - 高さ `reference_height`（既定 1920）の画で `line_px`（既定 2.4）画素の太さにそろえる（結果は解像度によらない）。
+  - `outline.scale` で、元のメッシュごとに太さを掛ける。物体の拡大とシーンの単位は、写しの `model3d_outline_m_per_local` で直す。
+
+**出力**:
+- `frames`: `model3d-frames/0.1`。並びのコマのうち描いたファイルの sha256 と大きさ、描いていない T（`missing`）。
+- `report`: `model3d-stage-render/0.1`。描いた・とばしたコマ、色の変換、カメラ（トラックか既定か、腰までの距離）、輪郭線の太さの幅、時間、設定。
+
+**確かめたこと**:
+- CI（Blender なし）では、次を確かめた。
+  - 設定の重ね方、コマの並び、腰のならし、カメラの位置、輪郭線の太さ、光の値の重ね方、2 つの契約。
+  - 台本の引数と工程の受け渡し、描いたコマの一覧と続きからの描画、悪い設定を止めること（代役の Blender）。
+- 2026-11-07 に Windows の Blender 4.5.15 で、試作が 32 秒の本番の最後のクリップ（118 コマ）を描いたのと同じ設定で確かめた。設定は 1080×1920、64 標本、線 1.6 画素、髪の線 0.7 倍。
+  - 試作の台本の写しで、コマごとのカメラ・舞台の模様・壁・輪郭光・光の柱・塗りの共有グループの値を、トラックに書き出した。帯の押し出しはこの工程にまだ無いので、試作の側も止めた。
+  - 公開版の `look.toon` を当てたキャラをそのトラックで描くと、4 コマ（T 843・880・920・960）とも試作と画素まで同じだった（207 万 3,600 画素で差 0）。
+  - 1 コマ約 13.5 秒（試作は 13〜15 秒）。
 
 ## Orpheus との接続（受け渡し）
 

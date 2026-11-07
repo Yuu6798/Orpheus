@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-stage-track/0.1",
+  "title": "model3d stage track",
+  "description": "render.stage が描くコマの並びと、コマごとのカメラ・舞台・光・塗りの値。T は書き出すコマの番号（1 から。ファイル名 f<T>.png）、f はキャラの動きの .blend のコマ。各コマの camera・stage・tone・wall・rims・beams は省くと既定の値（docs/model3d.md）。",
+  "type": "object",
+  "required": ["schema_version", "frames"],
+  "properties": {
+    "schema_version": {"const": "model3d-stage-track/0.1"},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/frame"}},
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "color": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
+    "frame": {
+      "type": "object",
+      "required": ["T", "f"],
+      "properties": {
+        "T": {"type": "integer", "minimum": 1},
+        "f": {"type": "integer"},
+        "camera": {
+          "description": "カメラの位置と狙う点（世界の座標、m）と、レンズ（mm）",
+          "type": "object",
+          "required": ["location", "target"],
+          "properties": {
+            "location": {"$ref": "#/$defs/vec3"},
+            "target": {"$ref": "#/$defs/vec3"},
+            "lens": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "stage": {"description": "壁の模様（led: 横の帯、led_diag: 斜めの帯、void: 壁・塔・トラスを消す）", "enum": ["led", "led_diag", "void"]},
+        "tone": {
+          "description": "セル調の塗りの共有グループ model3d_stage_tone の値（縁の色 a・b と強さ gain）",
+          "type": "object",
+          "properties": {"a": {"$ref": "#/$defs/color"}, "b": {"$ref": "#/$defs/color"}, "gain": {"type": "number", "minimum": 0}},
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "wall": {
+          "description": "LED の壁: 明るさ、明るい帯の色、暗い帯の色（省くと color × stripe_floor）、模様の横のずれ（物体の座標）",
+          "type": "object",
+          "properties": {
+            "strength": {"type": "number", "minimum": 0},
+            "color": {"$ref": "#/$defs/color"},
+            "dark": {"$ref": "#/$defs/color"},
+            "scroll": {"type": "number"}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "rims": {
+          "description": "左右の輪郭光（左・右の順）のエネルギー（W）と色",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "properties": {"energy": {"type": "number", "minimum": 0}, "color": {"$ref": "#/$defs/color"}},
+            "patternProperties": {"^x_": {}},
+            "additionalProperties": false
+          }
+        },
+        "beams": {
+          "description": "光の柱 8 本（左から）: 明るさ、向き（XYZ のオイラー角、ラジアン）、色",
+          "type": "object",
+          "properties": {
+            "gain": {"type": "number", "minimum": 0},
+            "rotations": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/vec3"}},
+            "colors": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/color"}}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        }
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-frames/0.1",
+  "title": "model3d frames",
+  "description": "render.stage が描いたコマの一覧。directory の中のファイル（f<T>.png）と、その sha256・大きさ。missing は並びにあって描いていないコマ（only で選ばなかったコマなど）。",
+  "type": "object",
+  "required": ["schema_version", "directory", "fps", "resolution", "frames", "missing"],
+  "properties": {
+    "schema_version": {"const": "model3d-frames/0.1"},
+    "directory": {"type": "string"},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "resolution": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2},
+    "frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["T", "f", "file", "sha256", "bytes"],
+        "properties": {
+          "T": {"type": "integer", "minimum": 1},
+          "f": {"type": "integer"},
+          "file": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "missing": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false
+}
