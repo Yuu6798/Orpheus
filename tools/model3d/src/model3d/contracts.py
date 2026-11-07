@@ -21,6 +21,8 @@ FILES = {
     "preset": "preset.schema.json",
     "handoff": "handoff.schema.json",
     "initial-model": "initial_model.schema.json",
+    "stage-track": "stage_track.schema.json",
+    "frames": "frames.schema.json",
 }
 
 KINDS = tuple(FILES)
