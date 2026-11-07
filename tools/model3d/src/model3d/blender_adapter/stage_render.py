@@ -696,8 +696,13 @@ def make_pushes(bpy, specs, unit):
                     chosen[o.name][1] = chosen[o.name][1] or named
                 else:
                     chosen[o.name] = [o, named]
-        targets, skipped = [], []
+        targets, skipped, separated = [], [], []
         for o, named in chosen.values():
+            if sum(1 for x in bpy.data.objects if x.data == o.data) > 1:
+                # メッシュのデータを別の物体と分け合う（リンク複製）と、シェイプキーも分け合い、片方の直しがもう片方も
+                # 動かす。描く間だけ、この物体だけのデータにする（.blend は保存しない）
+                o.data = o.data.copy()
+                separated.append(o.name)
             problem = vertex_count_problem(o.name, len(o.data.vertices), len(evaluated_points(bpy, o)[0]),
                                            viewport_modifiers(o))
             if problem:                                   # 描き始める前に止める
@@ -714,7 +719,7 @@ def make_pushes(bpy, specs, unit):
         pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit))
         notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx)), "armature": t.arm.name if t.arm else None,
                                    "without_bones": int((t.W.sum(1) <= 0).sum()) if t.arm else int(len(t.idx))}
-                                  for t in targets], "skipped": skipped,
+                                  for t in targets], "skipped": skipped, "separated": separated,
                       "colliders": [{"object": c.name, "open_edges": open_edges(c)} for c in colliders],
                       "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
                       "smooth": int(spec.get("smooth", 6))})
