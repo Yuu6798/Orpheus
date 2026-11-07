@@ -16,7 +16,7 @@ settings.json（render.prepare_push が書く。長さは m で、シーンの s
 - 面を decimate の割合に減らし、すべての面をなめらかにする（ふさいだ口の平らな面のふちで、向きが混ざるように）。
   写しに付いてきた形状キーは先に外す（キーのあるメッシュは面を減らせない。元のメッシュは変えない。写しは骨でだけ動く）。
 - 体積は、物体の中で測った値に、変換の行列式の大きさと scale_length³ を掛けて、世界の L で報告する。
-- 元の Armature モディファイアと同じアーマチュア・設定（頂点の組の絞りと反転も）で動かす（親と変換は元のまま）。カメラ・影・反射などには写さない
+- 元の Armature モディファイアと同じアーマチュア・設定（頂点の組の絞りと反転、ビューポートと描画で効くかも）で動かす（親と変換は元のまま）。カメラ・影・反射などには写さない
   （透明な材質も付ける）。model3d_collider の印を付け、look.toon の既定のメッシュ選びから外す（hide_render は付けない）。
 押し出す頂点の組（試作の帯の印と同じ手順）:
 - 種は、bones の骨とその子孫の骨に重みのある頂点。高さ top より下で、種とつながった部分（同じ位置の頂点はつながる）を選ぶ。
@@ -124,7 +124,8 @@ def world_litres(local_volume, world, unit):
     return abs(local_volume) * abs(float(np.linalg.det(np.asarray(world, float)[:3, :3]))) * unit ** 3 * 1000
 
 
-ARMATURE_KEYS = ("use_deform_preserve_volume", "use_vertex_groups", "use_bone_envelopes", "vertex_group", "invert_vertex_group")
+ARMATURE_KEYS = ("use_deform_preserve_volume", "use_vertex_groups", "use_bone_envelopes", "vertex_group", "invert_vertex_group",
+                 "show_viewport", "show_render")       # 効く・効かない（ビューポートと描画）も元と同じにする
 
 
 def signed_volume_bmesh(bm):
@@ -193,7 +194,7 @@ def make_collider(bpy, bmesh, spec, material, unit=1.0):
     if source_armature is not None:
         m = px.modifiers.new("armature", "ARMATURE")
         m.object = source_armature.object
-        for key in ARMATURE_KEYS:                       # 頂点の組の絞り（反転も）まで元と同じにして、元と同じに動かす
+        for key in ARMATURE_KEYS:                       # 頂点の組の絞り（反転も）と、効く・効かないまで元と同じにして、元と同じに動かす
             setattr(m, key, getattr(source_armature, key))
     for key in ("visible_camera", "visible_shadow", "visible_diffuse", "visible_glossy", "visible_transmission",
                 "visible_volume_scatter"):
