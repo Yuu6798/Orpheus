@@ -412,3 +412,18 @@ def test_the_collider_box_is_widened_by_the_largest_offset():
     assert stage_render.push_margin([np.array([3.0])], 0.01) == pytest.approx(3.0)                  # 1 単位 = 1 cm の 30 mm
     assert stage_render.push_margin([np.array([0.5])], 0.01) == pytest.approx(2.0)
     assert stage_render.push_margin([], 1.0) == 0.02 and stage_render.push_margin([np.zeros(0)], 1.0) == 0.02
+
+
+def test_the_armature_vertex_group_mask_blends_the_bone_motion_per_vertex():
+    assert stage_render.armature_influence({"mask": 0.25}, "mask", False, True) == 0.25
+    assert stage_render.armature_influence({"mask": 0.25}, "mask", True, True) == 0.75          # 反転
+    assert stage_render.armature_influence({}, "mask", False, True) == 0.0                      # 組に入っていない頂点は動かない
+    assert stage_render.armature_influence({}, "mask", True, True) == 1.0
+    assert stage_render.armature_influence({}, "mask", False, False) == 1.0                     # その名前の組が無ければ絞らない
+    assert stage_render.armature_influence({"mask": 0.0}, "", False, False) == 1.0
+    turn = np.array([[[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]] * 3)
+    rest = np.tile(np.eye(3), (3, 1, 1))
+    out = stage_render.masked_rotation(turn, rest, [1.0, 0.0, 0.5])
+    assert out[0] == pytest.approx(turn[0]) and out[1] == pytest.approx(np.eye(3))
+    assert out[2] == pytest.approx(0.5 * (np.eye(3) + turn[0]))
+    assert stage_render.masked_rotation(turn, rest, [1.0, 1.0, 1.0]) is turn                   # 絞りが無ければそのまま

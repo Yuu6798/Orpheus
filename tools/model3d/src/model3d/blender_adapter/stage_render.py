@@ -244,6 +244,24 @@ def push_overlap(entries):
     return None
 
 
+def armature_influence(vertex_groups, mask, invert, mask_exists):
+    """Armature モディファイアの頂点の組の絞り（mask。invert で反転）での、その頂点への骨の効き（0〜1）。絞りが無いか、
+    その名前の組がメッシュに無ければ 1（Blender と同じく、絞らない）。"""
+    if not mask or not mask_exists:
+        return 1.0
+    w = vertex_groups.get(mask, 0.0)
+    return 1.0 - w if invert else w
+
+
+def masked_rotation(full, rest, influence):
+    """骨の効き s で混ぜた、頂点ごとの 3×3: (1 - s) × rest + s × full（Armature の絞りは、骨で動かした形と動かす前の形を
+    s で混ぜる）。どの頂点も s が 1 なら full のまま。"""
+    s = np.asarray(influence, float)[:, None, None]
+    if np.all(s == 1.0):
+        return full
+    return (1.0 - s) * rest + s * full
+
+
 def blend_bone_rotations(weights, bone_rots):
     """頂点ごとの骨の重み（行の和が 1。骨の重みの無い頂点は 0 の行）と、骨ごとの 3×3 の動きから、頂点ごとの 3×3（重みで
     混ぜた線形の骨の動き）。骨の重みの無い頂点と、骨の無いときは、骨で動かないので単位行列にする。"""
@@ -553,10 +571,16 @@ def open_edges(ob):
 
 class PushTarget:
     """押し出すメッシュ 1 つ: 組に重みのある頂点、その割合と離す量（Blender 単位）、骨の重み、面のつながり、継ぎ目の組、
-    シェイプキー。arm はメッシュを動かすアーマチュア（Armature モディファイアが無ければ None。骨で動かない）。"""
+    シェイプキー。armature はメッシュを動かす Armature モディファイア（無ければ None。骨で動かない）。その頂点の組の絞りの
+    効きも、頂点ごとに持つ。"""
 
-    def __init__(self, ob, arm, groups, key):
-        self.ob, self.arm = ob, arm
+    def __init__(self, ob, armature, groups, key):
+        self.ob, self.arm = ob, (armature.object if armature is not None else None)
+        arm = self.arm
+        mask = armature.vertex_group if armature is not None else ""
+        invert = bool(armature.invert_vertex_group) if armature is not None else False
+        mask_exists = bool(mask) and mask in ob.vertex_groups
+        influence = []
         me = ob.data
         names = {vg.index: vg.name for vg in ob.vertex_groups}
         deform = {b.name for b in arm.data.bones if b.use_deform} if arm is not None else set()
@@ -570,7 +594,9 @@ class PushTarget:
             wt.append(picked[0])
             off.append(picked[1])
             dw.append({k: x for k, x in gs.items() if k in deform and x > 0})
+            influence.append(armature_influence(gs, mask, invert, mask_exists))
         self.idx, self.w, self.off = np.array(idx, int), np.array(wt), np.array(off)
+        self.influence = np.array(influence, float)
         self.bones = sorted({b for d in dw for b in d})
         column = {b: i for i, b in enumerate(self.bones)}
         self.W = np.zeros((len(idx), len(self.bones)))
@@ -603,7 +629,8 @@ class PushTarget:
         A = np.array(self.arm.matrix_world)[:3, :3]
         Mb = np.array([np.array(self.arm.pose.bones[b].matrix @ self.arm.data.bones[b].matrix_local.inverted())[:3, :3]
                        for b in self.bones])
-        return A @ blend_bone_rotations(self.W, Mb) @ np.linalg.inv(A) @ O
+        full = A @ blend_bone_rotations(self.W, Mb) @ np.linalg.inv(A) @ O
+        return masked_rotation(full, np.tile(O, (len(self.idx), 1, 1)), self.influence)
 
 
 class Push:
@@ -657,6 +684,23 @@ class Push:
             stats[t.ob.name] = (int((mag > PUSH_MOVED_M / unit).sum()), round(float(mag.max(initial=0.0) * unit * 1000), 1))
         bpy.context.view_layer.update()
         return stats
+
+
+def push_armature(ob):
+    """押し出しの直しを骨で動かす前の差に戻すときの、メッシュを動かす Armature モディファイア（効いているもの。無ければ
+    None）。頂点の組の重みで動かす形（線形、組の絞りも扱う）だけを扱い、骨の包み（envelope）で動かすもの・Armature が
+    2 つ以上のものは止める。頂点の組を使わず包みも使わない Armature は骨で動かさないので None。"""
+    active = [m for m in ob.modifiers if m.type == "ARMATURE" and m.object is not None and m.show_viewport and m.show_render]
+    if len(active) > 1:
+        raise SystemExit(f"push: {ob.name} に効いている Armature モディファイアが {len(active)} つあります（"
+                         f"{', '.join(m.name for m in active)}）。押し出しは 1 つの Armature で動くメッシュにだけ使えます")
+    if not active:
+        return None
+    m = active[0]
+    if m.use_bone_envelopes:
+        raise SystemExit(f"push: {ob.name} の Armature モディファイア {m.name} は骨の包み（Bone Envelopes）で動かします。"
+                         "押し出しは頂点の組の重みで動かす Armature にだけ使えます")
+    return m if m.use_vertex_groups else None
 
 
 def reset_pushes(bpy, pushes):
@@ -714,9 +758,7 @@ def make_pushes(bpy, specs, unit):
                                            viewport_modifiers(o))
             if problem:                                   # 描き始める前に止める
                 raise SystemExit(problem)
-            modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None
-                             and m.show_viewport and m.show_render), None)
-            target = PushTarget(o, modifier.object if modifier else None, groups, PUSH_KEY)
+            target = PushTarget(o, push_armature(o), groups, PUSH_KEY)
             if not len(target.idx):
                 if named:
                     raise SystemExit(f"push[{n}]: {o.name} に、{group_names} の組の重みのある頂点がありません")
