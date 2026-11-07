@@ -107,7 +107,7 @@ uv run mv gate check gate.json      # {"timeline": "timeline.json", "beats": …
 
 - 行の切り分けは、行ごとに別の連番（`--frames DIR:行の id`）か、1 つの連番と行ごとの領域の手がかり（`--hints` = `{行の id: 正規化した箱}`。箱の中の不透明な画素をその行と見なす）。props の行が 1 つだけなら手がかりは要らない。
 - 「見えている」は α > `--alpha-threshold`（既定 64）の画素があること。行の最初と最後に見えるコマ（end は最後のコマ + 1）と、見えている全コマの不透明な画素を覆う箱（正規化）を測る。
-- 宣言と実測の差（例「開始が 1 コマ遅い」「途中で見えないコマ 2」）は `<out の stem>_measured.json` と stdout の要約に出す。どちらが正しいかは決めない。見えているコマが無い行は、timeline に宣言の時刻のまま残し（`measured: false`。行数を props と揃え、`mv gate check` の行の対応を崩さない）、要約の `unseen_lines` に出す。
+- 宣言と実測の差（例「開始が 1 コマ遅い」「途中で見えないコマ 2」）は `<out の stem>_measured.json` と stdout の要約に出す。どちらが正しいかは決めない。見えているコマが無い行は、timeline に宣言の時刻のまま残し（`measured: false`。行数を props と揃え、`mv gate check` の行の対応を崩さない）、要約の `unseen_lines` に出す。`mv gate check` はこの行を実測として扱わない（歌詞の時刻では「実測できず見ていない行」として要確認、字と顔・UI 枠・字の重なりには出さない）。
 - 連番のコマ数は props の `duration_frames` と同じでなければならない（途中だけ描いた連番は測れない）。アルファの無い連番はエラー。並びは数字の大小（`frame2` < `frame10`）。
 - 拍・小節頭は props からそのまま秒に直して写し（丸めない）、フラッシュは props に無いので `--flashes 5.5,6.0`（秒）で与える。書く timeline は実測なので `fade_in_s` / `fade_out_s` は 0、`lyric_fade` は inside、`exclusive` は true。連番の各コマ（読んだバイト列から 1 回で計算）と props・使った hints の sha256 は timeline の `measured.sources` に残る。
 - 確かめたのは合成の連番（numpy で描いた箱）だけ。実際の Remotion の連番では未確認。

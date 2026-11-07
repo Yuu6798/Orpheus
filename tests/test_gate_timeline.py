@@ -79,6 +79,13 @@ def test_one_sequence_with_hints_and_a_line_that_never_appears(tmp_path):
     assert unseen["measured"] is False and (unseen["start"], unseen["end"]) == (42 / FPS, 46 / FPS)
     assert unseen["box"] == [0.0, round(round(0.9 * H) / H, 5), 1.0, 1.0]      # hints の箱（画素に丸めてから正規化）
     gate._validate_timeline(timeline)
+    # 見えなかった行は、歌詞の時刻の検査で実測として照合されず（要確認）、重なりの検査にも出ない
+    measured_lines = [{"text": "one", "start": 6 / FPS + 0.05, "method": "vocals_onset"}, {"text": "two", "start": 20 / FPS + 0.05, "method": "vocals_onset"},
+                      {"text": "three", "start": 42 / FPS + 0.05, "method": "vocals_onset"}]
+    check = gate.check_lyric_time(timeline, measured_lines, "band", gate.THRESHOLDS)
+    assert check["status"] == "warn" and "字が見えなかった行 1" in check["summary"] and check["problems"] == []
+    timeline["lyrics"][2]["start"], timeline["lyrics"][2]["end"] = 20 / FPS, 44 / FPS      # 宣言では 2 行目と重なるが、見えていない
+    assert gate.check_hook_overlap(gate._scoped(timeline), gate.THRESHOLDS)["status"] == "pass"
 
 
 def test_alpha_threshold_gaps_and_mismatches(tmp_path):
