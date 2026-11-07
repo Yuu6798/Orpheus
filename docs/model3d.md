@@ -79,7 +79,7 @@ uv run model3d run projects/model3d-demo/recipe_generate.json   # 合成の設�
 | stage track `model3d-stage-track/0.1` | `render.stage` が描くコマの並び（書き出す T と動きのコマ f）と、コマごとのカメラ（位置・狙う点・レンズ）・舞台の模様・壁・輪郭光・光の柱・塗りの共有グループの値 |
 | frames `model3d-frames/0.1` | 描いたコマのフォルダとファイル（T・f・sha256・大きさ）、fps・解像度、描いていない T |
 | stage plan `model3d-stage-plan/0.1` | `plan.stage` の段取り表: 時刻の印（秒か拍）と色の名前、カメラ（区間ごとの方位・距離・高さ・レンズ・狙う点と動き、寄りと揺れ、骨の通り道のならし方）、舞台の模様の区間、光（色・強さ・拍と印の信号・落とす区間・光ごとの係数） |
-| light keys `model3d-light-keys/0.1` | 曲の音の帯ごとの強さ（low・mid・high。コマごとに 0〜1）と拍の格子（period・k0_time）、fps とコマの数 |
+| light keys `model3d-light-keys/0.1` | 曲の音の帯ごとの強さ（low・mid・high。コマごとに 0〜1）と拍の格子（period・k0_time）、fps とコマの数。`plan.light_keys` が曲の音から作る |
 | bone path `model3d-bone-path/0.1` | 動きのコマごとの骨の付け根の位置（世界の座標、m）、シーンの scale_length、アーマチュアの名前 |
 | handoff `model3d-handoff/0.1` | Orpheus へ渡す成果物 1 つの控え（run・レシピ・成果物の sha256） |
 | initial model `model3d-initial-model/0.1` | 設定画から生成した初期モデルの記録: 入力のハッシュ、前処理の条件、生成器の素性（版・重みの sha256・ライセンス・実行ファイルの sha256）、パラメーター、生成物のハッシュ、幾何と構造の検査。review は常に needs_review |
@@ -205,6 +205,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `motion.ribbon_bones` | blend → blend, report | 帯の垂れの鎖の骨（`chains`。長さは鎖ごとに違ってよい）を、重力で垂れて太ももの上を前へ乗り越えるように揺らす（[帯の垂れを揺らす](#帯の垂れを揺らす)）。狙いは `follow` に `thigh`（下ほど太もも）を混ぜられる。当たりは `colliders` と、メッシュの輪切りから作る `fitted`。押す向きは腰（`hips`）の前と上へ寄せる。焼き付けた骨を確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `look.toon` | blend → blend, report | キャラに描く前のセル調の塗りと輪郭線を付ける（[セル調の塗りと輪郭線を付ける](#セル調の塗りと輪郭線を付ける)）。体は決まった向きの光で影を 2 段に分け、舞台の色と縁の光を足して Emission で出す。顔（`faces`）は光を少し受けて絵の色を出す。輪郭線は反転ハル。舞台の色と縁の強さは共有のノードグループ `model3d_stage_tone`。Blender が要り、再利用しない（毎回実行） |
 | `motion.bone_path` | blend [, track] → path | 動きのコマごとに、骨（既定は腰と頭）の付け根の位置を m で測る（[段取りを組む](#段取りを組む)）。track（描くコマの並び）があればその動きのコマを重ねず小さい順に、無ければ `frame_range` か .blend のシーンの全コマ。path は `model3d-bone-path/0.1`。Blender が要り、再利用しない（毎回実行） |
+| `plan.light_keys` | audio → keys | 曲の音（WAV など）から、`plan.stage` が光に使う光のキー（`model3d-light-keys/0.1`）を作る（[段取りを組む](#段取りを組む)）。窓（`start` 秒から `frames` コマ）のコマごとに、低・中・高の帯の強さ（0〜1。立ち上がりは即座、下がりはゆっくり）と、拍の格子 `grid`（必須）に入る拍。既定は試作の解析で、numpy だけで計算する（librosa.stft と同じ値）。計算だけで、同じ入力なら再利用する |
 | `plan.stage` | plan, keys, bones [, cut] → track [, report] | 段取り表（`model3d-stage-plan/0.1`）と光のキー（`model3d-light-keys/0.1`）と骨の通り道から、`render.stage` のトラックを作る（[段取りを組む](#段取りを組む)）。コマごとに、カメラ（区間・動き・寄りと揺れ）、壁の模様、光と塗りの縁の値を決める。cut（T と f のトラック）があればその並びで。計算だけで、同じ入力なら再利用する。report は区間ごとのコマの範囲 |
 | `render.stage` | blend, track → frames, report | キャラを舞台と光の中でコマごとに PNG に描く（[舞台で描く](#舞台で描く)）。床・LED の壁・トラス・光の柱とスポット 4 つ、EEVEE と光のにじみ。トラック（`model3d-stage-track/0.1`）のコマの並びとカメラ・光・塗りの値で描き、無ければ腰を追う正面のカメラと動かない光。輪郭線の太さはカメラの距離で画面の上にそろえる。舞台を切って `background` で緑背景か透けにも描ける。`push` で、描く直前に帯などの頂点を当たり（閉じたメッシュ）の外へ出す。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（`model3d-frames/0.1`）。Blender が要り、再利用しない（毎回実行） |
 | `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
@@ -1056,17 +1057,18 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
 
 ## 段取りを組む
 
-`plan.stage` は、段取り表（`model3d-stage-plan/0.1`）と光のキー（`model3d-light-keys/0.1`）と骨の通り道（`model3d-bone-path/0.1`）から、`render.stage` のトラックを作る。リポジトリ外の試作で 32 秒の本番のカメラと光を決めた計算を、曲によらない形に移した。曲ごとの時刻と値は、段取り表としてリポジトリの外のレシピに置く。
+`plan.stage` は、段取り表（`model3d-stage-plan/0.1`）と光のキー（`model3d-light-keys/0.1`）と骨の通り道（`model3d-bone-path/0.1`）から、`render.stage` のトラックを作る。リポジトリ外の試作で 32 秒の本番のカメラと光を決めた計算を、曲によらない形に移した。曲ごとの時刻と値は、段取り表としてリポジトリの外のレシピに置く。光のキーは、曲の音から `plan.light_keys` で作る。
 
 **流れ**（レシピの工程）:
-1. `motion.bone_path`（blend [, track] → path）: 動きのコマごとに、骨の付け根の位置を m で測る。
+1. `plan.light_keys`（audio → keys）: 曲の音から、コマごとの帯の強さと拍の格子を書く（下の「光のキー」）。
+2. `motion.bone_path`（blend [, track] → path）: 動きのコマごとに、骨の付け根の位置を m で測る。
    - 骨は `bones`（既定は `Hips` と `Head`）に `bone_prefix`（既定 `mixamorig:`）を前に付けた名前。アーマチュアは `armature`（省くと最初のアーマチュア。`render.stage` と同じ）。
    - `track`（描くコマの並び）があればその動きのコマを、無ければ `frame_range` か .blend のシーンの全コマを測る。
    - 骨だけを動かして測る（メッシュの変形は止める）。.blend は保存しない。
-2. `plan.stage`（plan, keys, bones [, cut] → track [, report]）: コマごとにカメラ・舞台・光の値を決める。
+3. `plan.stage`（plan, keys, bones [, cut] → track [, report]）: コマごとにカメラ・舞台・光の値を決める。
    - `cut`（T と f だけのトラック）があればその並び、無ければ骨の通り道のコマを T = 1 から順に。
    - コマ T の時刻は (T - 1) / fps 秒（fps は光のキー）。光のキーより後のコマは最後の値を使い、その数を報告する。
-3. `render.stage` でそのトラックを描く。
+4. `render.stage` でそのトラックを描く。
 
 **段取り表**（省いた部分は既定の値。既定は試作の値）:
 - 時刻は、秒の数・印（`marks` の名前）・拍 `{"beat": k}` のどれか。拍は光のキーの格子で k0_time + period × k 秒。
@@ -1115,10 +1117,37 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   - 壁の暗い帯の色は書かない（`render.stage` が、明るい帯の色 × `stripe_floor` にする）。
 - `report`（任意）: `model3d-stage-plan-report/0.1`。区間（カメラ・舞台・色）ごとの時刻と T の範囲とコマの数、使った骨、光のキーより後のコマの数。
 
-光のキーを曲から作る道具は、まだ公開版に無い（リポジトリ外の試作の道具で作り、`schema_version` を足して使った）。
+**光のキー**（`plan.light_keys`。audio → keys）: リポジトリ外の試作で 32 秒の本番の光のキーを作った解析を移した。
+- 曲の音（WAV など）の窓から、コマごとの帯の強さ（low・mid・high。0〜1）と、窓に入る拍を書く。
+  - 窓は、音の `start` 秒（既定 0）から `frames` コマ（省くと音の終わりまで）。`fps` の既定は 30。
+  - `song_start` は、窓の頭が曲の何秒目か（`start_s` に書く。既定は `start`）。
+- `grid`（必須）: 拍の格子 `{"period": 拍の間隔の秒, "k0_time": 拍 0 の時刻の秒}`。時刻は、窓の頭が 0 秒。
+  - 曲の拍を測る道具は持たない（2D の完成版などで決めた格子を書く）。
+- 解析（既定は試作の値）:
+  - 左右を平均した音に、コマ i の時刻 i / fps を中心にして、`n_fft`（既定 2048）標本のハン窓をかけ、パワーにする。
+    - 音の外は 0。中心が音の終わりより後のコマは無音にして、その数を報告する（`silent_frames`）。
+    - 標本の速さが fps で割り切れるとき（48000 Hz と 30 fps など）は、librosa.stft（中心に合わせ、外は 0）の |·|² と同じ値になる。
+    - 割り切れないときも、窓の中心をコマの時刻に合わせる（長い曲でもずれがたまらない）。
+  - 帯の強さ: 帯（`bands`）のパワーの和の log10 を、窓の中の `percentiles`（既定 20〜99）で 0〜1 に伸ばす。
+    - 帯の既定は、low 30〜130・mid 300〜3000・high 5000〜16000 Hz。
+    - 帯に入る周波数が無ければ止まる（標本の速さが低い音など）。
+  - low は、立ち上がり（前のコマとの差 × `kick_gain`（既定 3）を 0〜1 に）と、強さ × `low_floor`（既定 0.55）の大きい方。
+  - どの帯も、立ち上がりは即座に、下がりは前のコマの `release` 倍まで（既定 low 0.78・mid 0.86・high 0.72）。値は小数 3 桁に丸める。
+  - 拍（`beats`）は、格子の拍のうち窓に入る全部（k・時刻・コマ）。`plan.stage` は格子から計算するので、見るためのもの。
+- numpy だけで計算する（librosa は要らない）。
+  - 音は、soundfile があればそれで読む（libsndfile が読む形式）。
+  - 無ければ、PCM の WAV（8・16・24・32 ビット）を標準の wave で読む。値は soundfile と同じ。
+- 計算だけで、同じ音と設定なら再利用する。
 
 **確かめたこと**:
-- CI（Blender なし）では、次を確かめた。
+- 光のキー（CI。librosa・soundfile なし）では、次を確かめた。
+  - 作り物の曲（打音・中音・高音）での帯の強さの形と下がり方。
+  - 拍の数え方と、窓の頭と終わりちょうどの拍。窓の中心の取り方。無音のコマ。帯に入る周波数が無いとき。
+  - PCM の WAV の読み方（8〜32 ビット）。悪い設定。工程の受け渡しと再利用。作ったキーを `plan.stage` が読めること。
+  - librosa・scipy・soundfile がある環境では、窓が scipy のハン窓と、パワーが librosa.stft と、WAV の読み方が soundfile と、同じ値になることも確かめる（値・型・並びまで）。
+- 光のキーは、2026-11-07 にリポジトリ外の試作（32 秒の本番の窓の音。48000 Hz・16 ビット・左右）でも確かめた。
+  - 試作の光のキー（960 コマの 3 つの帯と、拍）と、全部の値が同じだった。
+- 段取り（CI。Blender なし）では、次を確かめた。
   - 時刻の読み方（秒・印・拍）、区間の並び、なめらかさ、ガウス、直前の出来事からの秒。
   - カメラ: 既定のカメラ、頭と決まった点の狙い、動き、whip・push・shake・beat_push、寄りと揺れを切る区間、描くコマだけでならすこと。
   - ちょうど拍や境目に当たるコマ（拍の選び方、区間・舞台・色・強さ・落とす区間の切り替え）。
