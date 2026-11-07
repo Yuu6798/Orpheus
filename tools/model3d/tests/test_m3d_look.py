@@ -215,3 +215,11 @@ def test_bad_shading_settings_are_refused(toon, message):
     from model3d.ops.look_ops import _look_settings
     with pytest.raises(ToolError, match=message):
         _look_settings({"meshes": ["body", "arm"], "toon": toon})
+
+
+def test_the_face_shadow_scales_the_shadow_and_keeps_the_bands():
+    bands = [1.0, 0.75, 0.2, 0.0]                                    # 4 段の当たり方
+    on_face = [toon_look.face_lit(b, 1.0, 0.35) for b in bands]
+    assert on_face == pytest.approx([1.0, 0.9125, 0.72, 0.65])        # 影の深さ (1 - L) が 0.35 倍。段の違いは残る
+    assert [toon_look.face_lit(b, 0.0, 0.35) for b in bands] == bands  # 印の無い所はふつうのまま
+    assert toon_look.face_lit(0.2, 0.5, 0.35) == pytest.approx(0.2 + 0.5 * 0.65 * 0.8)   # 印の境は混ぜる

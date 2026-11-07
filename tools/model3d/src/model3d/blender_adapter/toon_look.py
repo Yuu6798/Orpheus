@@ -220,17 +220,28 @@ def toon_material(bpy, m, tone, t):
         nt.links.new(dot.outputs["Value"], step_.inputs["Value"])
     att = nt.nodes.new("ShaderNodeAttribute")
     att.attribute_type, att.attribute_name = "GEOMETRY", t["face_attribute"] or ""
-    face_ = att.outputs["Fac"]
-    if t["face_shadow"] > 0:                             # 顔にも、影を face_shadow の割合だけ入れる
-        keep_face = nt.nodes.new("ShaderNodeMath")
-        keep_face.operation = "MULTIPLY"
-        keep_face.inputs[1].default_value = 1.0 - t["face_shadow"]
-        nt.links.new(att.outputs["Fac"], keep_face.inputs[0])
-        face_ = keep_face.outputs[0]
-    lit_ = nt.nodes.new("ShaderNodeMath")
-    lit_.operation = "MAXIMUM"
-    nt.links.new(step_.outputs[0], lit_.inputs[0])
-    nt.links.new(face_, lit_.inputs[1])
+    if t["face_shadow"] > 0:                             # 顔にも、影を face_shadow の割合だけ入れる（face_lit と同じ式）
+        dark_ = nt.nodes.new("ShaderNodeMath")           # 影の深さ 1 - L
+        dark_.operation = "SUBTRACT"
+        dark_.inputs[0].default_value = 1.0
+        nt.links.new(step_.outputs[0], dark_.inputs[1])
+        spare = nt.nodes.new("ShaderNodeMath")           # 顔の印 × (1 - face_shadow): 顔で消す影の割合
+        spare.operation = "MULTIPLY"
+        spare.inputs[1].default_value = 1.0 - t["face_shadow"]
+        nt.links.new(att.outputs["Fac"], spare.inputs[0])
+        lift = nt.nodes.new("ShaderNodeMath")
+        lift.operation = "MULTIPLY"
+        nt.links.new(dark_.outputs[0], lift.inputs[0])
+        nt.links.new(spare.outputs[0], lift.inputs[1])
+        lit_ = nt.nodes.new("ShaderNodeMath")            # L + 印 × (1 - face_shadow) × (1 - L)
+        lit_.operation = "ADD"
+        nt.links.new(step_.outputs[0], lit_.inputs[0])
+        nt.links.new(lift.outputs[0], lit_.inputs[1])
+    else:                                                # 顔には影を入れない（印の所は明るい側）
+        lit_ = nt.nodes.new("ShaderNodeMath")
+        lit_.operation = "MAXIMUM"
+        nt.links.new(step_.outputs[0], lit_.inputs[0])
+        nt.links.new(att.outputs["Fac"], lit_.inputs[1])
     grp = nt.nodes.new("ShaderNodeGroup")
     grp.node_tree = tone
     tint = nt.nodes.new("ShaderNodeMix")                 # 影の色に舞台の色を少し混ぜる
@@ -425,6 +436,13 @@ def toon_material(bpy, m, tone, t):
     a = bsdf.inputs["Alpha"]                             # 元の透け（髪の房やまつげの切り抜き）は残す
     nt.links.new(see_through(nt, em.outputs[0], a.links[0].from_socket if a.links else None, a.default_value),
                  out.inputs["Surface"])
+
+
+def face_lit(band, mark, face_shadow):
+    """顔の印のある所の光の当たり方（toon_material の face_shadow > 0 のノードと同じ式）。band はふつうの当たり方 L
+    （1 が明るい側）、mark は顔の印（0〜1）。L + mark × (1 - face_shadow) × (1 - L): 印が 1 なら影の深さを face_shadow 倍にし、
+    印が 0 ならふつうのまま、その間は混ぜる。"""
+    return band + mark * (1.0 - face_shadow) * (1.0 - band)
 
 
 def mark_skin(bpy, names, meshes):
