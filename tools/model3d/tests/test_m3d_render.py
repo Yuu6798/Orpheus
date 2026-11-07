@@ -517,3 +517,9 @@ def test_a_vertex_exactly_on_the_collider_surface_is_pushed_along_the_outward_no
     on_top = np.array([0.2, 0.3, 1.0])                       # ちょうど上の面の上
     need, _ = stage_render.vertex_need(on_top, 0.004, [box], tol=1e-7, surface=1e-6)
     assert need == pytest.approx([0, 0, 0.004])
+
+
+def test_absolute_shape_keys_stop_the_push():
+    assert stage_render.shape_key_problem("cloth", True) is None
+    message = stage_render.shape_key_problem("cloth", False)
+    assert message.startswith("push: cloth のシェイプキーは絶対") and "相対" in message

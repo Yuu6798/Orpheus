@@ -338,6 +338,16 @@ def push_margin(offsets, unit):
     return max(PUSH_MARGIN_M / unit, largest)
 
 
+def shape_key_problem(name, use_relative):
+    """押し出しは、相対のシェイプキー model3d_push の値（0 と 1）で直しを入れ切りする。絶対のシェイプキー（Relative の
+    チェックなし）は値でなく時間（eval_time）で形を選ぶので、直しが当たらず、キーを足すと今の動きの補間も変わる。
+    そのときの説明（相対かキーが無ければ None）。"""
+    if use_relative:
+        return None
+    return (f"push: {name} のシェイプキーは絶対（Relative のチェックなし）で、時間で形を選びます。押し出しはキーの値で直しを"
+            "入れ切りするので、相対のシェイプキーのメッシュ（またはシェイプキーの無いメッシュ）にだけ使えます")
+
+
 def push_overlap(entries):
     """押し出しの並び [(動かすメッシュの名前の並び, 当たりの名前の並び), ...]（輪郭線の写しを足し、組の重みの無い写しを
     除いた後）の重なりの説明（無ければ None）。1 つのメッシュを 2 つの押し出しで動かすと、同じシェイプキーを書き合い、
@@ -737,10 +747,16 @@ class PushTarget:
         self.key = None
         if not len(idx):                                 # 動かす頂点が無ければ、シェイプキーも足さない
             return
+        problem = shape_key_problem(ob.name, me.shape_keys.use_relative if me.shape_keys is not None else True)
+        if problem:                                       # キーを足す前に止める（絶対のキーの並びを変えない）
+            raise SystemExit(problem)
         if me.shape_keys is None:
             ob.shape_key_add(name="Basis", from_mix=False)
         blocks = me.shape_keys.key_blocks
         self.key = blocks[key] if key in blocks else ob.shape_key_add(name=key, from_mix=False)
+        # 前からあるキーを使い直すときも、値の 0 と 1 で直しを入れ切りできるようにする
+        self.key.mute, self.key.vertex_group, self.key.relative_key = False, "", me.shape_keys.reference_key
+        self.key.slider_min, self.key.slider_max = 0.0, 1.0
         self.key.value = 1.0
 
     def deform_rot(self):
