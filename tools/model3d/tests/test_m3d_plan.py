@@ -168,6 +168,24 @@ def test_a_frame_exactly_on_a_beat_gets_that_beat():
     assert fr["camera"]["location"][2] == pytest.approx(1.1 + 0.05)                  # 揺れの上下は cos(0) から
 
 
+def test_a_boundary_exactly_on_a_frame_switches_on_that_frame():
+    # 同じ格子で、拍 4 の境目（1.7000000000000002 秒）は T 52（1.7 秒）より丸めで少し後になる
+    assert 0.1 + 0.4 * 4 > 51 / 30
+    on_beat = {**keys(90), "fps": 30, "grid": {"period": 0.4, "k0_time": 0.1}}
+    edge = {"beat": 4}
+    doc = plan(camera={"shots": [{"until": edge, "dist": 2.0}, {}], "effects": [{"kind": "beat_push", "from": 0, "until": edge}]},
+               stage=[{"until": edge, "kind": "void"}, {"kind": "led"}],
+               lights={"palette": [{"until": edge, "a": [1, 0, 0], "b": [0, 0, 1]}, {"a": [0, 1, 0], "b": [0, 0, 1]}],
+                       "level": {"segments": [{"from": edge, "value": 0.5}]}, "dims": [{"from": 0, "until": edge, "tone": 0.0}]})
+    track, report = build_track(doc, on_beat, bones(range(1, 91)))
+    assert az_dist(frame(track, 51))[1] < 2.0
+    fr = frame(track, 52)
+    assert az_dist(fr)[1] == pytest.approx(3.6) and fr["stage"] == "led" and fr["wall"]["color"] == [0.0, 1.0, 0.0]
+    assert fr["rims"][0]["energy"] == pytest.approx((900 + 1800 * 0.4) * 0.5) and fr["tone"]["gain"] == pytest.approx(0.35 + 0.5 * 0.4)
+    assert frame(track, 51)["tone"]["gain"] == 0.0
+    assert [s["T"] for s in report["shots"]] == [[1, 51], [52, 90]]
+
+
 def test_the_paths_are_smoothed_over_the_shown_action_frames():
     path = bones(range(1, 11))
     path["bones"]["mixamorig:Hips"] = [[float(f * f), 0.0, 1.0] for f in range(1, 11)]

@@ -3,7 +3,8 @@ render.stage が描くトラック（model3d-stage-track/0.1）を作る。計�
 
 コマ T（1 から）の時刻は t = (T - 1) / fps 秒（fps は光のキー）。段取り表の時刻は、秒の数・印（marks）の名前・拍 {"beat": k}
 （拍の格子 k0_time + period × k）のどれかで書く。長さは m、角度は度、レンズは mm。省いた部分は下の既定の値
-（リポジトリの外の試作の値）。
+（リポジトリの外の試作の値）。時刻の境目（区間の切り替え、寄りと揺れの始まりと終わり、拍、印）は、EPS 秒前のコマから
+届いたとみなす（inside・since。ちょうど境目に当たるコマが、浮動小数の丸めで 1 コマ遅れないように）。
 
 カメラ（camera）:
 - 区間（shots）ごとに、方位 az（0 で正面、正で +X 側。キャラは -Y を向く）・狙う点からの水平の距離 dist・高さ height・
@@ -15,8 +16,7 @@ render.stage が描くトラック（model3d-stage-track/0.1）を作る。計�
   骨の通り道は、描くコマの動きのコマ f（重ねず小さい順）の並びのまま smooth のガウスでならす（既定は腰 σ 6 コマ、
   頭 σ 1.5 コマ・幅 ±6 コマ）。
 - effects（区間の effects が false の間は入れない）: whip（つなぎ目で寄りながら回り込み、戻る）・push（短く寄る）・
-  shake（揺れ）・beat_push（拍ごとに寄る。every の倍数の拍は strong、ほかは weak）。push・shake・beat_push の始まりと
-  拍は、光の hit・punch と同じく EPS 秒前のコマから届いたとみなす（ちょうど拍のコマが、丸めで 1 コマ遅れないように）。
+  shake（揺れ）・beat_push（拍ごとに寄る。every の倍数の拍は strong、ほかは weak）。
 - カメラの位置 = 狙う点 + (sin(az) × dist + 揺れの横, -cos(az) × dist)、高さ = height + 揺れの上下。
 
 舞台（stage）: 区間ごとの壁の模様（led / led_diag / void）と、壁の明るさに掛ける fade（[頭, 終わり]）。
@@ -40,7 +40,7 @@ from .io import ToolError
 
 SIGNALS = ("low", "mid", "high", "hit", "punch")
 BEAMS = 8
-EPS = 1e-6      # 拍・印・寄りや揺れの始まりの時刻は、この秒だけ前のコマから届いたとみなす（ちょうど当たるコマを、浮動小数の丸めで取り違えない）
+EPS = 1e-6      # 時刻の境目は、この秒だけ前のコマから届いたとみなす（ちょうど当たるコマを、浮動小数の丸めで取り違えない）
 VIEW_KEYS = ("az", "dist", "height", "lens", "target")
 CAMERA_BASE = {"az": 0.0, "dist": 3.6, "height": 1.1, "lens": 35.0, "target": {"hips": 0.6, "z": 0.95}}
 SMOOTH = {"hips": {"sigma": 6.0}, "head": {"sigma": 1.5, "radius": 6}}
@@ -131,10 +131,16 @@ def spans(parts, clock, where):
     return out
 
 
+def inside(t, start, end):
+    """t が [start, end) に入るか。境目は EPS 秒前のコマから次の側とみなす（since と同じ。ちょうど境目のコマを、丸めで
+    前の側にしない）。"""
+    return start - EPS <= t < end - EPS
+
+
 def find(span_list, t):
     """t を含む区間の番号（無ければ None）。"""
     for n, (start, end) in enumerate(span_list):
-        if start <= t < end:
+        if inside(t, start, end):
             return n
     return None
 
@@ -274,16 +280,16 @@ class Camera:
         elif kind == "push":
             for at in e["at"]:
                 d = t - at
-                if -EPS <= d < e["length"]:
+                if inside(d, 0.0, e["length"]):
                     dist *= 1 - e["amount"] * math.exp(-max(d, 0.0) / e["tau"])
         elif kind == "shake":
             for at in e["at"]:
                 d = t - at
-                if -EPS <= d < e["length"]:
+                if inside(d, 0.0, e["length"]):
                     d = max(d, 0.0)
                     sx += e["x"][0] * math.exp(-d / e["tau"]) * math.sin(d * e["x"][1])
                     sz += e["z"][0] * math.exp(-d / e["tau"]) * math.cos(d * e["z"][1])
-        elif e["from"] - EPS <= t < e["until"]:          # beat_push
+        elif inside(t, e["from"], e["until"]):           # beat_push
             grid = self.clock.grid
             k = math.floor((t + EPS - grid["k0_time"]) / grid["period"])    # ちょうど拍のコマを、丸めで前の拍にしない
             d = max(t - self.clock.beat(k), 0.0)
@@ -346,7 +352,7 @@ class Lights:
 
     def level(self, t):
         for start, end, value, kind in self.levels:
-            if start <= t < end:
+            if inside(t, start, end):
                 if isinstance(value, list):
                     return value[0] + (value[1] - value[0]) * ease((t - start) / (end - start), kind)
                 return float(value)
@@ -354,7 +360,7 @@ class Lights:
 
     def dim(self, t):
         for start, end, d in self.dims:
-            if start <= t < end:
+            if inside(t, start, end):
                 return d
         return {}
 
