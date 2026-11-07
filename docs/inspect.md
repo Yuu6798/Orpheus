@@ -115,7 +115,7 @@ dance で、spec の区間で一度も出ない元のコマ（`speed` で飛ば�
 
 - `source_frames`・`source_t`（生成し直す元のコマ）、`event_frames`、`events`（出来事の ID）、`categories`、`evidence`
 - `anchors`: 前後のコマ `{frame, image}`。画像は**元の大きさの PNG**（`anchors/<クリップ>_f<コマ>.png`）で、始点と終点を指定できる生成器にそのまま渡せる
-- `origin`（素性）、`actions`（区間の `regenerate_segment` を先頭に、出来事の手当ての候補を並べる。種類とコマが同じものだけを 1 つにし、コマの違う置き換えや補間は全部残す）、dance なら `spec` と `uses`
+- `origin`（素性）、`actions`（区間の `regenerate_segment` を先頭に、出来事の手当ての候補を並べる。種類とコマが同じものだけを 1 つにし、コマの違う置き換えや補間は全部残す）、dance なら `spec` と `uses`（生成し直す区間のコマが出る clip と出力のコマ・秒を全部。前後に広げた分も含む）
 
 将来の自動再生成は、この区間・前後の画・素性から生成器のジョブを作り、差し替えた素材で同じ検品をもう一度通す形を想定している（起動は毎回ユーザーの承認。GPU や有料 API の費用がかかるため）。
 
@@ -131,7 +131,7 @@ uv run mv inspect check inspect.json --vlm-response response.json     # 手で�
 ```
 
 - `--vlm-packet` は束を書くだけの指定で、`--vlm` とは同時に使えない（送らないつもりの指定で送信が起きないように）。`--vlm` と `--vlm-response` も同時に使えない。
-- **見せるコマ**: 出来事の山のコマを先に、残りは `vlm.every_s`（1 秒）ごとの見本。合わせて `vlm.max_frames`（24）まで。長い辺 `vlm.max_side`（768）の JPEG。設定画も同じ大きさの PNG で入れる。
+- **見せるコマ**: 出来事の山のコマを先に、残りは `vlm.every_s`（1 秒）ごとの見本。合わせて `vlm.max_frames`（24）まで。長い辺 `vlm.max_side`（768）の JPEG。設定画も同じ大きさの PNG で入れる（`reference[].box` があれば、数値の照合と同じく切り出してから）。
 - **依頼の束**（`vlm/request.json`、`inspect-vlm-request/0.1`）: `instructions`（`vlm.language` が `ja` か `en`）、`categories`（分類の定義。数値の検査の `checks` によらず 4 つと `other`）、`reference`、`frames`（`id` = `クリップ@コマ`・クリップ・コマ・秒・`why`・`file`）、`response_schema`。画像ごとの `sha256` も入れるので、素材を同じ名前で差し替えると依頼の sha256 も変わり、古い返答は取り込まない。
 - **返答**（`inspect-vlm-response/0.1`）: `tool`（`name`・`version`・`model`）、`request_sha256`（依頼の束の sha256。違えば止める。無ければ警告）、`findings`（`frame_id`・`category`（4 つか `other`）・`description`・`box`（正規化。任意））。依頼に無いコマの id は止める。拒否・打ち切り・失敗で見られなかったコマは `x_unreviewed`（`[{frame_id, reason}]`）に書くと、警告として報告に残る（指摘が無いこととは違う）。
 - **取り込み**: 同じクリップの近いコマ（区間か前後 1 コマ）に、添えてよい数値の出来事（3 コマ以下か分類が同じもの。重複コマの周期は除く）があればそれに添え（`evidence: measured+estimated`。主な分類は数値の規則のまま、VLM の分類は `categories` に足す。隣のコマの指摘なら出来事の区間をそのコマまで広げ、秒・直す場所・手当ての候補を作り直す）、無ければ VLM だけの出来事（`estimated`）を作る。どちらも直す場所と修正計画に入り、VLM が衣装と言った出来事には衣装の手当ての候補も付く。合否には使わない。

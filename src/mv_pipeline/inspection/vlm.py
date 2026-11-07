@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import jsonschema
+import numpy as np
 from PIL import Image
 
 from ..io import PipelineError, atomic_json, read_json, sha256
@@ -125,13 +126,17 @@ def write_packet(out, selection, grabbed, references, settings):
     for index, entry in enumerate(references):
         name = f"reference/{index:02d}.png"
         image = video.load_rgba(entry["path"])
+        if entry.get("box"):            # 数値の照合と同じ切り出し（三面図の 1 体だけなど）を見せる
+            height, width = image.shape[:2]
+            x0, y0, x1, y1 = entry["box"]
+            image = np.ascontiguousarray(image[int(round(y0 * height)):int(round(y1 * height)), int(round(x0 * width)):int(round(x1 * width))])
         scale = min(1.0, settings["max_side"] / max(image.shape[:2]))
         picture = Image.fromarray(image, "RGBA")
         if scale < 1.0:
             picture = picture.resize((max(1, int(round(image.shape[1] * scale))), max(1, int(round(image.shape[0] * scale)))), Image.Resampling.LANCZOS)
         (packet / "reference").mkdir(parents=True, exist_ok=True)
         picture.save(packet / name, format="PNG")
-        refs.append({"file": name, "path": entry["rel"], "view": entry.get("view"), "sha256": sha256(packet / name)})
+        refs.append({"file": name, "path": entry["rel"], "view": entry.get("view"), "box": entry.get("box"), "sha256": sha256(packet / name)})
     language = settings.get("language", "ja")
     request = {"schema_version": REQUEST_SCHEMA, "language": language,
                "instructions": INSTRUCTIONS.get(language, INSTRUCTIONS["en"]),

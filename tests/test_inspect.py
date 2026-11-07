@@ -378,6 +378,34 @@ def test_plan_keeps_each_frame_specific_remedy_of_merged_events():
     assert [a["frames"] for a in segments[0]["actions"] if a["kind"] == "replace_frames"] == [[30, 31], [34, 35]]
 
 
+def test_plan_lists_every_dance_use_of_the_padded_window():
+    from mv_pipeline.inspection import targets
+
+    usage = [(30, 0, 30, 1.0), (31, 0, 31, 1.0), (100, 1, 32, 1.0), (101, 1, 33, 1.0)]   # (出力のコマ, clip, 元のコマ, 重み)
+    clip = {"id": "c", "rel": "c.mp4", "sha256": "0" * 64, "fps": 24.0, "frames_total": 100, "inspected": [0, 100], "origin": None,
+            "spec": "spec.json", "usage": usage, "shot_fps": 24.0}
+    event = _plan_event(1, (30, 31), "shape", ["silhouette_pop"], [{"kind": "regenerate_segment", "frames": [30, 31]}])
+    event["target"] = {"uses": targets.dance_uses(usage, [30, 31], 99, 24.0)}
+    assert [u["pointer"] for u in event["target"]["uses"]] == ["/performer/clips/0"]
+    segment = targets.plan([clip], [event], inspect_config.THRESHOLDS)["segments"][0]
+    assert segment["source_frames"] == [28, 33]                       # 元のコマ 32 も生成し直すので、clip 1 の出力 100 にも出る
+    assert [(u["pointer"], u["shot_frames"]) for u in segment["uses"]] == [("/performer/clips/0", [[30, 32]]), ("/performer/clips/1", [[100, 101]])]
+
+
+def test_the_vlm_packet_shows_the_configured_crop_of_a_sheet(tmp_path):
+    from PIL import Image
+
+    sheet = np.zeros((100, 200, 3), np.uint8)
+    sheet[:, :100] = (220, 30, 30)
+    sheet[:, 100:] = (30, 30, 220)
+    Image.fromarray(sheet).save(tmp_path / "two.png")
+    entry = {"path": tmp_path / "two.png", "rel": "two.png", "view": "front", "box": [0.5, 0.0, 1.0, 1.0]}
+    _, request = vlm.write_packet(tmp_path / "out", [], {}, [entry], {**inspect_config.VLM_DEFAULTS})
+    assert request["reference"][0]["box"] == [0.5, 0.0, 1.0, 1.0]
+    image = video.load_rgb(tmp_path / "out" / "vlm" / request["reference"][0]["file"])
+    assert image.shape[:2] == (100, 100) and image[..., 2].min() > 200 and image[..., 0].max() < 60    # 右半分（青）だけ
+
+
 def test_vlm_packet_and_vlm_together_are_refused(small_demo, tmp_path):
     with pytest.raises(PipelineError, match="--vlm-packet"):
         run.run(small_demo / "inspect.json", tmp_path / "out", vlm_config=_adapter(tmp_path), vlm_packet=True)

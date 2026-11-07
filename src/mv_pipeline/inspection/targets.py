@@ -147,10 +147,7 @@ def plan(clips, events, th):
             if any(a["kind"] == "regenerate_segment" for e in group for a in e["actions"]):
                 merged.insert(0, {"kind": "regenerate_segment", "frames": window,
                                   "description": "前後のコマ（anchors）を始点・終点にして、この区間だけを生成し直す"})
-            uses = {}
-            for event in group:
-                for use in event["target"].get("uses", []):
-                    uses.setdefault(use["pointer"], set()).update(k for r in use["shot_frames"] for k in range(r[0], r[1]))
+
             segment = {"id": f"R{len(segments) + 1:02d}", "clip": clip["id"], "path": clip["rel"], "sha256": clip["sha256"],
                        "source_frames": window, "source_t": _seconds(window, fps), "event_frames": [a, b],
                        "events": [e["id"] for e in group], "categories": sorted({e["category"] for e in group},
@@ -159,11 +156,10 @@ def plan(clips, events, th):
                        "anchors": {"before": {"frame": window[0] - 1} if window[0] > 0 else None,
                                    "after": {"frame": window[1]} if window[1] < count else None},
                        "origin": clip.get("origin"), "actions": merged}
-            if clip.get("spec"):
+            if clip.get("spec"):        # 生成し直す区間（前後に広げ、まとめた後）のコマが出る所を全部挙げる
                 segment["spec"] = clip["spec"]
-                segment["uses"] = [{"pointer": pointer, "shot_frames": runs_of(shown),
-                                    "shot_t": [[round(r[0] / clip["shot_fps"], 4), round(r[1] / clip["shot_fps"], 4)] for r in runs_of(shown)]}
-                                   for pointer, shown in sorted(uses.items(), key=lambda item: int(item[0].rsplit("/", 1)[1]))]
+                segment["uses"] = [{k: use[k] for k in ("pointer", "shot_frames", "shot_t")}
+                                   for use in dance_uses(clip["usage"], window, clip["frames_total"] - 1, clip["shot_fps"])]
             segments.append(segment)
     return {"schema_version": PLAN_SCHEMA, "status": "proposed", "executor": None,
             "note": "提案だけで、何も実行していない。自動の再生成は未実装（将来）。区間ごとに素性（origin）・前後のコマ（anchors）・手当ての候補を渡す",
