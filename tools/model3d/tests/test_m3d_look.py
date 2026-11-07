@@ -20,6 +20,14 @@ def test_merged_fills_defaults_and_keeps_each_section_key():
     assert toon_look.DEFAULTS["toon"]["rim_from"] == 0.60                # 既定は書き換えない
 
 
+def test_metres_per_local_combines_object_scale_and_scene_units():
+    import numpy as np
+    half = np.diag([0.5, 0.5, 0.5, 1.0])
+    assert toon_look.metres_per_local(np.eye(4), 1.0) == 1.0
+    assert toon_look.metres_per_local(half, 1.0) == 0.5                 # 0.5 倍の物体では、中の 1 は 0.5 m
+    assert toon_look.metres_per_local(half, 0.01) == pytest.approx(0.005)   # 1 Blender 単位 = 1 cm のシーン
+
+
 def test_parse_args():
     args = toon_look.parse_args(["--blend", "i.blend", "--out-blend", "o.blend", "--report", "r.json", "--settings", "s.json"])
     assert args.settings == "s.json"

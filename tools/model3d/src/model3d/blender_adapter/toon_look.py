@@ -27,7 +27,8 @@ settings.json（look.toon が書く）:
 - 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す。
 輪郭線（試作の手順）: メッシュの写しの重なる頂点を溶かし、ratio まで面を減らし、手（hand_attribute）の所はならしてから、面を
 裏返す。絵の色を dark 倍した暗い色を Emission で出し、裏の面は描かない。骨の変形の後に法線の向きへ width_mm だけ太らせる
-（Displace。名前は out）。写しは model3d_outline の印を持ち、影を落とさない。
+（Displace。名前は out）。Displace は物体の中の単位で押すので、物体の拡大とシーンの単位（scale_length）で直した強さにし、
+その換算（中の単位 1 が何 m か）を model3d_outline_m_per_local の印に残す。写しは model3d_outline の印を持ち、影を落とさない。
 共有のノードグループ model3d_stage_tone（a・b・gain）は、描く工程がコマごとに書き換える。
 **検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じキャラから、同じ輪郭線の写しと同じ描画になることを確かめた
 （docs/model3d.md）。
@@ -309,6 +310,13 @@ def hull_material(bpy, name, image, color, o):
     return m
 
 
+def metres_per_local(matrix_world, scale_length):
+    """物体の中の単位 1 が何 m か（物体の拡大 × シーンの scale_length。拡大が軸ごとに違えばその平均）。"""
+    import numpy as np
+    scale = float(np.linalg.norm(np.asarray(matrix_world, float)[:3, :3], axis=0).mean())
+    return scale * float(scale_length)
+
+
 def outline_hull(bpy, ob, arm, o):
     """輪郭線の写し（試作の outline.py と同じ作り方）"""
     import bmesh
@@ -357,8 +365,13 @@ def outline_hull(bpy, ob, arm, o):
     me.materials.append(hull_material(bpy, "hull_" + ob.name, image, color, o))
     m1 = new.modifiers.new("armature", "ARMATURE")
     m1.object = arm
+    new.parent = arm
+    bpy.context.view_layer.update()
+    # Displace は物体の中の単位で押し出すので、mm の太さを、物体の拡大とシーンの単位で中の単位に直す（描く工程も同じ数で直す）
+    per = metres_per_local(new.matrix_world, sc.unit_settings.scale_length)
+    new["model3d_outline_m_per_local"] = per
     m2 = new.modifiers.new("out", "DISPLACE")
-    m2.direction, m2.mid_level, m2.strength = "NORMAL", 0.0, -o["width_mm"] / 1000
+    m2.direction, m2.mid_level, m2.strength = "NORMAL", 0.0, -(o["width_mm"] / 1000) / per
     if hand and hand in me.attributes:
         hv = [0.0] * len(me.vertices)
         me.attributes[hand].data.foreach_get("value", hv)
@@ -366,7 +379,6 @@ def outline_hull(bpy, ob, arm, o):
         for k, h in enumerate(hv):
             g.add([k], 1.0 - (1.0 - o["hand_line"]) * min(max(h, 0.0), 1.0), "REPLACE")
         m2.vertex_group = "line"
-    new.parent = arm
     new.visible_shadow = False
     new["model3d_outline"] = ob.name
     return new
