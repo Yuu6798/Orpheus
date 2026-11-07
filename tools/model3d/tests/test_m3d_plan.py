@@ -153,6 +153,21 @@ def test_push_shake_and_beat_push():
     assert az_dist(frame(track, 13))[1] == pytest.approx(3.6) and az_dist(frame(track, 31))[1] == pytest.approx(3.6 * 0.9)
 
 
+def test_a_frame_exactly_on_a_beat_gets_that_beat():
+    # 30 fps・拍 0.4 秒・k0 0.1 秒では、T 52（1.7 秒）がちょうど拍 4。割り算は丸めで 4 に届かない
+    assert math.floor((51 / 30 - 0.1) / 0.4) == 3
+    on_beat = {**keys(90), "fps": 30, "grid": {"period": 0.4, "k0_time": 0.1}}
+    beats = [{"kind": "beat_push", "from": 0, "until": 3.0}]
+    track, _ = build_track(plan(camera={"effects": beats}), on_beat, bones(range(1, 91)))
+    assert az_dist(frame(track, 52))[1] == pytest.approx(3.6 * (1 - 0.045))           # 拍 4（every 4 の倍数）の頭
+    assert az_dist(frame(track, 53))[1] == pytest.approx(3.6 * (1 - 0.045 * math.exp(-(1 / 30) / 0.12)), rel=1e-6)
+    marked = [{"kind": "push", "at": {"beat": 4}, "amount": 0.1}, {"kind": "shake", "at": {"beat": 4}, "x": [0.1, 10], "z": [0.05, 20]}]
+    track, _ = build_track(plan(camera={"effects": marked}), on_beat, bones(range(1, 91)))
+    fr = frame(track, 52)
+    assert az_dist(fr)[1] == pytest.approx(3.6 * 0.9)                                  # 揺れの横は sin(0) = 0 から
+    assert fr["camera"]["location"][2] == pytest.approx(1.1 + 0.05)                  # 揺れの上下は cos(0) から
+
+
 def test_the_paths_are_smoothed_over_the_shown_action_frames():
     path = bones(range(1, 11))
     path["bones"]["mixamorig:Hips"] = [[float(f * f), 0.0, 1.0] for f in range(1, 11)]

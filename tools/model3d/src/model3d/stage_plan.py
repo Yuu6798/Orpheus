@@ -15,7 +15,8 @@ render.stage が描くトラック（model3d-stage-track/0.1）を作る。計�
   骨の通り道は、描くコマの動きのコマ f（重ねず小さい順）の並びのまま smooth のガウスでならす（既定は腰 σ 6 コマ、
   頭 σ 1.5 コマ・幅 ±6 コマ）。
 - effects（区間の effects が false の間は入れない）: whip（つなぎ目で寄りながら回り込み、戻る）・push（短く寄る）・
-  shake（揺れ）・beat_push（拍ごとに寄る。every の倍数の拍は strong、ほかは weak）。
+  shake（揺れ）・beat_push（拍ごとに寄る。every の倍数の拍は strong、ほかは weak）。push・shake・beat_push の始まりと
+  拍は、光の hit・punch と同じく EPS 秒前のコマから届いたとみなす（ちょうど拍のコマが、丸めで 1 コマ遅れないように）。
 - カメラの位置 = 狙う点 + (sin(az) × dist + 揺れの横, -cos(az) × dist)、高さ = height + 揺れの上下。
 
 舞台（stage）: 区間ごとの壁の模様（led / led_diag / void）と、壁の明るさに掛ける fade（[頭, 終わり]）。
@@ -39,6 +40,7 @@ from .io import ToolError
 
 SIGNALS = ("low", "mid", "high", "hit", "punch")
 BEAMS = 8
+EPS = 1e-6      # 拍・印・寄りや揺れの始まりの時刻は、この秒だけ前のコマから届いたとみなす（ちょうど当たるコマを、浮動小数の丸めで取り違えない）
 VIEW_KEYS = ("az", "dist", "height", "lens", "target")
 CAMERA_BASE = {"az": 0.0, "dist": 3.6, "height": 1.1, "lens": 35.0, "target": {"hips": 0.6, "z": 0.95}}
 SMOOTH = {"hips": {"sigma": 6.0}, "head": {"sigma": 1.5, "radius": 6}}
@@ -79,8 +81,8 @@ def gauss(values, sigma, radius=None):
 
 
 def since(events, t):
-    """t から見て直前の出来事からの秒（試作と同じく 1e-6 秒だけ先の出来事も含める）。無ければ 99。"""
-    d = [t - e for e in events if t >= e - 1e-6]
+    """t から見て直前の出来事からの秒（試作と同じく EPS 秒だけ先の出来事も含める）。無ければ 99。"""
+    d = [t - e for e in events if t >= e - EPS]
     return min(d) if d else 99.0
 
 
@@ -272,17 +274,19 @@ class Camera:
         elif kind == "push":
             for at in e["at"]:
                 d = t - at
-                if 0 <= d < e["length"]:
-                    dist *= 1 - e["amount"] * math.exp(-d / e["tau"])
+                if -EPS <= d < e["length"]:
+                    dist *= 1 - e["amount"] * math.exp(-max(d, 0.0) / e["tau"])
         elif kind == "shake":
             for at in e["at"]:
                 d = t - at
-                if 0 <= d < e["length"]:
+                if -EPS <= d < e["length"]:
+                    d = max(d, 0.0)
                     sx += e["x"][0] * math.exp(-d / e["tau"]) * math.sin(d * e["x"][1])
                     sz += e["z"][0] * math.exp(-d / e["tau"]) * math.cos(d * e["z"][1])
-        elif e["from"] <= t < e["until"]:                # beat_push
-            k = math.floor((t - self.clock.grid["k0_time"]) / self.clock.grid["period"])
-            d = t - self.clock.beat(k)
+        elif e["from"] - EPS <= t < e["until"]:          # beat_push
+            grid = self.clock.grid
+            k = math.floor((t + EPS - grid["k0_time"]) / grid["period"])    # ちょうど拍のコマを、丸めで前の拍にしない
+            d = max(t - self.clock.beat(k), 0.0)
             dist *= 1 - (e["strong"] if k % e["every"] == 0 else e["weak"]) * math.exp(-d / e["tau"])
         return dist, az, sx, sz
 
