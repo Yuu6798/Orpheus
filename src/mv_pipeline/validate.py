@@ -83,12 +83,27 @@ def assets(data, root=None):
     return ids
 
 
+FRAME_EPS = 1e-9   # 7.1 × 30 = 213.00000000000003 のような浮動小数の誤差で、境目ちょうどの時刻が 1 コマ余計に数えられないため
+
+
+def frame_span(start_s, end_s, fps, total=None):
+    """行の表示コマ [start, end)。開始は floor、終了は ceil（表示を欠かさない方に丸める）。total があればその中に収める。
+    `mv render` の字幕と `mv export remotion-props` が同じ関数を呼ぶ（丸めを 2 か所に書かない）。"""
+    start = max(0, math.floor(start_s * fps + FRAME_EPS))
+    end = math.ceil(end_s * fps - FRAME_EPS)
+    return start, end if total is None else min(total, end)
+
+
+def frame_at(seconds, fps):
+    """一瞬の出来事（拍など）のコマ番号。いちばん近いコマ（.5 は切り上げ）。"""
+    return int(math.floor(seconds * fps + 0.5))
+
+
 def captions(data, fps, total):
     rows = sorted((x for x in data["lyrics"] if x["start_s"] is not None), key=lambda x: x["start_s"])
     result = []
     for row in rows:
-        start = max(0, math.floor(row["start_s"] * fps))
-        end = min(total, math.ceil(row["end_s"] * fps))
+        start, end = frame_span(row["start_s"], row["end_s"], fps, total)
         if result and result[-1]["endFrame"] > start:
             require(result[-1]["endMs"] <= row["start_s"] * 1000 + 1e-7,
                     "Overlapping singing: select one display line manually")

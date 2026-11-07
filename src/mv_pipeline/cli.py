@@ -48,6 +48,7 @@ def parser():
     _gate_parser(commands)
     _inspect_parser(commands)
     _workflow_parser(commands)
+    _export_parser(commands)
     return p
 
 
@@ -331,6 +332,28 @@ def inspect_command(args):
     return run.summarize(result, out)
 
 
+def _export_parser(commands):
+    """外のレンダラへ渡すファイルの書き出し。読むだけなので project_lock を通らない。"""
+    export = commands.add_parser("export", help="write files for external renderers (read-only)")
+    sub = export.add_subparsers(dest="export_command", required=True)
+    props = sub.add_parser("remotion-props", help="frame-based props.json (remotion-props/0.1) from analysis.json and storyboard.json")
+    props.add_argument("project", type=Path)
+    props.add_argument("--out", type=Path, required=True, help="props.json to write")
+    props.add_argument("--beats", type=Path, help='beat grid JSON with "beats" and "downbeats" (gate / dance format)')
+    props.add_argument("--beats-per-bar", type=int, help="derive downbeats from analysis beats_s every N beats")
+    props.add_argument("--downbeat-phase", type=int, default=0, help="index of the first downbeat within beats_s (with --beats-per-bar)")
+    props.add_argument("--no-storyboard", action="store_true", help="do not include storyboard scenes even if storyboard.json exists")
+
+
+def export_command(args):
+    """export サブコマンド。プロジェクトのファイルを読むだけで、書くのは --out だけ。"""
+    from . import remotion_props
+    if args.export_command == "remotion-props":
+        return remotion_props.export(args.project.resolve(), args.out, args.beats, args.beats_per_bar, args.downbeat_phase,
+                                     storyboard=not args.no_storyboard)
+    raise PipelineError(f"Unsupported export command: {args.export_command}")
+
+
 def workflow_command(args):
     """workflow サブコマンド。check で必須工程が未実施・未確認なら args.failed=1。"""
     from . import workflow
@@ -347,7 +370,7 @@ def workflow_command(args):
 
 
 GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
-                  "inspect": inspect_command, "workflow": workflow_command}
+                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command}
 
 
 # ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------

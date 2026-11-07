@@ -48,7 +48,8 @@ Date は UTC（日本時間では #2・#6 は 2026-10-25 未明）。
 
 | PR | Title | Date | Phase |
 |---|---|---|---|
-| （この PR） | `mv gate demo`: 正解の分かっている試験素材（声の代役・宣言した行の時刻・timeline・拍の格子・expected.json）と CI の smoke（demo → lines → check → 照合）。`gate lines` の歌い出しの推定の偏り（約 −20 ms。窓の掛かり始め）を docs/gate.md に表で記録（補正は入れず、ユウ判断）。WAV は soundfile 無しで読める（Remotion のテロップのデモから） | 2026-11-08 | 検査 |
+| （この PR） | `mv export remotion-props`: analysis / storyboard からコマ番号だけの props.json（remotion-props/0.1）を書く。丸めは `validate.frame_span` / `frame_at` に 1 か所化し、`mv render` の字幕と共有。TS の型 `renderer/src/lyric-props.ts`（Remotion のテロップのデモで秒→コマの丸めを TS に書き直す必要があったことから） | 2026-11-08 | Remotion 連携 |
+| #70 | `mv gate demo`: 正解の分かっている試験素材（声の代役・宣言した行の時刻・timeline・拍の格子・expected.json）と CI の smoke（demo → lines → check → 照合）。`gate lines` の歌い出しの推定の偏り（約 −20 ms。窓の掛かり始め）を docs/gate.md に表で記録（補正は入れず、ユウ判断）。WAV は soundfile 無しで読める（Remotion のテロップのデモから） | 2026-11-08 | 検査 |
 | #69 | 字の重なりの検査がフェードアウトを数える（手書きの timeline は `[start, end + fade_out_s]`。dance の timeline は `lyric_fade: inside` を書き `[start, end]`。`box_intersects` を添え、`overlap_mode: time_and_box` で箱が交わるときだけ数える。Remotion のテロップのデモから） | 2026-11-08 | 検査 |
 | #68 | GATE-3: 拍の検査の照合先を既定で拍にし、`align: "downbeat"` のものだけ小節頭と照合。文面と集計も照合先ごとに分けた（Remotion のテロップのデモで拍のフラッシュが不合格になった問題から） | 2026-11-08 | 検査 |
 | （この PR） | INSPECT-6: Windows と Blender の描画で `mv inspect` を確かめた（合成素材の 7 つ・本番の 32 秒の描画・緑背景で描いた描画にわざと入れた 7 つ）。`render.stage` に `background`（緑背景・透け）を足し、離れた塊の見落とし（2% → 1%）と人物が戻ったコマの動きの誤検出を直した | 2026-11-07 | 検品 |
