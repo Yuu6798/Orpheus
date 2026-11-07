@@ -48,6 +48,22 @@ def histogram(bins):
     return counts / counts.sum()
 
 
+def key_warning(key, where):
+    """緑抜きの色が灰色に近すぎて、灰色・白・黒（肌・髪・白い服）まで抜ける設定なら注意の文。大丈夫なら None。
+
+    緑抜きは色味（CbCr）の距離で決める。灰色（色味 0）とキーの色の距離が tolerance + softness より小さいと、灰色の画素の
+    アルファが 1 に届かない（くすんだ緑の背景の 3D 描画で、既定の 0.22 では人物の大半が抜けた。2026-11-07）。"""
+    cb, cr = dancekey._chroma(np.asarray(key["color"], np.float32) / 255.0)
+    gap = float(math.hypot(float(cb), float(cr)))
+    if gap >= key["tolerance"] + key["softness"]:
+        return None
+    limit = gap - key["softness"]
+    advice = f"tolerance を {limit:.2f} 以下に下げてください" if limit >= 0.02 else "背景を鮮やかな緑にするか、tolerance と softness を下げてください"
+    return (f"{where}: 緑抜きの色 {[round(c) for c in key['color']]} は灰色との色味の差が {gap:.2f} しかなく、tolerance {key['tolerance']:g}＋"
+            f"softness {key['softness']:g} では灰色・白・黒の画素（肌・髪・白い服）も背景として抜けます（人物が欠け、形状・衣装の誤検出のもとに"
+            f"なる）。{advice}")
+
+
 def mask_of(rgb, foreground):
     """人物の切り抜き（bool (h, w)）。前景を書いていなければ None。"""
     if not foreground or foreground["kind"] == "none":

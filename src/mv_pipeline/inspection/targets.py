@@ -79,9 +79,21 @@ def actions(event, clip, th):
     if "freeze" in checks:
         out.append({"kind": "interpolate", "frames": [a, b], "in_orpheus": False,
                     "description": "止まったコマの間を補間で埋めるか（外部の補間の道具）、生成し直す"})
-    if b - a <= 2 and event["category"] in ("continuity", "shape", "motion") and not checks & {"duplicate_cadence", "freeze"}:
+    measured = [s for s in event["signals"] if s["check"] != "vlm"]
+    settles = any(s["kind"] in ("pair", "segment") for s in measured)       # 区間の後で絵が元に戻る（前後のコマが似ている）
+    short = b - a <= 2 and event["category"] in ("continuity", "shape", "motion") and not checks & {"duplicate_cadence", "freeze"}
+    if short and measured and not settles:
+        # 絵が戻らない速い変化（step だけ）。前後のコマの絵が大きく違うので、置き換えると止まり（保つ）か二重写し（混ぜる）になる
+        # （実素材で確かめた。2026-11-07）。形状・動作は動きを補う補間か生成し直し、連続性の変わり目（画の切り替わり）はどちらも合わない
+        if event["category"] in ("shape", "motion"):
+            out.append({"kind": "interpolate", "frames": [a, b], "in_orpheus": False,
+                        "description": "速い動きの途中のコマ。前後のコマで置き換えると止まり（保つ）か二重写し（混ぜる）になる。"
+                                       "動きを補う補間（外部の道具）で作り直すか、生成し直す（ffmpeg の minterpolate では速い腕の動きが"
+                                       "二重写しのまま残った。学習型の補間は未確認。確実なのは生成し直し）"})
+    elif short:
         out.append({"kind": "replace_frames", "frames": [a, b], "with": [a - 1 if a > 0 else None, b if b < count else None], "in_orpheus": False,
-                    "description": "前後のコマで置き換える（前のコマを保つか前後を混ぜる）。Orpheus にはまだ無い（dance-shot/0.3 で予定）"})
+                    "description": "前後のコマで置き換える（前のコマを保つか前後を混ぜる。前後の絵が大きく違うと、保つと止まり、混ぜると二重写しになる）。"
+                                   "Orpheus にはまだ無い（dance-shot/0.3 で予定）"})
     if "duplicate_cadence" not in checks:
         out.append({"kind": "regenerate_segment", "frames": [a, b], "anchors": {"before": a - 1 if a > 0 else None, "after": b if b < count else None},
                     "description": "前後のコマを始点・終点にして、この区間だけを生成し直す（始点と終点を指定できる生成器で）"})
