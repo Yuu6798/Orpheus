@@ -29,6 +29,14 @@ import sys
 
 import numpy as np
 
+# 移し替えが要る骨と、あれば使う骨（Mixamo の名前。--bone-prefix を前に付ける）。どれも骨の役割（model3d/semantic.py の
+# MIXAMO_ROLES）を持つ
+REQUIRED_BONES = ("Hips", "Spine", "Spine1", "Spine2", "Neck", "Head", "LeftArm", "LeftForeArm", "LeftHand", "LeftUpLeg", "LeftLeg",
+                  "LeftFoot", "RightArm", "RightForeArm", "RightHand", "RightUpLeg", "RightLeg", "RightFoot")
+FINGERS = ("Thumb", "Index", "Middle", "Ring", "Pinky")
+OPTIONAL_BONES = tuple(f"{side}Hand{finger}{k}" for side in ("Left", "Right") for finger in FINGERS for k in (1, 2, 3)) + \
+    ("LeftToeBase", "RightToeBase", "LeftToe_End", "RightToe_End")
+
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(prog="retarget.py")
@@ -141,9 +149,7 @@ def main(argv=None):
     def N(n):
         return a.bone_prefix + n
 
-    missing = [N(n) for n in ("Hips", "Spine", "Spine1", "Spine2", "Neck", "Head", "LeftArm", "LeftForeArm", "LeftHand",
-                              "LeftUpLeg", "LeftLeg", "LeftFoot", "RightArm", "RightForeArm", "RightHand", "RightUpLeg",
-                              "RightLeg", "RightFoot") if N(n) not in pb]
+    missing = [N(n) for n in REQUIRED_BONES if N(n) not in pb]
     if missing:
         raise SystemExit(f"骨がありません（--bone-prefix を確かめてください）: {missing[:6]}")
 

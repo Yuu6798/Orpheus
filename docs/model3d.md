@@ -91,6 +91,10 @@ uv run model3d run projects/model3d-demo/recipe_generate.json   # 合成の設�
 `tools/model3d/src/model3d/semantic.py` の `PART_ROLES`（`body.leg.upper.L`、`hair.front`、`garment.sash.front`、`collider.leg.upper.L` など）と
 `BONE_ROLES`（`hips`、`spine`、`leg.upper.L`、`cuff.L`、`sash.1` など）。左右は `.L` / `.R`。語彙に無いものは `x.` で始めれば通る。
 Mixamo 風の `mixamorig:Hips` は接頭辞を外して `Hips` とも照合する。
+- 指の骨は `finger.<指>.<節>.<左右>`（指は thumb・index・middle・ring・pinky、節は付け根から 1・2・3、4 は先の位置だけを持つ骨。例 `finger.index.1.L`）。つま先の先は `toe.tip.L` / `toe.tip.R`。
+- `MIXAMO_ROLES` は、Mixamo の標準の骨の名前（接頭辞を外したもの）から骨の役割への対応表（指とつま先の先を含む、65 本）。
+  - `semantic.mixamo_bones(prefix)` は、それに接頭辞を付けた表を返す。preset の `bones` の元に使う。
+  - `motion.retarget` が要る骨（`REQUIRED_BONES`）と、あれば使う骨（`OPTIONAL_BONES`。指の 1〜3 節とつま先）は、どれもこの表にある（テストで確かめる）。
 
 ```sh
 uv run model3d semantic build preset.json semantic_map.json --asset-id ASSET --parts part_1,part_2 --rig rig.json

@@ -30,12 +30,38 @@ PART_ROLES = frozenset(
      "garment.sash", "garment.sash.front", "garment.sash.back", "garment.sash.knot", "garment.collar", "garment.belt",
      "accessory", "collider", "collider.leg.upper.L", "collider.leg.upper.R", "collider.torso"])
 
+FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+# 指の骨: 指ごとに付け根から 1・2・3、4 は先（Mixamo の Hand<指>4 のような、先の位置だけを持つ骨）
+FINGER_ROLES = tuple(f"finger.{finger}.{k}.{side}" for side in ("L", "R") for finger in FINGERS for k in (1, 2, 3, 4))
+
 BONE_ROLES = frozenset(
     ["root", "hips", "spine", "spine.1", "spine.2", "chest", "neck", "head", "head.top",
      "shoulder.L", "shoulder.R", "arm.upper.L", "arm.upper.R", "arm.lower.L", "arm.lower.R", "hand.L", "hand.R",
-     "leg.upper.L", "leg.upper.R", "leg.lower.L", "leg.lower.R", "foot.L", "foot.R", "toe.L", "toe.R",
+     "leg.upper.L", "leg.upper.R", "leg.lower.L", "leg.lower.R", "foot.L", "foot.R", "toe.L", "toe.R", "toe.tip.L", "toe.tip.R",
      "jaw", "eye.L", "eye.R", "cuff.L", "cuff.R", "sash.1", "sash.2", "sash.3", "sash.4",
-     "hair.1", "hair.2", "hair.3", "hair.4"])
+     "hair.1", "hair.2", "hair.3", "hair.4", *FINGER_ROLES])
+
+
+def _mixamo_roles():
+    roles = {"Hips": "hips", "Spine": "spine", "Spine1": "spine.1", "Spine2": "spine.2", "Neck": "neck", "Head": "head",
+             "HeadTop_End": "head.top"}
+    for side, s in (("Left", "L"), ("Right", "R")):
+        roles.update({f"{side}Shoulder": f"shoulder.{s}", f"{side}Arm": f"arm.upper.{s}", f"{side}ForeArm": f"arm.lower.{s}",
+                      f"{side}Hand": f"hand.{s}", f"{side}UpLeg": f"leg.upper.{s}", f"{side}Leg": f"leg.lower.{s}",
+                      f"{side}Foot": f"foot.{s}", f"{side}ToeBase": f"toe.{s}", f"{side}Toe_End": f"toe.tip.{s}"})
+        for finger in FINGERS:
+            for k in (1, 2, 3, 4):
+                roles[f"{side}Hand{finger.capitalize()}{k}"] = f"finger.{finger}.{k}.{s}"
+    return roles
+
+
+# Mixamo の標準の骨の名前（接頭辞 mixamorig: を外したもの）→ 骨の役割。motion.retarget が使う骨は、どれもここにある
+MIXAMO_ROLES = _mixamo_roles()
+
+
+def mixamo_bones(prefix="mixamorig:"):
+    """Mixamo の骨の名前（prefix 付き）→ 骨の役割。preset の bones に書く対応表の元になる。"""
+    return {prefix + name: role for name, role in MIXAMO_ROLES.items()}
 
 HUMANOID_REQUIRED_BONES = ("hips", "spine", "head", "arm.upper.L", "arm.upper.R", "leg.upper.L", "leg.upper.R")
 
