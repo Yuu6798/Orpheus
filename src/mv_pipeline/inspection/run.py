@@ -188,10 +188,9 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
         shutil.rmtree(folder)
     palettes = [reference.prepare(entry) for entry in cfg.references]
     clips = _clips_from_dance(cfg) if cfg.dance_spec else _clips_from_config(cfg)
-    skipped, events, unused, measured = [], [], [], {}
+    skipped, events, unused = [], [], []
     for clip in clips:
         found, signals = _measure(clip, cfg, palettes, skipped, say)
-        measured[clip["id"]] = found
         report.write_metrics(out / "metrics" / f"{clip['id']}.csv", found, clip["fps"])
         number = 0
         for event in detect.events(signals, clip["id"], clip["fps"]):
