@@ -28,6 +28,16 @@ def test_metres_per_local_combines_object_scale_and_scene_units():
     assert toon_look.metres_per_local(half, 0.01) == pytest.approx(0.005)   # 1 Blender 単位 = 1 cm のシーン
 
 
+def test_bound_modifiers_names_the_ones_an_outline_copy_cannot_keep():
+    from types import SimpleNamespace as M
+    ob = M(modifiers=[M(name="Armature", type="ARMATURE"), M(name="Mirror", type="MIRROR"), M(name="Subdivision", type="SUBSURF"),
+                      M(name="SurfaceDeform", type="SURFACE_DEFORM"), M(name="Cache", type="MESH_SEQUENCE_CACHE"),
+                      M(name="Smooth", type="CORRECTIVE_SMOOTH", rest_source="ORCO"),
+                      M(name="Smooth.001", type="CORRECTIVE_SMOOTH", rest_source="BIND")])
+    assert toon_look.bound_modifiers(ob) == ["SurfaceDeform", "Cache", "Smooth.001"]
+    assert toon_look.bound_modifiers(M(modifiers=[])) == []
+
+
 def test_parse_args():
     args = toon_look.parse_args(["--blend", "i.blend", "--out-blend", "o.blend", "--report", "r.json", "--settings", "s.json"])
     assert args.settings == "s.json"

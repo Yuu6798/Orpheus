@@ -25,10 +25,13 @@ settings.json（look.toon が書く）:
   スクリーンで足す。face_attribute の所と、weak_rim の属性の所は弱める。
 - 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（舞台の光は受けない）。
 - 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す。
-輪郭線（試作の手順）: メッシュの写しの重なる頂点を溶かし、ratio まで面を減らし、手（hand_attribute）の所はならしてから、面を
-裏返す。絵の色を dark 倍した暗い色を Emission で出し、裏の面は描かない。骨の変形の後に法線の向きへ width_mm だけ太らせる
-（Displace。名前は out）。Displace は物体の中の単位で押すので、物体の拡大とシーンの単位（scale_length）で直した強さにし、
-その換算（中の単位 1 が何 m か）を model3d_outline_m_per_local の印に残す。写しは model3d_outline の印を持ち、影を落とさない。
+輪郭線（試作の手順）: メッシュの写し（親子付け・変換・モディファイアの並びは元のまま）の重なる頂点を溶かし、ratio まで面を
+減らし、手（hand_attribute）の所はならしてから（どちらも並びの先頭で元の面に当てる）、面を裏返す。絵の色を dark 倍した暗い色を
+Emission で出し、裏の面は描かない。並びの最後（骨の変形と、形を変えるモディファイアの後）に、法線の向きへ width_mm だけ
+太らせる Displace を足す（名前は model3d_outline_modifier の印に残す。ふつうは out）。Displace は物体の中の単位で押すので、
+物体の拡大とシーンの単位（scale_length）で直した強さにし、その換算（中の単位 1 が何 m か）を model3d_outline_m_per_local の
+印に残す。写しは model3d_outline の印を持ち、影を落とさない。元の頂点の並びに結び付いたモディファイア（BOUND）のあるメッシュと、
+形状キーのあるメッシュの面を減らすことは止める（写しでは働かないため）。
 共有のノードグループ model3d_stage_tone（a・b・gain）は、描く工程がコマごとに書き換える。
 **検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じキャラから、同じ輪郭線の写しと同じ描画になることを確かめた
 （docs/model3d.md）。
@@ -317,8 +320,18 @@ def metres_per_local(matrix_world, scale_length):
     return scale * float(scale_length)
 
 
-def outline_hull(bpy, ob, arm, o):
-    """輪郭線の写し（試作の outline.py と同じ作り方）"""
+# 元の頂点の並びに結び付いた（覚えた頂点や、焼いた動きを読む）モディファイア。写しの頂点を溶かし面を減らすと働かない
+BOUND = {"SURFACE_DEFORM", "MESH_DEFORM", "LAPLACIANDEFORM", "MULTIRES", "MESH_CACHE", "MESH_SEQUENCE_CACHE", "SOFT_BODY", "CLOTH"}
+
+
+def bound_modifiers(ob):
+    """ob のモディファイアのうち、輪郭線の写しでは働かないもの（BOUND と、結び付けた形で戻す Corrective Smooth）の名前"""
+    return [m.name for m in ob.modifiers
+            if m.type in BOUND or (m.type == "CORRECTIVE_SMOOTH" and getattr(m, "rest_source", "") == "BIND")]
+
+
+def outline_hull(bpy, ob, o):
+    """輪郭線の写し（試作の outline.py と同じ作り方。写しは元の親子付け・変換・モディファイアの並びを持つ）"""
     import bmesh
     sc = bpy.context.scene
     src = ob.active_material
@@ -331,10 +344,9 @@ def outline_hull(bpy, ob, arm, o):
             bsdfs = [n for n in src.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
             if bsdfs:
                 color = tuple(bsdfs[0].inputs["Base Color"].default_value)
-    new = ob.copy()
+    new = ob.copy()                                      # 親子付け・変換・モディファイアの並び（骨の変形の設定も）はそのまま写す
     new.data = ob.data.copy()
     new.name = "hull_" + ob.name
-    new.modifiers.clear()
     sc.collection.objects.link(new)
     me = new.data
     if "custom_normal" in me.attributes:
@@ -345,17 +357,22 @@ def outline_hull(bpy, ob, arm, o):
     bm.to_mesh(me)
     bm.free()
     bpy.context.view_layer.objects.active = new
+
+    def apply_first(mod):                                # 元の面に当てる（写したモディファイアより先に）
+        bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
     ratio = float(o["ratio"].get(ob.name, 1.0))
     if ratio < 1.0:
         dec = new.modifiers.new("dec", "DECIMATE")
         dec.ratio = ratio
-        bpy.ops.object.modifier_apply(modifier=dec.name)
+        apply_first(dec)
     hand = o["hand_attribute"]
     if hand and hand in me.attributes:                   # 手首から先は面の細かな凹凸から線が点々と覗くので、写しだけならす
         sm = new.modifiers.new("smooth", "SMOOTH")
         sm.factor, sm.iterations = 0.6, 6
         sm.vertex_group = ""
-        bpy.ops.object.modifier_apply(modifier=sm.name)
+        apply_first(sm)
     bm = bmesh.new()
     bm.from_mesh(me)
     bmesh.ops.reverse_faces(bm, faces=bm.faces)
@@ -363,22 +380,20 @@ def outline_hull(bpy, ob, arm, o):
     bm.free()
     me.materials.clear()
     me.materials.append(hull_material(bpy, "hull_" + ob.name, image, color, o))
-    m1 = new.modifiers.new("armature", "ARMATURE")
-    m1.object = arm
-    new.parent = arm
     bpy.context.view_layer.update()
     # Displace は物体の中の単位で押し出すので、mm の太さを、物体の拡大とシーンの単位で中の単位に直す（描く工程も同じ数で直す）
     per = metres_per_local(new.matrix_world, sc.unit_settings.scale_length)
     new["model3d_outline_m_per_local"] = per
-    m2 = new.modifiers.new("out", "DISPLACE")
+    m2 = new.modifiers.new("out", "DISPLACE")             # 並びの最後（骨の変形や形を変えるモディファイアの後）に太らせる
     m2.direction, m2.mid_level, m2.strength = "NORMAL", 0.0, -(o["width_mm"] / 1000) / per
+    new["model3d_outline_modifier"] = m2.name
     if hand and hand in me.attributes:
         hv = [0.0] * len(me.vertices)
         me.attributes[hand].data.foreach_get("value", hv)
-        g = new.vertex_groups.new(name="line")
+        g = new.vertex_groups.new(name="line")           # 元に同じ名前の組があれば line.001 などになる
         for k, h in enumerate(hv):
             g.add([k], 1.0 - (1.0 - o["hand_line"]) * min(max(h, 0.0), 1.0), "REPLACE")
-        m2.vertex_group = "line"
+        m2.vertex_group = g.name
     new.visible_shadow = False
     new["model3d_outline"] = ob.name
     return new
@@ -418,6 +433,14 @@ def main(argv=None):
     for name in lined:
         if bpy.data.objects.get(name) is None or bpy.data.objects[name].type != "MESH":
             raise SystemExit(f"輪郭線を付けるメッシュがありません: {name}")
+        if not settings["outline"]["enabled"]:
+            continue
+        bound = bound_modifiers(bpy.data.objects[name])
+        if bound:
+            raise SystemExit(f"{name} の {bound} は元の頂点の並びに結び付いているので、輪郭線の写し（頂点を溶かし、面を減らす）"
+                             "では働きません。先にそのモディファイアを当てるか、outline.meshes から外してください")
+        if bpy.data.objects[name].data.shape_keys and float(settings["outline"]["ratio"].get(name, 1.0)) < 1.0:
+            raise SystemExit(f"{name} には形状キーがあるので、輪郭線の写しの面を減らせません（outline.ratio から外してください）")
     if set(meshes) & set(faces):
         raise SystemExit(f"同じメッシュを meshes と faces の両方に入れています: {sorted(set(meshes) & set(faces))}")
     t, f, o = settings["toon"], settings["face"], settings["outline"]
@@ -433,7 +456,7 @@ def main(argv=None):
     if o["enabled"]:
         bpy.ops.object.mode_set(mode="OBJECT") if bpy.context.object and bpy.context.object.mode != "OBJECT" else None
         for name in lined:
-            h = outline_hull(bpy, bpy.data.objects[name], arm, o)
+            h = outline_hull(bpy, bpy.data.objects[name], o)
             hulls.append({"mesh": name, "hull": h.name, "triangles": sum(len(p.vertices) - 2 for p in h.data.polygons),
                           "ratio": float(o["ratio"].get(name, 1.0))})
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
