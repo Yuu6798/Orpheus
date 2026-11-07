@@ -226,11 +226,11 @@ def read_window(path, start, frames, fps, n_fft=N_FFT):
     if rate <= 0 or total <= 0:
         raise ToolError(f"音のファイル {path} に音がありません")
     length = total / rate
-    first = int(start * rate)
+    first = int(math.floor(start * rate + 1e-6))         # 窓の頭の標本（秒の丸めの誤差で 1 つ手前にならないように）
     if first >= total:
         raise ToolError(f"窓の頭 start（{start} 秒）が、音の長さ（{length:.3f} 秒）より後です")
     if frames is None:
-        frames = int(math.floor((length - start) * fps))
+        frames = int(math.floor((total - first) * fps / rate + 1e-9))   # 標本の数から（秒の引き算の誤差でコマを落とさない）
         if frames < 1:
             raise ToolError(f"窓の頭 start（{start} 秒）から音の終わりまでが、1 コマ（{1 / fps:.4f} 秒）より短いです")
     if rate / fps < 1:

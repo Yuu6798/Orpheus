@@ -263,3 +263,10 @@ def test_the_operation_checks_its_inputs_and_the_window(tmp_path):
     (tmp_path / "bad.wav").write_bytes(b"not a wav")
     with pytest.raises(ToolError, match="読めません"):
         op({"audio": tmp_path / "bad.wav"}, grid, {"keys": tmp_path / "k.json"}, Context(tmp_path))
+
+
+@pytest.mark.parametrize("seconds, start, fps, frames", [(2.3, 0.1, 30, 66), (0.3, 0.2, 10, 1), (1.0, 0.7, 10, 3)])
+def test_whole_frames_left_in_the_audio_are_all_counted(tmp_path, monkeypatch, seconds, start, fps, frames):
+    path = _write_wav(tmp_path / "s.wav", np.zeros(int(round(seconds * 8000))), rate=8000)
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    assert lk.read_window(path, start, None, fps)[2] == frames   # (2.3 - 0.1) × 30 は浮動小数で 65.999… になる
