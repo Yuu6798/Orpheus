@@ -38,37 +38,21 @@ def test_bound_modifiers_names_the_ones_an_outline_copy_cannot_keep():
     assert toon_look.bound_modifiers(M(modifiers=[])) == []
 
 
-def _node(name, kind, *sources, image=None):
-    """ノードの代役: 入力の口ごとに、つながった元のノードを並べる"""
-    from types import SimpleNamespace as M
-    return M(name=name, type=kind, image=image, inputs=[M(links=[M(from_node=s)]) for s in sources])
-
-
-def _bsdf(*sources, color=(0.8, 0.1, 0.1, 1.0)):
-    from types import SimpleNamespace as M
-    return M(name="bsdf", type="BSDF_PRINCIPLED",
-             inputs={"Base Color": M(links=[M(from_node=s) for s in sources], default_value=color)})
-
-
-def test_base_image_follows_the_base_color_links_and_skips_other_images():
-    tex = _node("tex", "TEX_IMAGE", image="albedo")
-    mix = _node("mix", "MIX", _node("rgb", "RGB"), _node("reroute", "REROUTE", tex))   # 色の値と、継ぎを通った絵を混ぜる
-    assert toon_look.base_image(_bsdf(mix)) == "albedo"
-    assert toon_look.base_image(_bsdf(_node("empty", "TEX_IMAGE"), _node("attr", "VERTEX_COLOR"))) is None   # 絵のない絵の枠は飛ばす
-    assert toon_look.base_image(_bsdf()) is None
-
-
-def test_hull_source_uses_the_base_color_image_or_value():
+def test_line_sources_take_the_base_color_and_alpha_of_the_principled_bsdf():
     from types import SimpleNamespace as M
 
-    def material(*nodes):
-        return M(use_nodes=True, node_tree=M(nodes=list(nodes)))
+    def socket(sources=(), value=None):                                # 入力の口の代役: つながった元の出口と、値
+        return M(links=[M(from_socket=s) for s in sources], default_value=value)
 
-    normal = _node("normal", "TEX_IMAGE", image="normal_map")          # Base Color につながらない絵（法線の絵など）は使わない
-    assert toon_look.hull_source(material(normal, _bsdf(color=(0.2, 0.4, 0.6, 1.0)))) == (None, (0.2, 0.4, 0.6, 1.0))
-    assert toon_look.hull_source(material(normal, _bsdf(_node("tex", "TEX_IMAGE", image="albedo"))))[0] == "albedo"
-    assert toon_look.hull_source(material(normal)) == ("normal_map", (0.5, 0.5, 0.5, 1.0))          # Principled BSDF が無ければ最初の絵
-    assert toon_look.hull_source(None) == (None, (0.5, 0.5, 0.5, 1.0))
+    color_out, alpha_out = M(name="Color"), M(name="Alpha")
+    normal = M(type="TEX_IMAGE", image="normal_map", outputs={"Color": M(name="normal")})   # Base Color につながらない絵は使わない
+    textured = M(type="BSDF_PRINCIPLED", inputs={"Base Color": socket([color_out], (0.8, 0.1, 0.1, 1.0)),
+                                                 "Alpha": socket([alpha_out], 1.0)})
+    assert toon_look.line_sources(M(nodes=[normal, textured])) == (color_out, (0.8, 0.1, 0.1, 1.0), alpha_out, 1.0)
+    plain = M(type="BSDF_PRINCIPLED", inputs={"Base Color": socket((), (0.2, 0.4, 0.6, 1.0)), "Alpha": socket((), 0.5)})
+    assert toon_look.line_sources(M(nodes=[normal, plain])) == (None, (0.2, 0.4, 0.6, 1.0), None, 0.5)
+    assert toon_look.line_sources(M(nodes=[normal])) == (normal.outputs["Color"], (0.5, 0.5, 0.5, 1.0), None, 1.0)  # 最初の絵
+    assert toon_look.line_sources(M(nodes=[])) == (None, (0.5, 0.5, 0.5, 1.0), None, 1.0)
 
 
 def test_rendered_follows_collection_hiding_and_view_layer_exclusion():

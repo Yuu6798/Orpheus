@@ -18,20 +18,21 @@ settings.json（look.toon が書く）:
   saturation、width_mm（法線の向きに太らせる量。描くときにカメラの距離で上書きする）、hand_attribute と hand_line（その属性の
   所の線の太さの割合）。
 
-塗り方の違うメッシュ（セル調・顔・塗らないメッシュ）と分け合う材質は、塗り方ごとに写して付け替えてから書き換える。
+塗り方の違うメッシュ（セル調・顔・塗らないメッシュ）と分け合う材質は、塗り方ごとに写して付け替えてから書き換える（メッシュを
+ほかの物体と分け合う枠は、物体の側の枠に付け替える）。
 セル調の塗り（リポジトリ外の試作の手順）:
 - 絵の色（Principled BSDF の Base Color）を出し、影は決まった向きの光と面の向きの内積で 2 段に分ける（境は smoothstep で
   threshold ± soft）。影の側は、影の色に舞台の色（共有のノードグループ model3d_stage_tone の a）を tint だけ混ぜた色を掛ける。
 - 縁の光: 面が横を向く所（Layer Weight の Facing を rim_from〜rim_to）に、カメラから見て左は a、右は b の色を、強さ gain で
   スクリーンで足す。face_attribute の所と、weak_rim の属性の所は弱める。
 - 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（舞台の光は受けない）。EEVEE が使う材質の
-  出力につなぐ。
+  出力につなぐ。元の透け（Alpha につないだ出口か、1 未満の値）は、Transparent BSDF と混ぜて残す。
 - 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す（この
   3 つの入力につないだノードは外す）。
 輪郭線（試作の手順）: メッシュの写し（親子付け・変換・モディファイアの並びは元のまま）の重なる頂点を溶かし、ratio まで面を
 減らし、手の属性（hand_attribute）のあるメッシュは写しをならしてから（どちらも並びの先頭で元の面に当てる。形状キーがあれば、
-頂点と辺だけの仮のメッシュでならしたずれを全部のキーに足す）。材質の枠ごとに、Base Color をさかのぼった絵（無ければ色）を
-dark 倍した暗い色を Emission で出す線の材質にし、裏の面は描かない。並びの後ろ（骨の変形と、形を変えるモディファイアの後）で、
+頂点と辺だけの仮のメッシュでならしたずれを全部のキーに足す）。材質の枠ごとに、元の材質の写しで、Base Color につながった色
+（つなぎ方は元のまま。無ければ色の値）を dark 倍した暗い色を Emission で出し、元の透けを残す線の材質にし、裏の面は描かない。並びの後ろ（骨の変形と、形を変えるモディファイアの後）で、
 面を裏返し（ジオメトリノード model3d_flip_faces。名前は model3d_outline_flip の印。Solidify のように面の向きで形が変わる
 モディファイアも元と同じ向きで働く）、法線の向きへ width_mm だけ太らせる Displace を足す（名前は model3d_outline_modifier の
 印に残す。ふつうは out）。Displace は物体の中の単位で押すので、
@@ -107,31 +108,30 @@ def base_color(nt, bsdf):
     return rgb.outputs[0]
 
 
-def base_image(bsdf):
-    """Principled BSDF の Base Color の出どころをさかのぼって、最初に見つかる絵（無ければ None）"""
-    todo, seen = [lk.from_node for lk in bsdf.inputs["Base Color"].links], set()
-    while todo:
-        n = todo.pop(0)
-        if n.name in seen:
-            continue
-        seen.add(n.name)
-        if n.type == "TEX_IMAGE" and n.image is not None:
-            return n.image
-        todo.extend(lk.from_node for s in n.inputs for lk in s.links)
-    return None
+def line_sources(nt):
+    """線の材質に使う元の色と透け: (色の出口か None, 色の値, 透けの出口か None, 透けの値)。Principled BSDF があれば、
+    その Base Color と Alpha（つないだ出口か値）。無ければ最初の絵の色（透けなし）、それも無ければ灰色"""
+    bsdfs = [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"]
+    if bsdfs:
+        color, alpha = bsdfs[0].inputs["Base Color"], bsdfs[0].inputs["Alpha"]
+        return (color.links[0].from_socket if color.links else None, tuple(color.default_value),
+                alpha.links[0].from_socket if alpha.links else None, float(alpha.default_value))
+    texs = [n for n in nt.nodes if n.type == "TEX_IMAGE" and n.image is not None]
+    return texs[0].outputs["Color"] if texs else None, (0.5, 0.5, 0.5, 1.0), None, 1.0
 
 
-def hull_source(m):
-    """輪郭線の色の出どころ: Base Color をさかのぼった絵か、絵が無ければ Base Color の値（Principled BSDF が無ければ最初の絵）"""
-    image, color = None, (0.5, 0.5, 0.5, 1.0)
-    if m is not None and m.use_nodes:
-        bsdfs = [n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
-        if bsdfs:
-            image, color = base_image(bsdfs[0]), tuple(bsdfs[0].inputs["Base Color"].default_value)
-        else:
-            texs = [n for n in m.node_tree.nodes if n.type == "TEX_IMAGE" and n.image is not None]
-            image = texs[0].image if texs else None
-    return image, color
+def see_through(nt, shader, alpha, opacity):
+    """元の透け（Alpha につないだ出口か、1 未満の値）を残す: Transparent BSDF と透けの割合で混ぜた出口。透けがなければ shader"""
+    if alpha is None and opacity >= 1.0:
+        return shader
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    if alpha is not None:
+        nt.links.new(alpha, mix.inputs["Fac"])
+    else:
+        mix.inputs["Fac"].default_value = opacity
+    nt.links.new(nt.nodes.new("ShaderNodeBsdfTransparent").outputs[0], mix.inputs[1])
+    nt.links.new(shader, mix.inputs[2])
+    return mix.outputs[0]
 
 
 def material_output(nt):
@@ -146,10 +146,13 @@ def principled(m):
 
 def own_materials(bpy, names, tag):
     """names のメッシュの、Principled BSDF のある材質の並び（重ならない）。ほかのメッシュ（別の塗り方か、塗らないメッシュ）と
-    分け合う材質は、この塗り方用に写して付け替える（書き換えがほかのメッシュに及ばないように）。戻り: 材質の並びと、写した材質の名前"""
+    分け合う材質は、この塗り方用に写して付け替える（書き換えがほかのメッシュに及ばないように）。メッシュをほかの物体と分け合う
+    （リンクした複製の）枠は、物体の側の枠に付け替える（メッシュの側を替えると、分け合う物体の材質も替わるため）。
+    戻り: 材質の並びと、写した材質の名前"""
     group, copies, todo = set(names), {}, []
     for name in names:
-        for slot in bpy.data.objects[name].material_slots:
+        ob = bpy.data.objects[name]
+        for slot in ob.material_slots:
             m = slot.material
             if not principled(m):
                 continue
@@ -158,6 +161,8 @@ def own_materials(bpy, names, tag):
                 if m.name not in copies:
                     copies[m.name] = m.copy()
                     copies[m.name].name = f"{m.name}.{tag}"
+                if slot.link == "DATA" and ob.data.users > 1:
+                    slot.link = "OBJECT"
                 slot.material = copies[m.name]
                 m = copies[m.name]
             if m not in todo:
@@ -308,7 +313,9 @@ def toon_material(bpy, m, tone, t):
     nt.links.new(add_.outputs[2], inside.inputs[6])
     em = nt.nodes.new("ShaderNodeEmission")
     nt.links.new(inside.outputs[2], em.inputs["Color"])
-    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    a = bsdf.inputs["Alpha"]                             # 元の透け（髪の房やまつげの切り抜き）は残す
+    nt.links.new(see_through(nt, em.outputs[0], a.links[0].from_socket if a.links else None, a.default_value),
+                 out.inputs["Surface"])
 
 
 def face_material(m, f):
@@ -329,25 +336,35 @@ def face_material(m, f):
         nt.links.new(src, n.inputs["Emission Color"])
 
 
-def hull_material(bpy, name, image, color, o):
-    m = bpy.data.materials.new(name)
-    m.use_nodes = True
+def hull_material(bpy, name, src, o):
+    """線の材質: 元の材質 src の写しで、面の出力を、元の色を dark 倍・彩度 saturation 倍した暗い Emission に替える。色のつなぎ方
+    （絵・UV・頂点の色など）と透け（Alpha）は元のまま使う（髪の房やまつげの切り抜きに、線の殻を出さない）。裏の面は描かない"""
+    if src is not None and src.use_nodes:
+        m = src.copy()
+        m.name = name
+    else:
+        m = bpy.data.materials.new(name)
+        m.use_nodes = True
+        m.node_tree.nodes.clear()
     nt = m.node_tree
-    nt.nodes.clear()
-    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    color, value, alpha, opacity = line_sources(nt)
+    out = material_output(nt)
+    for socket in ("Surface", "Volume", "Displacement"):
+        for lk in list(out.inputs[socket].links):
+            nt.links.remove(lk)
     em = nt.nodes.new("ShaderNodeEmission")
     hsv = nt.nodes.new("ShaderNodeHueSaturation")
     hsv.inputs["Saturation"].default_value = o["saturation"]
     hsv.inputs["Value"].default_value = o["dark"]
-    if image is not None:
-        tex = nt.nodes.new("ShaderNodeTexImage")
-        tex.image = image
-        nt.links.new(tex.outputs["Color"], hsv.inputs["Color"])
+    if color is not None:
+        nt.links.new(color, hsv.inputs["Color"])
     else:
-        hsv.inputs["Color"].default_value = color
+        hsv.inputs["Color"].default_value = value
     nt.links.new(hsv.outputs["Color"], em.inputs["Color"])
-    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    nt.links.new(see_through(nt, em.outputs[0], alpha, opacity), out.inputs["Surface"])
     m.use_backface_culling = True
+    if hasattr(m, "surface_render_method"):              # 元が半透明の重ね描き（BLENDED）でも、線は切り抜きの描き方にする
+        m.surface_render_method = "DITHERED"
     return m
 
 
@@ -438,7 +455,7 @@ def outline_hull(bpy, ob, o):
     """輪郭線の写し（試作の outline.py と同じ作り方。写しは元の親子付け・変換・モディファイアの並びを持つ）"""
     import bmesh
     sc = bpy.context.scene
-    sources = [hull_source(slot.material) for slot in ob.material_slots] or [hull_source(None)]   # 材質の枠ごとの線の色
+    sources = [slot.material for slot in ob.material_slots] or [None]   # 材質の枠ごとの、線の材質の元
     new = ob.copy()                                      # 親子付け・変換・モディファイアの並び（骨の変形の設定も）はそのまま写す
     new.data = ob.data.copy()
     new.name = "hull_" + ob.name
@@ -459,8 +476,8 @@ def outline_hull(bpy, ob, o):
     hand = o["hand_attribute"]
     if hand and hand in me.attributes:                   # 手首から先は面の細かな凹凸から線が点々と覗くので、写しだけならす
         smooth_hull(bpy, new)
-    for k, (image, color) in enumerate(sources):         # 枠ごとに線の材質に替える（枠を消すと面の材質の番号が 0 に戻るので、中身だけ替える）
-        line = hull_material(bpy, "hull_" + ob.name + (f"_{k}" if k else ""), image, color, o)
+    for k, src in enumerate(sources):                    # 枠ごとに線の材質に替える（枠を消すと面の材質の番号が 0 に戻るので、中身だけ替える）
+        line = hull_material(bpy, "hull_" + ob.name + (f"_{k}" if k else ""), src, o)
         if k < len(new.material_slots):
             new.material_slots[k].material = line        # 物体に付けた材質の枠でも、写しの側だけが替わる
         else:
