@@ -7,7 +7,7 @@ from . import StepResult, number, register, require
 RENDER_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "stage_render.py"
 RENDER_PARAMETERS = {"blender", "resolution", "samples", "raytracing", "bloom", "bone_prefix", "fps", "camera", "outline", "stage",
                      "background", "push", "frames_dir", "only", "timeout"}
-PUSH_KEYS = {"meshes", "colliders", "groups", "smooth", "outlines"}
+PUSH_KEYS = {"meshes", "colliders", "groups", "smooth", "outlines", "recheck"}
 CAMERA_KEYS = {"sensor_height", "lens", "az", "dist", "height", "aim", "follow", "follow_sigma"}
 OUTLINE_KEYS = {"line_px", "reference_height", "scale"}
 STAGE_KEYS = {"enabled", "stripe_floor", "stripe_soft"}
@@ -139,8 +139,9 @@ def _push_settings(push):
                             for g in groups]}
         if "smooth" in spec:
             entry["smooth"] = int(number(spec, "smooth", minimum=0, integer=True))
-        if "outlines" in spec:
-            entry["outlines"] = _flag(spec, "outlines", f"{where}.outlines")
+        for key in ("outlines", "recheck"):
+            if key in spec:
+                entry[key] = _flag(spec, key, f"{where}.{key}")
         out.append(entry)
     return out
 

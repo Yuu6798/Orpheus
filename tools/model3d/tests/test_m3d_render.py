@@ -351,6 +351,7 @@ def test_the_operation_passes_the_push_to_the_script(tmp_path):
     ([{**PUSH, "smooth": -1}], "smooth"),
     ([{**PUSH, "smooth": 1.5}], "smooth"),
     ([{**PUSH, "outlines": "yes"}], "outlines"),
+    ([{**PUSH, "recheck": 1}], "recheck"),
 ])
 def test_the_operation_rejects_bad_push_settings(tmp_path, push, message):
     with pytest.raises(ToolError, match=message):
@@ -463,3 +464,43 @@ def test_only_modifiers_the_correction_can_pass_through_are_allowed():
            ("off", "LATTICE", False, False, None), ("subsurf", "SUBSURF", True, False, None)]
     assert stage_render.unsupported_modifiers(bad) == ["twist（SIMPLE_DEFORM）", "noise（DISPLACE）", "gn（NODES）",
                                                        "weights（VERTEX_WEIGHT_EDIT）", "subsurf（SUBSURF）"]
+
+
+class AxisBox:
+    """当たりの代わりの、軸にそろった箱（面のいちばん近い点・外向き・中か外か）。"""
+
+    def __init__(self, lo, hi, margin=0.02):
+        self.lo, self.hi, self.margin = np.array(lo, float), np.array(hi, float), margin
+
+    def box(self, p):
+        return bool(np.all((p > self.lo - self.margin) & (p < self.hi + self.margin)))
+
+    def inside(self, p):
+        return bool(np.all((p > self.lo) & (p < self.hi)))
+
+    def nearest(self, p):
+        if not self.inside(p):
+            q = np.clip(p, self.lo, self.hi)
+            d = np.linalg.norm(p - q)
+            return q, (p - q) / max(d, 1e-12), d
+        gaps = np.r_[p - self.lo, self.hi - p]
+        k = int(np.argmin(gaps))
+        axis, side = k % 3, (-1.0 if k < 3 else 1.0)
+        q = p.copy()
+        q[axis] = self.lo[axis] if k < 3 else self.hi[axis]
+        n = np.zeros(3)
+        n[axis] = side
+        return q, n, float(gaps[k])
+
+
+def test_a_vertex_inside_two_colliders_is_pushed_out_of_both():
+    left = AxisBox([-1, -1, -1], [0, 1, 1])                  # x = 0 で終わる箱
+    low = AxisBox([-1, -1, -1], [1, 0, 1])                   # y = 0 で終わる箱
+    p = np.array([-0.001, -0.002, 0.0])
+    need, added = stage_render.vertex_need(p, 0.004, [left, low], tol=1e-7)
+    assert added and need == pytest.approx([0.005, 0.006, 0.0])       # 長い方（y）だけでなく、x の分も足す
+    out = p + need
+    assert not left.inside(out) and not low.inside(out)
+    single, again = stage_render.vertex_need(np.array([-0.001, 0.5, 0.0]), 0.004, [left, low], tol=1e-7)
+    assert not again and single == pytest.approx([0.005, 0.0, 0.0])   # 1 つで足りれば試作と同じ（いちばん長い直しだけ）
+    assert stage_render.vertex_need(np.array([0.5, 0.5, 0.0]), 0.004, [left, low]) == (pytest.approx(np.zeros(3)), False)

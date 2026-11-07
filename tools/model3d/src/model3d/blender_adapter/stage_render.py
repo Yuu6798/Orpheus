@@ -245,6 +245,49 @@ def unsupported_modifiers(modifiers):
 
 
 PUSH_COND_MAX = 1e12      # これより条件数の大きい骨の動きは、潰れていて逆にできないとみなす
+PUSH_PASSES = 4           # 直した位置で当たりを調べ直す回数の上限
+PUSH_TOL_M = 1e-7         # 調べ直しで、離す量にこれだけ足りなくても足りているとみなす（丸めで直し続けないように）
+
+
+def collider_correction(collider, p, offset, tol=0.0):
+    """当たり 1 つについて、頂点 p を外へ出す動き（要らなければ None）。collider は box(p)（広げた箱の中か）・nearest(p)
+    （面のいちばん近い点・その面の外向き・距離。無ければ None）・inside(p) を持つ。tol は「足りている」とみなす幅。"""
+    if not collider.box(p):
+        return None
+    hit = collider.nearest(p)
+    if hit is None:
+        return None
+    q, normal, dist = hit
+    if clearly_outside(p, q, normal, dist, offset):
+        return None
+    inside = collider.inside(p)
+    if not inside and dist >= offset - tol:
+        return None
+    return push_correction(p, q, dist, offset, inside)
+
+
+def vertex_need(p, offset, colliders, passes=PUSH_PASSES, tol=0.0):
+    """頂点 p を、どの当たりからも offset だけ離す動き。まず当たりごとの直しのうちいちばん長いものを選び（リポジトリ外の
+    試作と同じ）、直した位置で全部の当たりを調べ直して、まだ中にあるか近すぎる分を足す（passes 回まで）。2 つの当たりに
+    違う向きで入った頂点を、片方に入ったまま残さないため。戻り: (動き, 調べ直しで足したか)。"""
+    need = np.zeros(3)
+    for collider in colliders:
+        v = collider_correction(collider, p, offset)
+        if v is not None and np.linalg.norm(v) > np.linalg.norm(need):
+            need = v
+    if not need.any():
+        return need, False
+    added = False
+    for _ in range(passes):
+        more = False
+        for collider in colliders:
+            v = collider_correction(collider, p + need, offset, tol)
+            if v is not None:
+                need = need + v
+                more = added = True
+        if not more:
+            break
+    return need, added
 
 
 def rest_offsets(d, rot):
@@ -590,6 +633,18 @@ def hip_path(bpy, arm, hips, frames, sigma):
     return {f: p for f, p in zip(frames, gauss_smooth(points, sigma))}
 
 
+def sync_to_render(ob):
+    """押し出しが測るのはビューポートの形（評価した depsgraph）で、描くのは描画の形。モディファイアの効き方が両方で違うと、
+    測った形と描いた形がずれるので、描く間だけ、ビューポートの効き方を描画の効き方にそろえる（.blend は保存しない）。
+    戻り: そろえたモディファイアの「物体/名前」。"""
+    changed = []
+    for m in ob.modifiers:
+        if m.show_viewport != m.show_render:
+            m.show_viewport = m.show_render
+            changed.append(f"{ob.name}/{m.name}")
+    return changed
+
+
 def viewport_modifiers(ob):
     """ビューポートで効いているモディファイアの「名前（種類）」。"""
     return [f"{m.name}（{m.type}）" for m in ob.modifiers if m.show_viewport]
@@ -698,14 +753,34 @@ class PushTarget:
         return masked_rotation(full, np.tile(O, (len(self.idx), 1, 1)), self.influence)
 
 
+class BlenderCollider:
+    """当たり 1 つ（BVH と、広げた箱）。vertex_need が使う box・nearest・inside。"""
+
+    def __init__(self, tree, lo, hi, rays, step):
+        self.tree, self.lo, self.hi, self.rays, self.step = tree, lo, hi, rays, step
+
+    def box(self, p):
+        return bool(np.all((p > self.lo) & (p < self.hi)))
+
+    def nearest(self, p):
+        from mathutils import Vector
+        q, n, _, dist = self.tree.find_nearest(Vector(p))
+        return None if q is None else (np.array(q), np.array(n), dist)
+
+    def inside(self, p):
+        return inside_mesh(self.tree, p, self.rays, self.step)
+
+
 class Push:
     """押し出し 1 つ（当たりと、動かすメッシュの並び）。apply() で今のコマを直す。"""
 
-    def __init__(self, bpy, targets, colliders, smooth, unit):
+    def __init__(self, bpy, targets, colliders, smooth, unit, recheck=True):
+        self.passes = PUSH_PASSES if recheck else 0       # false なら試作と同じく、いちばん長い直しだけ
         from mathutils import Vector
         self.bpy, self.targets, self.colliders, self.smooth, self.unit = bpy, targets, colliders, smooth, unit
         self.rays = [Vector(d).normalized() for d in PUSH_RAYS]
         self.unconverted = {}                             # 前の apply で、骨の動きが潰れて戻せなかった頂点の数（メッシュごと）
+        self.rechecked = {}                               # 前の apply で、直した位置で調べ直して直しを足した頂点の数
 
     def apply(self, reset=True):
         """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。reset が false なら、直す前の形へ戻すのは呼ぶ側
@@ -717,12 +792,14 @@ class Push:
         if reset:
             reset_pushes(bpy, [self])                     # 直す前の形で測る
         margin, step = push_margin([t.off for t in self.targets], unit), PUSH_STEP_M / unit
-        trees = []
+        colliders = []
         for collider in self.colliders:
             co, polys = evaluated_points(bpy, collider)
             polys, _ = outward_polygons(co, polys)       # 面は外向きにそろえて使う（鏡に映した当たり・裏返った当たり）
-            trees.append((BVHTree.FromPolygons([tuple(c) for c in co], polys), co.min(0) - margin, co.max(0) + margin))
+            colliders.append(BlenderCollider(BVHTree.FromPolygons([tuple(c) for c in co], polys), co.min(0) - margin,
+                                             co.max(0) + margin, self.rays, step))
         stats = {}
+        self.rechecked = {}
         for t in self.targets:
             co, _ = evaluated_points(bpy, t.ob)
             problem = vertex_count_problem(t.ob.name, len(t.basis), len(co), viewport_modifiers(t.ob),
@@ -731,17 +808,15 @@ class Push:
                 raise SystemExit(problem)
             p = co[t.idx]
             need = np.zeros_like(p)
-            for tree, lo, hi in trees:
-                for k in np.where(np.all((p > lo) & (p < hi), axis=1))[0]:
-                    q, n, _, dist = tree.find_nearest(Vector(p[k]))
-                    if q is None:
-                        continue
-                    q, n = np.array(q), np.array(n)
-                    if clearly_outside(p[k], q, n, dist, t.off[k]):
-                        continue
-                    v = push_correction(p[k], q, dist, t.off[k], inside_mesh(tree, p[k], self.rays, step))
-                    if v is not None and np.linalg.norm(v) > np.linalg.norm(need[k]):
-                        need[k] = v
+            near = np.zeros(len(p), bool)                # どれかの当たりの箱の中の頂点だけを調べる
+            for c in colliders:
+                near |= np.all((p > c.lo) & (p < c.hi), axis=1)
+            added = 0
+            for k in np.where(near)[0]:
+                need[k], more = vertex_need(p[k], t.off[k], colliders, passes=self.passes, tol=PUSH_TOL_M / unit)
+                added += more
+            if added:
+                self.rechecked[t.ob.name] = int(added)
             d, mag = spread_push(need, t.edges, self.smooth)
             d = weld_mean(d, t.weld) * t.w[:, None]
             rest, flat = rest_offsets(d, t.deform_rot())   # 直しの要る頂点だけを戻す（潰れた骨の頂点で止めない）
@@ -760,7 +835,7 @@ def push_armature(ob):
     """押し出しの直しを骨で動かす前の差に戻すときの、メッシュを動かす Armature モディファイア（効いているもの。無ければ
     None）。頂点の組の重みで動かす形（線形、組の絞りも扱う）だけを扱い、骨の包み（envelope）で動かすもの・Armature が
     2 つ以上のものは止める。頂点の組を使わず包みも使わない Armature は骨で動かさないので None。"""
-    active = [m for m in ob.modifiers if m.type == "ARMATURE" and m.object is not None and m.show_viewport and m.show_render]
+    active = [m for m in ob.modifiers if m.type == "ARMATURE" and m.object is not None and m.show_render]   # 効き方は描画にそろえてある
     if len(active) > 1:
         raise SystemExit(f"push: {ob.name} に効いている Armature モディファイアが {len(active)} つあります（"
                          f"{', '.join(m.name for m in active)}）。押し出しは 1 つの Armature で動くメッシュにだけ使えます")
@@ -804,6 +879,7 @@ def make_pushes(bpy, specs, unit):
             if ob is None or ob.type != "MESH":
                 raise SystemExit(f"push[{n}] の当たりのメッシュがありません: {name}")
             colliders.append(ob)
+        synced = [s for c in colliders for s in sync_to_render(c)]   # 測る形を描く形にそろえる
         chosen = {}                                      # 名前 → [物体, 名指しか]。同じ押し出しの中の重なりは 1 つにまとめる
         for name in spec["meshes"]:
             ob = bpy.data.objects.get(name)
@@ -819,6 +895,7 @@ def make_pushes(bpy, specs, unit):
                     chosen[o.name] = [o, named]
         targets, skipped, separated = [], [], []
         for o, named in chosen.values():
+            synced += sync_to_render(o)
             if sum(1 for x in bpy.data.objects if x.data == o.data) > 1:
                 # メッシュのデータを別の物体と分け合う（リンク複製）と、シェイプキーも分け合い、片方の直しがもう片方も
                 # 動かす。描く間だけ、この物体だけのデータにする（.blend は保存しない）
@@ -844,14 +921,14 @@ def make_pushes(bpy, specs, unit):
                 skipped.append(o.name)
                 continue
             targets.append(target)
-        pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit))
+        pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit, bool(spec.get("recheck", True))))
         notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx)), "armature": t.arm.name if t.arm else None,
                                    "without_bones": int((t.W.sum(1) <= 0).sum()) if t.arm else int(len(t.idx))}
-                                  for t in targets], "skipped": skipped, "separated": separated,
+                                  for t in targets], "skipped": skipped, "separated": separated, "synced": synced,
                       "colliders": [{"object": c.name, "open_edges": open_edges(c),
                                      "reversed": outward_polygons(*evaluated_points(bpy, c))[1]} for c in colliders],
                       "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
-                      "smooth": int(spec.get("smooth", 6))})
+                      "smooth": int(spec.get("smooth", 6)), "recheck": bool(spec.get("recheck", True))})
     problem = push_overlap([([t.ob.name for t in p.targets], [c.name for c in p.colliders]) for p in pushes])
     if problem:                                           # 輪郭線の写しを足した後の重なりは、描き始める前に止める
         raise SystemExit(problem)
@@ -965,6 +1042,9 @@ def main(argv=None):
         if pushes:                                       # 描く直前に押し出す（輪郭線の太さを入れた後の形で測る）
             moved = apply_pushes(bpy, pushes)
             entry = {"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}}
+            again = {k: n for push in pushes for k, n in push.rechecked.items()}
+            if again:                                    # 直した位置で調べ直して、ほかの当たりの分も足した頂点
+                entry["rechecked"] = again
             flat = {k: n for push in pushes for k, n in push.unconverted.items()}
             if flat:                                     # 骨の動きが潰れて直せなかった頂点（直さずに描く）
                 entry["unconverted"] = flat
