@@ -106,10 +106,24 @@ def write_references(out, palettes):
 
 def needed_frames(events, plan_segments):
     """{クリップ: {コマ番号, …}}。出来事の前・山・後・VLM の指摘のコマと、修正計画の前後のコマ。"""
+    wanted = still_frames(events)
+    for clip, frames in anchor_frames(plan_segments).items():
+        wanted.setdefault(clip, set()).update(frames)
+    return wanted
+
+
+def still_frames(events):
+    """静止画に要るコマ {クリップ: {コマ番号, …}}（出来事の前・山・後・VLM の指摘のコマ）。STILL_WIDTH の幅で足りる。"""
     wanted = {}
     for event in events:
         a, b = event["frames"]
         wanted.setdefault(event["clip"], set()).update({a - 1, event["peak"], b, *_vlm_frames(event)[:MAX_VLM_PANELS]})
+    return wanted
+
+
+def anchor_frames(plan_segments):
+    """修正計画の前後のコマ {クリップ: {コマ番号, …}}。生成し直すときの始点・終点の画なので元の大きさで要る。"""
+    wanted = {}
     for segment in plan_segments:
         for side in ("before", "after"):
             if segment["anchors"][side]:
@@ -223,10 +237,18 @@ def markdown(report, plan):
             others = [CATEGORY_LABELS[c] for c in event["categories"] if c != event["category"]]
             kind = CATEGORY_LABELS[event["category"]] + (f"（ほかに {'・'.join(others)}）" if others else "")
             remarks = list(dict.fromkeys(s["detail"] for s in event["signals"] if s["check"] == "vlm" and s["detail"] != event["summary"]))
-            checks = sorted({s["label"] for s in event["signals"] if not (remarks and s["check"] == "vlm")} - {event["label"]})
-            colors = list(dict.fromkeys(s["color"] for s in event["signals"]           # 同じ検査で別の色（欠けた色が 2 つなど）
-                                        if s["label"] == event["label"] and s["detail"] != event["summary"] and s.get("color")))
-            detail = (f"{event['label']}: {event['summary']}" + (f"（同じ検査のほかの色: {'・'.join(colors)}）" if colors else "")
+            colored = {}                     # 色を書く信号（設定画の色の欠け・設定画に無い色）は、ほかの信号でも色と比べた設定画を出す
+            for signal in event["signals"]:
+                if signal.get("color") and signal["detail"] != event["summary"]:
+                    found = colored.setdefault(signal["label"], {"colors": {}, "references": {}})
+                    found["colors"][signal["color"]] = True
+                    if signal.get("reference"):
+                        found["references"][signal["reference"]] = True
+            colors = "".join(f"（{'同じ検査のほかの色' if label == event['label'] else label}: {'・'.join(found['colors'])}"
+                             + (f"。{'・'.join(found['references'])} と照合" if found["references"] else "") + "）"
+                             for label, found in colored.items())
+            checks = sorted({s["label"] for s in event["signals"] if not (remarks and s["check"] == "vlm")} - {event["label"]} - set(colored))
+            detail = (f"{event['label']}: {event['summary']}" + colors
                       + (f"（ほかの信号: {'・'.join(checks)}）" if checks else "") + "".join(f"（VLM の指摘: {remark}）" for remark in remarks))
             lines.append(f"| {event['id']} | {_frames_text(event['frames'])} | {_seconds_text(event['t'])} | {kind} | {_cell(detail)} | "
                          f"{EVIDENCE[event['evidence']]} | {_cell(_where(event))} | {event.get('still', '')} |")
@@ -254,7 +276,13 @@ def markdown(report, plan):
     if vlm.get("frames"):
         lines.append(f"- 見せたコマ: {vlm['frames']['frames']}（出来事の山 {vlm['frames']['event_peaks']}・見本 {vlm['frames']['samples']}）")
     if vlm.get("tool"):
-        lines.append(f"- 道具: {vlm['tool']}（外部へ送る設定: {'はい' if vlm.get('sends_data') else 'いいえ'}）・指摘 {vlm.get('findings', 0)} 件")
+        model = f"・モデル {vlm['model']}" if vlm.get("model") else ""
+        lines.append(f"- 道具: {vlm['tool']}{model}（外部へ送る設定: {'はい' if vlm.get('sends_data') else 'いいえ'}）・指摘 {vlm.get('findings', 0)} 件")
+    if vlm.get("usage"):
+        usage = vlm["usage"]
+        lines.append(f"- トークン: 入力 {usage.get('input_tokens', 0):,}・キャッシュの書き込み {usage.get('cache_creation_input_tokens', 0):,}"
+                     f"・キャッシュの読み出し {usage.get('cache_read_input_tokens', 0):,}・出力 {usage.get('output_tokens', 0):,}"
+                     "（料金はモデルの料金表で計算する）")
     lines += [f"- 注意: {w}" for w in vlm.get("warnings", [])]
     if report["references"]:
         lines += ["", "## 設定画", "",

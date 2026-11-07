@@ -127,25 +127,46 @@ def _api_errors():
     return anthropic.APIStatusError, anthropic.APIConnectionError
 
 
+USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def _usage(message):
+    """返答のトークン数（入力・キャッシュの書き込みと読み出し・出力）。返答に無ければ None。料金はモデルの料金表で計算する。"""
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return None
+    return {field: int(getattr(usage, field, 0) or 0) for field in USAGE_FIELDS}
+
+
+def total_usage(log):
+    """バッチの記録のトークン数の合計（拒否・打ち切りのバッチも課金されるので数える）。どのバッチにも無ければ None。"""
+    found = [record["usage"] for record in log if record.get("usage")]
+    return {field: sum(usage[field] for usage in found) for field in USAGE_FIELDS} if found else None
+
+
 def review(client, request, packet, model, effort, size, say=print, errors=None):
     """全バッチを送って (指摘, 見られなかったコマ, バッチの記録, 応えたモデル) を返す。client は anthropic.Anthropic と同じ形。"""
     status_error, connection_error = errors or _api_errors()
     findings, unreviewed, log, served = [], [], [], None
     system = system_prompt(request)
+    # 返答の形はどのバッチでも同じにする（列挙は依頼の全コマ）。バッチごとに変えると、設定画の前置きのキャッシュが毎回外れた
+    # （実際の API で、3 バッチとも書き込みだけで読み出しが 0 だった。2026-11-07）。バッチの外のコマの指摘は normalize で捨てる
+    output_config = {"effort": effort, "format": {"type": "json_schema", "schema": api_schema([item["id"] for item in request["frames"]])}}
     for number, (ids, content) in enumerate(batches(request, packet, size), start=1):
         record = {"batch": number, "frames": ids}
         try:
             message = client.beta.messages.create(
                 model=model, max_tokens=MAX_TOKENS, betas=[FALLBACK_BETA], fallbacks="default",
                 system=system, messages=[{"role": "user", "content": content}],
-                output_config={"effort": effort, "format": {"type": "json_schema", "schema": api_schema(ids)}})
+                output_config=output_config)
         except status_error as error:
             record.update(error=f"HTTP {getattr(error, 'status_code', '?')}: {getattr(error, 'message', error)}"[:400])
         except connection_error as error:
             record.update(error=f"接続できません: {error}"[:400])
         else:
             served = message.model
-            record.update(model=message.model, stop_reason=message.stop_reason, request_id=getattr(message, "_request_id", None))
+            record.update(model=message.model, stop_reason=message.stop_reason, request_id=getattr(message, "_request_id", None),
+                          usage=_usage(message))
             text = _text(message)
             if message.stop_reason == "refusal":
                 details = getattr(message, "stop_details", None)
@@ -196,7 +217,7 @@ def main(argv=None):
     response = {"schema_version": "inspect-vlm-response/0.1",
                 "tool": {"name": "claude", "version": f"anthropic {anthropic.__version__}", "model": served or args.model},
                 "request_sha256": hashlib.sha256(raw).hexdigest(), "findings": findings,
-                "x_unreviewed": unreviewed, "x_batches": log, "x_requested_model": args.model, "x_effort": args.effort}
+                "x_unreviewed": unreviewed, "x_batches": log, "x_usage": total_usage(log), "x_requested_model": args.model, "x_effort": args.effort}
     args.output.write_text(json.dumps(response, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if len(unreviewed) == len(request["frames"]) and request["frames"]:
         print("どのコマも見られませんでした（x_batches の error を見てください）", file=sys.stderr)

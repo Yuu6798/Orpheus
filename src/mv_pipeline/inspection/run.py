@@ -189,6 +189,12 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
         shutil.rmtree(folder)
     palettes = reference.prepare_all(cfg.references)
     clips = _clips_from_dance(cfg) if cfg.dance_spec else _clips_from_config(cfg)
+    keys = [(clip["id"], (clip["foreground"] or {}).get("key")) for clip in clips if (clip["foreground"] or {}).get("kind") == "key"]
+    keys += [(entry["rel"], entry["key"]) for entry in cfg.references if entry.get("key")]
+    for where, key in keys:                           # 緑抜きで肌や髪まで抜ける設定は、検出の前に知らせる
+        warning = features.key_warning(key, where)
+        if warning and warning not in cfg.notes:
+            cfg.notes.append(warning)
     skipped, events, unused = [], [], []
     for clip in clips:
         found, signals = _measure(clip, cfg, palettes, skipped, say)
@@ -227,6 +233,9 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
             vlm_state.update(findings=len(response["findings"]), warnings=warnings, response="vlm/response.json",
                              tool=vlm_state.get("tool") or " ".join(filter(None, [tool.get("name"), tool.get("version")])),
                              model=tool.get("model"))
+            usage = response.get("x_usage")          # アダプタが書いたトークン数（任意。料金はモデルの料金表で計算する）
+            if isinstance(usage, dict) and usage and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in usage.values()):
+                vlm_state["usage"] = usage
             by_id = {clip["id"]: clip for clip in clips}
             for event in vlm.attach(events, response, request, clips):
                 clip = by_id[event["clip"]]
@@ -239,10 +248,14 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
             _finish_event(event, by_id[event["clip"]], cfg)
     events.sort(key=lambda e: ([c["id"] for c in clips].index(e["clip"]), e["frames"][0], e["frames"][1]))
     plan = targets.plan(clips, events, cfg.thresholds)
-    wanted = report.needed_frames(events, plan["segments"])
+    wanted = report.still_frames(events)            # 静止画は STILL_WIDTH の幅で足りる（元の大きさのコマを出来事の数だけ抱えない）
+    small = {clip["id"]: video.grab(clip["path"], wanted.get(clip["id"], ()), clip["info"], total=clip["frames_total"],
+                                    size=video.even_size(clip["info"]["width"], clip["info"]["height"], report.STILL_WIDTH))
+             for clip in clips if clip["id"] in wanted}
+    wanted = report.anchor_frames(plan["segments"])  # 修正計画の前後のコマは、生成し直すときの画なので元の大きさ
     grabbed = {clip["id"]: video.grab(clip["path"], wanted.get(clip["id"], ()), clip["info"], total=clip["frames_total"])
                for clip in clips if clip["id"] in wanted}
-    report.write_stills(out, events, grabbed, palettes)
+    report.write_stills(out, events, small, palettes)
     cutouts = report.write_references(out, palettes)
     report.write_anchors(out, plan, grabbed)
     problems = [clip for clip in clips if not clip["decode"]["ok"]]

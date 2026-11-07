@@ -27,7 +27,7 @@ BINS = GRAY_BINS + HUE_BINS * SAT_BINS * VAL_BINS
 HUE_SHIFT = 6             # 赤（色相 0）が色相の箱の中央に来るようにずらす（OpenCV の色相は 0..179）
 MIN_PRESENT = 0.004       # 人物がいるとみなす面積（画面の割合）
 SPECK = 0.0005            # これより小さい塊は雑音として捨てる（画面の割合）
-COMPONENT = (0.0015, 0.02)  # 数える塊: 画面の 0.15% 以上で、いちばん大きい塊の 2% 以上（離れた手ほどの大きさ）
+COMPONENT = (0.0015, 0.01)  # 数える塊: 画面の 0.15% 以上で、いちばん大きい塊の 1% 以上（離れた手ほどの大きさ。全身が画面の 2 割ほどの描画で、拳は体の 1〜1.5%）
 
 
 def color_bins(hsv):
@@ -46,6 +46,22 @@ def histogram(bins):
         return None
     counts = np.bincount(bins, minlength=BINS).astype(np.float64)
     return counts / counts.sum()
+
+
+def key_warning(key, where):
+    """緑抜きの色が灰色に近すぎて、灰色・白・黒（肌・髪・白い服）まで抜ける設定なら注意の文。大丈夫なら None。
+
+    緑抜きは色味（CbCr）の距離で決める。灰色（色味 0）とキーの色の距離が tolerance + softness より小さいと、灰色の画素の
+    アルファが 1 に届かない（くすんだ緑の背景の 3D 描画で、既定の 0.22 では人物の大半が抜けた。2026-11-07）。"""
+    cb, cr = dancekey._chroma(np.asarray(key["color"], np.float32) / 255.0)
+    gap = float(math.hypot(float(cb), float(cr)))
+    if gap >= key["tolerance"] + key["softness"]:
+        return None
+    limit = gap - key["softness"]
+    advice = f"tolerance を {limit:.2f} 以下に下げてください" if limit >= 0.02 else "背景を鮮やかな緑にするか、tolerance と softness を下げてください"
+    return (f"{where}: 緑抜きの色 {[round(c) for c in key['color']]} は灰色との色味の差が {gap:.2f} しかなく、tolerance {key['tolerance']:g}＋"
+            f"softness {key['softness']:g} では灰色・白・黒の画素（肌・髪・白い服）も背景として抜けます（人物が欠け、形状・衣装の誤検出のもとに"
+            f"なる）。{advice}")
 
 
 def mask_of(rgb, foreground):
@@ -283,7 +299,9 @@ def extract(path, info, size, foreground, start, end, palettes=(), thresholds=No
                 both = (half_mask | previous_half_mask).astype(np.uint8)
                 region = cv2.dilate(both, np.ones((3, 3), np.uint8)) > 0 if both.any() else None
             scale_px = (rows["body"][-1] if present else 1.0) * flow_size[1]
-            if region is None and half_mask is not None:
+            # 人物が前後のどちらかにしかいないコマは、動きではなく出入りを測ってしまう（消失は連続性の出来事で見る）
+            appears = half_mask is not None and (half_mask.any() != previous_half_mask.any())
+            if (region is None and half_mask is not None) or appears:
                 rows["flow"].append(math.nan)
                 rows["flow_vec"].append([0.0, 0.0])
                 rows["flow_box"].append(None)

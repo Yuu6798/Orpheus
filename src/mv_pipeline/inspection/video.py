@@ -110,17 +110,34 @@ def grab(path, indices, info, size=None, total=None):
         return _sequential(path, wanted, info, size)
     width, height = size or (info["width"], info["height"])
     chosen = "+".join(f"eq(n\\,{i})" for i in wanted)
-    run = subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(path), "-map", "0:v:0",
-                          "-fps_mode", "passthrough", "-vf", f"select='{chosen}',{_scale(size, info['matrix'])}", "-pix_fmt", "rgb24",
-                          "-f", "rawvideo", "pipe:1"], capture_output=True)
-    if run.returncode != 0:
-        raise PipelineError(f"コマを取り出せません（{Path(path).name}）: {run.stderr.decode('utf-8', 'replace')[-300:]}")
     size_bytes = width * height * 3
-    count = len(run.stdout) // size_bytes
-    if count != len(wanted):
+    errors = tempfile.TemporaryFile()
+    process = subprocess.Popen([media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(path), "-map", "0:v:0",
+                                "-fps_mode", "passthrough", "-vf", f"select='{chosen}',{_scale(size, info['matrix'])}", "-pix_fmt", "rgb24",
+                                "-f", "rawvideo", "pipe:1"], stdout=subprocess.PIPE, stderr=errors)
+    out, surplus = {}, b""
+    try:                              # 出力を全部ためずに 1 コマずつ読む（元の大きさのコマを一度に抱えない）
+        for index in wanted:
+            data = process.stdout.read(size_bytes)
+            if len(data) < size_bytes:
+                break
+            out[index] = np.frombuffer(data, np.uint8).reshape(height, width, 3).copy()
+        else:
+            surplus = process.stdout.read(1)
+        code = process.wait()
+        errors.seek(0)
+        message = errors.read().decode("utf-8", "replace")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        errors.close()
+    if code != 0:
+        raise PipelineError(f"コマを取り出せません（{Path(path).name}）: {message[-300:]}")
+    if len(out) != len(wanted) or surplus:
         return _sequential(path, wanted, info, size)
-    return {index: np.frombuffer(run.stdout[k * size_bytes:(k + 1) * size_bytes], np.uint8).reshape(height, width, 3).copy()
-            for k, index in enumerate(wanted)}
+    return out
 
 
 def load_rgba(path):

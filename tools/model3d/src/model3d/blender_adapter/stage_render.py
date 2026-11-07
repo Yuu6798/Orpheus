@@ -12,6 +12,8 @@ settings.json（render.stage が書く）:
 - outline: 輪郭線の写し（look.toon の model3d_outline の印）の太さを、カメラから腰までの距離で、高さ reference_height の
   画で line_px 画素になるように書き換える。scale は元のメッシュの名前 → 太さの倍率
 - stage: enabled（舞台・光・空を作る）、stripe_floor（壁の暗い帯の明るさ。明るい帯の色に掛ける）、stripe_soft（帯の境の幅）
+- background: 省くと舞台の空か .blend の空。"transparent" は透けの RGBA の PNG、{"color": [R, G, B]}（0〜255）はその色の背景
+  （緑抜き用。透けで描いて合成で敷くので、背景の色で人物を照らさない。ディザーは 0）。どちらも stage.enabled を false にする
 - only: 描くコマの T（省くと全部）
 track.json（model3d-stage-track/0.1）: 描くコマの並びと、コマごとのカメラ・舞台・光・塗りの値。省くと、.blend のシーンの
 全コマを T = 1 から順に、既定のカメラと動かない光で描く。
@@ -48,6 +50,7 @@ DEFAULTS = {
                "follow_sigma": 6.0},
     "outline": {"line_px": 2.4, "reference_height": 1920, "scale": {}},
     "stage": {"enabled": True, "stripe_floor": 0.02, "stripe_soft": 0.0},
+    "background": None,
     "only": None,
 }
 TONE = "model3d_stage_tone"
@@ -334,20 +337,45 @@ def apply_render(bpy, settings):
     sc.render.resolution_x, sc.render.resolution_y = settings["resolution"]
     sc.render.resolution_percentage = 100
     sc.render.use_motion_blur = False                   # キーフレームを使わず、描く前に値を入れるので、動きのぶれは使えない
-    sc.render.film_transparent = False
+    background = settings.get("background")
+    sc.render.film_transparent = background is not None    # 色の背景も、透けで描いてから合成で敷く（空の色で人物を照らさない）
     image = sc.render.image_settings
     image.file_format, image.color_mode, image.color_depth, image.compression = "PNG", "RGB", "8", 15
+    if background == "transparent":
+        image.color_mode = "RGBA"
     sc.view_settings.view_transform, sc.view_settings.look = "Standard", "None"
-    sc.use_nodes = bool(settings["bloom"])
-    if settings["bloom"]:
+    color = background.get("color") if isinstance(background, dict) else None
+    if color is not None:
+        sc.render.dither_intensity = 0.0                 # 背景の色を画素まで決まった値にする（緑抜きのキーの色）
+    sc.use_nodes = bool(settings["bloom"]) or color is not None
+    if sc.use_nodes:
         tree = sc.node_tree
         tree.nodes.clear()
         rl = tree.nodes.new("CompositorNodeRLayers")
-        gl = tree.nodes.new("CompositorNodeGlare")
-        gl.glare_type, gl.quality = "BLOOM", "HIGH"
         comp = tree.nodes.new("CompositorNodeComposite")
-        tree.links.new(rl.outputs["Image"], gl.inputs["Image"])
-        tree.links.new(gl.outputs["Image"], comp.inputs["Image"])
+        out = rl.outputs["Image"]
+        if settings["bloom"]:
+            gl = tree.nodes.new("CompositorNodeGlare")
+            gl.glare_type, gl.quality = "BLOOM", "HIGH"
+            tree.links.new(out, gl.inputs["Image"])
+            out = gl.outputs["Image"]
+        if color is not None:
+            bg = tree.nodes.new("CompositorNodeRGB")
+            bg.outputs[0].default_value = (*srgb_to_linear(color), 1.0)
+            over = tree.nodes.new("CompositorNodeAlphaOver")
+            tree.links.new(bg.outputs[0], over.inputs[1])
+            tree.links.new(out, over.inputs[2])
+            out = over.outputs["Image"]
+        tree.links.new(out, comp.inputs["Image"])
+
+
+def srgb_to_linear(color):
+    """0〜255 の sRGB の色を、合成の線形の値に（Standard の表示で同じ 0〜255 に戻る）。"""
+    out = []
+    for v in color:
+        c = v / 255.0
+        out.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    return tuple(out)
 
 
 def hip_path(bpy, arm, hips, frames, sigma):
@@ -485,7 +513,7 @@ def main(argv=None):
                         "display": sc.display_settings.display_device},
               "camera": {"from_track": from_track, "default": len(rendered) - from_track, "distance_to_hips_m": span(distances)},
               "outline": {"hulls": len(hulls), "width_mm": span(widths, 1000.0)},
-              "stage": bool(stage["enabled"]), "seconds": round(seconds, 1),
+              "stage": bool(stage["enabled"]), "background": settings.get("background"), "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
