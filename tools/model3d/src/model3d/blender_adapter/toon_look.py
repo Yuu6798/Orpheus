@@ -23,11 +23,14 @@ settings.json（look.toon が書く）:
   threshold ± soft）。影の側は、影の色に舞台の色（共有のノードグループ model3d_stage_tone の a）を tint だけ混ぜた色を掛ける。
 - 縁の光: 面が横を向く所（Layer Weight の Facing を rim_from〜rim_to）に、カメラから見て左は a、右は b の色を、強さ gain で
   スクリーンで足す。face_attribute の所と、weak_rim の属性の所は弱める。
-- 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（舞台の光は受けない）。
-- 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す。
+- 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（舞台の光は受けない）。EEVEE が使う材質の
+  出力につなぐ。
+- 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す（この
+  3 つの入力につないだノードは外す）。
 輪郭線（試作の手順）: メッシュの写し（親子付け・変換・モディファイアの並びは元のまま）の重なる頂点を溶かし、ratio まで面を
-減らし、手（hand_attribute）の所はならしてから（どちらも並びの先頭で元の面に当てる）、面を裏返す。絵の色を dark 倍した暗い色を
-Emission で出し、裏の面は描かない。並びの最後（骨の変形と、形を変えるモディファイアの後）に、法線の向きへ width_mm だけ
+減らし、手の属性（hand_attribute）のあるメッシュは写しをならしてから（どちらも並びの先頭で元の面に当てる。形状キーがあれば、
+頂点と辺だけの仮のメッシュでならしたずれを全部のキーに足す）、面を裏返す。材質の枠ごとに、Base Color をさかのぼった絵（無ければ色）を
+dark 倍した暗い色を Emission で出す線の材質にし、裏の面は描かない。並びの最後（骨の変形と、形を変えるモディファイアの後）に、法線の向きへ width_mm だけ
 太らせる Displace を足す（名前は model3d_outline_modifier の印に残す。ふつうは out）。Displace は物体の中の単位で押すので、
 物体の拡大とシーンの単位（scale_length）で直した強さにし、その換算（中の単位 1 が何 m か）を model3d_outline_m_per_local の
 印に残す。写しは model3d_outline の印を持ち、影を落とさない。元の頂点の並びに結び付いたモディファイア（BOUND）のあるメッシュと、
@@ -101,6 +104,39 @@ def base_color(nt, bsdf):
     return rgb.outputs[0]
 
 
+def base_image(bsdf):
+    """Principled BSDF の Base Color の出どころをさかのぼって、最初に見つかる絵（無ければ None）"""
+    todo, seen = [lk.from_node for lk in bsdf.inputs["Base Color"].links], set()
+    while todo:
+        n = todo.pop(0)
+        if n.name in seen:
+            continue
+        seen.add(n.name)
+        if n.type == "TEX_IMAGE" and n.image is not None:
+            return n.image
+        todo.extend(lk.from_node for s in n.inputs for lk in s.links)
+    return None
+
+
+def hull_source(m):
+    """輪郭線の色の出どころ: Base Color をさかのぼった絵か、絵が無ければ Base Color の値（Principled BSDF が無ければ最初の絵）"""
+    image, color = None, (0.5, 0.5, 0.5, 1.0)
+    if m is not None and m.use_nodes:
+        bsdfs = [n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
+        if bsdfs:
+            image, color = base_image(bsdfs[0]), tuple(bsdfs[0].inputs["Base Color"].default_value)
+        else:
+            texs = [n for n in m.node_tree.nodes if n.type == "TEX_IMAGE" and n.image is not None]
+            image = texs[0].image if texs else None
+    return image, color
+
+
+def material_output(nt):
+    """EEVEE が描くときに使う材質の出力（無ければ作る）"""
+    out = nt.get_output_node("EEVEE")
+    return out if out is not None else nt.nodes.new("ShaderNodeOutputMaterial")
+
+
 def principled(m):
     return m is not None and m.use_nodes and any(n.type == "BSDF_PRINCIPLED" for n in m.node_tree.nodes)
 
@@ -131,7 +167,7 @@ def toon_material(bpy, m, tone, t):
     from mathutils import Vector
     nt = m.node_tree
     bsdf = [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"][0]
-    out = [n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"][0]
+    out = material_output(nt)
     src = base_color(nt, bsdf)
     geo = nt.nodes.new("ShaderNodeNewGeometry")
     dot = nt.nodes.new("ShaderNodeVectorMath")
@@ -278,8 +314,8 @@ def face_material(m, f):
     for n in list(nt.nodes):
         if n.type != "BSDF_PRINCIPLED":
             continue
-        for name, value in (("Roughness", 1.0), ("Specular IOR Level", 0.0)):
-            for lk in list(n.inputs[name].links):
+        for name, value in (("Roughness", 1.0), ("Specular IOR Level", 0.0), ("Emission Strength", f["emit"])):
+            for lk in list(n.inputs[name].links):          # つないだノードがあると値が効かないので外す
                 nt.links.remove(lk)
             n.inputs[name].default_value = value
         src = base_color(nt, n)
@@ -288,7 +324,6 @@ def face_material(m, f):
         nt.links.new(src, hsv.inputs["Color"])
         nt.links.new(hsv.outputs["Color"], n.inputs["Base Color"])
         nt.links.new(src, n.inputs["Emission Color"])
-        n.inputs["Emission Strength"].default_value = f["emit"]
 
 
 def hull_material(bpy, name, image, color, o):
@@ -330,20 +365,61 @@ def bound_modifiers(ob):
             if m.type in BOUND or (m.type == "CORRECTIVE_SMOOTH" and getattr(m, "rest_source", "") == "BIND")]
 
 
+def apply_first(bpy, ob, mod):
+    """mod を並びの先頭に動かして当てる（写したモディファイアより先に、元の面に当てる）"""
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+
+def smooth_hull(bpy, new):
+    """写し全体をならす（Smooth、強さ 0.6・6 回）。形状キーがあると Blender はモディファイアを当てられないので、同じ頂点と辺だけの
+    仮のメッシュ（Smooth は辺だけを使う）で基本の形（Basis）をならし、そのずれを全部のキーと頂点に足す（キーごとの動きはそのまま）"""
+    import numpy as np
+
+    def smooth(ob):
+        sm = ob.modifiers.new("smooth", "SMOOTH")
+        sm.factor, sm.iterations = 0.6, 6
+        sm.vertex_group = ""
+        apply_first(bpy, ob, sm)
+
+    me = new.data
+    if me.shape_keys is None:
+        smooth(new)
+        return
+    n = len(me.vertices)
+    basis, after = np.zeros(n * 3), np.zeros(n * 3)
+    me.shape_keys.reference_key.data.foreach_get("co", basis)
+    edges = np.zeros(len(me.edges) * 2, dtype=np.int32)
+    me.edges.foreach_get("vertices", edges)
+    flat_mesh = bpy.data.meshes.new("model3d_smooth")
+    flat_mesh.vertices.add(n)
+    flat_mesh.vertices.foreach_set("co", basis)
+    flat_mesh.edges.add(len(me.edges))
+    flat_mesh.edges.foreach_set("vertices", edges)
+    flat_mesh.update()
+    flat = bpy.data.objects.new("model3d_smooth", flat_mesh)
+    bpy.context.scene.collection.objects.link(flat)
+    smooth(flat)
+    flat.data.vertices.foreach_get("co", after)
+    flat_mesh = flat.data
+    bpy.data.objects.remove(flat)
+    bpy.data.meshes.remove(flat_mesh)
+    shift = after - basis
+    for kb in me.shape_keys.key_blocks:
+        co = np.zeros(n * 3)
+        kb.data.foreach_get("co", co)
+        kb.data.foreach_set("co", co + shift)
+    me.vertices.foreach_set("co", after)
+    me.update()
+    bpy.context.view_layer.objects.active = new
+
+
 def outline_hull(bpy, ob, o):
     """輪郭線の写し（試作の outline.py と同じ作り方。写しは元の親子付け・変換・モディファイアの並びを持つ）"""
     import bmesh
     sc = bpy.context.scene
-    src = ob.active_material
-    image, color = None, (0.5, 0.5, 0.5, 1.0)
-    if src is not None and src.use_nodes:
-        texs = [n for n in src.node_tree.nodes if n.type == "TEX_IMAGE"]
-        if texs:
-            image = texs[0].image
-        else:
-            bsdfs = [n for n in src.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
-            if bsdfs:
-                color = tuple(bsdfs[0].inputs["Base Color"].default_value)
+    sources = [hull_source(slot.material) for slot in ob.material_slots] or [hull_source(None)]   # 材質の枠ごとの線の色
     new = ob.copy()                                      # 親子付け・変換・モディファイアの並び（骨の変形の設定も）はそのまま写す
     new.data = ob.data.copy()
     new.name = "hull_" + ob.name
@@ -356,30 +432,25 @@ def outline_hull(bpy, ob, o):
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2e-5)
     bm.to_mesh(me)
     bm.free()
-    bpy.context.view_layer.objects.active = new
-
-    def apply_first(mod):                                # 元の面に当てる（写したモディファイアより先に）
-        bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
-        bpy.ops.object.modifier_apply(modifier=mod.name)
-
     ratio = float(o["ratio"].get(ob.name, 1.0))
     if ratio < 1.0:
         dec = new.modifiers.new("dec", "DECIMATE")
         dec.ratio = ratio
-        apply_first(dec)
+        apply_first(bpy, new, dec)
     hand = o["hand_attribute"]
     if hand and hand in me.attributes:                   # 手首から先は面の細かな凹凸から線が点々と覗くので、写しだけならす
-        sm = new.modifiers.new("smooth", "SMOOTH")
-        sm.factor, sm.iterations = 0.6, 6
-        sm.vertex_group = ""
-        apply_first(sm)
+        smooth_hull(bpy, new)
     bm = bmesh.new()
     bm.from_mesh(me)
     bmesh.ops.reverse_faces(bm, faces=bm.faces)
     bm.to_mesh(me)
     bm.free()
-    me.materials.clear()
-    me.materials.append(hull_material(bpy, "hull_" + ob.name, image, color, o))
+    for k, (image, color) in enumerate(sources):         # 枠ごとに線の材質に替える（枠を消すと面の材質の番号が 0 に戻るので、中身だけ替える）
+        line = hull_material(bpy, "hull_" + ob.name + (f"_{k}" if k else ""), image, color, o)
+        if k < len(new.material_slots):
+            new.material_slots[k].material = line        # 物体に付けた材質の枠でも、写しの側だけが替わる
+        else:
+            me.materials.append(line)
     bpy.context.view_layer.update()
     # Displace は物体の中の単位で押し出すので、mm の太さを、物体の拡大とシーンの単位で中の単位に直す（描く工程も同じ数で直す）
     per = metres_per_local(new.matrix_world, sc.unit_settings.scale_length)

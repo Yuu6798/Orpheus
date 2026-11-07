@@ -38,6 +38,39 @@ def test_bound_modifiers_names_the_ones_an_outline_copy_cannot_keep():
     assert toon_look.bound_modifiers(M(modifiers=[])) == []
 
 
+def _node(name, kind, *sources, image=None):
+    """ノードの代役: 入力の口ごとに、つながった元のノードを並べる"""
+    from types import SimpleNamespace as M
+    return M(name=name, type=kind, image=image, inputs=[M(links=[M(from_node=s)]) for s in sources])
+
+
+def _bsdf(*sources, color=(0.8, 0.1, 0.1, 1.0)):
+    from types import SimpleNamespace as M
+    return M(name="bsdf", type="BSDF_PRINCIPLED",
+             inputs={"Base Color": M(links=[M(from_node=s) for s in sources], default_value=color)})
+
+
+def test_base_image_follows_the_base_color_links_and_skips_other_images():
+    tex = _node("tex", "TEX_IMAGE", image="albedo")
+    mix = _node("mix", "MIX", _node("rgb", "RGB"), _node("reroute", "REROUTE", tex))   # 色の値と、継ぎを通った絵を混ぜる
+    assert toon_look.base_image(_bsdf(mix)) == "albedo"
+    assert toon_look.base_image(_bsdf(_node("empty", "TEX_IMAGE"), _node("attr", "VERTEX_COLOR"))) is None   # 絵のない絵の枠は飛ばす
+    assert toon_look.base_image(_bsdf()) is None
+
+
+def test_hull_source_uses_the_base_color_image_or_value():
+    from types import SimpleNamespace as M
+
+    def material(*nodes):
+        return M(use_nodes=True, node_tree=M(nodes=list(nodes)))
+
+    normal = _node("normal", "TEX_IMAGE", image="normal_map")          # Base Color につながらない絵（法線の絵など）は使わない
+    assert toon_look.hull_source(material(normal, _bsdf(color=(0.2, 0.4, 0.6, 1.0)))) == (None, (0.2, 0.4, 0.6, 1.0))
+    assert toon_look.hull_source(material(normal, _bsdf(_node("tex", "TEX_IMAGE", image="albedo"))))[0] == "albedo"
+    assert toon_look.hull_source(material(normal)) == ("normal_map", (0.5, 0.5, 0.5, 1.0))          # Principled BSDF が無ければ最初の絵
+    assert toon_look.hull_source(None) == (None, (0.5, 0.5, 0.5, 1.0))
+
+
 def test_parse_args():
     args = toon_look.parse_args(["--blend", "i.blend", "--out-blend", "o.blend", "--report", "r.json", "--settings", "s.json"])
     assert args.settings == "s.json"
