@@ -26,6 +26,9 @@ track.json（model3d-stage-track/0.1）: 描くコマの並びと、コマごと
 - スポット 4 つ（どれも (0, 0, 1) を向き、ぼかし 0.5）: 主光（0.8, -5, 5）2600 W・影の半径 1.2 m、補助光（-1.5, -4, 1.2）
   650 W・影なし、左右の輪郭光（-4, 4.5, 5.5）・（4, 4.5, 5.5）。
 - 空: ほぼ黒（0.002, 0.002, 0.004）。EEVEE、色の変換は Standard（Look なし）、合成で Glare の Bloom（質 High）。
+長さ（トラックのカメラ、既定のカメラの距離と高さ、舞台）は m で、シーンの scale_length（1 Blender 単位が何 m か）で直す。
+舞台のメッシュは 1/scale_length 倍の親 model3d_stage_root の下に m のまま作り、光は強さを 1/scale_length² 倍、影の半径を
+1/scale_length 倍にする。カメラの写る範囲と画面の反射の厚みも直す（単位によらず同じに見えるように）。
 コマごと: 動きのコマ f へ進め、トラックの値（壁の模様・明るさ・色、輪郭光、光の柱、塗りの共有グループ、カメラ）を入れ、
 輪郭線の太さを書き換えて描く。書き出すファイルがすでにあるコマはとばす（続きから描ける）。
 **検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じキャラ・同じ値から、同じ画素になることを確かめた（docs/model3d.md）。
@@ -105,6 +108,12 @@ def outline_width(distance, lens, sensor_height, line_px, reference_height, res_
     return line_px * (res_y / reference_height) / px_per_m
 
 
+def light_energy(watts, unit):
+    """m で決めた光の強さ（W）を、1 Blender 単位が unit m のシーンで同じ明るさにする強さ。光は Blender 単位の距離の 2 乗で
+    弱まるので、1/unit² 倍にする。"""
+    return watts / unit ** 2
+
+
 def hull_strength(width_bu, unit, per, scale):
     """輪郭線の写しの Displace の強さ（中の単位。外へ太らせるので負）。width_bu は Blender 単位の太さ。unit（シーンの
     scale_length。1 Blender 単位が何 m か）で m に直してから、写しの換算 per（中の単位 1 が何 m か）で割る。"""
@@ -142,14 +151,20 @@ def frame_values(spec, static, stripe_floor):
 
 # ---------- ここから下は Blender の中でだけ動く ----------
 
-def build_stage(bpy, stage):
-    """舞台（床・LED の壁・トラスと塔・光の柱）と光と空を作る。戻り: コマごとに書き換える物"""
+def build_stage(bpy, stage, unit=1.0):
+    """舞台（床・LED の壁・トラスと塔・光の柱）と光と空を作る。戻り: コマごとに書き換える物。
+    大きさと置き場所は m で決めてある。メッシュは 1/unit 倍の親 model3d_stage_root の下に m のまま作り（模様は物体の中の座標で
+    決まるので変わらない）、光は Blender 単位の場所に置いて、強さを 1/unit² 倍・影の半径を 1/unit 倍にする（距離の 2 乗で弱まる
+    ため）。unit はシーンの scale_length（1 Blender 単位が何 m か）。"""
     from mathutils import Vector
     sc = bpy.context.scene
     coll = bpy.data.collections.new("model3d_stage")
     sc.collection.children.link(coll)
     vl = bpy.context.view_layer
     vl.active_layer_collection = vl.layer_collection.children[coll.name]
+    root = bpy.data.objects.new("model3d_stage_root", None)
+    coll.objects.link(root)
+    root.scale = (1.0 / unit,) * 3
 
     def emit_mat(name, blend=False):
         m = bpy.data.materials.new(name)
@@ -175,6 +190,7 @@ def build_stage(bpy, stage):
         o.name, o.scale = name, size
         bpy.ops.object.transform_apply(scale=True)
         o.data.materials.append(mat)
+        o.parent = root
         return o
 
     def principled(name, values):
@@ -188,6 +204,7 @@ def build_stage(bpy, stage):
     bpy.ops.mesh.primitive_plane_add(size=40, location=(0, 0, 0))
     floor = bpy.context.object
     floor.name = "stage_floor"
+    floor.parent = root
     floor.data.materials.append(principled("stage_floor", {"Base Color": (0.006, 0.006, 0.01, 1), "Roughness": 0.24,
                                                            "Specular IOR Level": 0.6}))
     wall_m, wall_e = emit_mat("stage_led")
@@ -222,6 +239,7 @@ def build_stage(bpy, stage):
         c.name = f"stage_beam{i}"
         c.location = (-9.8 + i * 2.8, 6.2, 7.4)
         c.rotation_mode = "XYZ"
+        c.parent = root
         m, em = emit_mat(f"stage_beam{i}", blend=True)
         n2 = m.node_tree
         gc = n2.nodes.new("ShaderNodeTexCoord")
@@ -258,10 +276,11 @@ def build_stage(bpy, stage):
 
     def spot(name, loc, energy, color, size):
         d = bpy.data.lights.new(name, "SPOT")
-        d.energy, d.color, d.spot_size, d.spot_blend = energy, color, size, 0.5
+        d.energy, d.color, d.spot_size, d.spot_blend = light_energy(energy, unit), color, size, 0.5
+        d.shadow_soft_size = d.shadow_soft_size / unit
         o = bpy.data.objects.new(name, d)
         coll.objects.link(o)
-        o.location = loc
+        o.location = Vector(loc) / unit
         o.rotation_mode = "QUATERNION"
         o.rotation_quaternion = (Vector((0, 0, 1.0)) - Vector(loc)).to_track_quat("-Z", "Y")
         return d
@@ -270,15 +289,15 @@ def build_stage(bpy, stage):
     fill = spot("stage_fill", (-1.5, -4.0, 1.2), 500, (0.8, 0.8, 1.0), 1.2)
     rim_a = spot("stage_rimA", (-4.0, 4.5, 5.5), 1500, VIOLET, 0.9)
     rim_b = spot("stage_rimB", (4.0, 4.5, 5.5), 1500, PINK, 0.9)
-    key.shadow_soft_size = 1.2                          # 硬い影が脚や顔の形の歪みに見えるので、やわらかくする
-    fill.energy, fill.use_shadow = 650, False
+    key.shadow_soft_size = 1.2 / unit                   # 硬い影が脚や顔の形の歪みに見えるので、やわらかくする
+    fill.energy, fill.use_shadow = light_energy(650, unit), False
     world = bpy.data.worlds.new("model3d_world")
     sc.world = world
     world.use_nodes = True
     world.node_tree.nodes["Background"].inputs[0].default_value = (0.002, 0.002, 0.004, 1)
     vl.active_layer_collection = vl.layer_collection
     return {"wall_emission": wall_e, "wall_mix": mix, "wall_mapping": mp, "wall_wave": wv, "walls": walls, "beams": beams,
-            "rims": (rim_a, rim_b)}
+            "rims": (rim_a, rim_b), "unit": unit}
 
 
 def set_stage(handles, kind):
@@ -297,7 +316,7 @@ def set_lights(handles, values):
     handles["wall_mix"].inputs[7].default_value = (*w["color"], 1)      # B（明るい帯）
     handles["wall_mapping"].inputs["Location"].default_value = (w["scroll"], 0, 0)
     for light, rim in zip(handles["rims"], values["rims"]):
-        light.energy = rim["energy"]
+        light.energy = light_energy(rim["energy"], handles["unit"])
         light.color = rim["color"]
     b = values["beams"]
     for (c, em, gain), rotation, color in zip(handles["beams"], b["rotations"], b["colors"]):
@@ -381,19 +400,22 @@ def main(argv=None):
     if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     stage, cam_s, line = settings["stage"], settings["camera"], settings["outline"]
-    handles = build_stage(bpy, stage) if stage["enabled"] else None
+    unit = float(sc.unit_settings.scale_length)          # 1 Blender 単位が何 m か（トラックと設定の長さは m）
+    handles = build_stage(bpy, stage, unit) if stage["enabled"] else None
     apply_render(bpy, settings)
+    trace = sc.eevee.ray_tracing_options                 # 画面の反射の厚みは Blender 単位なので、m のまま同じに見えるよう直す
+    trace.screen_trace_thickness = trace.screen_trace_thickness / unit
     tone = bpy.data.node_groups.get(TONE)
     tone_initial = ({"a": list(tone.nodes["a"].outputs[0].default_value)[:3], "b": list(tone.nodes["b"].outputs[0].default_value)[:3],
                      "gain": tone.nodes["gain"].outputs[0].default_value} if tone is not None else None)
     static = static_values((tone_initial["a"], tone_initial["b"]) if tone is not None else (VIOLET, PINK), stage["stripe_floor"])
-    unit = float(sc.unit_settings.scale_length)          # 1 Blender 単位が何 m か
     cam_d = bpy.data.cameras.new("model3d_cam")
     cam_d.sensor_fit, cam_d.sensor_height, cam_d.lens = "VERTICAL", cam_s["sensor_height"], cam_s["lens"]
     cam = bpy.data.objects.new("model3d_cam", cam_d)
     sc.collection.objects.link(cam)
     sc.camera = cam
     cam.rotation_mode = "QUATERNION"
+    cam_d.clip_start, cam_d.clip_end = cam_d.clip_start / unit, cam_d.clip_end / unit   # 写る範囲も m のまま
     needs_path = any("camera" not in spec for _, _, spec in plan)
     path = hip_path(bpy, arm, hips, sorted(set(action_frames)), cam_s["follow_sigma"]) if needs_path else {}
     hulls = []
@@ -427,13 +449,13 @@ def main(argv=None):
             tone.nodes["b"].outputs[0].default_value = (*values_t["b"], 1)
             tone.nodes["gain"].outputs[0].default_value = values_t["gain"]
         if "camera" in spec:
-            loc, target = Vector(spec["camera"]["location"]), Vector(spec["camera"]["target"])
+            loc, target = Vector(spec["camera"]["location"]) / unit, Vector(spec["camera"]["target"]) / unit   # m → Blender 単位
             cam_d.lens = spec["camera"].get("lens", cam_s["lens"])
             from_track += 1
         else:
             hip = path[f]
-            target = Vector((hip[0] * cam_s["follow"], hip[1] * cam_s["follow"], cam_s["aim"]))
-            loc = Vector(orbit(target, cam_s["az"], cam_s["dist"], cam_s["height"]))
+            target = Vector((hip[0] * cam_s["follow"], hip[1] * cam_s["follow"], cam_s["aim"] / unit))   # 腰は Blender 単位
+            loc = Vector(orbit(target, cam_s["az"], cam_s["dist"] / unit, cam_s["height"] / unit))
             cam_d.lens = cam_s["lens"]
         cam.location = loc
         cam.rotation_quaternion = (target - loc).to_track_quat("-Z", "Y")
@@ -456,7 +478,8 @@ def main(argv=None):
 
     report = {"schema_version": "model3d-stage-render/0.1", "blender": bpy.app.version_string,
               "planned": [{"T": T, "f": f} for T, f, _ in plan], "rendered": rendered, "skipped_existing": existing,
-              "fps": fps, "resolution": settings["resolution"], "engine": sc.render.engine, "samples": settings["samples"],
+              "fps": fps, "resolution": settings["resolution"], "scale_length": unit, "engine": sc.render.engine,
+              "samples": settings["samples"],
               "color": {"view_transform": sc.view_settings.view_transform, "look": sc.view_settings.look,
                         "exposure": sc.view_settings.exposure, "gamma": sc.view_settings.gamma,
                         "display": sc.display_settings.display_device},

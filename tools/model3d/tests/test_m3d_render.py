@@ -59,6 +59,11 @@ def test_hull_strength_converts_blender_units_to_the_hull_units():
     assert stage_render.hull_strength(0.002, 1.0, 1.0, 0.7) == pytest.approx(-0.0014)           # m のシーン、拡大 1、髪の 0.7 倍
 
 
+def test_light_energy_keeps_the_brightness_in_any_scene_unit():
+    assert stage_render.light_energy(2600, 1.0) == 2600
+    assert stage_render.light_energy(2600, 0.01) == pytest.approx(2600 * 1e4)   # 1 単位 = 1 cm: 距離が 100 倍なので 1 万倍
+
+
 def test_tone_values_fall_back_to_the_first_values_not_the_previous_frame():
     initial = {"a": [0.3, 0.09, 1.0], "b": [1.0, 0.05, 0.45], "gain": 0.35}
     assert stage_render.tone_values({"tone": {"gain": 2.0}}, initial) == {**initial, "gain": 2.0}
