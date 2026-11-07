@@ -523,3 +523,13 @@ def test_absolute_shape_keys_stop_the_push():
     assert stage_render.shape_key_problem("cloth", True) is None
     message = stage_render.shape_key_problem("cloth", False)
     assert message.startswith("push: cloth のシェイプキーは絶対") and "相対" in message
+
+
+def test_the_outline_drift_is_cancelled_a_step_at_a_time():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    rest = np.zeros((2, 3))
+    residual = np.array([[0.0, 0.0, 0.002], [0.002, 0.0, 0.0]])          # 描く形が、狙いより上と +x へずれた
+    out = stage_render.drift_step(rest, residual, np.array([np.eye(3), turn]))
+    assert out[0] == pytest.approx([0, 0, -0.001])                       # 半分だけ打ち消す
+    assert out[1] == pytest.approx(np.linalg.inv(turn) @ [-0.001, 0, 0])  # 骨で回る頂点は、回す前の差に戻して足す
+    assert not stage_render.drift_step(rest, np.zeros((2, 3)), np.array([np.eye(3), turn])).any()

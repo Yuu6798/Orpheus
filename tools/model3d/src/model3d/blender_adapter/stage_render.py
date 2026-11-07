@@ -251,6 +251,37 @@ PUSH_COND_MAX = 1e12      # これより条件数の大きい骨の動きは、�
 PUSH_PASSES = 4           # 直した位置で当たりを調べ直す回数の上限
 PUSH_TOL_M = 1e-7         # 調べ直しで、離す量にこれだけ足りなくても足りているとみなす（丸めで直し続けないように）
 PUSH_SURFACE_M = 1e-6     # 面からこれより近い頂点は面の上とみなし、面の外向きに離す
+PUSH_DRIFT_PASSES = 4     # 法線の Displace のずれを打ち消す回数の上限
+PUSH_DRIFT_STEP = 0.5     # 1 回に打ち消す割合（面の向きの変わり方で効きすぎないように）
+
+
+def drift_step(current, residual, rot):
+    """描く形のずれ residual（世界、頂点ごと）を、骨で動かす前の差でいくらか（PUSH_DRIFT_STEP）打ち消した次の差。"""
+    fix, _ = rest_offsets(-PUSH_DRIFT_STEP * np.asarray(residual, float), rot)
+    return current + fix
+
+
+def settle_drift(bpy, target, want, rest, rot, unit):
+    """法線の向きに太らせる Displace のあるメッシュで、描く形の組の頂点が want（測った位置 + 直し）に来るよう、直しを
+    少しずつ足す。いちばんずれの小さかった直し（組の頂点の平均で比べる）を書いて終える（はじめの直しより悪くはしない）。
+    戻り: [はじめのずれの最大, 平均, 残ったずれの最大, 平均]（mm）。"""
+    best, best_rest, first, current, best_max = None, rest, None, rest, None
+    for i in range(PUSH_DRIFT_PASSES + 1):
+        bpy.context.view_layer.update()
+        got = evaluated_points(bpy, target.ob)[0][target.idx]
+        residual = got - want
+        size = np.linalg.norm(residual, axis=1)
+        worst, mean = float(size.max(initial=0.0)), float(size.mean()) if len(size) else 0.0
+        first = (worst, mean) if first is None else first
+        if best is None or mean < best:
+            best, best_rest, best_max = mean, current, worst
+        if i == PUSH_DRIFT_PASSES or worst < PUSH_TOL_M / unit:
+            break
+        current = drift_step(current, residual, rot)
+        target.write(current)
+    target.write(best_rest)
+    mm = unit * 1000
+    return [round(first[0] * mm, 3), round(first[1] * mm, 4), round(best_max * mm, 3), round(best * mm, 4)]
 
 
 def collider_correction(collider, p, offset, tol=0.0, surface=1e-9):
@@ -730,6 +761,9 @@ class PushTarget:
             influence.append(armature_influence(gs, mask, invert, mask_exists))
         self.idx, self.w, self.off = np.array(idx, int), np.array(wt), np.array(off)
         self.influence = np.array(influence, float)
+        # 法線の向きに太らせる Displace（輪郭線の写し）: 直しで面の向きが変わると、描く形が直しからずれる
+        self.normal_displace = any(m.type == "DISPLACE" and m.show_render and m.direction in ("NORMAL", "CUSTOM_NORMAL")
+                                   for m in ob.modifiers)
         self.bones = sorted({b for d in dw for b in d})
         column = {b: i for i, b in enumerate(self.bones)}
         self.W = np.zeros((len(idx), len(self.bones)))
@@ -757,6 +791,13 @@ class PushTarget:
         # 前からあるキーを使い直すときも、値の 0 と 1 で直しを入れ切りできるようにする
         self.key.mute, self.key.vertex_group, self.key.relative_key = False, "", me.shape_keys.reference_key
         self.key.slider_min, self.key.slider_max = 0.0, 1.0
+        self.key.value = 1.0
+
+    def write(self, rest):
+        """組の頂点の、骨で動かす前の差 rest をシェイプキーに書き、効かせる。"""
+        kco = self.basis.copy()
+        kco[self.idx] += rest
+        self.key.data.foreach_set("co", kco.ravel())
         self.key.value = 1.0
 
     def deform_rot(self):
@@ -802,6 +843,7 @@ class Push:
         self.rays = [Vector(d).normalized() for d in PUSH_RAYS]
         self.unconverted = {}                             # 前の apply で、骨の動きが潰れて戻せなかった頂点の数（メッシュごと）
         self.rechecked = {}                               # 前の apply で、直した位置で調べ直して直しを足した頂点の数
+        self.drift = {}                                   # 前の apply で、法線の Displace のずれ（mm: 打ち消す前, 後）
 
     def apply(self, reset=True):
         """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。reset が false なら、直す前の形へ戻すのは呼ぶ側
@@ -820,7 +862,7 @@ class Push:
             colliders.append(BlenderCollider(BVHTree.FromPolygons([tuple(c) for c in co], polys), co.min(0) - margin,
                                              co.max(0) + margin, self.rays, step))
         stats = {}
-        self.rechecked = {}
+        self.rechecked, self.drift = {}, {}
         for t in self.targets:
             co, _ = evaluated_points(bpy, t.ob)
             problem = vertex_count_problem(t.ob.name, len(t.basis), len(co), viewport_modifiers(t.ob),
@@ -841,13 +883,15 @@ class Push:
                 self.rechecked[t.ob.name] = int(added)
             d, mag = spread_push(need, t.edges, self.smooth)
             d = weld_mean(d, t.weld) * t.w[:, None]
-            rest, flat = rest_offsets(d, t.deform_rot())   # 直しの要る頂点だけを戻す（潰れた骨の頂点で止めない）
+            rot = t.deform_rot()
+            rest, flat = rest_offsets(d, rot)              # 直しの要る頂点だけを戻す（潰れた骨の頂点で止めない）
             if flat:
                 self.unconverted[t.ob.name] = flat
-            kco = t.basis.copy()
-            kco[t.idx] += rest
-            t.key.data.foreach_set("co", kco.ravel())
-            t.key.value = 1.0
+            t.write(rest)
+            if self.passes and t.normal_displace:
+                # 法線の向きに太らせる Displace（輪郭線の写し）は、直しで面の向きが変わると太らせる向きも変わり、描く形が
+                # 「測った位置 + 直し」からずれる。描く形を測り直し、ずれを打ち消す直しを半分ずつ足す（いちばんずれの小さい直しを使う）
+                self.drift[t.ob.name] = settle_drift(bpy, t, p + d, rest, rot, unit)
             stats[t.ob.name] = (int((mag > PUSH_MOVED_M / unit).sum()), round(float(mag.max(initial=0.0) * unit * 1000), 1))
         bpy.context.view_layer.update()
         return stats
@@ -1064,6 +1108,9 @@ def main(argv=None):
         if pushes:                                       # 描く直前に押し出す（輪郭線の太さを入れた後の形で測る）
             moved = apply_pushes(bpy, pushes)
             entry = {"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}}
+            drift = {k: list(v) for push in pushes for k, v in push.drift.items()}
+            if drift:                                    # 法線の Displace のずれ（mm: 打ち消す前, 後）
+                entry["drift_mm"] = drift
             again = {k: n for push in pushes for k, n in push.rechecked.items()}
             if again:                                    # 直した位置で調べ直して、ほかの当たりの分も足した頂点
                 entry["rechecked"] = again
