@@ -193,6 +193,20 @@ def test_an_independent_step_next_to_a_short_event_stays_inside_what_to_fix():
     assert [e["frames"] for e in back] == [[84, 86]]          # 組の戻りのコマの変わり目は区間に足さない
 
 
+def test_a_freeze_keeps_the_catch_up_jump_frame_it_absorbs():
+    """同じ絵がコマ 4〜6、コマ 7 は小さな変化、コマ 8 で追い付きの画の飛び（変わり目だけ）。止まった区間はコマ 8 まで含む。"""
+    class Moving:
+        first, count = 0, 16
+        fdiff = np.array([np.nan, 0.01, 0.01, 0.01, 0.01, 0.0, 0.0, 0.01, 0.2, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01])
+
+        def frame(self, i):
+            return int(i)
+
+    jumps = [_signal("jump", "continuity", (8, 9), kind="step")]
+    found = detect._frozen(Moving(), inspect_config.THRESHOLDS, 24, jumps)
+    assert [(s["check"], s["frames"]) for s in found] == [("freeze", [4, 9])] and jumps == []     # 追い付きは止まりの信号に入れる
+
+
 def test_a_clip_wide_duplicate_cadence_does_not_swallow_a_glitch_inside_it():
     events = detect.events([_signal("duplicate_cadence", "continuity", (3, 95), kind="segment", value=18, threshold=3),
                             _signal("glitch", "continuity", (30, 31))], "c", 24)

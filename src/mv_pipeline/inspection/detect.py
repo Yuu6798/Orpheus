@@ -206,7 +206,9 @@ def _frozen(features, th, fps, jump_signals):
         detail = f"{end - start} コマ同じ絵です（{end - start - 1} コマ止まっています）"
         if catch_up:
             detail += "。直後に止まった分を追い付くように画が飛びます"
-        out.append(make_signal("freeze", "continuity", features, start, end + (1 if catch_up else 0), "segment", a, float(diff[a]), None,
+        # 区間は、取り込んだ追い付きのコマの終わりまで（end の次のコマで飛んでも、そのコマを直す場所から漏らさない）
+        stop = max([end] + [signal["frames"][1] - features.first for signal in catch_up])
+        out.append(make_signal("freeze", "continuity", features, start, stop, "segment", a, float(diff[a]), None,
                                th["dup_max"], "差", None, detail, extra={"held_frames": end - start}))
     return out
 
