@@ -349,6 +349,35 @@ def test_plan_segments_never_overlap_when_a_long_event_holds_short_ones():
     assert [s["source_frames"] for s in segments] == [[58, 77]] and segments[0]["events"] == ["c-F01", "c-F02", "c-F03"]
 
 
+def _plan_event(number, frames, category, checks, actions):
+    return {"id": f"c-F{number:02d}", "clip": "c", "frames": list(frames), "category": category, "evidence": "measured", "target": {},
+            "signals": [_signal(check, category, frames, kind="segment") for check in checks], "actions": actions}
+
+
+def test_plan_keeps_a_clip_wide_cadence_out_of_local_regeneration():
+    from mv_pipeline.inspection import targets
+
+    clip = {"id": "c", "rel": "c.mp4", "sha256": "0" * 64, "fps": 24.0, "frames_total": 100, "inspected": [0, 100], "origin": None}
+    cadence = _plan_event(1, (3, 95), "continuity", ["duplicate_cadence"], [{"kind": "decimate", "cycle": 5}])
+    shape = _plan_event(2, (30, 31), "shape", ["silhouette_pop"], [{"kind": "regenerate_segment", "frames": [30, 31]}])
+    segments = targets.plan([clip], [cadence, shape], inspect_config.THRESHOLDS)["segments"]
+    assert [(s["events"], s["source_frames"], [a["kind"] for a in s["actions"]]) for s in segments] == [
+        (["c-F01"], [1, 97], ["decimate"]), (["c-F02"], [28, 33], ["regenerate_segment"])]
+
+
+def test_plan_keeps_each_frame_specific_remedy_of_merged_events():
+    from mv_pipeline.inspection import targets
+
+    clip = {"id": "c", "rel": "c.mp4", "sha256": "0" * 64, "fps": 24.0, "frames_total": 100, "inspected": [0, 100], "origin": None}
+    first = _plan_event(1, (30, 31), "continuity", ["glitch"], [{"kind": "replace_frames", "frames": [30, 31], "with": [29, 31]},
+                                                               {"kind": "regenerate_segment", "frames": [30, 31]}])
+    second = _plan_event(2, (34, 35), "continuity", ["glitch"], [{"kind": "replace_frames", "frames": [34, 35], "with": [33, 35]},
+                                                                {"kind": "regenerate_segment", "frames": [34, 35]}])
+    segments = targets.plan([clip], [first, second], inspect_config.THRESHOLDS)["segments"]
+    assert len(segments) == 1 and segments[0]["source_frames"] == [28, 37]
+    assert [a["frames"] for a in segments[0]["actions"] if a["kind"] == "replace_frames"] == [[30, 31], [34, 35]]
+
+
 def test_vlm_packet_and_vlm_together_are_refused(small_demo, tmp_path):
     with pytest.raises(PipelineError, match="--vlm-packet"):
         run.run(small_demo / "inspect.json", tmp_path / "out", vlm_config=_adapter(tmp_path), vlm_packet=True)

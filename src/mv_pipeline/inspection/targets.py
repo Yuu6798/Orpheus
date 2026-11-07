@@ -6,6 +6,8 @@
 
 手当ての候補（actions）は規則で出す提案で、実行はしない。自動の再生成は未実装（修正計画が将来の入口）。
 """
+import json
+
 from . import PLAN_SCHEMA
 
 
@@ -103,8 +105,15 @@ def _trim_note(clip):
     return "（dance は clips[].source_start・start・end を直す）" if clip.get("spec") else ""
 
 
+def _cadence(event):
+    return any(s["check"] == "duplicate_cadence" for s in event.get("signals", ()))
+
+
 def plan(clips, events, th):
-    """修正計画。クリップごとに、近い出来事（plan_merge_s 以内）をまとめて生成し直す区間にする（前後に plan_pad_frames 広げる）。"""
+    """修正計画。クリップごとに、近い出来事（plan_merge_s 以内）をまとめて生成し直す区間にする（前後に plan_pad_frames 広げる）。
+
+    重複コマの周期の出来事は、ほかとまとめずに 1 つの区間にする（間引きの手当てで、生成し直す区間を広げない）。
+    まとめた区間の手当ては、種類とコマが同じものだけを 1 つにする（コマの違う置き換えや補間は全部残す）。"""
     segments = []
     by_clip = {}
     for event in events:
@@ -115,21 +124,25 @@ def plan(clips, events, th):
             continue
         fps, count = clip["fps"] or 0, clip["frames_total"]
         gap = max(1, int(round(th["plan_merge_s"] * fps))) if fps else 1
-        groups = []
+        groups, apart = [], []
         for event in items:
-            if groups and event["frames"][0] - max(e["frames"][1] for e in groups[-1]) <= gap:   # 群のいちばん後ろの終わりと比べる
+            if _cadence(event):          # クリップ全体の重複の周期（手当ては間引き）は、局所の生成し直しの区間に混ぜない
+                apart.append([event])
+            elif groups and event["frames"][0] - max(e["frames"][1] for e in groups[-1]) <= gap:   # 群のいちばん後ろの終わりと比べる
                 groups[-1].append(event)
             else:
                 groups.append([event])
+        groups = sorted(groups + apart, key=lambda group: min(e["frames"][0] for e in group))
         for group in groups:
             a, b = min(e["frames"][0] for e in group), max(e["frames"][1] for e in group)
             pad = th["plan_pad_frames"]
             window = [max(0, a - pad), min(count, b + pad)]
-            kinds, merged = set(), []
+            seen, merged = set(), []
             for event in group:
                 for action in event["actions"]:
-                    if action["kind"] not in kinds and action["kind"] != "regenerate_segment":
-                        kinds.add(action["kind"])
+                    key = json.dumps({k: v for k, v in action.items() if k != "description"}, sort_keys=True, ensure_ascii=False)
+                    if key not in seen and action["kind"] != "regenerate_segment":   # 同じ種類でもコマの違う手当ては残す
+                        seen.add(key)
                         merged.append(action)
             if any(a["kind"] == "regenerate_segment" for e in group for a in e["actions"]):
                 merged.insert(0, {"kind": "regenerate_segment", "frames": window,

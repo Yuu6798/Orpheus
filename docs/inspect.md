@@ -111,11 +111,11 @@ dance で、spec の区間で一度も出ない元のコマ（`speed` で飛ば�
 
 ## 修正計画（`fix_plan.json`）— 自動再生成の入口
 
-`inspect-fix-plan/0.1`。`status: "proposed"`、`executor: null`（自動の再生成は未実装）。クリップごとに、すき間が `plan_merge_s`（0.15 秒）以下の出来事を 1 つの区間にまとめ（間の短い良いコマを、前後の生成し直しに挟まないため）、前後に `plan_pad_frames`（2）コマ広げる。区間ごとに:
+`inspect-fix-plan/0.1`。`status: "proposed"`、`executor: null`（自動の再生成は未実装）。クリップごとに、すき間が `plan_merge_s`（0.15 秒）以下の出来事を 1 つの区間にまとめ（間の短い良いコマを、前後の生成し直しに挟まないため）、前後に `plan_pad_frames`（2）コマ広げる。重複コマの周期の出来事はほかとまとめない（手当ては間引きで、生成し直す区間をクリップ全体に広げないため）。区間ごとに:
 
 - `source_frames`・`source_t`（生成し直す元のコマ）、`event_frames`、`events`（出来事の ID）、`categories`、`evidence`
 - `anchors`: 前後のコマ `{frame, image}`。画像は**元の大きさの PNG**（`anchors/<クリップ>_f<コマ>.png`）で、始点と終点を指定できる生成器にそのまま渡せる
-- `origin`（素性）、`actions`（区間の `regenerate_segment` を先頭に、出来事の手当ての候補を重ねずに並べる）、dance なら `spec` と `uses`
+- `origin`（素性）、`actions`（区間の `regenerate_segment` を先頭に、出来事の手当ての候補を並べる。種類とコマが同じものだけを 1 つにし、コマの違う置き換えや補間は全部残す）、dance なら `spec` と `uses`
 
 将来の自動再生成は、この区間・前後の画・素性から生成器のジョブを作り、差し替えた素材で同じ検品をもう一度通す形を想定している（起動は毎回ユーザーの承認。GPU や有料 API の費用がかかるため）。
 
