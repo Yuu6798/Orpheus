@@ -1,0 +1,421 @@
+"""Blender の中で動かす: キャラにセル調の塗りと輪郭線を付ける（描く前の見た目の準備）。
+
+    blender --background --factory-startup --python toon_look.py -- --blend in.blend --out-blend out.blend \
+        --report report.json --settings settings.json
+
+settings.json（look.toon が書く）:
+- meshes: セル調にするメッシュの名前（既定: アーマチュアで動く、レンダーに出すメッシュ全部。faces に入れたものは除く）。
+- faces: 顔の塗り（光を少し受け、絵の色を直接出す）にするメッシュの名前（既定なし）。
+- toon: セル調の数。light（光の向き。面の向きとの内積で影を決める）、threshold・soft（影の境と、そのぼかし）、shade（影の色。
+  元の色に掛ける）、skin_shade（肌の影の色。省くと shade と同じ）、tint（影の色に舞台の色を混ぜる割合）、lit（光の当たる側の
+  明るさ）、rim_from・rim_to（縁の光が出始める・最大になる面の傾き）、rim_colors（カメラから見て左・右の縁の色）、rim_gain、
+  face_attribute（影を入れず縁の光も入れない所の頂点の属性）、weak_rim（縁の光を弱める属性と割合）、inside_attribute と
+  inside_color（裏の面と内側を暗くする色）。
+- face: 顔の塗りの数。lit（光を受ける割合）、emit（絵の色を直接出す割合）。
+- outline: 輪郭線（反転ハル）の数。enabled、meshes（輪郭線を付けるメッシュ。既定は meshes と同じ）、ratio（メッシュごとの残す
+  面の割合。既定 1）、dark（線の明るさ。元の色に掛ける）、
+  saturation、width_mm（法線の向きに太らせる量。描くときにカメラの距離で上書きする）、hand_attribute と hand_line（その属性の
+  所の線の太さの割合）。
+
+セル調の塗り（リポジトリ外の試作の手順）:
+- 絵の色（Principled BSDF の Base Color）を出し、影は決まった向きの光と面の向きの内積で 2 段に分ける（境は smoothstep で
+  threshold ± soft）。影の側は、影の色に舞台の色（共有のノードグループ model3d_stage_tone の a）を tint だけ混ぜた色を掛ける。
+- 縁の光: 面が横を向く所（Layer Weight の Facing を rim_from〜rim_to）に、カメラから見て左は a、右は b の色を、強さ gain で
+  スクリーンで足す。face_attribute の所と、weak_rim の属性の所は弱める。
+- 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（舞台の光は受けない）。
+- 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す。
+輪郭線（試作の手順）: メッシュの写しの重なる頂点を溶かし、ratio まで面を減らし、手（hand_attribute）の所はならしてから、面を
+裏返す。絵の色を dark 倍した暗い色を Emission で出し、裏の面は描かない。骨の変形の後に法線の向きへ width_mm だけ太らせる
+（Displace。名前は out）。写しは model3d_outline の印を持ち、影を落とさない。
+共有のノードグループ model3d_stage_tone（a・b・gain）は、描く工程がコマごとに書き換える。
+**検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じキャラから、同じ輪郭線の写しと同じ描画になることを確かめた
+（docs/model3d.md）。
+"""
+import argparse
+import json
+import os
+import sys
+
+DEFAULTS = {
+    "meshes": None, "faces": [],
+    "toon": {"light": [0.8, -5.0, 4.0], "threshold": 0.10, "soft": 0.05, "shade": [0.66, 0.52, 0.72], "skin_shade": None,
+             "tint": 0.22, "lit": 0.96, "rim_from": 0.60, "rim_to": 0.72, "rim_colors": [[0.30, 0.09, 1.0], [1.0, 0.05, 0.45]],
+             "rim_gain": 0.35, "face_attribute": "face_near",
+             "weak_rim": [{"attribute": "hand", "scale": 0.75}, {"attribute": "norim", "scale": 0.85}],
+             "inside_attribute": "inside", "inside_color": [0.10, 0.06, 0.16]},
+    "face": {"lit": 0.20, "emit": 0.62},
+    "outline": {"enabled": True, "meshes": None, "ratio": {}, "dark": 0.12, "saturation": 1.25, "width_mm": 3.0, "hand_attribute": "hand",
+                "hand_line": 0.45},
+}
+TONE = "model3d_stage_tone"
+
+
+def parse_args(argv):
+    ap = argparse.ArgumentParser(prog="toon_look.py")
+    ap.add_argument("--blend", required=True)
+    ap.add_argument("--out-blend", required=True)
+    ap.add_argument("--report", required=True)
+    ap.add_argument("--settings", required=True)
+    return ap.parse_args(argv)
+
+
+def merged(settings):
+    """既定の数に settings を重ねる（toon・face・outline は中の鍵ごと）。"""
+    out = {**DEFAULTS, **{k: v for k, v in settings.items() if k not in ("toon", "face", "outline")}}
+    for key in ("toon", "face", "outline"):
+        out[key] = {**DEFAULTS[key], **settings.get(key, {})}
+    return out
+
+
+def tone_group(bpy, colors, gain):
+    """舞台の色（a・b）と縁の光の強さ（gain）を、全部のメッシュで分け合うノードグループ"""
+    tone = bpy.data.node_groups.get(TONE) or bpy.data.node_groups.new(TONE, "ShaderNodeTree")
+    tone.nodes.clear()
+    tone.interface.clear()
+    tone.interface.new_socket("a", in_out="OUTPUT", socket_type="NodeSocketColor")
+    tone.interface.new_socket("b", in_out="OUTPUT", socket_type="NodeSocketColor")
+    tone.interface.new_socket("gain", in_out="OUTPUT", socket_type="NodeSocketFloat")
+    out = tone.nodes.new("NodeGroupOutput")
+    a, b, g = tone.nodes.new("ShaderNodeRGB"), tone.nodes.new("ShaderNodeRGB"), tone.nodes.new("ShaderNodeValue")
+    a.name, b.name, g.name = "a", "b", "gain"
+    a.outputs[0].default_value = (*colors[0], 1)
+    b.outputs[0].default_value = (*colors[1], 1)
+    g.outputs[0].default_value = gain
+    tone.links.new(a.outputs[0], out.inputs[0])
+    tone.links.new(b.outputs[0], out.inputs[1])
+    tone.links.new(g.outputs[0], out.inputs[2])
+    return tone
+
+
+def base_color(nt, bsdf):
+    """Principled BSDF の絵の色の出どころ（つないだ絵があればそれ、無ければ色の値の RGB）"""
+    if bsdf.inputs["Base Color"].links:
+        return bsdf.inputs["Base Color"].links[0].from_socket
+    rgb = nt.nodes.new("ShaderNodeRGB")
+    rgb.outputs[0].default_value = tuple(bsdf.inputs["Base Color"].default_value)
+    return rgb.outputs[0]
+
+
+def toon_material(bpy, m, tone, t):
+    """セル調の塗り（試作の toon_material と同じ組み方）"""
+    from mathutils import Vector
+    nt = m.node_tree
+    bsdf = [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"][0]
+    out = [n for n in nt.nodes if n.type == "OUTPUT_MATERIAL"][0]
+    src = base_color(nt, bsdf)
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    dot = nt.nodes.new("ShaderNodeVectorMath")
+    dot.operation = "DOT_PRODUCT"
+    dot.inputs[1].default_value = Vector(t["light"]).normalized()
+    nt.links.new(geo.outputs["Normal"], dot.inputs[0])
+    step_ = nt.nodes.new("ShaderNodeMapRange")
+    step_.interpolation_type = "SMOOTHSTEP"
+    step_.inputs["From Min"].default_value = t["threshold"] - t["soft"]
+    step_.inputs["From Max"].default_value = t["threshold"] + t["soft"]
+    nt.links.new(dot.outputs["Value"], step_.inputs["Value"])
+    att = nt.nodes.new("ShaderNodeAttribute")
+    att.attribute_type, att.attribute_name = "GEOMETRY", t["face_attribute"] or ""
+    lit_ = nt.nodes.new("ShaderNodeMath")
+    lit_.operation = "MAXIMUM"
+    nt.links.new(step_.outputs[0], lit_.inputs[0])
+    nt.links.new(att.outputs["Fac"], lit_.inputs[1])
+    grp = nt.nodes.new("ShaderNodeGroup")
+    grp.node_tree = tone
+    tint = nt.nodes.new("ShaderNodeMix")                 # 影の色に舞台の色を少し混ぜる
+    tint.data_type = "RGBA"
+    tint.inputs[0].default_value = t["tint"]
+    tint.inputs[6].default_value = (*t["shade"], 1)
+    if t["skin_shade"]:                                  # 肌（明るく彩度の低い色）の影だけ別の色にする
+        hsv_ = nt.nodes.new("ShaderNodeSeparateColor")
+        hsv_.mode = "HSV"
+        nt.links.new(src, hsv_.inputs[0])
+        sv_ = nt.nodes.new("ShaderNodeMapRange")
+        sv_.interpolation_type = "SMOOTHSTEP"
+        sv_.inputs["From Min"].default_value, sv_.inputs["From Max"].default_value = 0.62, 0.74
+        nt.links.new(hsv_.outputs[2], sv_.inputs["Value"])
+        ss_ = nt.nodes.new("ShaderNodeMapRange")
+        ss_.interpolation_type = "SMOOTHSTEP"
+        ss_.inputs["From Min"].default_value, ss_.inputs["From Max"].default_value = 0.42, 0.28
+        nt.links.new(hsv_.outputs[1], ss_.inputs["Value"])
+        sk_ = nt.nodes.new("ShaderNodeMath")
+        sk_.operation = "MULTIPLY"
+        nt.links.new(sv_.outputs[0], sk_.inputs[0])
+        nt.links.new(ss_.outputs[0], sk_.inputs[1])
+        smix_ = nt.nodes.new("ShaderNodeMix")
+        smix_.data_type = "RGBA"
+        nt.links.new(sk_.outputs[0], smix_.inputs[0])
+        smix_.inputs[6].default_value = (*t["shade"], 1)
+        smix_.inputs[7].default_value = (*t["skin_shade"], 1)
+        nt.links.new(smix_.outputs[2], tint.inputs[6])
+    nt.links.new(grp.outputs["a"], tint.inputs[7])
+    dark = nt.nodes.new("ShaderNodeMix")
+    dark.data_type, dark.blend_type = "RGBA", "MULTIPLY"
+    dark.inputs[0].default_value = 1.0
+    nt.links.new(src, dark.inputs[6])
+    nt.links.new(tint.outputs[2], dark.inputs[7])
+    bright = nt.nodes.new("ShaderNodeMix")
+    bright.data_type, bright.blend_type = "RGBA", "MULTIPLY"
+    bright.inputs[0].default_value = 1.0
+    bright.inputs[7].default_value = (t["lit"], t["lit"], t["lit"], 1)
+    nt.links.new(src, bright.inputs[6])
+    both = nt.nodes.new("ShaderNodeMix")
+    both.data_type = "RGBA"
+    nt.links.new(lit_.outputs[0], both.inputs[0])
+    nt.links.new(dark.outputs[2], both.inputs[6])
+    nt.links.new(bright.outputs[2], both.inputs[7])
+    # 縁の光：カメラから見て左は a の色、右は b の色
+    lw = nt.nodes.new("ShaderNodeLayerWeight")
+    lw.inputs["Blend"].default_value = 0.5
+    edge = nt.nodes.new("ShaderNodeMapRange")
+    edge.interpolation_type = "SMOOTHSTEP"
+    edge.inputs["From Min"].default_value = t["rim_from"]
+    edge.inputs["From Max"].default_value = t["rim_to"]
+    nt.links.new(lw.outputs["Facing"], edge.inputs["Value"])
+    vt = nt.nodes.new("ShaderNodeVectorTransform")
+    vt.vector_type, vt.convert_from, vt.convert_to = "NORMAL", "WORLD", "CAMERA"
+    nt.links.new(geo.outputs["Normal"], vt.inputs[0])
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(vt.outputs[0], sep.inputs[0])
+    side_ = nt.nodes.new("ShaderNodeMapRange")
+    side_.inputs["From Min"].default_value = -0.2
+    side_.inputs["From Max"].default_value = 0.2
+    nt.links.new(sep.outputs["X"], side_.inputs["Value"])
+    col = nt.nodes.new("ShaderNodeMix")
+    col.data_type = "RGBA"
+    nt.links.new(side_.outputs[0], col.inputs[0])
+    nt.links.new(grp.outputs["a"], col.inputs[6])
+    nt.links.new(grp.outputs["b"], col.inputs[7])
+    weak = None                                          # 縁の光を弱める所（手は細く、指が白く飛ぶ。暗い髪束は点々と光る）
+    for w in t["weak_rim"]:
+        attw = nt.nodes.new("ShaderNodeAttribute")
+        attw.attribute_type, attw.attribute_name = "GEOMETRY", w["attribute"]
+        scale = nt.nodes.new("ShaderNodeMath")
+        scale.operation = "MULTIPLY"
+        scale.inputs[1].default_value = w["scale"]
+        nt.links.new(attw.outputs["Fac"], scale.inputs[0])
+        if weak is None:
+            weak = scale
+        else:
+            mx = nt.nodes.new("ShaderNodeMath")
+            mx.operation = "MAXIMUM"
+            nt.links.new(weak.outputs[0], mx.inputs[0])
+            nt.links.new(scale.outputs[0], mx.inputs[1])
+            weak = mx
+    both_ = nt.nodes.new("ShaderNodeMath")
+    both_.operation = "MAXIMUM"
+    nt.links.new(att.outputs["Fac"], both_.inputs[0])
+    if weak is not None:
+        nt.links.new(weak.outputs[0], both_.inputs[1])
+    else:
+        both_.inputs[1].default_value = 0.0
+    keep_ = nt.nodes.new("ShaderNodeMath")               # 顔には縁の光を入れない
+    keep_.operation = "SUBTRACT"
+    keep_.inputs[0].default_value = 1.0
+    nt.links.new(both_.outputs[0], keep_.inputs[1])
+    amt = nt.nodes.new("ShaderNodeMath")
+    amt.operation = "MULTIPLY"
+    nt.links.new(edge.outputs[0], amt.inputs[0])
+    nt.links.new(grp.outputs["gain"], amt.inputs[1])
+    amt2 = nt.nodes.new("ShaderNodeMath")
+    amt2.operation = "MULTIPLY"
+    nt.links.new(amt.outputs[0], amt2.inputs[0])
+    nt.links.new(keep_.outputs[0], amt2.inputs[1])
+    add_ = nt.nodes.new("ShaderNodeMix")
+    add_.data_type, add_.blend_type = "RGBA", "SCREEN"
+    nt.links.new(amt2.outputs[0], add_.inputs[0])
+    nt.links.new(both.outputs[2], add_.inputs[6])
+    nt.links.new(col.outputs[2], add_.inputs[7])
+    # 裏の面と内側は暗くする（袖やスカートの内側。裏の絵には塗り直しの跡がある）
+    inside = nt.nodes.new("ShaderNodeMix")
+    inside.data_type, inside.blend_type = "RGBA", "MULTIPLY"
+    inside.inputs[7].default_value = (*t["inside_color"], 1)
+    att2 = nt.nodes.new("ShaderNodeAttribute")
+    att2.attribute_type, att2.attribute_name = "GEOMETRY", t["inside_attribute"] or ""
+    in_ = nt.nodes.new("ShaderNodeMath")
+    in_.operation = "MAXIMUM"
+    nt.links.new(geo.outputs["Backfacing"], in_.inputs[0])
+    nt.links.new(att2.outputs["Fac"], in_.inputs[1])
+    nt.links.new(in_.outputs[0], inside.inputs[0])
+    nt.links.new(add_.outputs[2], inside.inputs[6])
+    em = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(inside.outputs[2], em.inputs["Color"])
+    nt.links.new(em.outputs[0], out.inputs["Surface"])
+
+
+def face_material(m, f):
+    """顔の塗り（試作と同じ）: つやを消し、絵の色の lit 倍を受け、絵の色を emit の強さで出す（絵に影が描いてあるので）"""
+    nt = m.node_tree
+    for n in list(nt.nodes):
+        if n.type != "BSDF_PRINCIPLED":
+            continue
+        for name, value in (("Roughness", 1.0), ("Specular IOR Level", 0.0)):
+            for lk in list(n.inputs[name].links):
+                nt.links.remove(lk)
+            n.inputs[name].default_value = value
+        src = base_color(nt, n)
+        hsv = nt.nodes.new("ShaderNodeHueSaturation")
+        hsv.inputs["Value"].default_value = f["lit"]
+        nt.links.new(src, hsv.inputs["Color"])
+        nt.links.new(hsv.outputs["Color"], n.inputs["Base Color"])
+        nt.links.new(src, n.inputs["Emission Color"])
+        n.inputs["Emission Strength"].default_value = f["emit"]
+
+
+def hull_material(bpy, name, image, color, o):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    em = nt.nodes.new("ShaderNodeEmission")
+    hsv = nt.nodes.new("ShaderNodeHueSaturation")
+    hsv.inputs["Saturation"].default_value = o["saturation"]
+    hsv.inputs["Value"].default_value = o["dark"]
+    if image is not None:
+        tex = nt.nodes.new("ShaderNodeTexImage")
+        tex.image = image
+        nt.links.new(tex.outputs["Color"], hsv.inputs["Color"])
+    else:
+        hsv.inputs["Color"].default_value = color
+    nt.links.new(hsv.outputs["Color"], em.inputs["Color"])
+    nt.links.new(em.outputs[0], out.inputs["Surface"])
+    m.use_backface_culling = True
+    return m
+
+
+def outline_hull(bpy, ob, arm, o):
+    """輪郭線の写し（試作の outline.py と同じ作り方）"""
+    import bmesh
+    sc = bpy.context.scene
+    src = ob.active_material
+    image, color = None, (0.5, 0.5, 0.5, 1.0)
+    if src is not None and src.use_nodes:
+        texs = [n for n in src.node_tree.nodes if n.type == "TEX_IMAGE"]
+        if texs:
+            image = texs[0].image
+        else:
+            bsdfs = [n for n in src.node_tree.nodes if n.type == "BSDF_PRINCIPLED"]
+            if bsdfs:
+                color = tuple(bsdfs[0].inputs["Base Color"].default_value)
+    new = ob.copy()
+    new.data = ob.data.copy()
+    new.name = "hull_" + ob.name
+    new.modifiers.clear()
+    sc.collection.objects.link(new)
+    me = new.data
+    if "custom_normal" in me.attributes:
+        me.attributes.remove(me.attributes["custom_normal"])
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2e-5)
+    bm.to_mesh(me)
+    bm.free()
+    bpy.context.view_layer.objects.active = new
+    ratio = float(o["ratio"].get(ob.name, 1.0))
+    if ratio < 1.0:
+        dec = new.modifiers.new("dec", "DECIMATE")
+        dec.ratio = ratio
+        bpy.ops.object.modifier_apply(modifier=dec.name)
+    hand = o["hand_attribute"]
+    if hand and hand in me.attributes:                   # 手首から先は面の細かな凹凸から線が点々と覗くので、写しだけならす
+        sm = new.modifiers.new("smooth", "SMOOTH")
+        sm.factor, sm.iterations = 0.6, 6
+        sm.vertex_group = ""
+        bpy.ops.object.modifier_apply(modifier=sm.name)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.reverse_faces(bm, faces=bm.faces)
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.clear()
+    me.materials.append(hull_material(bpy, "hull_" + ob.name, image, color, o))
+    m1 = new.modifiers.new("armature", "ARMATURE")
+    m1.object = arm
+    m2 = new.modifiers.new("out", "DISPLACE")
+    m2.direction, m2.mid_level, m2.strength = "NORMAL", 0.0, -o["width_mm"] / 1000
+    if hand and hand in me.attributes:
+        hv = [0.0] * len(me.vertices)
+        me.attributes[hand].data.foreach_get("value", hv)
+        g = new.vertex_groups.new(name="line")
+        for k, h in enumerate(hv):
+            g.add([k], 1.0 - (1.0 - o["hand_line"]) * min(max(h, 0.0), 1.0), "REPLACE")
+        m2.vertex_group = "line"
+    new.parent = arm
+    new.visible_shadow = False
+    new["model3d_outline"] = ob.name
+    return new
+
+
+def main(argv=None):
+    import bpy  # Blender の中でだけ使える
+
+    if argv is None:
+        argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    a = parse_args(argv)
+    with open(a.settings, encoding="utf-8") as stream:
+        settings = merged(json.load(stream))
+    bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
+    armatures = [o for o in bpy.data.objects if o.type == "ARMATURE"]
+    if not armatures:
+        raise SystemExit("アーマチュアがありません")
+    arm = armatures[0]
+    if any(o.get("model3d_outline") for o in bpy.data.objects):
+        raise SystemExit("この .blend には、もう輪郭線の写しがあります（look.toon は 1 回だけ当ててください）")
+
+    def deformed(o):
+        return o.type == "MESH" and (o.parent == arm or any(m.type == "ARMATURE" and m.object == arm for m in o.modifiers))
+
+    faces = list(settings["faces"])
+    if settings["meshes"] is None:
+        meshes = [o.name for o in bpy.data.objects if deformed(o) and not o.hide_render and o.name not in faces]
+    else:
+        meshes = list(settings["meshes"])
+    for name in meshes + faces:
+        o = bpy.data.objects.get(name)
+        if o is None or o.type != "MESH":
+            raise SystemExit(f"メッシュがありません: {name}")
+        if not o.material_slots or o.active_material is None or not o.active_material.use_nodes or not any(
+                n.type == "BSDF_PRINCIPLED" for n in o.active_material.node_tree.nodes):
+            raise SystemExit(f"{name} の材質に Principled BSDF がありません")
+    lined = meshes if settings["outline"]["meshes"] is None else list(settings["outline"]["meshes"])
+    for name in lined:
+        if bpy.data.objects.get(name) is None or bpy.data.objects[name].type != "MESH":
+            raise SystemExit(f"輪郭線を付けるメッシュがありません: {name}")
+    if set(meshes) & set(faces):
+        raise SystemExit(f"同じメッシュを meshes と faces の両方に入れています: {sorted(set(meshes) & set(faces))}")
+    t, f, o = settings["toon"], settings["face"], settings["outline"]
+    tone = tone_group(bpy, t["rim_colors"], t["rim_gain"])
+    done, seen = [], set()
+    for name in meshes:
+        for slot in bpy.data.objects[name].material_slots:
+            m = slot.material
+            if m is None or m.name in seen or not m.use_nodes or not any(n.type == "BSDF_PRINCIPLED" for n in m.node_tree.nodes):
+                continue
+            seen.add(m.name)
+            toon_material(bpy, m, tone, t)
+            done.append(m.name)
+    face_done = []
+    for name in faces:
+        m = bpy.data.objects[name].active_material
+        if m.name not in seen:
+            seen.add(m.name)
+            face_material(m, f)
+            face_done.append(m.name)
+    hulls = []
+    if o["enabled"]:
+        bpy.ops.object.mode_set(mode="OBJECT") if bpy.context.object and bpy.context.object.mode != "OBJECT" else None
+        for name in lined:
+            h = outline_hull(bpy, bpy.data.objects[name], arm, o)
+            hulls.append({"mesh": name, "hull": h.name, "triangles": sum(len(p.vertices) - 2 for p in h.data.polygons),
+                          "ratio": float(o["ratio"].get(name, 1.0))})
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
+    report = {"schema_version": "model3d-toon-look/0.1", "blender": bpy.app.version_string, "meshes": meshes, "faces": faces,
+              "toon_materials": done, "face_materials": face_done, "outline_hulls": hulls, "tone_group": TONE,
+              "settings": settings}
+    with open(a.report, "w", encoding="utf-8") as stream:
+        json.dump(report, stream, ensure_ascii=False, indent=1)
+    print(json.dumps({"meshes": len(meshes), "toon_materials": len(done), "hulls": len(hulls)}))
+
+
+if __name__ == "__main__":
+    main()
