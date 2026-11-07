@@ -132,7 +132,7 @@ def test_run_adapter_alignment_imports_model_timings_and_caches(project, tmp_pat
         "import json, sys\n"
         "from pathlib import Path\n"
         "analysis = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
-        "Path(sys.argv[3]).open('a').write('x')\n"
+        "with Path(sys.argv[3]).open('a') as calls: calls.write('x')\n"
         "Path(sys.argv[2]).write_text(json.dumps({'audio_sha256': analysis['audio']['sha256'], 'offset_s': 0.5,\n"
         "    'tool': {'name': 'fixture-aligner', 'version': '1'},\n"
         "    'lyrics': [{'id': l['id'], 'text': l['text'], 'start_s': i * 2.0, 'end_s': i * 2.0 + 1.5}\n"

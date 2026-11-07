@@ -160,14 +160,15 @@ class Run:
         self.save()
 
     def fail(self, error):
+        """例外で途中で終わった run を failed にする。記録（log・manifest）に失敗しても、元の例外を隠さない。"""
         text = str(error) if isinstance(error, PipelineError) else f"{type(error).__name__}: {error}"
-        if not isinstance(error, PipelineError):
-            self.log("".join(traceback.format_exception(error)))
-        self.log(f"failed: {text}")
         self.manifest.update(status="failed", error=text[:3000], finished_at=now())
         try:
+            if not isinstance(error, PipelineError):
+                self.log("".join(traceback.format_exception(error)))
+            self.log(f"failed: {text}")
             self.save()
-        except OSError:  # 失敗の記録に失敗しても、元の例外を隠さない
+        except OSError:
             pass
 
 
@@ -220,9 +221,9 @@ def reusable(out, index, key):
 
 
 class Session:
-    """<out> をロックし、同じ key の成功 run があれば再利用、無ければ新しい run を開く。fx と dance の render_run で共通。
+    """<out> をロックし、同じ key の成功 run があれば再利用、無ければ新しい run を開く。fx / dance / legacy の run で共通。
 
-        with Session(out, key, "render", "render.log", force=force, say=say, tag="[fx]") as session:
+        with Session(out, key, "render", "render.log", say=say, tag="[fx]", force=force) as session:
             if session.reused:                       # 再利用できる成功 run の manifest（dir は session.reused_dir）
                 return summarize(session.reused_dir, session.reused, reused=True)
             run = session.run                        # status=running の Run。manifest を埋めて描く
@@ -231,11 +232,12 @@ class Session:
 
     with を抜けるまで <out> のロックを持つ。本体が例外で抜けたら、running のままの run を failed にして例外をそのまま通す。
     技術検査に落ちた run は本体が run.finish(False, message) で閉じてから PipelineError を投げる。
+    cache=False は index.json を読まず書かず、再利用もしない（legacy のようにキャッシュしない run）。
     """
 
-    def __init__(self, out, key, kind, log_name, *, force=False, say=None, tag=""):
+    def __init__(self, out, key, kind, log_name, *, say, tag, force=False, cache=True):
         self.out, self.key, self.kind, self.log_name = Path(out), key, kind, log_name
-        self.force, self.say, self.tag = force, say or (lambda message: None), tag
+        self.say, self.tag, self.force, self.cache = say, tag, force, cache
         self.index = self.run = self.reused = self.reused_dir = None
         self._stack = ExitStack()
 
@@ -244,8 +246,10 @@ class Session:
         try:
             self._stack.enter_context(project_lock(self.out))
             close_orphans(self.out)
-            self.index = load_index(self.out)
-            manifest = None if self.force else reusable(self.out, self.index, self.key)
+            manifest = None
+            if self.cache:
+                self.index = load_index(self.out)
+                manifest = None if self.force else reusable(self.out, self.index, self.key)
             if manifest:
                 self.say(f"{self.tag} 同じ入力の成功 run を再利用します: {manifest['run_id']}（作り直すには --force）")
                 self.reused, self.reused_dir = manifest, self.out / manifest["run_id"]
@@ -265,11 +269,12 @@ class Session:
         return False
 
     def succeed(self):
-        """run を succeeded で閉じ、index.json に key -> run_id を登録する。"""
+        """run を succeeded で閉じ、cache なら index.json に key -> run_id を登録する。"""
         self.run.finish(True)
-        self.index["runs"][self.key] = {"run_id": self.run.run_id, "finished_at": self.run.manifest["finished_at"]}
-        self.index["schema_version"] = INDEX_SCHEMA
-        atomic_json(self.out / "index.json", self.index)
+        if self.cache:
+            self.index["runs"][self.key] = {"run_id": self.run.run_id, "finished_at": self.run.manifest["finished_at"]}
+            self.index["schema_version"] = INDEX_SCHEMA
+            atomic_json(self.out / "index.json", self.index)
 
 
 def summarize(run_dir, manifest, reused):
@@ -305,7 +310,7 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
     fps = sp.data["output"]["fps"]
     key = render_key(sp, assets, variants, start, duration, n_frames, size, scale, grid, libraries)
     out = (Path(out) if out else default_out(sp)).resolve()
-    with Session(out, key, "render", "render.log", force=force, say=say, tag="[fx]") as session:
+    with Session(out, key, "render", "render.log", say=say, tag="[fx]", force=force) as session:
         if session.reused:
             # 再利用した run の manifest.look は作ったときの呼び出しの状態。この呼び出しの状態（映像は同じ）を返す
             return {**summarize(session.reused_dir, session.reused, reused=True), "look": look_state}

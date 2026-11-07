@@ -107,7 +107,7 @@ def render_run(spec_path, start=0.0, duration=None, out=None, scale=1.0, force=F
     key = _key("dance-render", sp, assets, {"start": start, "duration": duration, "frames": n_frames, "size": list(size),
                                             "scale": float(scale), "libraries": libraries, "hooks": finish and finish["sha256"]})
     out = (Path(out) if out else default_out(sp)).resolve()
-    with fxruns.Session(out, key, "dance-render", "render.log", force=force, say=say, tag="[dance]") as session:
+    with fxruns.Session(out, key, "dance-render", "render.log", say=say, tag="[dance]", force=force) as session:
         if session.reused:
             return fxruns.summarize(session.reused_dir, session.reused, reused=True)
         run = session.run

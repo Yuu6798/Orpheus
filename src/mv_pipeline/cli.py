@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -208,7 +209,7 @@ def _workflow_parser(commands):
 # どのコマンドも「引数 → 結果（dict / list / str / Path / None）」の関数で、_run が stdout への出力と
 # 例外の 1 行化を引き受ける。検査の不合格など「結果は出すが終了コードは 1」は args.failed で伝える。
 
-CLI_ERRORS = (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error)
+CLI_ERRORS = (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error, subprocess.CalledProcessError)
 
 
 def _progress(message):
@@ -225,22 +226,22 @@ def _require_fx():
 
 
 def _print_result(result):
+    """str はそのまま、dict / list / None は JSON、それ以外（Path など）は str で 1 つ出す。"""
     if isinstance(result, str):
         print(result)
-    elif isinstance(result, (dict, list)):
+    elif result is None or isinstance(result, (dict, list)):
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print(str(result or "OK"))
+        print(str(result))
 
 
 def _run(function, args):
-    """function(args) の結果を stdout に出して終了コードを返す。例外は stderr に 1 行で出して 1。"""
+    """function(args) の結果を stdout に出して終了コードを返す。例外（出力の途中の OSError も）は stderr に 1 行で出して 1。"""
     try:
-        result = function(args)
+        _print_result(function(args))
     except CLI_ERRORS as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    _print_result(result)
     return getattr(args, "failed", 0)
 
 
@@ -373,13 +374,14 @@ PROJECT_COMMANDS = {
 
 
 def project_command(args):
-    """`mv <command> PROJECT` を project_lock の中で実行し、結果を返す。"""
+    """`mv <command> PROJECT` を project_lock の中で実行し、結果を返す。結果の無いコマンドは "OK"。"""
     function = PROJECT_COMMANDS.get(args.command)
     if function is None:
         raise PipelineError(f"Unsupported command: {args.command}")
     root = args.project.resolve()
     with project_lock(root):
-        return function(root, args)
+        result = function(root, args)
+    return "OK" if result is None else result
 
 
 def main(argv=None):
