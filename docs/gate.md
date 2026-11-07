@@ -94,6 +94,24 @@ uv run mv gate check projects/gatedemo/gate.json      # expected.json の checks
 - 2026-11-08（字の重なり）: `lyric_fade` の無い timeline（手書き）は、見えている区間をフェードアウト込み `[start, end + fade_out_s]` で数える。前の行が `end` で消えたことにして「超過 0」だった、フェードアウト中に次の行が出る timeline は、重なりが 0.1 秒を超えれば不合格になる（例: `end=3.0`・`fade_out_s=0.3` の次に `start=3.0` の行 → 0.300 秒）。`mv dance` は行を `end` の前でフェードアウトし終えるので、この変更から timeline に `lyric_fade: "inside"` を書き、重なりは `[start, end]` で数える（**この変更より前に描いた dance の run は `lyric_fade` が無く after として読むので、フェードの分だけ重なりが増えて不合格になりうる。描き直すか timeline に `"lyric_fade": "inside"` を足す**）。別の列に置いた 2 行を重なりと数えたくないときは `thresholds.overlap_mode: "time_and_box"`。Remotion で描いたテロップのデモで見つかった。
 - 2026-11-08（GATE-3）: 拍の検査の照合先を「小節頭があれば小節頭」から「既定は拍（`align: "downbeat"` のものだけ小節頭）」に変えた。小節頭の配列を持つ timeline で、拍に置いたフラッシュ・切れ目が不合格だったものは合格になる。小節頭に合わせたい出来事は `align: "downbeat"` を書く（書かないと拍と照合するので、小節頭からのずれは見つからない）。Remotion で描いたテロップのデモを `mv gate check` に掛けたとき、拍のフラッシュ 5 件が「小節頭と照合、ずれ 4」で止まったことから。
 
+## 連番から timeline を起こす（`mv gate timeline`）
+
+Remotion などで描いた透過の連番（PNG。straight α）から、字が**実際に見えているコマと範囲**を α で実測し、`mv gate check` が読む dance-timeline/0.1 を書く。宣言（props の時刻）と実測の差を行ごとに出す。
+
+```sh
+uv run mv export remotion-props projects/song-a --out props.json --beats-per-bar 4
+uv run mv gate timeline --frames out/line1:lyric-001 --frames out/line2:lyric-002 --lyrics props.json --layer band --out timeline.json
+uv run mv gate timeline --frames out/all --hints hints.json --lyrics props.json --layer band --out timeline.json   # 1 つの連番に全行
+uv run mv gate check gate.json      # {"timeline": "timeline.json", "beats": …} 
+```
+
+- 行の切り分けは、行ごとに別の連番（`--frames DIR:行の id`）か、1 つの連番と行ごとの領域の手がかり（`--hints` = `{行の id: 正規化した箱}`。箱の中の不透明な画素をその行と見なす）。props の行が 1 つだけなら手がかりは要らない（あればその箱の中だけを見る）。
+- 「見えている」は α > `--alpha-threshold`（既定 64）の画素があること。行の最初と最後に見えるコマ（end は最後のコマ + 1）と、見えている全コマの不透明な画素を覆う箱（正規化）を測る。
+- 宣言と実測の差（例「開始が 1 コマ遅い」「途中で見えないコマ 2」）は `<out の stem>_measured.json` と stdout の要約に出す。どちらが正しいかは決めない。見えているコマが無い行は、timeline に宣言の時刻のまま残し（`measured: false`。行数を props と揃え、`mv gate check` の行の対応を崩さない）、要約の `unseen_lines` に出す。`mv gate check` はこの行を実測として扱わない（歌詞の時刻では「実測できず見ていない行」として要確認、字と顔・UI 枠・字の重なりには出さない）。
+- 連番のコマ数は props の `duration_frames` と同じでなければならない（途中だけ描いた連番は測れない）。アルファの無い連番はエラー。並びは数字の大小（`frame2` < `frame10`）。
+- 拍・小節頭は props からそのまま秒に直して写し（丸めない）、フラッシュは props に無いので `--flashes 5.5,6.0`（秒）で与える。書く timeline は実測なので `fade_in_s` / `fade_out_s` は 0、`lyric_fade` は inside、`exclusive` は true。連番の各コマ（読んだバイト列から 1 回で計算）と props・使った hints の sha256 は timeline の `measured.sources` に残る。
+- 確かめたのは合成の連番（numpy で描いた箱）だけ。実際の Remotion の連番では未確認。
+
 ## 限界
 
 - **歌い出しの推定は正解より約 20 ms 早い**（2026-11-08 に `mv gate demo` の素材で測定。補正は入れていない。入れるかはユウの判断）。音量の包絡は 30 ms の窓を 10 ms 刻みで前向きに取るので、窓が歌い出しに掛かり始める 2 刻み前から上がり始め、谷から上がり始めた最初の点へ戻す式がそこを選ぶ。立ち上がりの長さにはほぼよらず、背景の床が高いときだけ上がり幅のしきい値を越える点が遅れて偏りが小さくなる。実曲（子音・残響つき）では未測定。
