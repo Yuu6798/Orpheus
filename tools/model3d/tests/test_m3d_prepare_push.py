@@ -206,3 +206,8 @@ def test_the_weld_distance_is_turned_into_the_objects_own_units():
     turn[:3, :3] = [[0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]]                            # 回して 2 倍
     assert pp.local_distance(turn, 2e-5) == pytest.approx(1e-5)
     assert "vertex_group" in pp.ARMATURE_KEYS and "invert_vertex_group" in pp.ARMATURE_KEYS
+
+
+def test_the_collider_mark_is_the_one_look_toon_skips():
+    from model3d.blender_adapter import toon_look
+    assert pp.COLLIDER_MARK == toon_look.COLLIDER_MARK == "model3d_collider"

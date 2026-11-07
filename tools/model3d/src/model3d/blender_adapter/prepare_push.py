@@ -15,7 +15,7 @@ settings.json（render.prepare_push が書く。長さは m で、シーンの s
   体積が負（内向き）なら裏返して外向きにする。筒のままだと、穴のふちの面の向きで中か外かを読み違えるため。
 - 面を decimate の割合に減らし、すべての面をなめらかにする（ふさいだ口の平らな面のふちで、向きが混ざるように）。
 - 元の Armature モディファイアと同じアーマチュア・設定（頂点の組の絞りと反転も）で動かす（親と変換は元のまま）。カメラ・影・反射などには写さない
-  （透明な材質も付ける）。
+  （透明な材質も付ける）。model3d_collider の印を付け、look.toon の既定のメッシュ選びから外す（hide_render は付けない）。
 押し出す頂点の組（試作の帯の印と同じ手順）:
 - 種は、bones の骨とその子孫の骨に重みのある頂点。高さ top より下で、種とつながった部分（同じ位置の頂点はつながる）を選ぶ。
 - 重みは、高さ z で smoothstep((top - z) / fade)（上の端で 0、fade 下で 1）を 1/64 に丸めたもの（0 の頂点は入れない）。
@@ -31,6 +31,7 @@ import sys
 import numpy as np
 
 LEVELS = 64                                              # 重みの刻み（試作と同じ）
+COLLIDER_MARK = "model3d_collider"                      # 当たりの写しの印（look.toon の既定のメッシュ選びから外す）
 
 
 def parse_args(argv):
@@ -186,6 +187,7 @@ def make_collider(bpy, bmesh, spec, material):
     for key in ("visible_camera", "visible_shadow", "visible_diffuse", "visible_glossy", "visible_transmission",
                 "visible_volume_scatter"):
         setattr(px, key, False)
+    px[COLLIDER_MARK] = True                             # look.toon などの既定のメッシュ選びから外す印（hide_render は付けない）
     return {"name": px.name, "from": src.name, "armature": source_armature.object.name if source_armature else None,
             "filled_edges": len(holes), "open_edges": open_left, "volume_l": round(abs(volume) * 1000, 3),
             "flipped": bool(volume < 0), "vertices": len(px.data.vertices), "faces": len(px.data.polygons), "weld_local": weld}
