@@ -220,6 +220,23 @@ def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
             "ビューポートで切ってください（測るのはビューポートの形）")
 
 
+def push_overlap(entries):
+    """押し出しの並び [(動かすメッシュの名前の並び, 当たりの名前の並び), ...]（輪郭線の写しを足し、組の重みの無い写しを
+    除いた後）の重なりの説明（無ければ None）。1 つのメッシュを 2 つの押し出しで動かすと、同じシェイプキーを書き合い、
+    後の押し出しが前の直しを打ち消す。同じ押し出しの中で、動かすメッシュと当たりの両方にも入れられない。"""
+    owner = {}
+    for n, (targets, colliders) in enumerate(entries):
+        both = sorted(set(targets) & set(colliders))
+        if both:
+            return f"push[{n}]: {', '.join(both)} は、動かすメッシュ（輪郭線の写しも数える）と当たりの両方に入っています"
+        for name in targets:
+            if name in owner:
+                return (f"push[{n}]: {name} は push[{owner[name]}] でも動かします（輪郭線の写しも数える）。1 つのメッシュは "
+                        "1 つの押し出しにだけ入れてください（同じシェイプキーを書き合い、後の押し出しが前の直しを打ち消すため）")
+            owner[name] = n
+    return None
+
+
 def blend_bone_rotations(weights, bone_rots):
     """頂点ごとの骨の重み（行の和が 1。骨の重みの無い頂点は 0 の行）と、骨ごとの 3×3 の動きから、頂点ごとの 3×3（重みで
     混ぜた線形の骨の動き）。骨の重みの無い頂点と、骨の無いときは、骨で動かないので単位行列にする。"""
@@ -666,7 +683,7 @@ def make_pushes(bpy, specs, unit):
             if ob is None or ob.type != "MESH":
                 raise SystemExit(f"push[{n}] の当たりのメッシュがありません: {name}")
             colliders.append(ob)
-        targets, skipped = [], []
+        chosen = {}                                      # 名前 → [物体, 名指しか]。同じ押し出しの中の重なりは 1 つにまとめる
         for name in spec["meshes"]:
             ob = bpy.data.objects.get(name)
             if ob is None or ob.type != "MESH":
@@ -675,19 +692,25 @@ def make_pushes(bpy, specs, unit):
             if spec.get("outlines", True):
                 objects += [(o, False) for o in bpy.data.objects if o.type == "MESH" and o.get("model3d_outline") == name]
             for o, named in objects:
-                problem = vertex_count_problem(o.name, len(o.data.vertices), len(evaluated_points(bpy, o)[0]),
-                                               viewport_modifiers(o))
-                if problem:                               # 描き始める前に止める
-                    raise SystemExit(problem)
-                modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None
-                                 and m.show_viewport and m.show_render), None)
-                target = PushTarget(o, modifier.object if modifier else None, groups, PUSH_KEY)
-                if not len(target.idx):
-                    if named:
-                        raise SystemExit(f"push[{n}]: {o.name} に、{group_names} の組の重みのある頂点がありません")
-                    skipped.append(o.name)
-                    continue
-                targets.append(target)
+                if o.name in chosen:
+                    chosen[o.name][1] = chosen[o.name][1] or named
+                else:
+                    chosen[o.name] = [o, named]
+        targets, skipped = [], []
+        for o, named in chosen.values():
+            problem = vertex_count_problem(o.name, len(o.data.vertices), len(evaluated_points(bpy, o)[0]),
+                                           viewport_modifiers(o))
+            if problem:                                   # 描き始める前に止める
+                raise SystemExit(problem)
+            modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None
+                             and m.show_viewport and m.show_render), None)
+            target = PushTarget(o, modifier.object if modifier else None, groups, PUSH_KEY)
+            if not len(target.idx):
+                if named:
+                    raise SystemExit(f"push[{n}]: {o.name} に、{group_names} の組の重みのある頂点がありません")
+                skipped.append(o.name)
+                continue
+            targets.append(target)
         pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit))
         notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx)), "armature": t.arm.name if t.arm else None,
                                    "without_bones": int((t.W.sum(1) <= 0).sum()) if t.arm else int(len(t.idx))}
@@ -695,6 +718,9 @@ def make_pushes(bpy, specs, unit):
                       "colliders": [{"object": c.name, "open_edges": open_edges(c)} for c in colliders],
                       "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
                       "smooth": int(spec.get("smooth", 6))})
+    problem = push_overlap([([t.ob.name for t in p.targets], [c.name for c in p.colliders]) for p in pushes])
+    if problem:                                           # 輪郭線の写しを足した後の重なりは、描き始める前に止める
+        raise SystemExit(problem)
     return pushes, notes
 
 

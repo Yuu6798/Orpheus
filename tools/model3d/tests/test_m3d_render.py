@@ -396,3 +396,11 @@ def test_a_modifier_that_changes_the_vertex_count_stops_the_push():
     message = stage_render.vertex_count_problem("cloth", 100, 52, ["Armature（ARMATURE）", "Decimate（DECIMATE）"], frame=17)
     assert "コマ 17 で、cloth" in message and "100 → 52" in message and "Decimate（DECIMATE）" in message
     assert "（なし）" in stage_render.vertex_count_problem("cloth", 100, 99, [])
+
+
+def test_one_mesh_belongs_to_one_push_after_adding_the_outline_copies():
+    assert stage_render.push_overlap([(["cloth", "hull_cloth"], ["leg"]), (["skirt"], ["leg"])]) is None
+    message = stage_render.push_overlap([(["cloth", "hull_cloth"], ["leg"]), (["hull_cloth"], ["leg"])])
+    assert message.startswith("push[1]: hull_cloth は push[0] でも動かします")
+    both = stage_render.push_overlap([(["cloth", "hull_cloth"], ["hull_cloth", "leg"])])
+    assert both.startswith("push[0]: hull_cloth は、動かすメッシュ") and "当たりの両方" in both
