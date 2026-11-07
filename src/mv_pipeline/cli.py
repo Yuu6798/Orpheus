@@ -354,7 +354,7 @@ def export_command(args):
                                      storyboard=not args.no_storyboard)
     raise PipelineError(f"Unsupported export command: {args.export_command}")
 def _overlay_parser(commands):
-    """透過レイヤーの重ね合わせ（docs/fx.md の overlay）。`project` 引数を持たず、project_lock も通らない。cv2 は使わない。"""
+    """透過レイヤーの重ね合わせ（docs/fx.md の overlay）。`project` 引数を持たず、project_lock も通らない。書き出しが fx の render にあるので fx extra が要る。"""
     overlay = commands.add_parser("overlay", help="experimental: composite transparent layers (PNG sequences / alpha video) over a base and encode")
     overlay.add_argument("--base", type=Path, required=True, help="base image or video")
     overlay.add_argument("--layer", type=Path, action="append", default=[], required=True,
@@ -368,6 +368,7 @@ def _overlay_parser(commands):
 
 
 def overlay_command(args):
+    _require_fx()      # 書き出しは fx の render（cv2 を import する）にある
     from .fx import overlay
     return overlay.run_overlay(args.base, args.layer, args.audio, args.out, args.fps, args.crf, args.force, _progress, args.quiet)
 

@@ -326,7 +326,7 @@ uv run mv overlay --base fx_runs/<run_id>/both.mp4 --layer lyrics_png/ --layer s
 - コマ数・fps・寸法が合わないものはエラー（勝手に合わせない）。土台が画像なら `--fps` が要り、コマ数はレイヤーから決まる。土台が動画なら fps とコマ数は動画から。
 - run（既定 `<土台のフォルダ>/overlay_runs/<run_id>/`）に `overlay.mp4`・`manifest.json`・`render.log` を残し、`index.json` に key → run_id を登録する。key は土台・各レイヤーの全コマ・音声の sha256 と設定から作り、同じ入力の成功 run は再利用する（`--force` で作り直す）。manifest の `overlay` の欄（土台・レイヤーごとの各コマの sha256・音声・設定）は `fx_overlay.schema.json`（fx-overlay/0.1。`contracts/` の外）で検証してから書く。
 - 書き出しの後に `probe.check_video`（technical_pass。寸法・fps・コマ数・色タグ・音声の尺）を通す。通らなければ run は failed。
-- cv2 は使わない（Pillow・numpy・ffmpeg）。実験的。確かめたのは合成素材（numpy で描いた半透明の箱）だけで、Remotion の実際の連番ではまだ通していない。
+- 重ね合わせ自体は Pillow・numpy・ffmpeg だけで行うが、書き出しは fx の render（cv2 を import する）なので fx extra が要る。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー。実験的。確かめたのは合成素材（numpy で描いた半透明の箱）だけで、Remotion の実際の連番ではまだ通していない。
 
 ## accept
 

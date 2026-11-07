@@ -13,10 +13,10 @@ fx の共通の書き出し（render.write_video。BT.709・tv・yuv420p の式�
   manifest の overlay の欄は fx_overlay.schema.json（fx-overlay/0.1。contracts/ の外）で検証してから書く。
 - 最後に probe.check_video（technical_pass）を通す。通らなければ run は failed。
 
-cv2 は使わない（Pillow・numpy・ffmpeg だけ）。
+書き出しは fx の render（cv2 を import する）にあるので fx extra が要る。重ね合わせ自体は Pillow・numpy・ffmpeg だけで行う。
 """
-import hashlib
 import json
+import re
 import subprocess
 import tempfile
 import time
@@ -28,8 +28,7 @@ from PIL import Image
 
 from .. import media
 from ..io import PipelineError, atomic_json, sha256
-from . import probe, runs
-from . import spec as fxspec
+from . import fingerprint, probe, runs
 
 SCHEMA_VERSION = "fx-overlay/0.1"
 SCHEMA_PATH = Path(__file__).with_name("fx_overlay.schema.json")
@@ -42,6 +41,11 @@ DEFAULT_CRF = 18
 
 def _is_image(path):
     return Path(path).suffix.lower() in IMAGE_SUFFIXES
+
+
+def natural_key(path):
+    """frame2 < frame10 になる並び（数字の桁をそろえていない連番でも順序を間違えない）。"""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", Path(path).name)]
 
 
 def _image_size(path):
@@ -68,17 +72,20 @@ def describe_base(path, fps=None):
     if fps is not None and abs(float(fps) - info["fps"]) > 1e-3:
         raise PipelineError(f"--fps {fps:g} が --base の fps {info['fps']:g} と違います（土台が動画のときは動画の fps を使います）")
     return {"kind": "video", "path": str(path), "sha256": sha256(path), "size": [info["width"], info["height"]],
-            "fps": float(info["fps"]), "frames": decoded["frames"]}
+            "fps": float(info["fps"]), "frames": decoded["frames"], "matrix": info["matrix"]}
 
 
 def describe_layer(path):
     """レイヤーの {kind, path, size, frames, sha256 | files}。連番は各コマの名前と sha256、動画は全体の sha256。"""
     path = Path(path)
     if path.is_dir():
-        files = sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() in FRAME_SUFFIXES)
+        files = sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() in FRAME_SUFFIXES), key=natural_key)
         if not files:
             raise PipelineError(f"--layer のフォルダに連番（{'/'.join(FRAME_SUFFIXES)}）がありません: {path}")
-        width, height = _image_size(files[0])
+        with Image.open(files[0]) as image:
+            width, height = image.size
+            if "A" not in image.getbands() and not (image.mode == "P" and "transparency" in image.info):
+                raise PipelineError(f"--layer の連番にアルファがありません（{image.mode}）: {files[0].name}。透過の PNG にしてください")
         return {"kind": "frames", "path": str(path), "size": [width, height], "frames": len(files),
                 "files": [{"name": p.name, "sha256": sha256(p)} for p in files]}
     if not path.is_file():
@@ -92,7 +99,7 @@ def describe_layer(path):
     if "a" not in (info["pix_fmt"] or ""):
         raise PipelineError(f"--layer の動画にアルファがありません（pix_fmt {info['pix_fmt']}）: {path.name}")
     return {"kind": "video", "path": str(path), "sha256": sha256(path), "size": [info["width"], info["height"]],
-            "frames": decoded["frames"], "fps": info["fps"]}
+            "frames": decoded["frames"], "fps": info["fps"], "matrix": info["matrix"]}
 
 
 def describe_audio(path):
@@ -123,15 +130,20 @@ def resolve(base, layers, fps):
 # ---- 読み出し ---------------------------------------------------------------------
 
 class _VideoReader:
-    """動画を rgb24（土台）か rgba（レイヤー）で 1 コマずつ読む。寸法は変えない。"""
+    """動画を rgb24（土台）か rgba（レイヤー）で 1 コマずつ読む。寸法は変えない。
 
-    def __init__(self, path, size, pix_fmt):
+    コマは復号順にそのまま（-fps_mode passthrough。probe.decode の数え方と同じ）。タグが bt709 の動画は行列を指定して読む
+    （dance / inspection と同じ。指定しないと swscale の既定の BT.601 で色が変わる）。"""
+
+    def __init__(self, path, size, pix_fmt, matrix=None):
         width, height = size
         channels = 4 if pix_fmt == "rgba" else 3
         self.path, self.bytes_per_frame, self.shape = Path(path), width * height * channels, (height, width, channels)
         self.errors = tempfile.TemporaryFile()
+        scale = "scale=iw:ih:flags=bicubic+accurate_rnd+full_chroma_int" + (":in_color_matrix=bt709" if matrix == "bt709" else "")
         self.proc = subprocess.Popen([media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-an",
-                                      "-pix_fmt", pix_fmt, "-f", "rawvideo", "pipe:1"], stdout=subprocess.PIPE, stderr=self.errors)
+                                      "-fps_mode", "passthrough", "-vf", scale, "-pix_fmt", pix_fmt, "-f", "rawvideo", "pipe:1"],
+                                     stdout=subprocess.PIPE, stderr=self.errors)
 
     def read(self):
         data = self.proc.stdout.read(self.bytes_per_frame)
@@ -161,7 +173,7 @@ def _base_frames(base, n_frames):
         for _ in range(n_frames):
             yield still
         return
-    reader = _VideoReader(base["path"], base["size"], "rgb24")
+    reader = _VideoReader(base["path"], base["size"], "rgb24", base.get("matrix"))
     try:
         for _ in range(n_frames):
             yield reader.read()
@@ -176,7 +188,7 @@ def _layer_frames(layer, n_frames):
             with Image.open(folder / item["name"]) as image:
                 yield np.asarray(image.convert("RGBA"), dtype=np.uint8)
         return
-    reader = _VideoReader(layer["path"], layer["size"], "rgba")
+    reader = _VideoReader(layer["path"], layer["size"], "rgba", layer.get("matrix"))
     try:
         for _ in range(n_frames):
             yield reader.read()
@@ -194,16 +206,21 @@ def composite(under, rgba):
 def frames(base, layers, n_frames, progress=None):
     """合成したコマを順に返す。"""
     sources = [_layer_frames(layer, n_frames) for layer in layers]
-    for index, under in enumerate(_base_frames(base, n_frames)):
-        image = under
-        for source in sources:
-            rgba = next(source)
-            if rgba.shape[:2] != image.shape[:2]:
-                raise PipelineError(f"コマ {index} の寸法が違います: {rgba.shape[1]}x{rgba.shape[0]}（期待 {image.shape[1]}x{image.shape[0]}）")
-            image = composite(image, rgba)
-        yield image
-        if progress:
-            progress(index + 1)
+    under_frames = _base_frames(base, n_frames)
+    try:
+        for index, under in enumerate(under_frames):
+            image = under
+            for source in sources:
+                rgba = next(source)
+                if rgba.shape[:2] != image.shape[:2]:
+                    raise PipelineError(f"コマ {index} の寸法が違います: {rgba.shape[1]}x{rgba.shape[0]}（期待 {image.shape[1]}x{image.shape[0]}）")
+                image = composite(image, rgba)
+            yield image
+            if progress:
+                progress(index + 1)
+    finally:   # 途中で止まっても、各レイヤーの ffmpeg を閉じる
+        for source in sources + [under_frames]:
+            source.close()
 
 
 # ---- run --------------------------------------------------------------------------
@@ -231,7 +248,7 @@ def _meter(say, total):
 def run_overlay(base_path, layer_paths, audio_path=None, out=None, fps=None, crf=DEFAULT_CRF, force=False, progress=None, quiet=False):
     """土台にレイヤーを重ねて overlay.mp4 を書き、run と index に記録する。CLI が stdout に出す要約を返す。"""
     began = time.monotonic()
-    say = progress or (lambda message: None)
+    say = (lambda message: None) if quiet or progress is None else progress
     if not layer_paths:
         raise PipelineError("--layer を 1 つ以上指定してください")
     base = describe_base(base_path, fps)
@@ -244,7 +261,9 @@ def run_overlay(base_path, layer_paths, audio_path=None, out=None, fps=None, crf
     record = {"schema_version": SCHEMA_VERSION, "base": base, "layers": layers, "audio": audio,
               "settings": {"fps": fps, "crf": crf, "size": list(size), "frames": n_frames, "alpha": "straight", "blend": "srgb"}}
     _validate(record)
-    key = runs.content_key_for("overlay", {"record": record, "engine": fxspec.canonical_json({"version": SCHEMA_VERSION}), "libraries": _libraries()})
+    # 重ねる式や読み方（この package のコード）が変われば key も変わる（古い絵を再利用しない）
+    key = runs.content_key_for("overlay", {"record": record, "engine": {"version": SCHEMA_VERSION, "fingerprint": fingerprint()},
+                                           "libraries": _libraries()})
     out = (Path(out) if out else Path(base_path).resolve().parent / "overlay_runs").resolve()
     with runs.Session(out, key, "overlay", "render.log", say=say, tag="[overlay]", force=force) as session:
         if session.reused:
@@ -286,8 +305,3 @@ def _summarize(run_dir, manifest, reused, began):
             "technical_pass": manifest["technical_pass"], "output": str(Path(run_dir) / item["path"]), "frames": item["frames"],
             "size": manifest["output"]["size"], "fps": manifest["interval"]["fps"], "layers": len(manifest["overlay"]["layers"]),
             "audio": manifest["overlay"]["audio"] is not None, "seconds": round(time.monotonic() - began, 1)}
-
-
-def content_sha256(record):
-    """記録の正規形の sha256（テストと台帳の照合用）。"""
-    return hashlib.sha256(fxspec.canonical_json(record).encode("utf-8")).hexdigest()

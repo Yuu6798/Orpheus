@@ -123,6 +123,25 @@ def test_video_base_and_alpha_video_layer(tmp_path):
         overlay.run_overlay(tmp_path / "base.mp4", [tmp_path / "base.mp4"], out=tmp_path / "runs")
 
 
+def test_sequence_order_is_numeric_and_opaque_sequences_are_rejected(tmp_path):
+    folder = tmp_path / "unpadded"
+    folder.mkdir()
+    for i in range(12):
+        rgba = np.zeros((SIZE[1], SIZE[0], 4), np.uint8)
+        rgba[0, 0] = (i, 0, 0, 255)                        # コマ番号を左上の画素に入れる
+        Image.fromarray(rgba, "RGBA").save(folder / f"frame{i}.png")
+    layer = overlay.describe_layer(folder)
+    assert [f["name"] for f in layer["files"]] == [f"frame{i}.png" for i in range(12)]
+    _base_image(tmp_path / "base.png")
+    frames = list(overlay.frames({"kind": "image", "path": str(tmp_path / "base.png"), "size": list(SIZE), "frames": None}, [layer], 12))
+    assert [int(f[0, 0][0]) for f in frames] == list(range(12))
+    opaque = tmp_path / "opaque"
+    opaque.mkdir()
+    Image.new("RGB", SIZE, (1, 2, 3)).save(opaque / "f0.png")
+    with pytest.raises(PipelineError, match="アルファがありません"):
+        overlay.describe_layer(opaque)
+
+
 def test_layers_stack_bottom_to_top(tmp_path):
     _base_image(tmp_path / "base.png", (0, 0, 0))
     _layer_frames(tmp_path / "red", alpha=255, color=(255, 0, 0))
