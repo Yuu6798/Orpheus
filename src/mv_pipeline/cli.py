@@ -167,6 +167,15 @@ def _gate_parser(commands):
     demo.add_argument("--flash-align", choices=["beat", "downbeat"], default="beat", help="what the flashes should be compared with")
     demo.add_argument("--attack-ms", type=float, default=30.0, help="rise time of each line's tone")
     demo.add_argument("--floor-db", type=float, default=-40.0, help="background noise relative to the tone")
+    tl = sub.add_parser("timeline", help="measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check")
+    tl.add_argument("--frames", action="append", default=[], required=True,
+                    help="PNG sequence folder; 'DIR:lyric-001' binds the folder to one line. Repeatable")
+    tl.add_argument("--lyrics", type=Path, required=True, help="props.json from mv export remotion-props (remotion-props/0.1)")
+    tl.add_argument("--layer", required=True, help="layer name written into the timeline (e.g. band)")
+    tl.add_argument("--hints", type=Path, help="JSON {line id: normalized box} when one sequence holds several lines")
+    tl.add_argument("--alpha-threshold", type=int, default=64, help="a pixel is visible when alpha is above this (0-254)")
+    tl.add_argument("--flashes", help="comma-separated flash times in seconds to write into the timeline (props have none)")
+    tl.add_argument("--out", type=Path, required=True, help="timeline.json to write (plus <stem>_measured.json)")
 
 
 def _inspect_parser(commands):
@@ -315,6 +324,14 @@ def gate_command(args):
         from .gate import demo
         return demo.create(args.dir, args.duration, args.fps, args.bpm, args.beats_per_bar, not args.no_downbeats, args.shifts,
                            args.flashes, args.flash_align, args.attack_ms, args.floor_db)
+    if args.gate_command == "timeline":
+        from .gate import frames_timeline
+        flashes = [v for v in (args.flashes or "").split(",") if v.strip()]
+        try:
+            flashes = [float(v) for v in flashes]
+        except ValueError as error:
+            raise PipelineError(f"--flashes は秒をコンマで区切って指定してください: {args.flashes!r}") from error
+        return frames_timeline.write(args.frames, args.lyrics, args.layer, args.out, args.hints, args.alpha_threshold, flashes)
     from .gate import checks
     report, out = checks.run(args.config, args.out)
     args.failed = 1 if report["overall"] == "fail" else 0

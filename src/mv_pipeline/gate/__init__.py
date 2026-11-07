@@ -7,6 +7,7 @@
   - checks: 9 つの検査（`mv gate check`）。入力は `mv dance render` の timeline.json と、持っている分の材料。
   - lines: 行・秒の確認表（`mv gate lines`）。行頭の候補を出すだけで、確定はユーザーの試聴。
   - demo: 正解の分かっている試験素材（`mv gate demo`）。声の代役・宣言した行の時刻・timeline・拍の格子・expected.json。
+  - frames_timeline: 透過の連番から timeline を起こす（`mv gate timeline`）。α から見えているコマと箱を実測する。
 
 cv2 は使わない。soundfile は `--vocals` を使うときだけ読み込む（analysis extra。PCM の WAV は無くても読める）。
 """
