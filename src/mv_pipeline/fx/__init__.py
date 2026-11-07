@@ -25,6 +25,7 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
   - runs: run ディレクトリ・manifest・キャッシュ（index.json）・stills・accept。key は描画に影響する入力すべて
     （正規化 spec・素材の sha256・fingerprint()・版の集合・区間・出力寸法と scale・ライブラリ版）から作る。入力を足したら key にも足す。
   - legacy: 外部の実制作レンダラを呼んで run として記録する（cv2 不要・キャッシュしない）。
+  - overlay: 透過レイヤー（PNG 連番・アルファつき動画）を土台に重ねて書き出す `mv overlay`（cv2 不要。Pillow と ffmpeg）。
   - demo: 合成デモ素材と spec.json（cv2 を使う）。
   runs / legacy / probe は cv2 を import しない（fx accept と fx legacy は fx extra なしで動く）。
   例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
