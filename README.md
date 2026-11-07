@@ -69,6 +69,12 @@ uv run python examples/workflow/run.py projects/workflow-example
 `uv sync --locked --extra analysis --extra fx` の後、`uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json` で合成素材の4版と2×2グリッドを出します。
 設定は `contracts/` の外にあり、採点も自動合否も行いません。詳細と限界は [docs/fx.md](docs/fx.md)。
 
+## 生成動画の検品 inspect（実験的）
+
+生成した動画（i2v のカット・緑背景のダンス素材・3D の描画など）から、異常の候補をコマ番号と秒で見つけ、形状・動作・衣装・連続性に分けます。設定画と配色を照合し、見つけた所を直す場所（元動画のコマ・dance の spec の clip と出力の秒・生成の素性）に結び付けて、前後のコマの画像つきの修正計画（`fix_plan.json`）を書きます。
+`uv sync --locked --extra analysis --extra fx` の後、`uv run mv inspect demo projects/inspectdemo && uv run mv inspect check projects/inspectdemo/inspect.json` で、異常を 7 か所に入れた合成素材を検品します。
+数値と根拠を出すだけで、合否・採否は決めません（検出が無いことは合格ではない）。しきい値は合成素材で決めた仮の値で、実作品ではまだ通していません。VLM（画像を読めるモデル）は、依頼の束を書いてユーザーが明示した外部プログラムだけを呼び、素材を外へ送る設定は `--allow-send` が無いと動きません。自動の再生成はしません。詳細と限界は [docs/inspect.md](docs/inspect.md)。
+
 ## 自作の 3D モデリングツール model3d（外部ツール・実験的）
 
 設定画や既存モデルから、部位・骨の対応（役割名）、加工レシピの実行、形状と動作の検査、書き出しをレシピと記録で進める道具。`tools/model3d/` にあり、Orpheus とは出力ファイルと制作記録だけで接続します（`mv_pipeline` とは互いに import しません）。
@@ -94,6 +100,7 @@ Qwen/Demucsの接続スクリプトは同梱していますが、このPCでは�
 - [演出エンジン fx（実験的）](docs/fx.md)
 - [ダンス合成 dance（実験的）](docs/dance.md)
 - [書き出し前の検査 gate（実験的）](docs/gate.md)
+- [生成動画の検品 inspect（実験的）](docs/inspect.md)
 - [自作の 3D モデリングツール model3d（外部ツール・実験的）](docs/model3d.md)
 - [ロードマップ](docs/roadmap.md)（実装前の計画を含む。実装済みの機能とは区別）
 
