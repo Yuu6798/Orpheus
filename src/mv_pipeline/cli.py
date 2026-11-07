@@ -412,8 +412,8 @@ def workflow_command(args):
 
 
 GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
-                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command, "layer": layer_command}
-                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command, "overlay": overlay_command}
+                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command, "overlay": overlay_command,
+                  "layer": layer_command}
 
 
 # ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------
