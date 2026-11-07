@@ -55,6 +55,13 @@ def test_events_come_from_the_timeline_and_out_of_range_times_are_listed(tmp_pat
     assert record["missing"][0]["t"] == 5.0 and record["events"]["kinds"] == list(sheet.KINDS) and record["fps"] == FPS and record["fps_origin"] == "timeline"
     result = sheet.build(tmp_path / "frames", tmp_path / "t.png", events_path=tmp_path / "timeline.json", backgrounds=("white",), kinds=("flashes",))
     assert result["cells"] == 1
+    # 一部の区間だけ描いた run: timeline の時刻はショットの時刻で、動画は interval.start から始まる
+    partial = {**timeline, "interval": {"start": 10.0, "duration": N / FPS, "frames": N}, "seams": [], "flashes": [10.5],
+               "lyrics": [{"layer": "band", "text": "late", "start": 10.0, "end": 10.5, "box": [0, 0, 1, 1]}]}
+    atomic_json(tmp_path / "partial.json", partial)
+    sheet.build(tmp_path / "frames", tmp_path / "p.png", events_path=tmp_path / "partial.json", backgrounds=("white",))
+    record = read_json(tmp_path / "p.json")
+    assert [(c["t"], c["frame"]) for c in record["cells"]] == [(10.0, 0), (10.5, 12)] and record["events"]["interval_start"] == 10.0
 
 
 def test_opaque_video_wraps_times_into_columns(tmp_path):
@@ -97,6 +104,10 @@ def test_unpadded_names_palette_without_transparency_and_uneven_sizes(tmp_path):
     palette.mkdir()
     Image.new("P", (W, H)).save(palette / "f0.png")
     assert sheet.describe_source(palette, fps=FPS)["transparent"] is False
+    keyed = tmp_path / "keyed"
+    keyed.mkdir()
+    Image.new("RGB", (W, H), (1, 2, 3)).save(keyed / "f0.png", transparency=(1, 2, 3))       # tRNS の透明色
+    assert sheet.describe_source(keyed, fps=FPS)["transparent"] is True
     uneven = tmp_path / "uneven"
     uneven.mkdir()
     Image.new("RGBA", (W, H)).save(uneven / "f0.png")

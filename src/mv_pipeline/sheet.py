@@ -5,7 +5,8 @@
 
 - コマごとに「コマ番号・秒・出来事の名前」を書き込む。透過の連番なら、白・黒・灰（--backgrounds）の上に置いた版を横に並べる
   （縁と読みやすさの確認用）。動画は不透明として扱い（アルファつきの動画は先に `mv overlay` などで平らにする）、時刻を --columns 列に折り返す。
-- 時刻 → コマ番号は validate.frame_at（いちばん近いコマ）。連番の fps は --fps（--events の timeline があればその fps）。
+- 時刻 → コマ番号は validate.frame_at（いちばん近いコマ）。timeline の時刻はショットの時刻なので、一部の区間だけ描いた run では
+  interval.start を引いてから動画のコマにする。連番の fps は --fps（--events の timeline があればその fps）。
   動画の fps は動画から読み、--fps や timeline の fps と 1% 以上違えば止める。
 - 字は --font（TTF / TTC）か、よくある場所の日本語の書体を探して使う。見つからなければ Pillow の既定の書体で、日本語を含む出来事の名前は
   ASCII の略記（line 1 / flash / seam / given）にして画像に書き、正式な名前は隣の JSON に残す（記録の `label_font` にどちらかが分かる）。
@@ -55,7 +56,8 @@ def _frame_files(folder):
 
 
 def _has_alpha(image):
-    return "A" in image.getbands() or (image.mode == "P" and "transparency" in image.info)
+    """アルファのチャンネルがあるか、PNG の tRNS（パレット・RGB・グレーの透明色）があるか。"""
+    return "A" in image.getbands() or "transparency" in image.info
 
 
 def describe_source(path, fps=None, fps_origin="--fps"):
@@ -201,7 +203,9 @@ def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEF
     wanted = [(float(t), "指定", "given") for t in at] if events_path is None else events_from_timeline(timeline, kinds)
     if not wanted:
         raise PipelineError("並べる時刻がありません（timeline に行・フラッシュ・切れ目が無い）")
-    entries = [{"t": t, "frame": validate.frame_at(t, fps), "event": name, "event_ascii": short} for t, name, short in wanted]
+    # timeline の時刻はショットの時刻。一部の区間だけ描いた run の動画は interval.start から始まるので、その分を引いてコマにする
+    offset = float((timeline or {}).get("interval", {}).get("start", 0.0)) if events_path is not None else 0.0
+    entries = [{"t": t, "frame": validate.frame_at(t - offset, fps), "event": name, "event_ascii": short} for t, name, short in wanted]
     for entry in entries:
         entry["missing"] = not 0 <= entry["frame"] < source["frames"]
     frames = _load_frames(source, [e["frame"] for e in entries if not e["missing"]])
@@ -230,7 +234,8 @@ def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEF
               "cell_width": cell_width, "fps": fps, "fps_origin": fps_origin if source["kind"] == "frames" else "video",
               "label_font": font_path, "labels": "full" if font_path else "ascii",
               "source": {k: v for k, v in source.items() if k not in ("files", "info")},
-              "events": None if events_path is None else {"path": str(events_path), "sha256": sha256(events_path), "kinds": list(kinds)},
+              "events": None if events_path is None else {"path": str(events_path), "sha256": sha256(events_path), "kinds": list(kinds),
+                                                          "interval_start": offset},
               "backgrounds": list(backgrounds) if source["transparent"] else [],
               "cells": layout, "missing": [{k: e[k] for k in ("t", "frame", "event")} for e in entries if e["missing"]],
               "note": "閲覧用。合否は出さない。cells[*].sha256 はそのコマの画素（連番はファイル）の sha256"}
