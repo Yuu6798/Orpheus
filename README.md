@@ -24,6 +24,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv init … render verify` | 音源・歌詞時刻・静止画・演出 JSON から、パン・ズーム・クロスフェードと歌詞テロップつきの MP4 を描く | 本体 | [runbook](docs/runbook.md) |
 | `mv workflow` | 用途別（歌詞つき MV / ダンス編集）に必要な工程を並べ、現在のファイルから完了を確認する | 本体 | [workflow](docs/workflow.md) |
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
+| `mv export remotion-props` | analysis / storyboard から、Remotion 側が秒を扱わずに済むコマ番号だけの props.json を書く | 実験的 | [remotion-props](docs/remotion-props.md) |
 | `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
 | `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）と、歌詞の行・秒の確認表 | 実験的 | [gate](docs/gate.md) |
@@ -141,6 +142,7 @@ pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 | [runbook.md](docs/runbook.md) | MV 制作の実行手順（入力 → 歌詞時刻 → 演出 → 描画 → 検証） |
 | [workflow.md](docs/workflow.md) | 用途別の制作計画と完了確認 |
 | [adapters.md](docs/adapters.md) | 歌詞同期・音源分離アダプターの共通形式と接続例 |
+| [remotion-props.md](docs/remotion-props.md) | Remotion を透過レイヤーの部品として使うための、コマ番号だけの props の書き出し |
 | [fx.md](docs/fx.md) / [dance.md](docs/dance.md) / [gate.md](docs/gate.md) / [inspect.md](docs/inspect.md) | 実験的な機能の使い方と限界 |
 | [model3d.md](docs/model3d.md) / [model3d-dance.md](docs/model3d-dance.md) / [model3d-review.md](docs/model3d-review.md) | 3D ツールの使い方、既存制作レシピの接続、実行確認の記録 |
 | [dependencies.md](docs/dependencies.md) | 採用ツールの版と利用条件（Remotion の利用条件を含む） |
