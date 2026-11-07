@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "inspect",
+  "description": "mv inspect check の設定（inspect/0.1）。パスは設定ファイルのあるフォルダ基準（絶対パスも可）。clips か dance_spec のどちらか 1 つを書く。未知の鍵は拒否し、x_ で始まる鍵はどの階層でも許す。",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {"const": "inspect/0.1"},
+    "clips": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/clip"}},
+    "dance_spec": {"type": "string", "minLength": 1},
+    "origins": {"type": "object", "additionalProperties": {"$ref": "#/$defs/origin"}},
+    "reference": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+    "foreground": {"$ref": "#/$defs/foreground"},
+    "checks": {"type": "array", "items": {"enum": ["continuity", "motion", "shape", "costume"]}, "uniqueItems": true},
+    "analysis_width": {"type": "integer", "minimum": 64, "maximum": 1920},
+    "thresholds": {"type": "object", "additionalProperties": {"type": "number"}},
+    "vlm": {
+      "type": "object",
+      "properties": {
+        "every_s": {"type": "number", "exclusiveMinimum": 0},
+        "max_frames": {"type": "integer", "minimum": 1, "maximum": 200},
+        "max_side": {"type": "integer", "minimum": 128, "maximum": 2048},
+        "language": {"type": "string"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "oneOf": [{"required": ["clips"]}, {"required": ["dance_spec"]}],
+  "$defs": {
+    "box": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 4, "maxItems": 4},
+    "rgb": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 255}, "minItems": 3, "maxItems": 3},
+    "key": {
+      "type": "object",
+      "required": ["color"],
+      "properties": {
+        "color": {"$ref": "#/$defs/rgb"},
+        "tolerance": {"type": "number", "minimum": 0},
+        "softness": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "foreground": {
+      "oneOf": [
+        {"const": "none"},
+        {"type": "object", "required": ["key"], "properties": {"key": {"$ref": "#/$defs/key"}}, "patternProperties": {"^x_": {}}, "additionalProperties": false},
+        {"type": "object", "required": ["box"], "properties": {"box": {"$ref": "#/$defs/box"}}, "patternProperties": {"^x_": {}}, "additionalProperties": false}
+      ]
+    },
+    "origin": {"type": "object", "description": "生成の素性（tool・model・version・job・seed・prompt・start_image など）。中身は検査に使わず、直す場所と修正計画にそのまま写す。"},
+    "clip": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+        "path": {"type": "string", "minLength": 1},
+        "frames": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2},
+        "origin": {"$ref": "#/$defs/origin"},
+        "foreground": {"$ref": "#/$defs/foreground"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "reference": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "view": {"type": "string"},
+        "box": {"$ref": "#/$defs/box"},
+        "background": {"enum": ["auto", "alpha", "border", "none"]},
+        "key": {"$ref": "#/$defs/key"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
+  }
+}
