@@ -316,12 +316,19 @@ def recover(out):
 
 
 def _inputs(cfg, result, adapter, vlm_response):
-    """この実行の入力と sha256 の一覧（設定・動画・設定画・dance の spec・VLM の設定と返答）。"""
+    """この実行の入力と sha256 の一覧（設定・動画・設定画・dance の spec・演出の時刻のファイル・VLM の設定と返答）。"""
     items = [{"role": "config", "path": str(cfg.path), "sha256": cfg.sha256}]
     if cfg.dance_spec:
         items.append({"role": "dance_spec", "path": str(cfg.dance_spec), "sha256": sha256(cfg.dance_spec)})
     items += [{"role": "clip", "id": clip["id"], "path": clip["path"], "sha256": clip["sha256"]} for clip in result["clips"]]
     items += [{"role": "reference", "path": entry["rel"], "sha256": sha256(entry["path"])} for entry in cfg.references]
+    for clip in result["clips"]:                     # 演出の時刻のファイル（cues.track・cues.light_keys。全体の cues はクリップごとに同じ）
+        for source in (clip.get("cues") or {}).get("sources", []):
+            files = zip(source["paths"], source["sha256"]) if source["kind"] == "track" else [(source["path"], source["sha256"])]
+            for path, digest in files:
+                item = {"role": f"cues_{source['kind']}", "path": path, "sha256": digest}
+                if item not in items:
+                    items.append(item)
     if adapter:
         items.append({"role": "vlm_adapter", "path": adapter["path"], "sha256": adapter["sha256"]})
     if vlm_response:

@@ -1243,6 +1243,29 @@ def _write(path, data):
     return path
 
 
+def test_the_cue_files_are_in_the_run_inputs(small_demo, tmp_path):
+    config = read_json(small_demo / "inspect.json")
+    config["clips"][0]["path"] = str(small_demo / config["clips"][0]["path"])
+    config["reference"][0]["path"] = str(small_demo / config["reference"][0]["path"])
+    track = _write(tmp_path / "track.json", _track(fps=24.0))
+    keys = _write(tmp_path / "keys.json", {"schema_version": "model3d-light-keys/0.1", "fps": 24, "frames": 96,
+                                           "grid": {"period": 0.5, "k0_time": 0.0}, "low": [0], "mid": [0], "high": [0]})
+    config["cues"] = {"track": "track.json", "light_keys": "keys.json"}       # 全体の cues
+    result, _ = run.run(_write(tmp_path / "cues.json", config), tmp_path / "global")
+    roles = {item["role"]: item for item in result["run"]["inputs"]}
+    assert roles["cues_track"] == {"role": "cues_track", "path": "track.json", "sha256": hashlib.sha256(track.read_bytes()).hexdigest()}
+    assert roles["cues_light_keys"]["sha256"] == hashlib.sha256(keys.read_bytes()).hexdigest()
+    edited = _track(fps=24.0)
+    edited["frames"][30]["camera"]["location"][0] += 3.0                      # その場で書き換えたトラック
+    _write(track, edited)
+    del config["cues"]
+    config["clips"][0]["cues"] = {"track": "track.json"}                     # クリップごとの cues
+    again, _ = run.run(_write(tmp_path / "cues.json", config), tmp_path / "clip")
+    after = [item for item in again["run"]["inputs"] if item["role"] == "cues_track"]
+    assert after == [{"role": "cues_track", "path": "track.json", "sha256": hashlib.sha256(track.read_bytes()).hexdigest()}]
+    assert after[0]["sha256"] != roles["cues_track"]["sha256"]                # 書き換えたトラックは、記録の sha256 で見分けられる
+
+
 def test_cues_are_refused_with_a_dance_spec(dance_root, tmp_path):
     config = {"schema_version": "inspect/0.1", "dance_spec": str(dance_root / "spec.json"), "cues": {"cuts": [1.0]}}
     with pytest.raises(PipelineError, match="cues は clips"):

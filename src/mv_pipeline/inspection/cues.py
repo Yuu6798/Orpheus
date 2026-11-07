@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..io import PipelineError, read_json
+from ..io import PipelineError, read_json, sha256
 
 TOLERANCE_S = 0.05
 BEAT_TOLERANCE = 0.1
@@ -132,7 +132,7 @@ def load(spec, base):
     tracks = spec.get("track")
     tracks = [tracks] if isinstance(tracks, str) else list(tracks or [])
     if tracks:                                         # 並びはつないでから読む（クリップの境目のカットも見るため）
-        frames, rates = [], set()
+        frames, rates, digests = [], set(), []
         for rel in tracks:
             path = (Path(base) / rel).resolve()
             if not path.is_file():
@@ -142,6 +142,7 @@ def load(spec, base):
                 raise PipelineError(f"cues.track は model3d-stage-track/0.1（fps のあるもの）にしてください: {rel}")
             frames += data["frames"]
             rates.add(float(data["fps"]))
+            digests.append(sha256(path))               # 報告の run.inputs に入れる（その場で書き換えたトラックを見分ける）
         if len(rates) != 1:
             raise PipelineError(f"cues.track の fps がそろっていません: {sorted(rates)}")
         if len({f["T"] for f in frames}) != len(frames):
@@ -150,7 +151,7 @@ def load(spec, base):
         cues["cuts"] += cuts
         cues["moves"] += moves
         cues["lights"] += [[t, t] for t in light_times]
-        cues["sources"].append({"kind": "track", "paths": [str(rel) for rel in tracks], "cuts": len(cuts), "moves": len(moves),
+        cues["sources"].append({"kind": "track", "paths": [str(rel) for rel in tracks], "sha256": digests, "cuts": len(cuts), "moves": len(moves),
                                 "lights": len(light_times),
                                 "frames_without_camera": sum(1 for f in frames if not f.get("camera"))})   # カットと動きを見ていないコマ
     if spec.get("light_keys"):
@@ -161,7 +162,7 @@ def load(spec, base):
         if not isinstance(data, dict) or data.get("schema_version") != "model3d-light-keys/0.1":
             raise PipelineError(f"cues.light_keys は model3d-light-keys/0.1 にしてください: {spec['light_keys']}")
         cues["grid"] = {"period": float(data["grid"]["period"]), "k0_time": float(data["grid"]["k0_time"])}
-        cues["sources"].append({"kind": "light_keys", "path": str(spec["light_keys"])})
+        cues["sources"].append({"kind": "light_keys", "path": str(spec["light_keys"]), "sha256": sha256(path)})
     if cues["grid"] is not None and not cues["grid"]["period"] > 0:
         raise PipelineError("cues の拍の period は正の秒にしてください")
     if offset:                                         # cue の時刻 → クリップの時刻
