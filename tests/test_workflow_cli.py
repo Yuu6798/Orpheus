@@ -34,3 +34,16 @@ def test_missing_plan_returns_a_normal_cli_error(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "Error:" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_the_inspection_stage_is_set_on_the_plan_and_reports_are_passed_to_check(tmp_path, capsys):
+    assert main(["workflow", "plan", str(tmp_path / "song"), "--purpose", "lyric-mv", "--inspection", "required"]) == 0
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    assert json.loads((tmp_path / "song" / "workflow.json").read_text(encoding="utf-8"))["inspection"] == "required"
+    report = tmp_path / "inspect_report.json"
+    report.write_text(json.dumps({"schema_version": "inspect-report/0.1", "overall": "clean", "clips": [{"sha256": "0" * 64}],
+                                  "summary": {"events": 0}, "skipped": [], "vlm": {"status": "not_run"}}), encoding="utf-8")
+    assert main(["workflow", "check", plan, "--inspect-report", str(report)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    stage = next(row for row in result["stages"] if row["id"] == "inspection")
+    assert stage["required"] is True and stage["inspection_state"] == "stale" and "inspection" in result["missing"]
