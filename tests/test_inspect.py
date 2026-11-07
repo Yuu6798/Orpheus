@@ -174,6 +174,24 @@ def test_a_missing_color_is_measured_only_on_the_frames_where_it_is_missing():
     assert missing[0]["peak"] in (0, 4, 8)
 
 
+def test_an_extra_color_is_measured_only_on_the_frames_where_it_shows():
+    """設定画に無い色の区間が、しきい値より下のコマをはさんでつながり、比べる向きも入れ替わるとき、値・山・色は
+    しきい値を超えたコマだけで測る（Codex の指摘の例。前は値 0.0・しきい値 0.12 と書いた）。"""
+    front = _fake_palette("front", [0.4, 0.4, 0.2], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.4, 0.4, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    blue = np.array([50.0, 0.0, -60.0], np.float32)
+
+    def frame(palette, extra):
+        shown = extra >= inspect_config.THRESHOLDS["ref_extra_min"]
+        return {**_fake_stats(palette, palette["weights"], extra), "extra_lab": blue if shown else None,
+                "extra_box": [0.1, 0.1, 0.2, 0.2] if shown else None}
+
+    stats = [[frame(front, f), frame(back, b)] for f, b in [(0.4, 0.5), (0.0, 0.1), (0.5, 0.4), (0.0, 0.1)] * 3]
+    found = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert [(s["check"], s["frames"], s["reference"], s["value"], s["peak"]) for s in found] == \
+        [("reference_extra", [0, 11], "turn.png（front）", 0.4, 0)]
+
+
 def test_the_markdown_names_the_other_colors_of_the_same_check(checked):
     import copy
 

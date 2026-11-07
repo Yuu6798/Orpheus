@@ -256,7 +256,7 @@ def signals(features, palettes, th, fps):
 
     コマごとに explaining で比べる設定画を選ぶ（区間の中で入れ替わってもよい）。欠けは色ごと（color_groups の組ごと）に区間を作り、
     値と山は、書く色が実際に欠けたコマだけで測る（別の色が続けて欠けても、区間が欠けの無いコマをはさんでつながっても、
-    欠けの値を薄めない）。"""
+    欠けの値を薄めない）。設定画に無い色も、値・山・色は、しきい値を超えたコマだけで測る。"""
     minimum = max(1, int(round(th["min_segment_s"] * fps)))
     picks = [explaining(stats, palettes, th) for stats in features.ref]
     several = "。ほかの設定画でも欠けなく説明できないコマ" if len(palettes) > 1 else ""
@@ -282,7 +282,7 @@ def signals(features, palettes, th, fps):
         counts = Counter(picks[i][2] for i in range(a, b) if flagged[i])
         r = max(counts, key=lambda q: (counts[q], -q))
         palette = palettes[r]
-        compared = [i for i in range(a, b) if picks[i] and picks[i][2] == r]
+        compared = [i for i in range(a, b) if flagged[i] and picks[i][2] == r]       # 設定画に無い色が出たコマだけで測る
         shares = [features.ref[i][r]["extra"] for i in compared]
         peak = max(compared, key=lambda i: (features.ref[i][r]["extra"], -i))
         colors = [features.ref[i][r]["extra_lab"] for i in compared if features.ref[i][r]["extra_lab"] is not None]
