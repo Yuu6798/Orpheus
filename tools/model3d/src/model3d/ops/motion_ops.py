@@ -484,3 +484,57 @@ def spring_bones(inputs, parameters, outputs, context):
                    "spring_stretch_mm": report.get("spring_stretch_mm"), "bones_vs_springs_mm": report.get("bones_vs_springs_mm"),
                    "bake_check": {name: round(float(value), 5) for name, value in check.items()}}
     return StepResult(observations=[observation])
+
+
+SLEEVE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "sleeve_bones.py"
+SLEEVE_PARAMETERS = {"blender", "sleeves", "ratio", "f_hz", "damping", "substeps", "timeout"}
+SLEEVE_TOLERANCE_DEG = 0.01   # 焼き付けた袖口の向きと狙いの差の許容（単精度の誤差より十分大きく、目に見える差より十分小さい）
+
+
+def _sleeve_settings(parameters):
+    sleeves = parameters.get("sleeves")
+    if not isinstance(sleeves, list) or not sleeves or not all(
+            isinstance(s, dict) and set(s) == {"bone", "follow"} and all(isinstance(s[k], str) and s[k] for k in ("bone", "follow"))
+            for s in sleeves):
+        raise ToolError(f"sleeves は {{bone: 袖口の骨, follow: 曲げに付いて行く骨}} の配列（空でない）にしてください: {sleeves!r}")
+    if len({s["bone"] for s in sleeves}) != len(sleeves) or any(s["bone"] == s["follow"] for s in sleeves):
+        raise ToolError(f"sleeves の袖口の骨は重ならず、follow と違う骨にしてください: {sleeves!r}")
+    ratio = float(number(parameters, "ratio", 0.75, minimum=0))
+    if ratio > 1:
+        raise ToolError(f"ratio は 0〜1 にしてください: {ratio!r}")
+    return {"sleeves": [{"bone": s["bone"], "follow": s["follow"]} for s in sleeves], "ratio": ratio,
+            "f_hz": float(number(parameters, "f_hz", 4.0, minimum=0, exclusive=True)),
+            "damping": float(number(parameters, "damping", 0.45, minimum=0)),
+            "substeps": number(parameters, "substeps", 8, minimum=1, integer=True)}
+
+
+@register("motion.sleeve_bones", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="骨へ移した動き（blend）で、袖口の骨（sleeves の bone）を、関節（follow の骨。前腕など）の曲げの ratio 倍に、"
+                  "減衰つきのばねで少し遅れて付いて行かせ、回転のキーに焼き付ける（Blender の中で）。ねじれは入れない。焼き付けた後に"
+                  "向きを測り直し、狙いと合わなければ止まる。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def sleeve_bones(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    require(inputs, ("blend",), "motion.sleeve_bones")
+    unknown = set(parameters) - SLEEVE_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.sleeve_bones の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(SLEEVE_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"motion.sleeve_bones には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "motion.sleeve_bones")
+    settings_path = Path(context.step_dir) / "sleeve_settings.json"
+    atomic_json(settings_path, _sleeve_settings(parameters))
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--settings", str(settings_path)]
+    record = launcher.run_blender(blender, SLEEVE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    check = report.get("bake_check_deg")
+    if isinstance(check, bool) or not isinstance(check, (int, float)) or not check <= SLEEVE_TOLERANCE_DEG:
+        raise ToolError(f"motion.sleeve_bones で、焼き付けた袖口の向きが狙いと合いません（差 {check}°、許容 {SLEEVE_TOLERANCE_DEG}°）。"
+                        "袖口の骨や親の骨の拡大が 1 でない・拘束が掛かっているリグは扱えません")
+    observation = {"kind": "sleeve_bones", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": report.get("frames"), "sleeves": report.get("sleeves"),
+                   "bake_check_deg": round(float(check), 5)}
+    return StepResult(observations=[observation])
