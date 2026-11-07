@@ -204,6 +204,11 @@ def test_the_markdown_names_the_other_colors_of_the_same_check(checked):
     costume["signals"].append({**primary, "color": "#123456", "detail": "同じ検査で、別の色 #123456 の信号"})
     text = report.markdown(result, read_json(out / "fix_plan.json"))
     assert "同じ検査のほかの色: #123456" in text
+    missing = [s for s in costume["signals"] if s["check"] == "reference_missing"]
+    assert missing and all(s["detail"] != costume["summary"] for s in missing)
+    line = next(line for line in text.splitlines() if line.startswith(f"| {costume['id']} |"))
+    assert all(s["color"] in line for s in missing) and "sheet.png（front） と照合" in line      # 主でない設定画の信号も、色と設定画を表に出す
+    assert "ほかの信号: " not in line or "設定画の色の欠け" not in line.split("ほかの信号: ")[1]
 
 
 def test_the_same_sheet_used_twice_without_a_view_gets_numbered_labels_and_a_cutout(tmp_path):
@@ -290,6 +295,34 @@ def test_stills_metrics_and_markdown_are_written(checked):
     assert rows[1].split(",")[-2] == "0" and rows[65].split(",")[-2] != "0"               # 上着が青のコマ 64 で設定画の色が欠ける
     text = (out / "inspect_report.md").read_text(encoding="utf-8")
     assert "検出が無いことは合格ではありません" in text and "demo-F06" in text and "修正計画（提案。何も実行していません）" in text
+
+
+def test_stills_are_grabbed_at_still_width_and_anchors_at_full_size(tmp_path):
+    """静止画のコマは静止画の幅で取り出し、修正計画の前後のコマ（生成し直すときの画）だけを元の大きさで取り出す。
+    元の大きさのコマを出来事の数だけ抱えないため（実素材の 60 秒 1080×1920 で、ピークのメモリが 2.1 GB から 0.6 GB になった）。"""
+    from mv_pipeline.inspection import report
+
+    demo.create(tmp_path, width=480, height=854, anomalies=["glitch"])
+    result, out = run.run(tmp_path / "inspect.json", tmp_path / "out")
+    event = next(e for e in result["events"] if e["frames"] == [30, 31])
+    still = video.load_rgb(out / event["still"])
+    assert still.shape[0] == video.even_size(480, 854, report.STILL_WIDTH)[1]          # 縦 568（幅 320 に縮めた高さ）
+    segment = next(s for s in read_json(out / "fix_plan.json")["segments"] if event["id"] in s["events"])
+    assert video.load_rgb(out / segment["anchors"]["before"]["image"]).shape == (854, 480, 3)
+
+
+def test_a_dull_key_color_that_would_remove_grey_skin_and_hair_is_reported():
+    """くすんだ緑（3D 描画の背景）では、既定の tolerance で灰色・白・黒まで抜ける。注意を出し、下げる値を示す。"""
+    from mv_pipeline.inspection import features
+
+    dull = {"color": [90, 174, 62], "tolerance": 0.22, "softness": 0.12}
+    warning = features.key_warning(dull, "three")
+    assert warning and "three" in warning and "tolerance を 0.11 以下" in warning
+    assert features.key_warning({**dull, "tolerance": 0.06}, "three") is None
+    assert features.key_warning({"color": [0, 255, 0], "tolerance": 0.22, "softness": 0.12}, "clip") is None
+    grey = np.full((8, 8, 3), 200, np.uint8)
+    assert not features.mask_of(grey, {"kind": "key", "key": dull}).any()                  # 実際に灰色が抜ける
+    assert features.mask_of(grey, {"kind": "key", "key": {**dull, "tolerance": 0.06}}).all()
 
 
 def test_a_clean_clip_has_no_events(tmp_path):
@@ -526,6 +559,23 @@ def test_a_vlm_response_must_answer_this_request(small_demo, tmp_path):
             run.run(small_demo / "inspect.json", tmp_path / "third", vlm_response=tmp_path / "bad.json")
 
 
+def test_the_report_shows_the_model_and_token_counts_an_adapter_wrote(small_demo, tmp_path):
+    """アダプタが返答に書いたモデルとトークン数（x_usage）を、報告の VLM の欄に出す（実際の API で費用が分からなかった）。"""
+    run.run(small_demo / "inspect.json", tmp_path / "first", vlm_packet=True)
+    request = (tmp_path / "first" / "vlm" / "request.json").read_bytes()
+    usage = {"input_tokens": 1234, "cache_creation_input_tokens": 5000, "cache_read_input_tokens": 10000, "output_tokens": 789}
+    response = {"schema_version": vlm.RESPONSE_SCHEMA, "tool": {"name": "claude", "model": "some-model"},
+                "request_sha256": hashlib.sha256(request).hexdigest(), "findings": [], "x_usage": usage}
+    (tmp_path / "response.json").write_text(json.dumps(response), encoding="utf-8")
+    result, out = run.run(small_demo / "inspect.json", tmp_path / "second", vlm_response=tmp_path / "response.json")
+    assert result["vlm"]["usage"] == usage and result["vlm"]["model"] == "some-model"
+    text = (out / "inspect_report.md").read_text(encoding="utf-8")
+    assert "モデル some-model" in text and "入力 1,234・キャッシュの書き込み 5,000・キャッシュの読み出し 10,000・出力 789" in text
+    (tmp_path / "response.json").write_text(json.dumps({**response, "x_usage": {"input_tokens": "many"}}), encoding="utf-8")
+    result, _ = run.run(small_demo / "inspect.json", tmp_path / "third", vlm_response=tmp_path / "response.json")
+    assert "usage" not in result["vlm"]                                            # 形の違う x_usage は写さない
+
+
 def test_a_response_inside_the_last_report_can_be_imported_again(small_demo, tmp_path):
     adapter = _adapter(tmp_path, "--echo-events", "shape")
     out = tmp_path / "out"
@@ -556,6 +606,26 @@ def test_plan_segments_never_overlap_when_a_long_event_holds_short_ones():
 def _plan_event(number, frames, category, checks, actions):
     return {"id": f"c-F{number:02d}", "clip": "c", "frames": list(frames), "category": category, "evidence": "measured", "target": {},
             "signals": [_signal(check, category, frames, kind="segment") for check in checks], "actions": actions}
+
+
+def test_a_fast_change_that_does_not_settle_gets_interpolation_instead_of_frame_replacement():
+    """絵が戻らない変化（step だけ）の 1 コマは、前後のコマで置き換えると止まりか二重写しになる（実素材で確かめた）。
+    形状・動作は補間を、連続性の変わり目（画の切り替わり）は置き換えも補間も出さない。戻る変化（pair）は置き換えのまま。"""
+    from mv_pipeline.inspection import targets
+
+    clip = {"id": "c", "rel": "c.mp4", "sha256": "0" * 64, "fps": 24.0, "frames_total": 178, "inspected": [0, 170], "origin": None}
+
+    def kinds(category, check, kind):
+        event = {"frames": [81, 82], "category": category, "signals": [_signal(check, category, (81, 82), kind=kind)]}
+        return [a["kind"] for a in targets.actions(event, clip, inspect_config.THRESHOLDS)]
+
+    assert kinds("shape", "silhouette_pop", "step") == ["interpolate", "regenerate_segment"]
+    assert kinds("motion", "motion_spike", "step") == ["interpolate", "regenerate_segment"]
+    assert kinds("continuity", "jump", "step") == ["regenerate_segment"]
+    assert kinds("shape", "silhouette_pop", "pair") == ["replace_frames", "regenerate_segment"]
+    assert kinds("continuity", "glitch", "pair") == ["replace_frames", "regenerate_segment"]
+    vlm_only = {"frames": [24, 25], "category": "shape", "signals": [{**_signal("silhouette_pop", "shape", (24, 25), kind="point"), "check": "vlm"}]}
+    assert [a["kind"] for a in targets.actions(vlm_only, clip, inspect_config.THRESHOLDS)] == ["replace_frames", "regenerate_segment"]
 
 
 def test_plan_keeps_a_clip_wide_cadence_out_of_local_regeneration():
@@ -729,10 +799,17 @@ class _Block:
         self.type, self.text = "text", text
 
 
+class _Usage:
+    def __init__(self, input_tokens, output_tokens, cache_creation_input_tokens=0, cache_read_input_tokens=0):
+        self.input_tokens, self.output_tokens = input_tokens, output_tokens
+        self.cache_creation_input_tokens, self.cache_read_input_tokens = cache_creation_input_tokens, cache_read_input_tokens
+
+
 class _Message:
-    def __init__(self, text, stop_reason="end_turn"):
+    def __init__(self, text, stop_reason="end_turn", usage=None):
         self.content = [_Block(text)] if text is not None else []
         self.stop_reason, self.model, self.stop_details = stop_reason, "served-model", None
+        self.usage = usage
 
 
 class _FakeClient:
@@ -761,15 +838,21 @@ def test_claude_adapter_sends_the_sheets_as_a_cached_prefix_and_keeps_refused_fr
     assert planned[1][1][:2] == head                                               # どのバッチも同じ前置き（キャッシュに載る）
     first = json.dumps({"findings": [{"frame_id": ids[0], "category": "shape", "description": "腕の先に塊", "box": [0.7, -0.2, 1.4, 0.4]},
                                      {"frame_id": "other@1", "category": "shape", "description": "依頼に無い", "box": None}]})
-    replies = [_Message(first)] + [_Message(None, "refusal")] * (len(planned) - 1)
+    replies = [_Message(first, usage=_Usage(1000, 200, 3000, 0))] + [_Message(None, "refusal", usage=_Usage(900, 10, 0, 3000))] * (len(planned) - 1)
     client = _FakeClient(replies)
     findings, unreviewed, log, served = module.review(client, request, request_path.parent, module.DEFAULT_MODEL, "high", 3, say=lambda m: None)
     assert findings == [{"frame_id": ids[0], "category": "shape", "description": "腕の先に塊", "box": [0.7, 0.0, 1.0, 0.4]}]
     assert {item["frame_id"] for item in unreviewed} == set(ids[3:]) and served == "served-model"
     call = client.calls[0]
     assert call["model"] == module.DEFAULT_MODEL and call["fallbacks"] == "default" and call["betas"] == [module.FALLBACK_BETA]
-    assert call["output_config"]["format"]["schema"]["properties"]["findings"]["items"]["properties"]["frame_id"]["enum"] == ids[:3]
+    assert call["output_config"]["format"]["schema"]["properties"]["findings"]["items"]["properties"]["frame_id"]["enum"] == ids
+    assert all(other["output_config"] == call["output_config"] and other["system"] == call["system"] for other in client.calls)  # 前置きを同じに
     assert len(log) == len(planned) and log[1]["error"].startswith("拒否")
+    rest = len(planned) - 1                                                        # 拒否のバッチも課金されるので数える
+    assert log[0]["usage"] == {"input_tokens": 1000, "cache_creation_input_tokens": 3000, "cache_read_input_tokens": 0, "output_tokens": 200}
+    assert module.total_usage(log) == {"input_tokens": 1000 + 900 * rest, "cache_creation_input_tokens": 3000,
+                                       "cache_read_input_tokens": 3000 * rest, "output_tokens": 200 + 10 * rest}
+    assert module.total_usage([{"batch": 1, "error": "HTTP 500"}]) is None
 
 
 def test_claude_adapter_follows_the_request_language():
