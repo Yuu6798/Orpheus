@@ -142,6 +142,11 @@ def test_sequence_order_is_numeric_and_opaque_sequences_are_rejected(tmp_path):
         overlay.describe_layer(opaque)
 
 
+def test_alpha_pix_fmt_is_checked_by_format_not_by_spelling():
+    assert all(overlay.has_alpha_pix_fmt(f) for f in ("rgba", "bgra", "yuva420p", "gbrap", "ya8", "rgba64le"))
+    assert not any(overlay.has_alpha_pix_fmt(f) for f in ("gray", "yuv420p", "rgb24", "gbrp", None, ""))
+
+
 def test_layers_stack_bottom_to_top(tmp_path):
     _base_image(tmp_path / "base.png", (0, 0, 0))
     _layer_frames(tmp_path / "red", alpha=255, color=(255, 0, 0))

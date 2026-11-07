@@ -75,6 +75,13 @@ def describe_base(path, fps=None):
             "fps": float(info["fps"]), "frames": decoded["frames"], "matrix": info["matrix"]}
 
 
+ALPHA_PIX_FMT_PREFIXES = ("rgba", "bgra", "argb", "abgr", "yuva", "gbrap", "ya")   # ffmpeg のアルファつき pix_fmt（gray など名前に a を含むだけのものは除く）
+
+
+def has_alpha_pix_fmt(pix_fmt):
+    return bool(pix_fmt) and pix_fmt.startswith(ALPHA_PIX_FMT_PREFIXES)
+
+
 def describe_layer(path):
     """レイヤーの {kind, path, size, frames, sha256 | files}。連番は各コマの名前と sha256、動画は全体の sha256。"""
     path = Path(path)
@@ -96,7 +103,7 @@ def describe_layer(path):
     decoded = probe.decode(path, "v")
     if not decoded["ok"]:
         raise PipelineError(f"--layer の動画を復号できません: {decoded['error']}")
-    if "a" not in (info["pix_fmt"] or ""):
+    if not has_alpha_pix_fmt(info["pix_fmt"]):
         raise PipelineError(f"--layer の動画にアルファがありません（pix_fmt {info['pix_fmt']}）: {path.name}")
     return {"kind": "video", "path": str(path), "sha256": sha256(path), "size": [info["width"], info["height"]],
             "frames": decoded["frames"], "fps": info["fps"], "matrix": info["matrix"]}
