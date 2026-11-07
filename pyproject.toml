@@ -18,7 +18,7 @@ fx = ["opencv-python-headless==5.0.0.93"]
 model3d = ["orpheus-model3d==0.1.0"]
 
 [dependency-groups]
-dev = ["pytest==9.1.1"]
+dev = ["pytest==9.2.0"]
 audit = ["pip-audit==2.10.1"]
 
 [project.scripts]
