@@ -71,3 +71,30 @@ def test_asset_manifest_records_hashes_and_mesh_identity(tmp_path):
         manifest.build("asset-1", [("a", tmp_path / "sash.json"), ("a", tmp_path / "ref.png")])
     with pytest.raises(ToolError, match="見つかりません"):
         manifest.build("asset-1", [("a", tmp_path / "missing.json")])
+
+
+def test_finger_roles_and_the_mixamo_table_cover_the_bones_retarget_uses():
+    from model3d import semantic
+    from model3d.blender_adapter import retarget
+    assert len(semantic.FINGER_ROLES) == 40 and all(semantic.is_bone_role(r) for r in semantic.FINGER_ROLES)
+    assert "finger.index.1.L" in semantic.BONE_ROLES and "finger.pinky.4.R" in semantic.BONE_ROLES
+    assert semantic.side_of("finger.thumb.2.L") == "L" and semantic.side_of("finger.ring.3.R") == "R"
+    roles = semantic.MIXAMO_ROLES
+    assert all(semantic.is_bone_role(r) and not r.startswith("x.") for r in roles.values())
+    assert len(set(roles.values())) == len(roles)                       # 1 つの役割は 1 本の骨
+    used = retarget.REQUIRED_BONES + retarget.OPTIONAL_BONES
+    assert [b for b in used if b not in roles] == []                    # 移し替えが使う骨は、どれも役割を持つ
+    assert roles["LeftHandIndex1"] == "finger.index.1.L" and roles["RightHandThumb4"] == "finger.thumb.4.R"
+    assert roles["LeftToe_End"] == "toe.tip.L" and roles["Spine2"] == "spine.2"
+    bones = semantic.mixamo_bones()
+    assert bones["mixamorig:RightHandPinky3"] == "finger.pinky.3.R" and len(bones) == len(roles)
+    assert semantic.mixamo_bones("rig:")["rig:Hips"] == "hips"
+    assert set(semantic.HUMANOID_REQUIRED_BONES) <= set(roles.values())
+
+
+def test_a_preset_can_name_the_finger_bones():
+    from model3d import semantic
+    preset = {"parts": {}, "bones": semantic.mixamo_bones(), "required_roles": {"bones": ["finger.index.1.L", "hand.R"]}}
+    assert semantic.check_preset(preset) is preset
+    with pytest.raises(ToolError, match="知らない骨の役割"):
+        semantic.check_preset({"parts": {}, "bones": {"mixamorig:LeftHandIndex1": "finger.index.5.L"}, "required_roles": {}})
