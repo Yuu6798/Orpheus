@@ -207,6 +207,17 @@ def test_the_fade_out_does_not_extend_past_the_rendered_interval():
     assert gate.check_hook_overlap(tl, TH)["status"] == "fail"                    # 全体では 0.35 秒
 
 
+def test_a_line_still_fading_out_at_the_interval_start_is_kept():
+    """区間が 3.0 秒から始まるとき、end=3.0・fade_out_s=0.3 の行はフェードアウト中なので区間に残り、3.0 秒から出る行との重なりを数える。"""
+    tl = timeline(interval={"start": 3.0, "duration": 3.0, "frames": 72})
+    tl["lyrics"][0].update(end=3.0, fade_out_s=0.3)
+    scoped = gate._scoped(tl)
+    assert [ln["text"] for ln in scoped["lyrics"] if ln["layer"] == "back"] == ["HOLD", "LIGHT"]
+    check = gate.check_hook_overlap(scoped, TH)
+    assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("0.300 秒")
+    assert [ln["text"] for ln in gate._scoped(timeline(lyric_fade="inside", interval=tl["interval"]))["lyrics"] if ln["layer"] == "back"] == ["LIGHT"]
+
+
 def test_after_fade_keeps_the_line_stable_until_end_for_the_face_check():
     """lyric_fade が after の行は end まで止まって見えるので、end の直前の顔との重なりを数える（inside なら出入りの間で可）。"""
     face = {"start": 2.85, "end": 2.95, "box": [0.4, 0.05, 0.6, 0.15]}

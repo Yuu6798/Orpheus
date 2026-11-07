@@ -80,10 +80,11 @@ def _scoped(timeline):
     """描いた区間に出るものだけを残した timeline。区間をまたぐ字の時間（見えている終わり visible_until も）は区間に切る。"""
     first, last = _window(timeline)
     fade = _lyric_fade(timeline)
-    lyrics = [{**ln, "start": max(ln["start"], first), "end": min(ln["end"], last),
+    # 区間に出るかは、見えている終わり（after ならフェードアウト込み）で決める。区間の初めにフェードアウト中の行も残す
+    lyrics = [{**ln, "start": max(ln["start"], first), "end": min(max(ln["end"], first), last),
                "stable": [max(_stable(ln, fade)[0], first), min(_stable(ln, fade)[1], last)],
                "visible_until": min(_visible_end(ln, fade), last)}
-              for ln in timeline["lyrics"] if ln["start"] < last and ln["end"] > first]
+              for ln in timeline["lyrics"] if ln["start"] < last and _visible_end(ln, fade) > first]
     inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
     within = {key: [item for item in timeline[key] if first <= item["t"] < last] for key in ("seam_info", "flash_info") if key in timeline}
     return {**timeline, "lyrics": lyrics, "seams": inside(timeline.get("seams", [])), "flashes": inside(timeline.get("flashes", [])), **within}
