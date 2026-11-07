@@ -19,4 +19,22 @@ uv run mv export remotion-props projects/song-a --out props.json --beats beats.j
 
 端数の例（30 fps）: 3.02 秒の始まりは 90 コマ、5.48 秒の始まりは 164 コマ、5.48 秒の終わりは 165 コマ。
 
-書き出しはプロジェクトのファイルを読むだけで、`--out` 以外を書かない（`project_lock` も通らない）。Remotion で描いた連番を重ねる（`mv overlay`）、連番から timeline を起こす（`mv gate timeline`）、描画を台帳に載せる工程は別。
+書き出しはプロジェクトのファイルを読むだけで、`--out` 以外を書かない（`project_lock` も通らない）。Remotion で描いた連番を重ねる（`mv overlay`）、連番から timeline を起こす（`mv gate timeline`）は別のコマンド。
+
+## 描画を台帳に載せる（`mv layer render`）
+
+Remotion の連番の描画を工程として包み、run と台帳に残す。
+
+```sh
+uv run mv layer render --props props.json --out runs/layer                      # 既定: renderer/src/layer-index.tsx の LyricLayer
+uv run mv layer render --props props.json --entry my/lyrics.tsx --composition Lyrics --public fonts/ --twice
+```
+
+- 既定のエントリ `renderer/src/layer-index.tsx` は、props（remotion-props/0.1）を読んで見えている行だけを透過で置く最小のコンポジション `LyricLayer`（`renderer/src/LyricLayer.tsx`。拍のコマで字を少し大きくする）。自分のコンポジションは `--entry` / `--composition` で差し替える。
+- 描画は `renderer/render-frames.mjs`（`renderFrames`、`imageFormat: png`）。連番は `<run>/frames/element-<コマ>.png`。
+- run の `manifest.json` に記録: Remotion の版、エントリ・props・public の各ファイルの sha256、コンポジション名、描画スクリプトの sha256、ブラウザーの実行ファイル（Remotion が用意したもの、または `ORPHEUS_BROWSER`）とその版、連番の manifest（`frames.json`。コマごとの sha256）の sha256、描画時間。
+- `--twice` は同じ入力で 2 回描き、コマごとの sha256 が全部一致するかを `deterministic` に残す（2 回目の連番は消す）。一致しないことは記録であって合否ではない。
+- 台帳の鍵は入力（エントリ・props・public・コンポジション・Remotion の版・描画スクリプト）から作り、同じ入力の成功 run は再利用する（`--force`。`--twice` は常に描く）。
+- `--renderer` で描画スクリプトを差し替えられる（同じ引数と、標準出力の最後の行の JSON の決まり）。テストは Remotion を呼ばない代役で確かめる。
+- 連番の中身の良し悪しは判定しない。見るのは `mv sheet`、重ねるのは `mv overlay`、timeline を起こすのは `mv gate timeline`。
+- 2026-11-08 にこの環境（Linux、Remotion 4.0.532、Remotion が用意した Chromium）で、192×320・12 コマの `LyricLayer` を `--twice` で描き、全コマの sha256 が一致した。実作品の連番では未確認。

@@ -73,6 +73,8 @@ GPU情報はOS報告であり、利用可能VRAMやモデル性能を保証し�
 ## 利用条件
 
 導入したRemotion 4.0.532の `node_modules/remotion/LICENSE.md` を確認しました。
+
+2026-11-08 に `node_modules/remotion/LICENSE.md`（4.0.532）を読み直した。Free License の対象は、個人、従業員 3 人以下の営利組織、非営利組織、評価中の利用。それ以外の営利組織は Company License が要る。Remotion 5.0 でライセンスが少し変わる旨の注記がある（変更の内容は同ファイルのリンク先）。`mv layer render`（透過の連番の描画）はこの条件の下で使う。
 この版は個人、従業員3名以下の営利組織、非営利組織、商用利用前の評価などにFree Licenseの区分があります。
 適用外の組織はCompany Licenseの対象です。価格や資格の判断は公式条件を確認してください。
 Editor Starterの購入・導入はしていません。
