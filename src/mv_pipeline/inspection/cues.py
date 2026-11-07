@@ -55,10 +55,14 @@ def _intervals(value, where):
 
 
 def _light_levels(frame):
-    """トラックの 1 コマの光の強さ（壁・輪郭光の和・光の柱・塗りの縁）と、色と模様。無い欄は None。"""
+    """トラックの 1 コマの光の強さ（壁・輪郭光の和・光の柱・塗りの縁）と、描く色と模様。無い欄は None。
+    色は描く側（render.stage）がコマごとに当てるもの全部: 壁の明るい帯と暗い帯・輪郭光・光の柱・塗りの縁の a と b。
+    コマごとに続けて動く値（壁の模様のずれ・光の柱の向き）は切り替えではないので入れない。"""
     wall, rims, beams, tone = frame.get("wall") or {}, frame.get("rims") or [], frame.get("beams") or {}, frame.get("tone") or {}
     levels = (wall.get("strength"), sum(r.get("energy", 0.0) for r in rims) if rims else None, beams.get("gain"), tone.get("gain"))
-    look = (frame.get("stage"), tuple(wall.get("color") or ()), tuple(tuple(r.get("color") or ()) for r in rims))
+    look = (frame.get("stage"), tuple(wall.get("color") or ()), tuple(wall.get("dark") or ()),
+            tuple(tuple(r.get("color") or ()) for r in rims), tuple(tuple(c) for c in beams.get("colors") or ()),
+            tuple(tone.get("a") or ()), tuple(tone.get("b") or ()))
     return levels, look
 
 

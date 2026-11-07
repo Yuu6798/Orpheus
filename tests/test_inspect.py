@@ -1177,6 +1177,23 @@ def test_cuts_and_fast_moves_are_read_from_a_model3d_track(tmp_path):
         cues.load({"track": "bad.json"}, tmp_path)
 
 
+def test_a_color_only_change_in_any_rendered_light_is_a_light_cue():
+    from mv_pipeline.inspection import cues
+    red, green, blue = [1, 0, 0], [0, 1, 0], [0, 0, 1]
+    for key, before, after in (("tone", {"a": red, "b": blue, "gain": 0.5}, {"a": green, "b": blue, "gain": 0.5}),
+                               ("wall", {"strength": 0.2, "color": red, "dark": [0.1, 0, 0]},
+                                {"strength": 0.2, "color": red, "dark": [0, 0, 0.1]}),
+                               ("beams", {"gain": 1.0, "colors": [red] * 8}, {"gain": 1.0, "colors": [red] * 7 + [green]})):
+        frames = _track()["frames"]
+        for frame in frames:                                           # 明るさはそのままで、色だけが T 41 で切り替わる
+            frame[key] = after if frame["T"] >= 41 else before
+        assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)], key
+    turning = _track()["frames"]
+    for frame in turning:                                              # 壁の模様のずれは毎コマ動くが、切り替えではない
+        frame["wall"] = {"strength": 0.2, "color": red, "scroll": 0.01 * frame["T"]}
+    assert cues.from_track(turning, 30.0)[2] == []
+
+
 def test_a_track_may_leave_out_the_camera_or_its_lens(tmp_path):
     from mv_pipeline.inspection import cues
     frames = _track()["frames"]
