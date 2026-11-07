@@ -64,7 +64,7 @@ WAVE = {"led": ("X", 1.5, 1.6), "led_diag": ("DIAGONAL", 6.0, 3.0), "void": ("X"
 VIOLET, PINK = (0.30, 0.09, 1.0), (1.0, 0.05, 0.45)       # 塗りの共有グループが無いときの、既定の縁の色
 BEAMS = 8
 PUSH_RAYS = ((1, 0.13, 0.07), (-0.11, 1, 0.05), (0.06, -0.09, 1), (-1, -0.08, -0.12), (0.1, -1, -0.07))   # 中か外かを調べる光線
-PUSH_MARGIN_M = 0.02      # 当たりの箱をこれだけ広げた中の頂点だけを調べる
+PUSH_MARGIN_M = 0.02      # 当たりの箱をこれだけ（離す量がもっと大きければ、その量だけ）広げた中の頂点だけを調べる
 PUSH_STEP_M = 1e-5        # 光線が面を越えて次の面を探すときに進める長さ
 PUSH_MOVED_M = 0.001      # 報告で「動かした」と数える量
 PUSH_KEY = "model3d_push"
@@ -218,6 +218,13 @@ def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
     return (f"push: {when}{name} のモディファイア（{', '.join(modifiers) or 'なし'}）で頂点の数が変わります（{base} → {evaluated}）。"
             "押し出しは頂点の並びが変わらないメッシュにだけ使えます。Mask・Decimate・Subdivision などは、先に適用するか、"
             "ビューポートで切ってください（測るのはビューポートの形）")
+
+
+def push_margin(offsets, unit):
+    """当たりの箱を広げる幅（Blender 単位）: PUSH_MARGIN_M と、いちばん大きい離す量（offsets は動かすメッシュごとの
+    頂点の離す量の並び、Blender 単位）の大きい方。箱の外でも、離す量より近い頂点は直すので、それより狭くしない。"""
+    largest = max((float(np.max(off)) for off in offsets if len(off)), default=0.0)
+    return max(PUSH_MARGIN_M / unit, largest)
 
 
 def push_overlap(entries):
@@ -615,7 +622,7 @@ class Push:
         bpy, unit = self.bpy, self.unit
         if reset:
             reset_pushes(bpy, [self])                     # 直す前の形で測る
-        margin, step = PUSH_MARGIN_M / unit, PUSH_STEP_M / unit
+        margin, step = push_margin([t.off for t in self.targets], unit), PUSH_STEP_M / unit
         trees = []
         for collider in self.colliders:
             co, polys = evaluated_points(bpy, collider)

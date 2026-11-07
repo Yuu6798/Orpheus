@@ -404,3 +404,11 @@ def test_one_mesh_belongs_to_one_push_after_adding_the_outline_copies():
     assert message.startswith("push[1]: hull_cloth は push[0] でも動かします")
     both = stage_render.push_overlap([(["cloth", "hull_cloth"], ["hull_cloth", "leg"])])
     assert both.startswith("push[0]: hull_cloth は、動かすメッシュ") and "当たりの両方" in both
+
+
+def test_the_collider_box_is_widened_by_the_largest_offset():
+    assert stage_render.push_margin([np.array([0.007, 0.004]), np.array([0.004])], 1.0) == 0.02     # 本番の量では 2 cm のまま
+    assert stage_render.push_margin([np.array([0.007, 0.03])], 1.0) == 0.03                          # 3 cm 離すなら 3 cm 広げる
+    assert stage_render.push_margin([np.array([3.0])], 0.01) == pytest.approx(3.0)                  # 1 単位 = 1 cm の 30 mm
+    assert stage_render.push_margin([np.array([0.5])], 0.01) == pytest.approx(2.0)
+    assert stage_render.push_margin([], 1.0) == 0.02 and stage_render.push_margin([np.zeros(0)], 1.0) == 0.02
