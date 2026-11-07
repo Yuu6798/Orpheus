@@ -441,3 +441,14 @@ def test_collider_faces_are_turned_outward_for_mirrored_or_inside_out_meshes():
     inside_out = [tuple(reversed(f)) for f in faces]
     assert stage_render.outward_polygons(cube, inside_out) == (faces, True)
     assert stage_render.signed_volume(cube, []) == 0.0
+
+
+def test_only_vertices_that_need_a_correction_are_inverted():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    rot = np.array([np.eye(3), np.zeros((3, 3)), turn, np.zeros((3, 3))])        # 2 つは骨の拡大が 0 で潰れている
+    d = np.array([[0.0, 0.0, 0.01], [0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [0.0, 0.01, 0.0]])
+    rest, flat = stage_render.rest_offsets(d, rot)
+    assert rest[0] == pytest.approx([0, 0, 0.01]) and rest[2] == pytest.approx([0, -0.01, 0])     # 回した分を戻す
+    assert not rest[1].any()                                 # 直しが 0 なら、潰れていても止めない
+    assert not rest[3].any() and flat == 1                   # 直しが要るのに潰れている頂点は直さず、数を返す
+    assert stage_render.rest_offsets(np.zeros((2, 3)), np.zeros((2, 3, 3))) == (pytest.approx(np.zeros((2, 3))), 0)

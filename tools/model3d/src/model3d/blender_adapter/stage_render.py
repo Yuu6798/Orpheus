@@ -220,6 +220,28 @@ def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
             "ビューポートで切ってください（測るのはビューポートの形）")
 
 
+PUSH_COND_MAX = 1e12      # これより条件数の大きい骨の動きは、潰れていて逆にできないとみなす
+
+
+def rest_offsets(d, rot):
+    """世界の直し d（頂点ごと）を、頂点ごとの 3×3 の動き rot の逆で、骨で動かす前の差に戻す。直しが 0 の頂点は逆の行列を
+    作らない（骨の拡大が 0 などで潰れていても止めない）。直しが要るのに骨の動きが潰れて逆にできない頂点は 0 のままにし、
+    その数を返す。戻り: (戻した差, 戻せなかった頂点の数)。"""
+    d = np.asarray(d, float)
+    rest = np.zeros_like(d)
+    moving = np.linalg.norm(d, axis=1) > 0
+    if not moving.any():
+        return rest, 0
+    rots = np.asarray(rot, float)[moving]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ok = np.linalg.cond(rots) < PUSH_COND_MAX
+    part = np.zeros((int(moving.sum()), 3))
+    if ok.any():
+        part[ok] = np.einsum("vij,vj->vi", np.linalg.inv(rots[ok]), d[moving][ok])
+    rest[moving] = part
+    return rest, int((~ok).sum())
+
+
 def signed_volume(points, polys):
     """閉じたメッシュの、面の並びの向きでの体積（外向きなら正）。面は扇に三角に分ける。"""
     tris = [(p[0], p[i], p[i + 1]) for p in polys for i in range(1, len(p) - 1)]
@@ -644,6 +666,8 @@ class PushTarget:
         if self.arm is None or not self.bones:
             return np.tile(O, (len(self.idx), 1, 1))
         A = np.array(self.arm.matrix_world)[:3, :3]
+        if np.linalg.cond(A) >= PUSH_COND_MAX:           # アーマチュアの物体そのものが潰れている: どの頂点も戻せない
+            return np.zeros((len(self.idx), 3, 3))
         Mb = np.array([np.array(self.arm.pose.bones[b].matrix @ self.arm.data.bones[b].matrix_local.inverted())[:3, :3]
                        for b in self.bones])
         full = A @ blend_bone_rotations(self.W, Mb) @ np.linalg.inv(A) @ O
@@ -657,13 +681,15 @@ class Push:
         from mathutils import Vector
         self.bpy, self.targets, self.colliders, self.smooth, self.unit = bpy, targets, colliders, smooth, unit
         self.rays = [Vector(d).normalized() for d in PUSH_RAYS]
+        self.unconverted = {}                             # 前の apply で、骨の動きが潰れて戻せなかった頂点の数（メッシュごと）
 
     def apply(self, reset=True):
         """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。reset が false なら、直す前の形へ戻すのは呼ぶ側
-        （apply_pushes）がすでにした。"""
+        （apply_pushes）がすでにした。骨の動きが潰れて戻せなかった頂点の数は self.unconverted に残す。"""
         from mathutils import Vector
         from mathutils.bvhtree import BVHTree
         bpy, unit = self.bpy, self.unit
+        self.unconverted = {}
         if reset:
             reset_pushes(bpy, [self])                     # 直す前の形で測る
         margin, step = push_margin([t.off for t in self.targets], unit), PUSH_STEP_M / unit
@@ -694,7 +720,9 @@ class Push:
                         need[k] = v
             d, mag = spread_push(need, t.edges, self.smooth)
             d = weld_mean(d, t.weld) * t.w[:, None]
-            rest = np.einsum("vij,vj->vi", np.linalg.inv(t.deform_rot()), d)
+            rest, flat = rest_offsets(d, t.deform_rot())   # 直しの要る頂点だけを戻す（潰れた骨の頂点で止めない）
+            if flat:
+                self.unconverted[t.ob.name] = flat
             kco = t.basis.copy()
             kco[t.idx] += rest
             t.key.data.foreach_set("co", kco.ravel())
@@ -903,7 +931,12 @@ def main(argv=None):
         bpy.context.view_layer.update()
         if pushes:                                       # 描く直前に押し出す（輪郭線の太さを入れた後の形で測る）
             moved = apply_pushes(bpy, pushes)
-            push_frames.append({"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}})
+            entry = {"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}}
+            flat = {k: n for push in pushes for k, n in push.unconverted.items()}
+            if flat:                                     # 骨の動きが潰れて直せなかった頂点（直さずに描く）
+                entry["unconverted"] = flat
+                print(f"PUSH T {T} f {f}: 骨の動きが潰れて直せなかった頂点 {flat}", flush=True)
+            push_frames.append(entry)
         sc.render.filepath = file
         bpy.ops.render.render(write_still=True)
         rendered.append(T)
