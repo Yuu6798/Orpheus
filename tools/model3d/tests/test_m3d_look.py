@@ -171,3 +171,47 @@ def test_the_operation_needs_blender_and_both_outputs(tmp_path):
         call(tmp_path, {})
     with pytest.raises(ToolError, match="report"):
         call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN))}, {"blend": "o.blend"})
+
+
+SHADING = {"bands": [{"at": 0.55, "soft": 0.05, "weight": 0.2}, {"at": 0.10, "soft": 0.04, "weight": 0.6},
+                     {"at": -0.40, "soft": 0.05, "weight": 0.2}],
+           "face_shadow": 0.35, "skin_meshes": ["body"], "skin_shade": [0.86, 0.6, 0.56],
+           "skin_highlight": {"at": 0.75, "soft": 0.08, "amount": 0.12, "color": [1, 0.94, 0.88]},
+           "rim_scale": 1.3, "real_light": 0.25, "real_light_gain": 0.8, "real_light_max": 1.4}
+
+
+def test_the_shading_settings_are_checked_and_passed_on():
+    from model3d.ops.look_ops import _look_settings
+    s = _look_settings({"meshes": ["body", "arm"], "toon": SHADING})["toon"]
+    assert s["bands"] == SHADING["bands"] and s["face_shadow"] == 0.35 and s["skin_meshes"] == ["body"]
+    assert s["skin_highlight"] == {"at": 0.75, "soft": 0.08, "amount": 0.12, "color": [1.0, 0.94, 0.88]}
+    assert s["rim_scale"] == 1.3 and s["real_light"] == 0.25 and s["real_light_gain"] == 0.8 and s["real_light_max"] == 1.4
+    assert _look_settings({"toon": {"bands": None, "skin_highlight": None}})["toon"] == {}     # null は省いたのと同じ
+    merged = toon_look.merged({"toon": {}})["toon"]                                         # 省けば今の 2 段の塗りのまま
+    assert merged["bands"] is None and merged["face_shadow"] == 0 and merged["skin_meshes"] is None
+    assert merged["skin_highlight"] is None and merged["rim_scale"] == 1 and merged["real_light"] == 0
+
+
+@pytest.mark.parametrize("toon, message", [
+    ({"bands": []}, "toon.bands"),
+    ({"bands": [{"at": 0.1, "soft": 0.05}]}, "toon.bands"),
+    ({"bands": [{"at": 0.1, "soft": 0.05, "weight": 1.0}] * 5}, "toon.bands"),
+    ({"bands": [{"at": 1.5, "soft": 0.05, "weight": 1.0}]}, "at"),
+    ({"bands": [{"at": 0.1, "soft": 0, "weight": 1.0}]}, "soft"),
+    ({"bands": [{"at": 0.1, "soft": 0.05, "weight": 0.5}]}, "weight の和"),
+    ({"bands": [{"at": 0.1, "soft": 0.05, "weight": 0.5}, {"at": 0.1, "soft": 0.05, "weight": 0.5}]}, "重なって"),
+    ({"face_shadow": 1.5}, "face_shadow"),
+    ({"skin_meshes": []}, "skin_meshes"),
+    ({"skin_meshes": ["leg"]}, "skin_meshes"),
+    ({"skin_highlight": {"at": 0.7, "soft": 0.1, "amount": 0.2}}, "skin_highlight"),
+    ({"skin_highlight": {"at": 0.7, "soft": 0.1, "amount": 2, "color": [1, 1, 1]}}, "amount"),
+    ({"skin_highlight": {"at": 0.7, "soft": 0.1, "amount": 0.2, "color": [1, 1, 2]}}, "color"),
+    ({"rim_scale": -1}, "rim_scale"),
+    ({"real_light": 1.2}, "real_light"),
+    ({"real_light_gain": 0}, "real_light_gain"),
+    ({"real_light_max": -1}, "real_light_max"),
+])
+def test_bad_shading_settings_are_refused(toon, message):
+    from model3d.ops.look_ops import _look_settings
+    with pytest.raises(ToolError, match=message):
+        _look_settings({"meshes": ["body", "arm"], "toon": toon})

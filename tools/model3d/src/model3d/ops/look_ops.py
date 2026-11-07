@@ -7,7 +7,9 @@ from . import StepResult, number, register, require
 LOOK_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "toon_look.py"
 LOOK_PARAMETERS = {"blender", "meshes", "faces", "toon", "face", "outline", "timeout"}
 TOON_KEYS = {"light", "threshold", "soft", "shade", "skin_shade", "tint", "lit", "rim_from", "rim_to", "rim_colors", "rim_gain",
-             "face_attribute", "weak_rim", "inside_attribute", "inside_color"}
+             "face_attribute", "weak_rim", "inside_attribute", "inside_color",
+             "bands", "face_shadow", "skin_meshes", "skin_highlight", "rim_scale", "real_light", "real_light_gain", "real_light_max"}
+HIGHLIGHT_KEYS = {"at", "soft", "amount", "color"}
 FACE_KEYS = {"lit", "emit"}
 OUTLINE_KEYS = {"enabled", "meshes", "ratio", "dark", "saturation", "width_mm", "hand_attribute", "hand_line"}
 
@@ -45,6 +47,60 @@ def _section(parameters, key, allowed):
     if unknown:
         raise ToolError(f"{key} の知らない鍵: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
     return section
+
+
+def _unit(section, key, where):
+    value = float(number(section, key, minimum=0))
+    if value > 1:
+        raise ToolError(f"{where} は 0〜1 にしてください: {value!r}")
+    return value
+
+
+def _shading(toon, meshes):
+    """陰影を足す設定（段・顔の弱い影・肌の部品とハイライト・縁の光の強さ・実際の光）を確かめる。省いたものは書かない。"""
+    t = {}
+    if "bands" in toon and toon["bands"] is not None:
+        bands = toon["bands"]
+        if not isinstance(bands, list) or not 1 <= len(bands) <= 4 or not all(isinstance(b, dict) and set(b) == {"at", "soft", "weight"}
+                                                                                for b in bands):
+            raise ToolError(f"toon.bands は {{at: 光との内積の境, soft: ぼかし, weight: 重み}} の配列（1〜4）にしてください: {bands!r}")
+        t["bands"] = []
+        for b in bands:
+            at, soft, weight = float(number(b, "at")), float(number(b, "soft", minimum=0, exclusive=True)), float(
+                number(b, "weight", minimum=0, exclusive=True))
+            if not -1 <= at <= 1:
+                raise ToolError(f"toon.bands の at は -1〜1（光の向きと面の向きの内積）にしてください: {at!r}")
+            t["bands"].append({"at": at, "soft": soft, "weight": weight})
+        if abs(sum(b["weight"] for b in t["bands"]) - 1) > 1e-6:
+            raise ToolError(f"toon.bands の weight の和は 1 にしてください（明るい側が 1、影の側が 0）: {bands!r}")
+        if len({b["at"] for b in t["bands"]}) != len(t["bands"]):
+            raise ToolError(f"toon.bands の at が重なっています: {bands!r}")
+    if "face_shadow" in toon:
+        t["face_shadow"] = _unit(toon, "face_shadow", "toon.face_shadow")
+    if "skin_meshes" in toon and toon["skin_meshes"] is not None:
+        t["skin_meshes"] = _names(toon["skin_meshes"], "toon.skin_meshes", allow_none=False)
+        if not t["skin_meshes"]:
+            raise ToolError("toon.skin_meshes は肌の部品の名前の並び（1 つ以上）にしてください")
+        if meshes is not None and set(t["skin_meshes"]) - set(meshes):
+            raise ToolError(f"toon.skin_meshes に meshes に無いメッシュがあります: {sorted(set(t['skin_meshes']) - set(meshes))}")
+    if "skin_highlight" in toon and toon["skin_highlight"] is not None:
+        h = toon["skin_highlight"]
+        if not isinstance(h, dict) or set(h) != HIGHLIGHT_KEYS:
+            raise ToolError(f"toon.skin_highlight は {{at, soft, amount, color}} にしてください: {h!r}")
+        at = float(number(h, "at"))
+        if not -1 <= at <= 1:
+            raise ToolError(f"toon.skin_highlight.at は -1〜1 にしてください: {at!r}")
+        t["skin_highlight"] = {"at": at, "soft": float(number(h, "soft", minimum=0, exclusive=True)),
+                               "amount": _unit(h, "amount", "toon.skin_highlight.amount"),
+                               "color": _vector(h["color"], "toon.skin_highlight.color", lower=0, upper=1)}
+    if "rim_scale" in toon:
+        t["rim_scale"] = float(number(toon, "rim_scale", minimum=0))
+    if "real_light" in toon:
+        t["real_light"] = _unit(toon, "real_light", "toon.real_light")
+    for k in ("real_light_gain", "real_light_max"):
+        if k in toon:
+            t[k] = float(number(toon, k, minimum=0, exclusive=True))
+    return t
 
 
 def _look_settings(parameters):
@@ -91,6 +147,7 @@ def _look_settings(parameters):
             if scale > 1 or not (isinstance(w["attribute"], str) and w["attribute"]):
                 raise ToolError(f"toon.weak_rim の各項目は {{attribute: 属性, scale: 0〜1}} にしてください: {w!r}")
             t["weak_rim"].append({"attribute": w["attribute"], "scale": scale})
+    t.update(_shading(toon, meshes))
     face = _section(parameters, "face", FACE_KEYS)
     f = {k: float(number(face, k, minimum=0)) for k in FACE_KEYS if k in face}
     outline = _section(parameters, "outline", OUTLINE_KEYS)
