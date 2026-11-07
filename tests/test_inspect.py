@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,7 @@ cv2 = pytest.importorskip("cv2")
 
 from fx_synth import run_cli  # noqa: E402
 from mv_pipeline.inspection import config as inspect_config  # noqa: E402
-from mv_pipeline.inspection import demo, detect, run, video, vlm  # noqa: E402
+from mv_pipeline.inspection import demo, detect, reference, run, video, vlm  # noqa: E402
 from mv_pipeline.io import PipelineError, read_json  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
@@ -76,9 +77,170 @@ def test_costume_event_names_the_missing_sheet_color_and_the_new_color(checked):
     red, blue = list(red), list(blue)
     assert red[0] > 120 and red[1] < 60 and red[2] < 80, missing["color"]       # 設定画の深紅の上着
     assert blue[2] > 150 and blue[0] < 90, extra["color"]                     # 入れ替えた青
-    assert missing["reference"] == "sheet.png" and missing["value"] < 0.05
+    assert missing["reference"] == "sheet.png（front）" and missing["view"] == "front" and missing["value"] < 0.05
     summary = result["clips"][0]["reference"]
     assert summary["overlap_median"] > 0.8 and summary["overlap_min_frame"] == 30   # 乱れのコマがいちばん遠い
+    assert summary["best_reference"] == [{"path": "sheet.png", "view": "front", "label": "sheet.png（front）", "frames": 96}]
+
+
+def _fake_features(stats):
+    count = len(stats)
+    return types.SimpleNamespace(ref=stats, count=count, frame=lambda i: i, present=np.ones(count, bool),
+                                 bbox=np.tile([0.3, 0.1, 0.7, 0.9], (count, 1)))
+
+
+def _fake_palette(view, weights, hexes):
+    rgb = np.array([[[int(h[i:i + 2], 16) for i in (1, 3, 5)] for h in hexes]], np.uint8)
+    return {"rel": "turn.png", "view": view, "label": f"turn.png（{view}）" if view else "turn.png", "weights": np.array(weights),
+            "hex": hexes, "colors": reference.to_lab(rgb).reshape(-1, 3), "bands": [2, 1, 1]}
+
+
+def _fake_stats(palette, coverage, extra):
+    coverage = np.array(coverage)
+    return {"coverage": coverage, "extra": extra, "extra_lab": None, "extra_box": None,
+            "overlap": float(np.minimum(coverage, palette["weights"]).sum())}
+
+
+def test_with_several_views_a_frame_that_one_view_explains_is_not_flagged():
+    """同じ衣装の正面と背面。重なりは正面が大きいのに正面の薄い色だけが欠けるコマ（背中を向いた・ぶれた）は、背面で欠けなく説明できるので出さない。
+    どの向きでも欠けるコマ・どの向きにも無い色だけを出し、比べた向きを名前で書く（実素材の確かめで、重なりで選ぶと誤検出した）。"""
+    front = _fake_palette("front", [0.5, 0.4, 0.1], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.6, 0.2, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    stats = [[_fake_stats(front, [0.5, 0.4, 0.01], 0.30), _fake_stats(back, [0.45, 0.2, 0.06], 0.05)] for _ in range(12)]
+    stats += [[_fake_stats(front, [0.5, 0.45, 0.0], 0.25), _fake_stats(back, [0.5, 0.45, 0.0], 0.30)] for _ in range(12)]
+    assert reference.best(stats[0]) == 0                       # 重なりだけなら正面を選ぶ（正面の薄紫が欠ける）
+    found = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    missing = [s for s in found if s["check"] == "reference_missing"]
+    extra = [s for s in found if s["check"] == "reference_extra"]
+    assert [s["frames"] for s in missing] == [[12, 24]] and [s["frames"] for s in extra] == [[12, 24]]
+    assert missing[0]["reference"] == "turn.png（front）" and missing[0]["view"] == "front" and missing[0]["color"] == "#d39bcd"
+    assert "ほかの設定画でも欠けなく説明できないコマ" in missing[0]["detail"]
+    assert extra[0]["reference"] == "turn.png（front）" and "ほかの設定画にも無い色" in extra[0]["detail"]
+
+
+def test_each_missing_color_keeps_its_own_frames_and_value():
+    """別の色が続けて欠けても、同時に欠けても、色ごとの区間と、その区間だけで測った値を残す（1 本にまとめて値を薄めない）。"""
+    sheet = _fake_palette(None, [0.4, 0.35, 0.25], ["#f0d0c8", "#703e80", "#2050c0"])
+    stats = []
+    for i in range(48):
+        coverage = [0.4, 0.35, 0.25]
+        for c in ([i // 12] if i < 36 else [0, 1]):          # コマ 0〜35 は 12 コマずつ順に 1 色、36〜47 は 2 色が同時に欠ける
+            coverage[c] = 0.0
+        stats.append([_fake_stats(sheet, coverage, 0.0)])
+    missing = reference.signals(_fake_features(stats), [sheet], inspect_config.THRESHOLDS, 24.0)
+    found = sorted((s["frames"][0], s["frames"][1], s["color"]) for s in missing)
+    assert found == [(0, 12, "#f0d0c8"), (12, 24, "#703e80"), (24, 36, "#2050c0"), (36, 48, "#703e80"), (36, 48, "#f0d0c8")], found
+    assert all(s["value"] == 0.0 for s in missing)
+    assert all("ほかの設定画" not in s["detail"] and s["reference"] == "turn.png" for s in missing)     # 設定画 1 枚なら書かない
+
+
+def test_the_same_color_missing_while_the_compared_view_switches_is_one_interval():
+    """向き違いの同じ色（正面と背面の薄紫）は 1 つの色として数える。比べる向きが 3 コマごとに入れ替わっても区間は切れない。"""
+    front = _fake_palette("front", [0.5, 0.3, 0.2], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.5, 0.3, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    stats = []
+    for i in range(12):
+        near = 0.3 if (i // 3) % 2 == 0 else 0.2           # 重なりの大きい向きが 3 コマごとに入れ替わる
+        stats.append([_fake_stats(front, [0.5, near, 0.0], 0.0), _fake_stats(back, [0.5, 0.5 - near, 0.0], 0.0)])
+    assert [reference.explaining(item, [front, back], inspect_config.THRESHOLDS)[0] for item in stats[:6]] == [0, 0, 0, 1, 1, 1]
+    missing = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert [(s["frames"], s["color"], s["view"]) for s in missing] == [([0, 12], "#d39bcd", "front")]
+
+
+def test_two_colors_of_one_sheet_never_share_a_group_through_another_sheet():
+    """別の設定画の中間の色（L 50）が同じ設定画の 2 色（L 20 と 80）の両方に近くても、その 2 色は別の組のまま。
+    2 色が順に欠けたら、色ごとの区間と値 0.0 を残す（Codex の指摘の例）。"""
+    front = {"rel": "a.png", "view": "front", "label": "a.png（front）", "weights": np.array([0.5, 0.5]), "hex": ["#333333", "#cccccc"],
+             "colors": np.array([[20, 0, 0], [80, 0, 0]], np.float32), "bands": [1, 1]}
+    back = {"rel": "a.png", "view": "back", "label": "a.png（back）", "weights": np.array([1.0]), "hex": ["#777777"],
+            "colors": np.array([[50, 0, 0]], np.float32), "bands": [1]}
+    groups = reference.color_groups([front, back], inspect_config.THRESHOLDS)
+    assert sorted(groups) == [[(0, 0), (1, 0)], [(0, 1)]]                    # 近い順（同じ差なら番号順）に、1 枚から 1 色ずつ
+    stats = [[_fake_stats(front, [0.0, 0.5] if i < 12 else [0.5, 0.0], 0.0), _fake_stats(back, [0.0], 0.0)] for i in range(24)]
+    missing = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert sorted((s["frames"][0], s["frames"][1], s["color"], s["value"]) for s in missing) == [(0, 12, "#333333", 0.0), (12, 24, "#cccccc", 0.0)]
+
+
+def test_a_missing_color_is_measured_only_on_the_frames_where_it_is_missing():
+    """区間が欠けの無いコマをはさんでつながり、比べる向きも入れ替わるとき、値は書く色が欠けたコマだけで測る（Codex の指摘の例）。"""
+    front = _fake_palette("front", [0.4, 0.4, 0.2], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.4, 0.4, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    kinds = {"front_missing": ([0.4, 0.4, 0.0], [0.4, 0.3, 0.0]), "back_missing": ([0.4, 0.3, 0.0], [0.4, 0.4, 0.0]),
+             "healthy": ([0.4, 0.4, 0.2], [0.4, 0.4, 0.15])}
+    order = ["front_missing", "healthy", "back_missing", "healthy"] * 3
+    stats = [[_fake_stats(front, kinds[k][0], 0.0), _fake_stats(back, kinds[k][1], 0.0)] for k in order]
+    missing = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert [(s["frames"], s["color"], s["value"]) for s in missing] == [([0, 11], "#d39bcd", 0.0)]
+    assert missing[0]["peak"] in (0, 4, 8)
+
+
+def test_an_extra_color_is_measured_only_on_the_frames_where_it_shows():
+    """設定画に無い色の区間が、しきい値より下のコマをはさんでつながり、比べる向きも入れ替わるとき、値・山・色は
+    しきい値を超えたコマだけで測る（Codex の指摘の例。前は値 0.0・しきい値 0.12 と書いた）。"""
+    front = _fake_palette("front", [0.4, 0.4, 0.2], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.4, 0.4, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    blue = np.array([50.0, 0.0, -60.0], np.float32)
+
+    def frame(palette, extra):
+        shown = extra >= inspect_config.THRESHOLDS["ref_extra_min"]
+        return {**_fake_stats(palette, palette["weights"], extra), "extra_lab": blue if shown else None,
+                "extra_box": [0.1, 0.1, 0.2, 0.2] if shown else None}
+
+    stats = [[frame(front, f), frame(back, b)] for f, b in [(0.4, 0.5), (0.0, 0.1), (0.5, 0.4), (0.0, 0.1)] * 3]
+    found = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert [(s["check"], s["frames"], s["reference"], s["value"], s["peak"]) for s in found] == \
+        [("reference_extra", [0, 11], "turn.png（front）", 0.4, 0)]
+
+
+def test_the_markdown_names_the_other_colors_of_the_same_check(checked):
+    import copy
+
+    from mv_pipeline.inspection import report
+
+    _, result, out, _ = checked
+    result = copy.deepcopy(result)
+    costume = next(e for e in result["events"] if e["category"] == "costume")
+    primary = next(s for s in costume["signals"] if s["detail"] == costume["summary"])
+    costume["signals"].append({**primary, "color": "#123456", "detail": "同じ検査で、別の色 #123456 の信号"})
+    text = report.markdown(result, read_json(out / "fix_plan.json"))
+    assert "同じ検査のほかの色: #123456" in text
+
+
+def test_the_same_sheet_used_twice_without_a_view_gets_numbered_labels_and_a_cutout(tmp_path):
+    from PIL import Image
+
+    image = np.zeros((40, 40, 4), np.uint8)
+    image[10:30, 10:30] = (200, 30, 30, 255)
+    Image.fromarray(image, "RGBA").save(tmp_path / "s.png")
+    entries = [{"path": tmp_path / "s.png", "rel": "s.png"}, {"path": tmp_path / "s.png", "rel": "s.png", "view": "back"},
+               {"path": tmp_path / "s.png", "rel": "s.png"}]
+    palettes = reference.prepare_all(entries)
+    assert [p["label"] for p in palettes] == ["s.png#1", "s.png（back）", "s.png#3"]
+    cutout = palettes[0]["cutout"]
+    assert cutout.shape == palettes[0]["thumb"].shape
+    assert tuple(cutout[20, 20]) == (200, 30, 30) and cutout[0, 0, 0] == cutout[0, 0, 1] >= 200     # 人物の画素はそのまま、背景は市松模様
+
+
+def test_two_views_cut_from_one_sheet_are_reported_by_view_with_their_cutouts(tmp_path):
+    from PIL import Image
+
+    demo.create(tmp_path, anomalies=["costume"])
+    sheet = np.array(Image.open(tmp_path / "sheet.png"))
+    Image.fromarray(np.concatenate([sheet, sheet[:, ::-1]], axis=1), "RGBA").save(tmp_path / "turn.png")
+    config = read_json(tmp_path / "inspect.json")
+    config["reference"] = [{"path": "turn.png", "view": "front", "box": [0.0, 0.0, 0.5, 1.0]},
+                           {"path": "turn.png", "view": "back", "box": [0.5, 0.0, 1.0, 1.0]}]
+    (tmp_path / "inspect.json").write_text(json.dumps(config), encoding="utf-8")
+    result, out = run.run(tmp_path / "inspect.json", tmp_path / "out")
+    labels = ["turn.png（front）", "turn.png（back）"]
+    assert [r["label"] for r in result["references"]] == labels and [r["view"] for r in result["references"]] == ["front", "back"]
+    for ref in result["references"]:
+        assert ref["cutout"].startswith("references/") and video.load_rgb(out / ref["cutout"]).shape[1] > 2 * 120
+    costume = next(e for e in result["events"] if e["category"] == "costume")
+    assert {s["reference"] for s in costume["signals"] if s["check"].startswith("reference_")} <= set(labels)
+    assert [b["label"] for b in result["clips"][0]["reference"]["best_reference"]] == labels
+    text = (out / "inspect_report.md").read_text(encoding="utf-8")
+    assert all(label in text for label in labels) and "references/01.png" in text
 
 
 def test_events_point_at_the_clip_frames_and_carry_the_origin(checked):
@@ -124,7 +286,8 @@ def test_stills_metrics_and_markdown_are_written(checked):
         image = video.load_rgb(out / event["still"])
         assert image.shape[0] == 384 and image.shape[1] >= 3 * 216          # 前・山・後
     rows = (out / "metrics" / "demo.csv").read_text(encoding="utf-8").splitlines()
-    assert len(rows) == 97 and rows[0].startswith("frame,t,luma")
+    assert len(rows) == 97 and rows[0].startswith("frame,t,luma") and rows[0].endswith("reference_overlap,reference_missing,reference_extra")
+    assert rows[1].split(",")[-2] == "0" and rows[65].split(",")[-2] != "0"               # 上着が青のコマ 64 で設定画の色が欠ける
     text = (out / "inspect_report.md").read_text(encoding="utf-8")
     assert "検出が無いことは合格ではありません" in text and "demo-F06" in text and "修正計画（提案。何も実行していません）" in text
 
@@ -343,6 +506,8 @@ def test_vlm_findings_are_estimates_attached_to_measured_events_or_new_events(sm
     assert only[0]["target"]["source_frames"] == [0, 1] and only[0]["id"].startswith("demo-F")
     assert any(only[0]["id"] in s["events"] and "estimated" in s["evidence"] for s in read_json(out / "fix_plan.json")["segments"])
     assert any("見られなかったコマ" in w for w in result["vlm"]["warnings"])
+    text = (out / "inspect_report.md").read_text(encoding="utf-8")
+    assert "（VLM の指摘: 代役の指摘（event:" in text and "ほかの信号: VLM の指摘" not in text      # 数値の出来事に付いた指摘は文を出す
 
 
 def test_a_vlm_response_must_answer_this_request(small_demo, tmp_path):

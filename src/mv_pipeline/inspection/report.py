@@ -67,12 +67,12 @@ def contact_sheet(event, frames, palettes):
         stamp(panel, label_patch(f"f{number}{named[number]}", panel.shape[0]), 0, 0)
         panels.append(panel)
     used = {s.get("reference") for s in event["signals"] if s["check"].startswith("reference_")}
-    for palette in palettes:
-        if palette["rel"] in used:
+    for number, palette in enumerate(palettes):
+        if palette["label"] in used:
             thumb = palette["thumb"]
             height = panels[0].shape[0]
             scaled = np.array(Image.fromarray(thumb).resize((max(2, int(round(thumb.shape[1] * height / thumb.shape[0]))), height), Image.Resampling.BOX))
-            stamp(scaled, label_patch("REFERENCE", height), 0, 0)
+            stamp(scaled, label_patch(reference_tag(palette, number), height), 0, 0)
             panels.append(scaled)
     height = max(p.shape[0] for p in panels)
     canvas = np.full((height, sum(p.shape[1] for p in panels) + GAP * (len(panels) - 1), 3), BACKGROUND, np.uint8)
@@ -81,6 +81,27 @@ def contact_sheet(event, frames, palettes):
         canvas[:panel.shape[0], x:x + panel.shape[1]] = panel
         x += panel.shape[1] + GAP
     return canvas
+
+
+def reference_tag(palette, number):
+    """静止画に書く設定画の名前（ASCII だけ）。向き（view）が ASCII ならそれを、ほかは番号（1 始まり）を書く。"""
+    view = palette.get("view") or ""
+    return f"REF {view}" if view and view.isascii() and view.isprintable() and len(view) <= 16 else f"REF {number + 1}"
+
+
+def write_references(out, palettes):
+    """設定画ごとに [切り出した設定画 | 色を取った画素（市松模様 = 背景として除いた所）] を references/NN.png に書く。→ パスの一覧。"""
+    names = []
+    for number, palette in enumerate(palettes):
+        thumb, cutout = palette["thumb"], palette["cutout"]
+        canvas = np.full((thumb.shape[0], thumb.shape[1] * 2 + GAP, 3), BACKGROUND, np.uint8)
+        canvas[:, :thumb.shape[1]] = thumb
+        canvas[:, thumb.shape[1] + GAP:] = cutout
+        stamp(canvas, label_patch(reference_tag(palette, number), canvas.shape[0]), 0, 0)
+        name = f"references/{number:02d}.png"
+        save_png_atomic(canvas, Path(out) / name)
+        names.append(name)
+    return names
 
 
 def needed_frames(events, plan_segments):
@@ -126,15 +147,20 @@ def _num(value, digits=5):
     return "" if value is None or not math.isfinite(value) else f"{value:.{digits}f}"
 
 
-def write_metrics(path, features, fps):
-    """コマごとの数値（しきい値を自作に合わせて直すときの材料）。差の列は前のコマとの比較。"""
+def write_metrics(path, features, fps, palettes=(), thresholds=None):
+    """コマごとの数値（しきい値を自作に合わせて直すときの材料）。差の列は前のコマとの比較。
+
+    設定画の列: reference_overlap はいちばん重なる設定画との重なり。reference_missing はそのコマをいちばんよく説明する設定画で欠けた
+    主な色の数、reference_extra は設定画に無い色の割合（どちらも reference.explaining で選んだ設定画。欠けと余りの検査と同じ値）。"""
     overlap = reference.overlap_series(features) if features.ref else [math.nan] * features.count
+    explained = [reference.explaining(stats, palettes, thresholds) for stats in features.ref] if features.ref and palettes else []
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(["frame", "t", "luma", "frame_diff", "structure_diff", "present", "area", "cx", "cy", "body", "components",
-                         "shape_change", "area_change", "centroid_change", "palette_change", "flow_p95", "reference_overlap"])
+                         "shape_change", "area_change", "centroid_change", "palette_change", "flow_p95", "reference_overlap",
+                         "reference_missing", "reference_extra"])
         for i in range(features.count):
             structure = features.diffs(i - 1, i)[1] if i else math.nan
             pick = (lambda f: f(i - 1, i)) if i else (lambda f: math.nan)
@@ -142,7 +168,9 @@ def write_metrics(path, features, fps):
                              _num(features.fdiff[i]), _num(structure), int(bool(features.present[i])), _num(features.area[i]),
                              _num(features.centroid[i, 0]), _num(features.centroid[i, 1]), _num(features.body[i]), int(features.components[i]),
                              _num(pick(features.shape_change)), _num(pick(features.area_change)), _num(pick(features.centroid_change)),
-                             _num(pick(features.palette_change)), _num(features.flow[i]), _num(overlap[i])])
+                             _num(pick(features.palette_change)), _num(features.flow[i]), _num(overlap[i]),
+                             len(explained[i][1]) if i < len(explained) and explained[i] else "",
+                             _num(features.ref[i][explained[i][2]]["extra"]) if i < len(explained) and explained[i] else ""])
 
 
 def _frames_text(frames):
@@ -194,8 +222,12 @@ def markdown(report, plan):
         for event in events:
             others = [CATEGORY_LABELS[c] for c in event["categories"] if c != event["category"]]
             kind = CATEGORY_LABELS[event["category"]] + (f"（ほかに {'・'.join(others)}）" if others else "")
-            checks = sorted({s["label"] for s in event["signals"]} - {event["label"]})
-            detail = f"{event['label']}: {event['summary']}" + (f"（ほかの信号: {'・'.join(checks)}）" if checks else "")
+            remarks = list(dict.fromkeys(s["detail"] for s in event["signals"] if s["check"] == "vlm" and s["detail"] != event["summary"]))
+            checks = sorted({s["label"] for s in event["signals"] if not (remarks and s["check"] == "vlm")} - {event["label"]})
+            colors = list(dict.fromkeys(s["color"] for s in event["signals"]           # 同じ検査で別の色（欠けた色が 2 つなど）
+                                        if s["label"] == event["label"] and s["detail"] != event["summary"] and s.get("color")))
+            detail = (f"{event['label']}: {event['summary']}" + (f"（同じ検査のほかの色: {'・'.join(colors)}）" if colors else "")
+                      + (f"（ほかの信号: {'・'.join(checks)}）" if checks else "") + "".join(f"（VLM の指摘: {remark}）" for remark in remarks))
             lines.append(f"| {event['id']} | {_frames_text(event['frames'])} | {_seconds_text(event['t'])} | {kind} | {_cell(detail)} | "
                          f"{EVIDENCE[event['evidence']]} | {_cell(_where(event))} | {event.get('still', '')} |")
     if report["unused"]:
@@ -225,9 +257,12 @@ def markdown(report, plan):
         lines.append(f"- 道具: {vlm['tool']}（外部へ送る設定: {'はい' if vlm.get('sends_data') else 'いいえ'}）・指摘 {vlm.get('findings', 0)} 件")
     lines += [f"- 注意: {w}" for w in vlm.get("warnings", [])]
     if report["references"]:
-        lines += ["", "## 設定画", ""]
+        lines += ["", "## 設定画", "",
+                  "色を取った画素は `references/` の画像で確かめてください（左が切り出した設定画、右が色を取った画素。市松模様は背景として除いた所）。"
+                  "設定画が複数なら、欠けと余りはコマごとにいちばんよく説明する 1 枚と比べます。", ""]
         for ref in report["references"]:
             colors = "・".join(f"{c['hex']}（{c['share']:.0%}）" for c in ref["colors"])
             note = "（縁の色から切り抜いた推定）" if ref["estimated"] else ""
-            lines.append(f"- `{ref['path']}`{note}: {colors}")
+            image = f"・`{ref['cutout']}`" if ref.get("cutout") else ""
+            lines.append(f"- {ref['label']}{note}{image}: 人物として使った画素 {ref['foreground_share']:.0%}。主な色 {colors}")
     return "\n".join(lines) + "\n"
