@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-bone-path/0.1",
+  "title": "model3d bone path",
+  "description": "motion.bone_path が測る、動きのコマ f ごとの骨の付け根の位置（世界の座標、m。シーンの scale_length を掛けてある）。bones の各列は frames と同じ順・同じ数。",
+  "type": "object",
+  "required": ["schema_version", "unit", "frames", "bones"],
+  "properties": {
+    "schema_version": {"const": "model3d-bone-path/0.1"},
+    "unit": {"const": "m"},
+    "scale_length": {"description": "1 Blender 単位が何 m か", "type": "number", "exclusiveMinimum": 0},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "armature": {"type": "string"},
+    "frames": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+    "bones": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+      }
+    },
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false
+}

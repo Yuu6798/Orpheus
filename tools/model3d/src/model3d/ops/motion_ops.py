@@ -621,3 +621,60 @@ def sleeve_bones(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "frames": report.get("frames"), "sleeves": report.get("sleeves"),
                    "bake_check_deg": round(float(check), 5)}
     return StepResult(observations=[observation])
+
+
+BONE_PATH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "bone_path.py"
+BONE_PATH_PARAMETERS = {"blender", "bone_prefix", "bones", "armature", "frame_range", "timeout"}
+
+
+def _bone_path_settings(parameters, track):
+    prefix = _bone_prefix(parameters)
+    bones = parameters.get("bones", ["Hips", "Head"])
+    if not isinstance(bones, list) or not bones or not all(isinstance(b, str) and b for b in bones) or len(set(bones)) != len(bones):
+        raise ToolError(f"bones は骨の名前（bone_prefix の後ろ。空でない・重ならない文字列）の並びにしてください: {bones!r}")
+    armature = parameters.get("armature")
+    if armature is not None and not (isinstance(armature, str) and armature):
+        raise ToolError(f"armature はアーマチュアの物体の名前にしてください: {armature!r}")
+    span = parameters.get("frame_range")
+    if span is not None and track is not None:
+        raise ToolError("frame_range と track は一緒に使えません（track があれば、その動きのコマを測ります）")
+    frames = None
+    if track is not None:
+        frames = sorted({int(fr["f"]) for fr in track["frames"]})
+    elif span is not None:
+        if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)
+                or span[0] > span[1]):
+            raise ToolError(f"frame_range は [最初, 最後] のコマ（整数、最初 ≤ 最後）にしてください: {span!r}")
+        frames = list(range(span[0], span[1] + 1))
+    return {"bones": [prefix + b for b in bones], "frames": frames, "armature": armature}
+
+
+@register("motion.bone_path", inputs=("blend", "track"), outputs=("path",), cacheable=False,
+          summary="動きのコマごとに、骨（既定は腰と頭）の付け根の位置（世界の座標、m）を測る（Blender の中で）。track（描くコマの"
+                  "並び。model3d-stage-track/0.1）があればその動きのコマを重ねず小さい順に、無ければ frame_range か .blend のシーンの"
+                  "全コマを測る。path は model3d-bone-path/0.1（plan.stage がカメラの狙いに使う）。Blender は外部の実行ファイル"
+                  "なので再利用しない（毎回実行）")
+def bone_path(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .render_ops import _track
+    require(inputs, ("blend",), "motion.bone_path")
+    unknown = set(parameters) - BONE_PATH_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.bone_path の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(BONE_PATH_PARAMETERS)}）")
+    if "path" not in outputs:
+        raise ToolError("motion.bone_path には outputs の path が要ります")
+    blender = _blender(parameters, context, "motion.bone_path")
+    track = _track(inputs["track"]) if inputs.get("track") is not None else None
+    settings = _bone_path_settings(parameters, track)
+    settings_path = Path(context.step_dir) / "bone_path_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--out", outputs["path"]]
+    record = launcher.run_blender(blender, BONE_PATH_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    path = contracts.validate("bone-path", read_json(outputs["path"]))
+    observation = {"kind": "bone_path", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": len(path["frames"]), "bones": sorted(path["bones"]),
+                   "scale_length": path.get("scale_length")}
+    return StepResult(observations=[observation])

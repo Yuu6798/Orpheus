@@ -29,6 +29,9 @@ SCHEMAS = {
     "initial-model": "model3d-initial-model/0.1",
     "stage-track": "model3d-stage-track/0.1",
     "frames": "model3d-frames/0.1",
+    "stage-plan": "model3d-stage-plan/0.1",
+    "light-keys": "model3d-light-keys/0.1",
+    "bone-path": "model3d-bone-path/0.1",
 }
 
 

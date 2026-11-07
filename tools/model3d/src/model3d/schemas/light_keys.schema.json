@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-light-keys/0.1",
+  "title": "model3d light keys",
+  "description": "plan.stage が光に使う、曲の音の帯ごとの強さ（コマごと、0〜1）と拍の格子。コマ T（1 から）の値は low[T - 1] など（足りない所は最後の値）。拍 k の時刻は k0_time + period × k（秒、窓の頭が 0）。",
+  "type": "object",
+  "required": ["schema_version", "fps", "frames", "grid", "low", "mid", "high"],
+  "properties": {
+    "schema_version": {"const": "model3d-light-keys/0.1"},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "frames": {"type": "integer", "minimum": 1},
+    "start_s": {"description": "窓の頭が曲の何秒目か", "type": "number"},
+    "grid": {
+      "type": "object",
+      "required": ["period", "k0_time"],
+      "properties": {"period": {"type": "number", "exclusiveMinimum": 0}, "k0_time": {"type": "number"}},
+      "additionalProperties": false
+    },
+    "low": {"$ref": "#/$defs/band"},
+    "mid": {"$ref": "#/$defs/band"},
+    "high": {"$ref": "#/$defs/band"},
+    "beats": {
+      "description": "窓に入る拍（見るためのもの。plan.stage は格子から計算する）",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["k", "t"],
+        "properties": {"k": {"type": "integer"}, "t": {"type": "number"}, "frame": {"type": "integer"}},
+        "additionalProperties": false
+      }
+    },
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "band": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0, "maximum": 1}}
+  }
+}
