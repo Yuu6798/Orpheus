@@ -29,9 +29,11 @@ settings.json（look.toon が書く）:
   3 つの入力につないだノードは外す）。
 輪郭線（試作の手順）: メッシュの写し（親子付け・変換・モディファイアの並びは元のまま）の重なる頂点を溶かし、ratio まで面を
 減らし、手の属性（hand_attribute）のあるメッシュは写しをならしてから（どちらも並びの先頭で元の面に当てる。形状キーがあれば、
-頂点と辺だけの仮のメッシュでならしたずれを全部のキーに足す）、面を裏返す。材質の枠ごとに、Base Color をさかのぼった絵（無ければ色）を
-dark 倍した暗い色を Emission で出す線の材質にし、裏の面は描かない。並びの最後（骨の変形と、形を変えるモディファイアの後）に、法線の向きへ width_mm だけ
-太らせる Displace を足す（名前は model3d_outline_modifier の印に残す。ふつうは out）。Displace は物体の中の単位で押すので、
+頂点と辺だけの仮のメッシュでならしたずれを全部のキーに足す）。材質の枠ごとに、Base Color をさかのぼった絵（無ければ色）を
+dark 倍した暗い色を Emission で出す線の材質にし、裏の面は描かない。並びの後ろ（骨の変形と、形を変えるモディファイアの後）で、
+面を裏返し（ジオメトリノード model3d_flip_faces。名前は model3d_outline_flip の印。Solidify のように面の向きで形が変わる
+モディファイアも元と同じ向きで働く）、法線の向きへ width_mm だけ太らせる Displace を足す（名前は model3d_outline_modifier の
+印に残す。ふつうは out）。Displace は物体の中の単位で押すので、
 物体の拡大とシーンの単位（scale_length）で直した強さにし、その換算（中の単位 1 が何 m か）を model3d_outline_m_per_local の
 印に残す。写しは model3d_outline の印を持ち、影を落とさない。元の頂点の並びに結び付いたモディファイア（BOUND）のあるメッシュと、
 形状キーのあるメッシュの面を減らすことは止める（写しでは働かないため）。
@@ -365,6 +367,22 @@ def bound_modifiers(ob):
             if m.type in BOUND or (m.type == "CORRECTIVE_SMOOTH" and getattr(m, "rest_source", "") == "BIND")]
 
 
+FLIP = "model3d_flip_faces"
+
+
+def flip_group(bpy):
+    """面を裏返すだけのジオメトリノード（全部の写しで分け合う）"""
+    group = bpy.data.node_groups.get(FLIP)
+    if group is None:
+        group = bpy.data.node_groups.new(FLIP, "GeometryNodeTree")
+        group.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+        group.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        flip = group.nodes.new("GeometryNodeFlipFaces")
+        group.links.new(group.nodes.new("NodeGroupInput").outputs[0], flip.inputs["Mesh"])
+        group.links.new(flip.outputs["Mesh"], group.nodes.new("NodeGroupOutput").inputs[0])
+    return group
+
+
 def apply_first(bpy, ob, mod):
     """mod を並びの先頭に動かして当てる（写したモディファイアより先に、元の面に当てる）"""
     bpy.context.view_layer.objects.active = ob
@@ -440,11 +458,6 @@ def outline_hull(bpy, ob, o):
     hand = o["hand_attribute"]
     if hand and hand in me.attributes:                   # 手首から先は面の細かな凹凸から線が点々と覗くので、写しだけならす
         smooth_hull(bpy, new)
-    bm = bmesh.new()
-    bm.from_mesh(me)
-    bmesh.ops.reverse_faces(bm, faces=bm.faces)
-    bm.to_mesh(me)
-    bm.free()
     for k, (image, color) in enumerate(sources):         # 枠ごとに線の材質に替える（枠を消すと面の材質の番号が 0 に戻るので、中身だけ替える）
         line = hull_material(bpy, "hull_" + ob.name + (f"_{k}" if k else ""), image, color, o)
         if k < len(new.material_slots):
@@ -455,6 +468,9 @@ def outline_hull(bpy, ob, o):
     # Displace は物体の中の単位で押し出すので、mm の太さを、物体の拡大とシーンの単位で中の単位に直す（描く工程も同じ数で直す）
     per = metres_per_local(new.matrix_world, sc.unit_settings.scale_length)
     new["model3d_outline_m_per_local"] = per
+    flip = new.modifiers.new("flip", "NODES")             # 面は写したモディファイアの後で裏返す（Solidify のように面の向きで
+    flip.node_group = flip_group(bpy)                    # 形が変わるモディファイアも、元と同じ向きで働かせる）
+    new["model3d_outline_flip"] = flip.name
     m2 = new.modifiers.new("out", "DISPLACE")             # 並びの最後（骨の変形や形を変えるモディファイアの後）に太らせる
     m2.direction, m2.mid_level, m2.strength = "NORMAL", 0.0, -(o["width_mm"] / 1000) / per
     new["model3d_outline_modifier"] = m2.name
