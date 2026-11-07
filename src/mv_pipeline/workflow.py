@@ -16,6 +16,9 @@ SCHEMA = "orpheus-workflow/0.1"
 PURPOSES = ("lyric-mv", "dance-edit")
 OMITTABLE = {"beats", "lyrics"}
 STAGES = ("inputs", "beats", "lyrics", "direction", "assets", "render", "verification")
+INSPECTION = "inspection"          # 検品（mv inspect）の行。計画の inspection か --inspect-report があるときだけ出す
+INSPECTION_MODES = ("optional", "required")
+INSPECT_REPORT = "inspect-report/0.1"
 SCOPE = "必要工程と現在の入力・出力の証拠を照合します。演出の良し悪し、実曲の同期精度、作品採用は判定しません。"
 
 
@@ -37,6 +40,8 @@ def _load(path):
     validate.require(plan.get("purpose") in PURPOSES, "Unknown workflow purpose")
     validate.require(isinstance(plan.get("target"), str) and bool(plan["target"].strip()), "workflow target is required")
     validate.require(plan.get("lyrics") is None or isinstance(plan["lyrics"], bool), "lyrics must be true, false, or null")
+    validate.require(plan.get("inspection") is None or plan["inspection"] in INSPECTION_MODES,
+                     f"inspection must be one of {INSPECTION_MODES} or absent")
     validate.require(plan["purpose"] != "lyric-mv" or plan.get("lyrics") is True, "lyric-mv requires lyrics")
     omissions = plan.get("omissions", {})
     validate.require(isinstance(omissions, dict), "omissions must be an object")
@@ -82,8 +87,17 @@ def _guidance(purpose, target, lyrics):
             for key, title, inputs, command, outputs in rows]
 
 
-def create_plan(target, purpose, out=None, lyrics=None):
+def _inspection_row(mode):
+    """検品の行。mode が required なら必須（検品を必須にするかは制作ごとに決める）。採否は判定しない。"""
+    return {"id": INSPECTION, "title": "検品（mv inspect）", "required": mode == "required",
+            "inputs": "最終動画か、spec の素材を見た mv inspect check の inspect_report.json",
+            "command": "uv run mv inspect check <INSPECT.json>; uv run mv workflow check <PLAN> --inspect-report <inspect_report.json>",
+            "outputs": "検品の記録（run_id・時刻・見た動画の sha256・要確認の数・見ていない検査）。異常かどうか・採否は人"}
+
+
+def create_plan(target, purpose, out=None, lyrics=None, inspection=None):
     validate.require(purpose in PURPOSES, f"purpose must be one of {PURPOSES}")
+    validate.require(inspection is None or inspection in INSPECTION_MODES, f"inspection must be one of {INSPECTION_MODES}")
     validate.require(lyrics is None or isinstance(lyrics, bool), "lyrics must be a boolean")
     target = Path(target).resolve()
     if purpose == "lyric-mv":
@@ -101,7 +115,9 @@ def create_plan(target, purpose, out=None, lyrics=None):
         relative = str(target)
     plan = {"schema_version": SCHEMA, "purpose": purpose, "target": relative,
             "lyrics": lyrics, "omissions": {}, "scope": SCOPE,
-            "stages": _guidance(purpose, target, lyrics)}
+            "stages": _guidance(purpose, target, lyrics) + ([_inspection_row(inspection)] if inspection else [])}
+    if inspection:
+        plan["inspection"] = inspection
     atomic_json(path, plan)
     return {"plan": str(path), **plan}
 
@@ -141,7 +157,7 @@ def _file_hash(path, expected):
     validate.require(sha256(path) == expected, f"File hash mismatch: {path}")
 
 
-def _inspect_mv(root, rows, run_dir):
+def _inspect_mv(root, rows, run_dir, media):
     if not all((root / name).is_file() for name in ("project.json", "analysis.json")):
         return
 
@@ -216,6 +232,7 @@ def _inspect_mv(root, rows, run_dir):
             validate.require(relative.startswith(prefix), "Render journal contains a different run")
             _file_hash(safe_path(chosen, relative[len(prefix):]), expected)
         _set(rows, "render", "pass", "現在の入力に一致する最終runと出力ハッシュを確認", [chosen / "video.mp4"])
+        media["final_video"] = chosen / "video.mp4"
         return chosen
 
     chosen = _attempt(rows, "render", rendered)
@@ -279,13 +296,14 @@ def _timeline_matches(sp, record, manifest):
         validate.require(record.get("finished") is None, "timeline contains an unrecorded finishing hook")
 
 
-def _inspect_dance(target, plan, rows, run_dir, gate_config, out):
+def _inspect_dance(target, plan, rows, run_dir, gate_config, out, media):
     from .dance import spec as dancespec
     if not target.is_file():
         return None
     sp = _attempt(rows, "inputs", lambda: dancespec.load_spec(target))
     if sp is None:
         return None
+    media["spec_sha256"] = sp.sha256
     data = sp.data
     if data["audio"] is None:
         _set(rows, "inputs", "pending", "音楽に合わせる編集には音源を指定してください")
@@ -311,6 +329,7 @@ def _inspect_dance(target, plan, rows, run_dir, gate_config, out):
             validate.require(path.is_file(), f"Missing referenced asset ({role}): {path}")
             result[role] = {"path": relative, "sha256": sha256(path)}
         _set(rows, "assets", "pass", "素材の存在と現在のハッシュを取得", [sp.resolve(path) for path in refs.values()])
+        media["assets"] = {item["sha256"] for item in result.values()}
         return result
     current_assets = _attempt(rows, "assets", assets)
     if current_assets is None or run_dir is None:
@@ -350,6 +369,7 @@ def _inspect_dance(target, plan, rows, run_dir, gate_config, out):
         record = _object(run / "timeline.json")
         _timeline_matches(sp, record, m)
         _set(rows, "render", "pass", "現在のspec・素材と一致する全尺・原寸runを確認", [video, run / "manifest.json", run / "timeline.json"])
+        media["final_video"] = video
         return video, record
     rendered_result = _attempt(rows, "render", rendered)
     if rendered_result is None:
@@ -403,15 +423,81 @@ def _inspect_dance(target, plan, rows, run_dir, gate_config, out):
     return _attempt(rows, "verification", gated)
 
 
-def check(plan_path, run_dir=None, gate_config=None, out=None):
-    path, plan, target = _load(plan_path)
-    rows = {item["id"]: {**item, "observed_status": "pending", "status": "pending", "summary": "必要な入力・成果物がまだありません", "evidence": []}
-            for item in _guidance(plan["purpose"], target, plan["lyrics"])}
-    gate = None
-    if plan["purpose"] == "lyric-mv":
-        _inspect_mv(target, rows, run_dir)
+def _inspection(rows, reports, media):
+    """検品の記録を照合する。報告が今の最終動画（sha256）・spec（dance）・素材のどれを見たものかを確かめ、未実施・検品済み
+    （要確認・見つけた所なし・見ていない検査あり）・古い検品を分ける。異常かどうか・採否は判定しない。"""
+    if not reports:
+        _set(rows, INSPECTION, "pending", "検品の記録がありません（mv inspect check の inspect_report.json を --inspect-report で渡す）")
+        rows[INSPECTION]["inspection_state"] = "not_run"
+        return
+    final = sha256(media["final_video"]) if media.get("final_video") else None
+    entries = []
+    for report_path in reports:
+        report_path = Path(report_path).resolve()
+        data = _object(report_path)
+        validate.require(data.get("schema_version") == INSPECT_REPORT, f"Not an mv inspect report ({INSPECT_REPORT}): {report_path}")
+        seen = {clip.get("sha256") for clip in data.get("clips", [])}
+        run = data.get("run") or {}
+        spec = next((item.get("sha256") for item in run.get("inputs", []) if item.get("role") == "dance_spec"), None)
+        current = bool(seen) and bool(media.get("assets")) and seen <= media["assets"]   # 見た動画がどれも今の素材
+        if final and final in seen:
+            target = "final_video"
+        elif spec and spec == media.get("spec_sha256") and current:     # spec の JSON は素材をパスで指すだけ。同じパスで差し替えた
+            target = "spec_sources"                                     # 素材は spec の sha256 では分からないので、見た動画も照らす
+        elif current:
+            target = "assets"
+        else:
+            target = None
+        summary = data.get("summary", {})
+        frames = (data.get("vlm") or {}).get("frames") or {}
+        entries.append({"report": str(report_path), "run_id": run.get("id"), "finished_at": run.get("finished_at"),
+                        "overall": data.get("overall"), "target": target, "events": summary.get("events"),
+                        "events_without_cue": (summary.get("cues") or {}).get("events_without_cue"),
+                        "skipped": len(data.get("skipped", [])), "vlm": (data.get("vlm") or {}).get("status"),
+                        "vlm_unsent": frames.get("events_unsent")})
+    rows[INSPECTION]["inspections"] = entries
+    matched = [entry for entry in entries if entry["target"]]
+    if not matched:
+        _set(rows, INSPECTION, "pending", "渡した検品は、今の最終動画・spec・素材のどれとも sha256 が合いません（古いか別の動画の検品）",
+             [entry["report"] for entry in entries])
+        rows[INSPECTION]["inspection_state"] = "stale"
+        return
+    if any(entry["overall"] == "review" for entry in matched):
+        state = "review"
+    elif any(entry["overall"] == "clean_with_skips" for entry in matched):
+        state = "clean_with_skips"
     else:
-        gate = _inspect_dance(target, plan, rows, run_dir, gate_config, out)
+        state = "clean"
+    labels = {"final_video": "最終動画", "spec_sources": "spec の素材", "assets": "素材"}
+    parts = []
+    for entry in matched:
+        detail = (f"{labels[entry['target']]}を検品（{entry['run_id'] or '記録なし'}・{entry['finished_at'] or '時刻なし'}）: "
+                  f"{entry['overall']}・要確認 {entry['events']} 件")
+        if entry["events_without_cue"] is not None:
+            detail += f"（演出と重ならない {entry['events_without_cue']} 件）"
+        if entry["skipped"]:
+            detail += f"・見ていない検査 {entry['skipped']}"
+        if entry["vlm_unsent"]:
+            detail += f"・VLM に見せなかった出来事 {entry['vlm_unsent']}"
+        parts.append(detail)
+    _set(rows, INSPECTION, "pass", " / ".join(parts) + "。異常かどうか・採否は人が決める", [entry["report"] for entry in matched])
+    rows[INSPECTION]["inspection_state"] = state
+
+
+def check(plan_path, run_dir=None, gate_config=None, out=None, inspect_reports=()):
+    path, plan, target = _load(plan_path)
+    stages = _guidance(plan["purpose"], target, plan["lyrics"])
+    if plan.get("inspection") or inspect_reports:      # 検品の行は、計画で決めたときか、記録を渡したときだけ（前の計画は前のまま）
+        stages.append(_inspection_row(plan.get("inspection", "optional")))
+    rows = {item["id"]: {**item, "observed_status": "pending", "status": "pending", "summary": "必要な入力・成果物がまだありません", "evidence": []}
+            for item in stages}
+    gate, media = None, {}
+    if plan["purpose"] == "lyric-mv":
+        _inspect_mv(target, rows, run_dir, media)
+    else:
+        gate = _inspect_dance(target, plan, rows, run_dir, gate_config, out, media)
+    if INSPECTION in rows:
+        _attempt(rows, INSPECTION, lambda: _inspection(rows, list(inspect_reports), media))
     for stage, reason in plan["omissions"].items():
         rows[stage]["omission_reason"] = reason
         if rows[stage]["observed_status"] == "pending":

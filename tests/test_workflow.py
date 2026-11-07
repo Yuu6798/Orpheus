@@ -322,3 +322,73 @@ def test_dance_finishing_hook_is_bound_to_current_source_and_timeline(dance, cha
         atomic_json(run / "timeline.json", timeline)
     report = dance_check(dance)
     assert report["overall"] == "failed" and rows(report)["render"]["status"] == "fail"
+
+
+def inspect_report(path, clips, *, overall="review", events=3, spec_sha256=None, without_cue=None):
+    """mv inspect の報告（inspect-report/0.1）の、workflow が読む欄だけを持つ作り物。"""
+    inputs = [{"role": "dance_spec", "path": "spec.json", "sha256": spec_sha256}] if spec_sha256 else []
+    summary = {"events": events, **({"cues": {"events_with_cue": events - without_cue, "events_without_cue": without_cue,
+                                               "events_unchecked": 0}} if without_cue is not None else {})}
+    atomic_json(path, {"schema_version": "inspect-report/0.1", "overall": overall,
+                       "clips": [{"id": f"c{i}", "sha256": value} for i, value in enumerate(clips)],
+                       "summary": summary, "skipped": [], "vlm": {"status": "packet", "frames": {"events_unsent": 1}},
+                       "run": {"id": "20261108T000000Z-test", "finished_at": "2026-11-08T00:00:00+00:00", "inputs": inputs}})
+    return path
+
+
+def test_the_inspection_stage_appears_only_when_planned_or_given(mv, tmp_path):
+    root, plan = mv
+    journal_fixture(root)
+    assert "inspection" not in rows(workflow.check(plan))                       # 前の計画は前のまま
+    report = inspect_report(tmp_path / "inspect.json", ["0" * 64])
+    row = rows(workflow.check(plan, inspect_reports=[report]))["inspection"]
+    assert row["required"] is False and row["status"] == "pending" and row["inspection_state"] == "stale"
+
+
+def test_a_required_inspection_needs_a_report_of_the_final_video(mv, tmp_path):
+    root, _ = mv
+    plan = Path(workflow.create_plan(root, "lyric-mv", out=tmp_path / "plan.json", inspection="required")["plan"])
+    assert read_json(plan)["inspection"] == "required" and read_json(plan)["stages"][-1]["id"] == "inspection"
+    run = journal_fixture(root)
+    report = workflow.check(plan)
+    assert report["overall"] == "incomplete" and report["missing"] == ["inspection"]
+    assert rows(report)["inspection"]["inspection_state"] == "not_run"
+    seen = inspect_report(tmp_path / "seen.json", [sha256(run / "video.mp4")], without_cue=2)
+    report = workflow.check(plan, inspect_reports=[seen], out=tmp_path / "out")
+    row = rows(report)["inspection"]
+    assert report["overall"] == "complete" and report["accepted"] is False                # 検品済みでも、採否は人
+    assert row["status"] == "pass" and row["inspection_state"] == "review" and row["evidence"] == [str(seen.resolve())]
+    assert row["inspections"][0]["target"] == "final_video" and row["inspections"][0]["run_id"] == "20261108T000000Z-test"
+    assert "要確認 3 件（演出と重ならない 2 件）" in row["summary"] and "VLM に見せなかった出来事 1" in row["summary"]
+    assert "検品（mv inspect）" in (tmp_path / "out" / "workflow_report.md").read_text(encoding="utf-8")
+    old = inspect_report(tmp_path / "old.json", ["1" * 64])
+    report = workflow.check(plan, inspect_reports=[old])
+    assert report["overall"] == "incomplete" and rows(report)["inspection"]["inspection_state"] == "stale"
+    clean = inspect_report(tmp_path / "clean.json", [sha256(run / "video.mp4")], overall="clean", events=0)
+    assert rows(workflow.check(plan, inspect_reports=[clean]))["inspection"]["inspection_state"] == "clean"
+
+
+def test_a_dance_inspection_of_the_current_spec_sources_is_recorded(dance, tmp_path):
+    root, plan, run = dance
+    sources = inspect_report(tmp_path / "sources.json", [sha256(root / "figure.png")], spec_sha256=sha256(root / "spec.json"))
+    row = rows(workflow.check(plan, run_dir=run, gate_config=root / "gate.json", inspect_reports=[sources]))["inspection"]
+    assert row["status"] == "pass" and row["inspections"][0]["target"] == "spec_sources"
+    output = inspect_report(tmp_path / "output.json", [sha256(run / "dance.mp4")])
+    assert rows(workflow.check(plan, run_dir=run, gate_config=root / "gate.json", inspect_reports=[output]))["inspection"]["inspections"][0]["target"] == "final_video"
+
+
+def test_a_spec_inspection_of_replaced_sources_is_stale(dance, tmp_path):
+    root, plan, run = dance
+    before = inspect_report(tmp_path / "before.json", [sha256(root / "figure.png")], spec_sha256=sha256(root / "spec.json"))
+    Image.new("RGBA", (30, 60), (80, 150, 230, 255)).save(root / "figure.png")   # 同じパスで素材を差し替えた（spec の sha256 は同じ）
+    row = rows(workflow.check(plan, run_dir=run, gate_config=root / "gate.json", inspect_reports=[before]))["inspection"]
+    assert row["status"] == "pending" and row["inspection_state"] == "stale" and row["inspections"][0]["target"] is None
+
+
+def test_a_broken_inspection_record_fails_and_a_bad_mode_is_refused(mv, tmp_path):
+    root, plan = mv
+    atomic_json(tmp_path / "other.json", {"schema_version": "something-else"})
+    report = workflow.check(plan, inspect_reports=[tmp_path / "other.json"])
+    assert rows(report)["inspection"]["status"] == "fail" and "inspection" in report["failed"]
+    with pytest.raises(PipelineError, match="inspection"):
+        workflow.create_plan(root, "lyric-mv", out=tmp_path / "bad.json", inspection="sometimes")
