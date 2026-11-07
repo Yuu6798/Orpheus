@@ -49,12 +49,24 @@ def rotation_part(m):
 
 def bend(rigid, actual):
     """曲げなしの向き rigid（コマ, 3, 3）から今の向き actual（コマ, 3, 3）への、Y 軸どうしの最小の回転を、rigid の向きの中の
-    回転ベクトル（コマ, 3）で返す（ねじれは入れない）。"""
+    回転ベクトル（コマ, 3）で返す（ねじれは入れない）。Y 軸がちょうど真逆（180° の曲げ）だと外積の向きが決まらないので、
+    rigid の X 軸（前腕なら肘の蝶番の向きに近い）のまわりの半回転にする。"""
     ya, yb = rigid[:, :, 1], actual[:, :, 1]
     axis = np.cross(ya, yb)
     sn = np.linalg.norm(axis, axis=1, keepdims=True)
-    world = axis / np.maximum(sn, 1e-9) * np.arctan2(sn, np.sum(ya * yb, axis=1, keepdims=True))
+    cs = np.sum(ya * yb, axis=1, keepdims=True)
+    folded = (sn[:, 0] < 1e-9) & (cs[:, 0] < 0)
+    axis = np.where(folded[:, None], rigid[:, :, 0], axis / np.maximum(sn, 1e-9))
+    world = axis * np.arctan2(sn, cs)
+    world[folded] = rigid[folded, :, 0] * np.pi
     return np.einsum("fji,fj->fi", rigid, world)
+
+
+def sleeve_stats(raw, want, rv):
+    """袖口ごとの報告の数: 曲げ（割合を掛ける前）の最大と、狙い（割合を掛けた後）からの遅れの中央値・最大（°）。"""
+    lag = np.degrees(np.linalg.norm(rv - want, axis=1))
+    return {"bend_max_deg": round(float(np.degrees(np.linalg.norm(raw, axis=1).max())), 1),
+            "lag_deg": {"median": round(float(np.median(lag)), 2), "max": round(float(lag.max()), 2)}}
 
 
 def lagged(want, fps, substeps=8, f_hz=4.0, damping=0.45):
@@ -160,7 +172,8 @@ def main(argv=None):
         follow, parent = s["follow"], bones[s["follow"]].parent.name
         rigid = rotation_part(pose[parent] @ np.linalg.inv(rest(parent)) @ rest(follow))   # 曲げなしの向き
         actual = rotation_part(pose[follow])
-        want = bend(rigid, actual) * settings["ratio"]
+        raw = bend(rigid, actual)                    # 割合を掛ける前の曲げ（報告にも使う）
+        want = raw * settings["ratio"]
         rv = lagged(want, fps, int(settings["substeps"]), settings["f_hz"], settings["damping"])
         offset = rotation_part(rest(follow)).T @ rotation_part(rest(s["bone"]))   # 静止での follow の骨との向きの差
         target = rigid @ rotvec_matrix(rv) @ offset
@@ -176,10 +189,7 @@ def main(argv=None):
             pb[s["bone"]].rotation_quaternion = q
             pb[s["bone"]].keyframe_insert("rotation_quaternion", frame=f)
         targets[s["bone"]] = target
-        lag = np.degrees(np.linalg.norm(rv - want, axis=1))
-        results.append({"bone": s["bone"], "follow": follow, "parent": own_parent,
-                        "bend_max_deg": round(float(np.degrees(np.linalg.norm(want / max(settings["ratio"], 1e-12), axis=1).max())), 1),
-                        "lag_deg": {"median": round(float(np.median(lag)), 2), "max": round(float(lag.max()), 2)}})
+        results.append({"bone": s["bone"], "follow": follow, "parent": own_parent, **sleeve_stats(raw, want, rv)})
     # 確かめ: 焼き付けた袖口の骨の向きが、狙いの向きと合うこと
     worst = 0.0
     for k, f in enumerate(frames):

@@ -64,6 +64,21 @@ def test_bend_leaves_out_the_twist_about_the_bone():
     np.testing.assert_allclose(bent[0], [0.9, 0, 0], atol=1e-12)                       # 曲げなしの向きの中の回転として
 
 
+def test_a_joint_folded_right_back_bends_half_a_turn_about_the_rigid_x_axis():
+    rigid = random_rotations(2, np.random.default_rng(6))
+    folded = sleeve_bones.bend(rigid, rigid @ rot([1, 0, 0], np.pi))          # Y 軸がちょうど真逆
+    np.testing.assert_allclose(folded, [[np.pi, 0, 0]] * 2, atol=1e-12)
+    nearly = sleeve_bones.bend(rigid, rigid @ rot([1, 0, 0], np.pi - 1e-6))    # すぐ手前は、外積の向きで同じ半回転の近く
+    np.testing.assert_allclose(nearly, [[np.pi - 1e-6, 0, 0]] * 2, atol=1e-8)
+    np.testing.assert_allclose(sleeve_bones.rotvec_matrix(folded)[:, :, 1], [[0, -1, 0]] * 2, atol=1e-12)
+
+
+def test_the_reported_bend_comes_before_the_ratio():
+    raw = np.array([[0.0, 0.0, 0.0], [1.2, 0.0, 0.0]])
+    stats = sleeve_bones.sleeve_stats(raw, raw * 0.0, np.zeros((2, 3)))       # ratio 0 でも、曲げは測ったまま
+    assert stats["bend_max_deg"] == round(math.degrees(1.2), 1) and stats["lag_deg"] == {"median": 0.0, "max": 0.0}
+
+
 def test_lag_starts_on_the_target_follows_late_and_overshoots_a_step():
     want = np.zeros((40, 3))
     want[5:, 0] = 1.0                                              # 6 コマ目で急に曲がる
