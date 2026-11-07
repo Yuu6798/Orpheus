@@ -1253,6 +1253,10 @@ def test_events_at_cues_stay_as_candidates_and_say_which_cue(small_demo, tmp_pat
     assert result["clips"][0]["cues"]["cuts"] == 1
     text = (out / "inspect_report.md").read_text(encoding="utf-8")
     assert "演出の時刻と重なる: カット 1.25 秒" in text and "重ならない出来事から見てください" in text
+    for md in (tmp_path / "plain" / "inspect_report.md", out / "inspect_report.md"):   # 冒頭の箇条書きと一覧の表の間は空行（md の表として読まれる）
+        lines = md.read_text(encoding="utf-8").splitlines()
+        header = next(i for i, line in enumerate(lines) if line.startswith("| クリップ |"))
+        assert lines[header - 1] == ""
 
 
 def _write(path, data):

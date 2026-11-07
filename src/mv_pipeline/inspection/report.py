@@ -222,7 +222,7 @@ def markdown(report, plan):
                    if report['summary']['cues']['events_unchecked'] else "")
                 + "。重なっても異常の可能性は残ります（演出と同じ時に崩れることもあるので、出来事は消していません）。重ならない出来事から見てください。"]
                if report["summary"].get("cues") else []),
-             ""
+             "",
              "| クリップ | 見た範囲 | 連続性 | 動作 | 形状 | 衣装 | その他 | 設定画との重なり（中央値・最小） | 見ていない検査 |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for clip in report["clips"]:
