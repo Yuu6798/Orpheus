@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {lineAt, onBeat} from '../src/lyric-props.ts';
+import {indexProps, lineAt, onBeat} from '../src/lyric-props.ts';
 import type {LyricProps} from '../src/lyric-props.ts';
 
 const props: LyricProps = {
@@ -25,4 +25,11 @@ test('beats and downbeats are frame numbers, never seconds', () => {
   assert.equal(onBeat(props, 16), false);
   assert.equal(onBeat(props, 15, 'downbeat'), false);
   assert.equal(onBeat(props, 60, 'downbeat'), true);
+});
+test('the index is built once per props object and sorts lines by start_frame', () => {
+  const shuffled: LyricProps = {...props, lines: [props.lines[1], props.lines[0]]};
+  assert.equal(indexProps(shuffled), indexProps(shuffled));
+  assert.deepEqual(indexProps(shuffled).lines.map(l => l.id), ['a', 'b']);
+  assert.equal(lineAt(shuffled, 100)?.id, 'a');
+  assert.equal(indexProps(shuffled).beats.size, 4);
 });

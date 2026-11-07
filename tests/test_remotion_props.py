@@ -19,6 +19,8 @@ def project(tmp_path):
     (5.48, 6.0, 164, 180),      # 5.48 秒を始まりにすれば 164 コマ
     (0.0, 0.01, 0, 1),
     (2.999999, 3.0, 89, 90),
+    (7.1, 7.1, 213, 213),       # 7.1 × 30 = 213.00000000000003 でも 1 コマ余計に数えない
+    (1.0, 1.1, 30, 33),
 ])
 def test_fractional_times_round_down_at_the_start_and_up_at_the_end(start_s, end_s, start, end):
     assert validate.frame_span(start_s, end_s, 30) == (start, end)
@@ -57,12 +59,42 @@ def test_untimed_lines_are_kept_apart_and_downbeats_come_from_beats_per_bar_or_a
     grid = tmp_path / "beats.json"
     atomic_json(grid, {"beats": [0.0, 1.0, 2.0], "downbeats": [0.0, 2.0]})
     props = remotion_props.build(project, beats_path=grid, storyboard=False)
-    assert props["beats"]["frames"] == [0, 30, 60] and props["beats"]["downbeat_frames"] == [0, 60]
-    assert props["beats"]["source"] == {"kind": "file", "path": str(grid), "sha256": sha256(grid)}
+    assert props["beats"]["frames"] == [0, 30, 60] and props["beats"]["downbeat_frames"] == [0, 60] and props["beats"]["bpm"] is None
+    assert props["beats"]["source"] == {"kind": "file", "name": "beats.json", "sha256": sha256(grid), "replaces_analysis_beats": True}
+    assert str(tmp_path) not in json.dumps(props)                     # 個人のパスは書かない
     with pytest.raises(PipelineError, match="同時に"):
-        remotion_props.build(project, beats_path=grid, beats_per_bar=4)
+        remotion_props.build(project, beats_path=grid, beats_per_bar=4, storyboard=False)
     with pytest.raises(PipelineError, match="--beats-per-bar"):
-        remotion_props.build(project, beats_per_bar=4, downbeat_phase=4)
+        remotion_props.build(project, beats_per_bar=4, downbeat_phase=4, storyboard=False)
+    with pytest.raises(PipelineError, match="--downbeat-phase"):
+        remotion_props.build(project, downbeat_phase=1, storyboard=False)
+    atomic_json(grid, [0.0, 1.0])
+    with pytest.raises(PipelineError, match="オブジェクト"):
+        remotion_props.build(project, beats_path=grid, storyboard=False)
+    atomic_json(grid, {"beats": [1.0, 0.5], "downbeats": [-0.2]})
+    with pytest.raises(PipelineError, match="--beats の"):
+        remotion_props.build(project, beats_path=grid, storyboard=False)
+
+
+def test_lines_follow_the_render_captions_and_beats_stay_inside_the_render(project):
+    """隣り合う行は前の行の終わりを次の始まりで切り（mv render の字幕と同じ）、拍はコマに丸めてから duration_frames の中だけ残す。"""
+    a = read_json(project / "analysis.json")
+    a["lyrics"][0].update(start_s=1.0, end_s=2.01)
+    a["lyrics"][1].update(start_s=2.01, end_s=3.0)
+    a.update(beats_s=[0.0, 5.99])                                    # 5.99 秒はコマに丸めると 180 = duration_frames の外
+    atomic_json(project / "analysis.json", a)
+    props = remotion_props.build(project, storyboard=False)
+    assert [(line["start_frame"], line["end_frame"]) for line in props["lines"]] == [(30, 60), (60, 90)]
+    assert props["beats"]["frames"] == [0] and props["render_source"] == "project"
+    a["lyrics"][1].update(start_s=2.0, end_s=3.0)                    # 歌が重なる → mv render と同じく止める
+    atomic_json(project / "analysis.json", a)
+    with pytest.raises(PipelineError, match="Overlapping"):
+        remotion_props.build(project, storyboard=False)
+
+
+def test_render_settings_come_from_the_storyboard_when_present(project):
+    props = remotion_props.build(project)
+    assert props["render_source"] == "storyboard" and (props["fps"], props["width"], props["height"], props["duration_frames"]) == (30, 320, 180, 180)
 
 
 def test_a_stale_storyboard_is_rejected_not_exported(project):

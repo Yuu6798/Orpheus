@@ -83,11 +83,14 @@ def assets(data, root=None):
     return ids
 
 
+FRAME_EPS = 1e-9   # 7.1 × 30 = 213.00000000000003 のような浮動小数の誤差で、境目ちょうどの時刻が 1 コマ余計に数えられないため
+
+
 def frame_span(start_s, end_s, fps, total=None):
     """行の表示コマ [start, end)。開始は floor、終了は ceil（表示を欠かさない方に丸める）。total があればその中に収める。
     `mv render` の字幕と `mv export remotion-props` が同じ関数を呼ぶ（丸めを 2 か所に書かない）。"""
-    start = max(0, math.floor(start_s * fps))
-    end = math.ceil(end_s * fps)
+    start = max(0, math.floor(start_s * fps + FRAME_EPS))
+    end = math.ceil(end_s * fps - FRAME_EPS)
     return start, end if total is None else min(total, end)
 
 

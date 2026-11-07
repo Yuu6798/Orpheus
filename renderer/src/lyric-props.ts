@@ -50,10 +50,41 @@ export type LyricProps = {
   sources: {analysis_sha256: string; audio_sha256: string; storyboard_sha256?: string};
 };
 
-/** コマ frame に見えている行（無ければ undefined）。 */
-export const lineAt = (props: LyricProps, frame: number): LyricLine | undefined =>
-  props.lines.find(line => line.start_frame <= frame && frame < line.end_frame);
+export type PropsIndex = {
+  /** start_frame で昇順に並んだ行。 */
+  lines: LyricLine[];
+  beats: Set<number>;
+  downbeats: Set<number>;
+};
+
+const indexes = new WeakMap<LyricProps, PropsIndex>();
+
+/** コマごとの参照に使う索引（props ごとに 1 回だけ作る）。 */
+export const indexProps = (props: LyricProps): PropsIndex => {
+  let index = indexes.get(props);
+  if (!index) {
+    index = {lines: [...props.lines].sort((a, b) => a.start_frame - b.start_frame),
+      beats: new Set(props.beats.frames), downbeats: new Set(props.beats.downbeat_frames)};
+    indexes.set(props, index);
+  }
+  return index;
+};
+
+/** コマ frame に見えている行（無ければ undefined）。行は重ならない前提（Python 側が切る）なので二分探索で引く。 */
+export const lineAt = (props: LyricProps, frame: number): LyricLine | undefined => {
+  const {lines} = indexProps(props);
+  let low = 0;
+  let high = lines.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const line = lines[mid];
+    if (frame < line.start_frame) high = mid - 1;
+    else if (frame >= line.end_frame) low = mid + 1;
+    else return line;
+  }
+  return undefined;
+};
 
 /** コマ frame が拍（downbeat なら小節頭）に当たるか。 */
 export const onBeat = (props: LyricProps, frame: number, kind: 'beat' | 'downbeat' = 'beat'): boolean =>
-  (kind === 'downbeat' ? props.beats.downbeat_frames : props.beats.frames).includes(frame);
+  (kind === 'downbeat' ? indexProps(props).downbeats : indexProps(props).beats).has(frame);
