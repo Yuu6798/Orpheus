@@ -1,12 +1,55 @@
 # Orpheus / オルフェウス
 
-完成ミックス音源、歌詞時刻、画像、演出JSONから、ローカルで再生成できるMV制作パイプライン。
-Pythonが入力検証と工程管理を行い、Remotionが静止画のパン・ズーム・クロスフェード、歌詞、音声をMP4へ描画します。
+[![CI](https://github.com/Yuu6798/orpheus/actions/workflows/ci.yml/badge.svg)](https://github.com/Yuu6798/orpheus/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## 動かす
+音源・歌詞・画像・設定ファイルから、**ローカルで再生成できる**ミュージックビデオ（MV）を組み立てる道具箱です。
+Python が入力の検証と工程の記録を担い、描画は Remotion（2D の MV）、OpenCV（演出・ダンス合成）、Blender（3D。外部プロセス）に任せます。
 
-Python 3.11〜3.13、Node.js 22以上、uv、pnpmが必要です。リポジトリのルートで実行してください。
-uvは0.13.5以上が必要です（古い場合は `uv self update` か `pip install -U "uv>=0.13.5"`）。
+> Orpheus is a local, reproducible toolkit for building music videos from audio, lyric timings, images and JSON specs.
+> Python validates inputs and journals every step; rendering is delegated to Remotion, OpenCV and (optionally) Blender.
+> Documentation is in Japanese.
+
+## 特徴
+
+- **再現できる**: 入力は SHA-256 で記録し、同じ入力なら再描画しない。出力ごとに入力の写しと検証結果を残す。
+- **ネットワークを呼ばない**: 生成 AI の API、クラウドへの送信、公開は行わない。外部プログラムはユーザーが明示した設定だけを実行する。
+- **採点しない**: 自動で出すのは構造の検査（`technical_pass`）だけ。作品としての採否（`accepted`）は人が記録する。
+- **契約を守る**: MV の入出力の形は `contracts/` の JSON Schema が正典。実験的な機能の設定はその外に置く。
+
+## 何ができるか
+
+| 入口 | できること | 状態 | 詳細 |
+|---|---|---|---|
+| `mv init … render verify` | 音源・歌詞時刻・静止画・演出 JSON から、パン・ズーム・クロスフェードと歌詞テロップつきの MP4 を描く | 本体 | [runbook](docs/runbook.md) |
+| `mv workflow` | 用途別（歌詞つき MV / ダンス編集）に必要な工程を並べ、現在のファイルから完了を確認する | 本体 | [workflow](docs/workflow.md) |
+| `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
+| `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
+| `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
+| `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）と、歌詞の行・秒の確認表 | 実験的 | [gate](docs/gate.md) |
+| `mv inspect` | 生成動画の異常候補をコマと秒で見つけ、分類し、設定画と照合して修正計画を書く | 実験的 | [inspect](docs/inspect.md) |
+| `model3d` | 設定画や既存モデルから、部位と骨の対応・加工レシピ・検査・書き出し・動きの移し替え・舞台描画を記録つきで進める | 実験的・外部ツール | [model3d](docs/model3d.md) |
+
+「本体」は `contracts/` の契約に沿い CI で描画まで確かめている範囲、「実験的」は設定スキーマが契約の外にあり、しきい値や既定値が合成素材で決めた仮の値の範囲です。
+実験的な機能の実素材での確認状況は各ドキュメントの冒頭に書いてあります。
+
+## 必要なもの
+
+| ツール | 版 |
+|---|---|
+| Python | 3.11〜3.13 |
+| [uv](https://docs.astral.sh/uv/) | 0.13.5 以上（`uv self update` か `pip install -U "uv>=0.13.5"`） |
+| Node.js | 22 以上 |
+| pnpm | 11（`package.json` の `packageManager` に固定） |
+| FFmpeg | PATH にあればそれを使う。無ければ同梱の imageio-ffmpeg 版 |
+| Blender | `model3d` の描画工程だけ。別プロセスで呼ぶ |
+
+初回の `mv render` では Remotion が Chrome Headless Shell を取得します。既存のブラウザーを使うときは環境変数 `ORPHEUS_BROWSER` に実行ファイルのパスを入れてください。
+ffprobe は PATH のもの、無ければ Remotion 同梱版を使います（`ORPHEUS_FFPROBE` で指定可）。
+
+## 5 分で試す
+
+リポジトリのルートで実行します。合成音・幾何学画像・架空の歌詞から 6 秒のテスト動画を作ります。
 
 ```sh
 uv sync --locked --extra analysis
@@ -16,113 +59,96 @@ uv run mv render projects/demo
 uv run mv verify projects/demo
 ```
 
-6秒の合成音・幾何学画像・架空歌詞のテスト動画を `projects/demo/runs/<run_id>/video.mp4` に生成します。
-初回の描画ではRemotionがChrome Headless Shellを取得します。FFmpegはPATH上のもの、なければ固定版imageio-ffmpeg、ffprobeはRemotion同梱版を使います。
-既存ブラウザーを使う場合は `ORPHEUS_BROWSER` に実行ファイルのパスを設定できます。
-
-## AI に制作を任せるとき
-
-最初に用途を選び、必要な入力・既存コマンド・次の工程への受け渡しを制作計画にします。
-`workflow` は解析や描画を勝手に実行せず、現在のファイルと検証結果から工程の完了を確認します。
+動画は `projects/demo/runs/<run_id>/video.mp4`、検証結果は同じフォルダーの `verification.json` に出ます。
+実験的な機能も同じ形で合成素材のデモを持っています（`--extra fx` が要ります）。
 
 ```sh
-# 歌詞付き MV。対象ディレクトリは mv init の前でも指定できます。
+uv sync --locked --extra analysis --extra fx --extra model3d
+uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json
+uv run mv dance demo projects/dancedemo && uv run mv dance render projects/dancedemo/spec.json
+uv run mv inspect demo projects/inspectdemo && uv run mv inspect check projects/inspectdemo/inspect.json
+uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json
+```
+
+`uv sync` は指定しなかった extra を外すので、使う extra は毎回まとめて書きます。
+
+## 実曲で MV を作る流れ
+
+```sh
+# 1. 用途を選ぶと、必要な入力・使うコマンド・次の工程への受け渡しが workflow.json に並ぶ
 uv run mv workflow plan projects/song-a --purpose lyric-mv
-# 計画に示された既存コマンドで制作した後に確認します。
+
+# 2. 計画に沿って既存コマンドで進める（抜粋。全体は docs/runbook.md）
+uv run mv init projects/song-a --audio song.wav --lyrics lyrics.txt --start 60 --duration 45
+uv run mv analyze projects/song-a                       # 拍・BPM 候補（librosa）
+uv run mv apply-edits projects/song-a timings.json      # 歌詞の行時刻（手修正）。モデルの同期結果は import-alignment
+uv run mv export-brief projects/song-a                  # 演出担当（人や AI）へ渡す資料
+uv run mv import-storyboard projects/song-a storyboard.json
+uv run mv import-assets projects/song-a assets.json
+uv run mv preview projects/song-a --studio              # Remotion Studio で確認
+uv run mv render projects/song-a --profile final
+uv run mv verify projects/song-a
+
+# 3. 必要な工程が済んでいるかを現在のファイルから確認する（未実施・未確認なら終了コード 1）
 uv run mv workflow check projects/song-a/workflow.json --out projects/song-a/workflow-report
-
-# 既存ダンス素材の音楽編集。歌詞を表示しない場合も拍の確認は必要です。
-uv run mv workflow plan projects/dance/spec.json --purpose dance-edit --no-lyrics
-uv run mv workflow check projects/dance/workflow.json --run projects/dance/dance_runs/RUN_ID --gate-config projects/dance/gate.json
 ```
 
-必要な工程が未実施・未確認なら終了コードは 1。拍・歌詞同期を意図的に省く場合は
-`mv workflow omit PLAN beats --reason "自由拍の区間として編集する"` のように理由を記録します。
-省略は検査合格に変わらず `complete_with_omissions` として残り、失敗した検査は省略理由で隠せません。
-作品の採用判断（`accepted`）は別です。
+- 時刻の 0 秒は切り出した音源の先頭です。元曲の開始秒と元ファイルのハッシュは別に残ります。
+- 歌詞時刻やサビの区間は推測して確定扱いにしません。モデルの推定は `unreviewed` のまま取り込み、確認した行だけが本番描画に使えます。
+- 拍や歌詞同期を意図して省くときは `mv workflow omit PLAN beats --reason "…"` で理由を記録します。省略は検査の合格には変わりません。
+- 合成素材で全工程を通す実行例: `uv run python examples/workflow/run.py projects/workflow-example`（[examples/workflow](examples/workflow/README.md)）。
 
-合成音源・架空歌詞から拍解析、歌詞時刻、演出、描画、完了確認まで追う実行例:
+## リポジトリの構成
+
+```
+contracts/            MV の入出力契約（analysis / storyboard / assets の JSON Schema）。変更には承認が要る
+src/mv_pipeline/      CLI `mv` と工程管理。fx / dance / gate / inspection はサブパッケージ
+renderer/             Remotion のコンポジションと描画スクリプト（TypeScript）
+tools/model3d/        自作 3D ツール `model3d`（別パッケージ。mv_pipeline と互いに import しない）
+scripts/              既存の同期器・分離器・VLM を呼ぶアダプターの例（ネットワークに出るものは明記）
+prompts/              演出担当へ渡す指示文（storyboard / 画像の様式）
+examples/             契約の例。examples/workflow/ は合成素材で全工程を通す実行例
+docs/                 手順・仕様・検証記録・ロードマップ
+tests/                pytest。fx / model3d のテストは各 extra が無いと黙って skip される
+projects/             作業用（Git には入れない。音源・画像・動画・鍵を置く場所）
+```
+
+## 範囲と限界
+
+- 実曲の MV には、音源・正しい歌詞・対象区間・画像が要ります。合成素材の描画が通ることは、実曲の同期精度を保証しません。
+- 画像は手動で搬入し、演出はファイルで受け渡します。画像生成 API、LLM への送信、Drive への公開は含みません。
+- 歌詞同期器（Qwen）と音源分離器（Demucs）の接続スクリプトは同梱していますが、モデルの実行環境は別に用意します。
+- 実験的な機能のしきい値・既定値は合成素材で決めた仮の値で、実素材での確認範囲は各ドキュメントに書いてあります。
+- 作品の素材・モデル・動画・鍵・費用はこのリポジトリに含めません。
+
+## 開発
 
 ```sh
-uv run python examples/workflow/run.py projects/workflow-example
+uv sync --locked --extra analysis --extra fx --extra model3d && pnpm install --frozen-lockfile
+uv run pytest                  # 数分。fx / model3d のテストは各 extra がある環境でだけ走る
+pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 ```
 
-入力素材は実行時に生成します。実曲の歌詞同期精度を検証する例ではありません。
-[用途別の手順と判定](docs/workflow.md) / [制作例の入出力](examples/workflow/README.md)
+- 開発の決まり（契約の不変、実測と推定の区別、依頼のない送信・公開の禁止、検証・依存のルール）は [AGENTS.md](AGENTS.md) が正です。Claude Code 向けの運用は [CLAUDE.md](CLAUDE.md)。
+- 依存は `uv.lock` / `pnpm-lock.yaml` で固定し、直接依存は exact pin。依存を変えたら lock も同じ PR で更新します。
+- CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）は Python 3.11 / 3.13 のテスト、Node の型検査とテスト、合成素材での描画（MV / fx / dance / inspect / model3d）、`pip-audit` を回します。成果物はアップロードしません。
+- main へ直接 push せず、トピックブランチから PR にします。コミットは Conventional Commits（日本語可）。
 
-## 実装済み
+## ドキュメント
 
-- 入力のSHA-256記録、区間切り出し、48kHz・ステレオPCMへの正規化
-- 3つの原契約を変更せず、スキーマ・参照・時刻・ファイル・パス・ハッシュを検証
-- librosaによる拍・BPM候補・RMS。構成ラベルは手動区間を使用
-- 歌詞同期JSONの搬入、既存分離・同期環境へのCLI接続、時刻オフセット補正
-- 元解析と別管理する手修正、歌詞変更時の未解決表示
-- 演出用brief出力、storyboard/assets搬入、参照画像変更の再確認
-- Remotion Studioと本番で共通のコンポジション、全体レイヤーの日本語歌詞
-- プロジェクトロック、工程状態、ハッシュキャッシュ、描画からの再開、実行ごとの入力保存
-- MP4全復号、解像度・fps・フレーム数・音声・元音源との比較
-- 用途別の制作計画、必須工程の完了確認、省略理由の記録（既存の入出力契約は変更しない）
-
-## 演出エンジン fx（実験的）
-
-1 枚絵 + 深度 + マスクから、カメラ・空間レイヤー・局所光で動画を作り、「現行版 / レイヤー / 局所光 / 両方」を同じ区間で比べます（決定論・API 不要）。
-`uv sync --locked --extra analysis --extra fx` の後、`uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json` で合成素材の4版と2×2グリッドを出します。
-設定は `contracts/` の外にあり、採点も自動合否も行いません。詳細と限界は [docs/fx.md](docs/fx.md)。
-
-## 生成動画の検品 inspect（実験的）
-
-生成した動画（i2v のカット・緑背景のダンス素材・3D の描画など）から、異常の候補をコマ番号と秒で見つけ、形状・動作・衣装・連続性に分けます。設定画と配色を照合し、見つけた所を直す場所（元動画のコマ・dance の spec の clip と出力の秒・生成の素性）に結び付けて、前後のコマの画像つきの修正計画（`fix_plan.json`）を書きます。
-`uv sync --locked --extra analysis --extra fx` の後、`uv run mv inspect demo projects/inspectdemo && uv run mv inspect check projects/inspectdemo/inspect.json` で、異常を 7 か所に入れた合成素材を検品します。
-数値と根拠を出すだけで、合否・採否は決めません（検出が無いことは合格ではない）。しきい値は合成素材で決めた仮の値です（実素材・3D 描画・実際の VLM で試した結果は docs/inspect.md）。VLM（画像を読めるモデル）は、依頼の束を書いてユーザーが明示した外部プログラムだけを呼び、素材を外へ送る設定は `--allow-send` が無いと動きません。自動の再生成はしません。詳細と限界は [docs/inspect.md](docs/inspect.md)。
-
-## 自作の 3D モデリングツール model3d（外部ツール・実験的）
-
-設定画や既存モデルから、部位・骨の対応（役割名）、加工レシピの実行、形状と動作の検査、書き出しをレシピと記録で進める道具。`tools/model3d/` にあり、Orpheus とは出力ファイルと制作記録だけで接続します（`mv_pipeline` とは互いに import しません）。
-`uv sync --locked --extra analysis --extra fx --extra model3d` の後、`uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json` で合成素材の一気通貫（押し出し → 結合 → 貫通の補正 → 検査 → OBJ）を通します。
-設定画（RGBA 1 枚）から初期モデルを作る工程（前処理・別プロセスの生成器・検査・記録）もあり、`recipe_generate.json` で代役の生成器を使った流れを通せます（本物の生成器は別の仮想環境。`tools/model3d/backends/README.md`）。
-`model3d dance-recipe` で、非公開の既存制作 worker を原料からの再構築 → 設定画の目元投影 → 質感適用 → Blender 描画 → 動画化の5工程に接続できます。実素材と既存動作の再現用で、新規生成メッシュの品質改善や汎用リギングとは別です。[接続手順と実行範囲](docs/model3d-dance.md)、全体の詳細と限界は [docs/model3d.md](docs/model3d.md)。
-
-## 現在の範囲
-
-実曲のMV制作には、音源・正しい歌詞・対象区間・画像が必要です。合成素材の描画確認は実曲の同期精度を保証しません。
-Qwen/Demucsの接続スクリプトは同梱していますが、このPCではモデル実行・歌唱精度を未検証です。
-画像は手動搬入、演出はファイル受け渡しです。画像API、Claudeへの送信、Drive公開、allin1、生成動画は初期依存に含めません。
-
-## 手順・仕様
-
-- [実行手順](docs/runbook.md)
-- [用途別の制作計画と完了確認](docs/workflow.md)
-- [音源・歌詞から描画までの実行例](examples/workflow/README.md)
-- [検証結果](docs/implementation-validation.md)
-- [採用ツールと利用条件](docs/dependencies.md)
-- [元の設計](docs/design.md)（設計時の仮名 `ugh-mv-pipeline` は本リポジトリでは `Orpheus`）
-- [同期アダプター](docs/adapters.md)
-- [演出エンジン fx（実験的）](docs/fx.md)
-- [ダンス合成 dance（実験的）](docs/dance.md)
-- [書き出し前の検査 gate（実験的）](docs/gate.md)
-- [生成動画の検品 inspect（実験的）](docs/inspect.md)
-- [自作の 3D モデリングツール model3d（外部ツール・実験的）](docs/model3d.md)
-- [ロードマップ](docs/roadmap.md)（実装前の計画を含む。実装済みの機能とは区別）
-
-MV の原契約は `contracts/` が正典です。dance・fx の設定と用途別の制作計画は、その外で管理します。
-`examples/` 直下は元の架空データであり、対応する音源・画像は付属しません。`examples/workflow/` は実行時に合成素材を生成します。
-`projects/` の音源、画像、動画、ログや鍵はGitへ追加しません。
-
-## 開発検証
-
-```sh
-uv sync --locked --extra analysis --extra fx --extra model3d   # fx / model3d のテストは各 extra が前提（無いと黙って skip される）
-uv run pytest
-pnpm typecheck
-pnpm test
-```
-
-Remotionには独自の利用条件があります。導入版の記録と公式リンクは [dependencies.md](docs/dependencies.md) を参照してください。
+| 文書 | 内容 |
+|---|---|
+| [runbook.md](docs/runbook.md) | MV 制作の実行手順（入力 → 歌詞時刻 → 演出 → 描画 → 検証） |
+| [workflow.md](docs/workflow.md) | 用途別の制作計画と完了確認 |
+| [adapters.md](docs/adapters.md) | 歌詞同期・音源分離アダプターの共通形式と接続例 |
+| [fx.md](docs/fx.md) / [dance.md](docs/dance.md) / [gate.md](docs/gate.md) / [inspect.md](docs/inspect.md) | 実験的な機能の使い方と限界 |
+| [model3d.md](docs/model3d.md) / [model3d-dance.md](docs/model3d-dance.md) / [model3d-review.md](docs/model3d-review.md) | 3D ツールの使い方、既存制作レシピの接続、実行確認の記録 |
+| [dependencies.md](docs/dependencies.md) | 採用ツールの版と利用条件（Remotion の利用条件を含む） |
+| [implementation-validation.md](docs/implementation-validation.md) / [validation.md](docs/validation.md) | 実装と納品物の検証記録 |
+| [design.md](docs/design.md) | 元の設計（設計時の仮名 `ugh-mv-pipeline` は本リポジトリの `Orpheus`） |
+| [roadmap.md](docs/roadmap.md) | ロードマップ（実装前の計画を含む。実装済みの機能とは区別） |
 
 ## ライセンス
 
-このリポジトリのコードと資料は [Apache License 2.0](LICENSE) です（2026-11-06）。
-
-- 依存するライブラリと外部のツール（Remotion、Blender、生成モデル、推定モデルなど）は、それぞれのライセンスに従います。
-- GPL のコードは入れません。
-- 作品の素材・モデル・動画・鍵は、このリポジトリに含まれません。
+コードと資料は [Apache License 2.0](LICENSE) です。
+依存するライブラリと外部ツール（Remotion、Blender、生成モデル、推定モデルなど）はそれぞれのライセンスに従います。GPL のコードは入れません。
