@@ -169,14 +169,49 @@ def test_hooks_may_not_overlap_for_long():
     overlapping = timeline()
     overlapping["lyrics"][0]["end"] = 3.2
     assert gate.check_hook_overlap(overlapping, TH)["status"] == "fail"
-    overlapping["lyrics"][0]["end"] = 3.05
+    overlapping["lyrics"][0]["end"] = 3.0      # フェードアウト 0.08 秒だけ重なる
     assert gate.check_hook_overlap(overlapping, TH)["status"] == "pass"
+
+
+def test_the_fade_out_counts_as_visible_overlap():
+    """L1 は end=3.0・fade_out_s=0.3、L2 は start=3.0。画面では 0.3 秒重なって見えるので、既定（time）で不合格（前は超過 0 だった）。"""
+    tl = timeline()
+    tl["lyrics"][0].update(end=3.0, fade_out_s=0.3)
+    check = gate.check_hook_overlap(tl, TH)
+    assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("0.300 秒")
+    assert check["problems"][0]["box_intersects"] is True and "交わる" in check["problems"][0]["detail"]
+
+
+def test_a_dance_timeline_fades_out_inside_the_line_so_the_same_times_pass():
+    """mv dance の timeline（lyric_fade: inside）は end の前でフェードアウトを終えるので、同じ時刻でも重なりは 0。"""
+    tl = timeline(lyric_fade="inside")
+    tl["lyrics"][0].update(end=3.0, fade_out_s=0.3)
+    assert gate.check_hook_overlap(tl, TH)["status"] == "pass"
+    tl["lyrics"][0]["end"] = 3.2
+    check = gate.check_hook_overlap(tl, TH)
+    assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("0.200 秒") and "end まで" in check["problems"][0]["detail"]
+    with pytest.raises(gate.PipelineError, match="lyric_fade"):
+        gate.check_hook_overlap(timeline(lyric_fade="outside"), TH)
+
+
+def test_time_and_box_mode_ignores_lines_in_different_columns():
+    tl = timeline()
+    tl["lyrics"][0].update(end=3.0, fade_out_s=0.3, box=[0.1, 0.2, 0.4, 0.3])
+    tl["lyrics"][1].update(box=[0.6, 0.2, 0.9, 0.3])                      # 別の列
+    by_time = gate.check_hook_overlap(tl, TH)
+    assert by_time["status"] == "fail" and by_time["problems"][0]["box_intersects"] is False
+    boxed = gate.check_hook_overlap(tl, {**TH, "overlap_mode": "time_and_box"})
+    assert boxed["status"] == "pass" and "数えなかった重なり 1" in boxed["summary"]
+    tl["lyrics"][1]["box"] = [0.3, 0.2, 0.9, 0.3]                         # 箱が交わる列に戻す
+    assert gate.check_hook_overlap(tl, {**TH, "overlap_mode": "time_and_box"})["status"] == "fail"
+    with pytest.raises(gate.PipelineError, match="overlap_mode"):
+        gate.check_hook_overlap(tl, {**TH, "overlap_mode": "box"})
 
 
 def test_overlap_uses_the_earlier_end_and_every_pair():
     hooks = timeline()
     hooks["lyrics"][0].update(start=0.0, end=5.0)
-    hooks["lyrics"][1].update(start=1.0, end=1.08)
+    hooks["lyrics"][1].update(start=1.0, end=1.08, fade_out_s=0.0)
     assert gate.check_hook_overlap(hooks, TH)["status"] == "pass"
     hooks["lyrics"].append({**hooks["lyrics"][1], "text": "LATE", "start": 2.0, "end": 4.0})
     check = gate.check_hook_overlap(hooks, TH)    # 隣り合わない 1 行目と 3 行目の重なりも見る

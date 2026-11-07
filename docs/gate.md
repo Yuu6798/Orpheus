@@ -51,7 +51,7 @@ uv run mv gate check gate.json [--out DIR]
   "tracks": "tracks.json",
   "poses": "poses.json",
   "beats": "analysis.json",
-  "thresholds": {"lead_max_s": 0.2}
+  "thresholds": {"lead_max_s": 0.2, "overlap_mode": "time"}
 }
 ```
 
@@ -63,7 +63,7 @@ uv run mv gate check gate.json [--out DIR]
 | UI 枠 | timeline だけ | 0 コマ。箱に収まらない字（`overflow`）も不合格 |
 | 揺れ | `tracks`（`{"名前": [[t, x, y], …]}`。画素） | 2 階差分の RMS 3 画素以下。3 点未満の要素は見ず、一部なら要確認、全部なら未実施 |
 | つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。時刻はコマに丸めてから前後を決める。1 コマ以内に `camera.seams` があれば、その設定を文言に添える。骨格が前後に無ければ要確認 |
-| 字の重なり | timeline だけ | `exclusive` な層ごとに同時表示 0.1 秒以下（`exclusive` の無い 0.1 の timeline は back だけ） |
+| 字の重なり | timeline だけ | `exclusive` な層ごとに同時表示 0.1 秒以下（`exclusive` の無い 0.1 の timeline は back だけ）。見えている区間は、timeline の `lyric_fade` が `"after"`（無ければこれ。手書きの timeline）なら `[start, end + fade_out_s]`（フェードアウト込み）、`"inside"`（`mv dance` の出力。end の前でフェードアウトを終える）なら `[start, end]`。問題の行には 2 行の箱が交わるか（`box_intersects`）を添える。`thresholds.overlap_mode` が `"time_and_box"` なら箱が交わるときだけ数える（既定 `"time"`） |
 | 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列）。無ければ timeline の `beats` | フラッシュと切れ目が**拍**（`beats` / `beats_s`。無ければ小節頭で代用）から 1 コマ以内。小節頭に合わせたいものは `flash_info` / `seam_info` の `align: "downbeat"`（dance の spec では `flashes[].align` / `clips[].align`。無ければ `"beat"`）で小節頭（無ければ拍で代用）と照合する。文面と集計は照合先ごと（「拍から」「小節頭から」、「N 件を拍と照合、M 件を小節頭と照合」）。`beat_exempt` の切れ目・フラッシュは「対象外（意図）」として数えるが、不合格にしない。blend の切れ目は blend の開始時刻を見る |
 | 書き出し | `video`・`master`（任意で `expected_sha256`） | 全部のコマを復号できる、コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
 
@@ -79,6 +79,7 @@ uv run mv gate check gate.json [--out DIR]
 
 ## 既定の合否が変わった変更
 
+- 2026-11-08（字の重なり）: `lyric_fade` の無い timeline（手書き）は、見えている区間をフェードアウト込み `[start, end + fade_out_s]` で数える。前の行が `end` で消えたことにして「超過 0」だった、フェードアウト中に次の行が出る timeline は、重なりが 0.1 秒を超えれば不合格になる（例: `end=3.0`・`fade_out_s=0.3` の次に `start=3.0` の行 → 0.300 秒）。`mv dance` は行を `end` の前でフェードアウトし終えるので、この変更から timeline に `lyric_fade: "inside"` を書き、重なりは `[start, end]` で数える（**この変更より前に描いた dance の run は `lyric_fade` が無く after として読むので、フェードの分だけ重なりが増えて不合格になりうる。描き直すか timeline に `"lyric_fade": "inside"` を足す**）。別の列に置いた 2 行を重なりと数えたくないときは `thresholds.overlap_mode: "time_and_box"`。Remotion で描いたテロップのデモで見つかった。
 - 2026-11-08（GATE-3）: 拍の検査の照合先を「小節頭があれば小節頭」から「既定は拍（`align: "downbeat"` のものだけ小節頭）」に変えた。小節頭の配列を持つ timeline で、拍に置いたフラッシュ・切れ目が不合格だったものは合格になる。小節頭に合わせたい出来事は `align: "downbeat"` を書く（書かないと拍と照合するので、小節頭からのずれは見つからない）。Remotion で描いたテロップのデモを `mv gate check` に掛けたとき、拍のフラッシュ 5 件が「小節頭と照合、ずれ 4」で止まったことから。
 
 ## 限界

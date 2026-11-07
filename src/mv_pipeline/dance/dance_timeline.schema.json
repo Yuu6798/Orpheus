@@ -19,6 +19,7 @@
       }
     },
     "lyrics": {"type": "array", "items": {"$ref": "#/$defs/lyric"}},
+    "lyric_fade": {"enum": ["inside", "after"], "description": "fade_out_s が行の end の前で終わる（inside。mv dance の描画）か、end の後に続く（after。無ければこちら）か"},
     "clips": {"type": "array", "items": {"$ref": "#/$defs/clip"}},
     "seams": {"type": "array", "items": {"type": "number"}},
     "flashes": {"type": "array", "items": {"type": "number"}},

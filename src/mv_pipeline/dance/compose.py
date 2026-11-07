@@ -483,6 +483,7 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "schema_version": "dance-timeline/0.1",
         "size": [width, height], "fps": ctx.fps, "duration_s": ctx.duration,
         "interval": {"start": start, "duration": length, "frames": count},
+        "lyric_fade": "inside",   # 行は end の直前まで見え、fade_out_s（exit を含む）は end の前で終わる（lyrics.Line.fade）
         "lyrics": [{"layer": line.layer, "text": line.text, "start": line.start, "end": line.end,
                     "fade_in_s": line.style["fade_in_s"], "fade_out_s": line.style["fade_out_s"],
                     "box_px": line.box_px, "box": norm(line.box_px), "overflow": line.overflow} for line in ctx.lines],

@@ -47,6 +47,7 @@ THRESHOLDS = {
     "jitter_px": 3.0,         # 2 階差分の RMS（画素）
     "seam_pose": 0.05,        # 切れ目の前後の関節の平均移動量（画面の割合）
     "hook_overlap_s": 0.1,
+    "overlap_mode": "time",   # 字の重なり: time = 見えている時間だけで数える / time_and_box = 箱も交わるときだけ数える
     "beat_frames": 1.0,
     "ssim": 0.98,
     "confirmed_overrides_measured": True,
@@ -301,22 +302,56 @@ def check_seams(timeline, poses, th):
     return result(name, "warn" if problems else "pass", f"切れ目 {len(seams)}、姿勢の差が大きいもの {len(problems)}", problems)
 
 
+OVERLAP_MODES = ("time", "time_and_box")
+LYRIC_FADES = ("inside", "after")   # fade_out_s が end の前にあるか（dance の描画）、end の後に続くか（手書きの timeline の既定）
+
+
+def _lyric_fade(timeline):
+    fade = timeline.get("lyric_fade", "after")
+    if fade not in LYRIC_FADES:
+        raise PipelineError(f"timeline の lyric_fade は {' か '.join(LYRIC_FADES)} にしてください: {fade!r}")
+    return fade
+
+
+def _visible(line, fade):
+    """字が画面に見えている時間。lyric_fade が after なら [start, end + fade_out_s]（フェードアウトの間も見えている）、
+    inside なら [start, end]（dance は end の前でフェードアウトを終える）。"""
+    return line["start"], line["end"] + (line.get("fade_out_s", 0) if fade == "after" else 0)
+
+
 def check_hook_overlap(timeline, th):
-    """同時に 1 行だけの層（exclusive）ごとに、行の重なりを見る。exclusive の無い timeline は back だけ。"""
+    """同時に 1 行だけの層（exclusive）ごとに、行の重なりを見る。exclusive の無い timeline は back だけ。
+
+    見えている区間は _visible（timeline の lyric_fade。無ければ after = フェードアウト込み）。問題の行には 2 行の箱が交わるか
+    （box_intersects）を添える。thresholds.overlap_mode が time_and_box なら、箱が交わるときだけ数える（別の列に置いた 2 行は重なりではない）。"""
     name = "字の重なり"
+    mode = th.get("overlap_mode", "time")
+    if mode not in OVERLAP_MODES:
+        raise PipelineError(f"thresholds.overlap_mode は {' か '.join(OVERLAP_MODES)} にしてください: {mode!r}")
+    fade = _lyric_fade(timeline)
     grouped = {}
     for line in timeline["lyrics"]:
         if line.get("exclusive", line["layer"] == "back"):
             grouped.setdefault(line["layer"], []).append(line)
-    problems, changes = [], 0
+    problems, changes, apart = [], 0, 0
     for lines in grouped.values():
         lines = sorted(lines, key=lambda ln: ln["start"])
         changes += max(0, len(lines) - 1)
         for left, right in itertools.combinations(lines, 2):
-            shared = min(left["end"], right["end"]) - right["start"]
-            if shared > th["hook_overlap_s"] + EPS:
-                problems.append({"t": right["start"], "text": f"{left['text']} / {right['text']}", "detail": f"{shared:.3f} 秒同時に見えます"})
-    return result(name, "fail" if problems else "pass", f"入れ替わり {changes} 回、超過 {len(problems)}", problems)
+            shared = min(_visible(left, fade)[1], _visible(right, fade)[1]) - right["start"]
+            if shared <= th["hook_overlap_s"] + EPS:
+                continue
+            crossing = _intersects(left["box"], right["box"])
+            if mode == "time_and_box" and not crossing:
+                apart += 1
+                continue
+            note = "フェードアウト込み" if fade == "after" else "end まで"
+            problems.append({"t": right["start"], "text": f"{left['text']} / {right['text']}", "box_intersects": crossing,
+                             "detail": f"{shared:.3f} 秒同時に見えます（{note}。箱は{'交わる' if crossing else '交わらない'}）"})
+    summary = f"入れ替わり {changes} 回、超過 {len(problems)}"
+    if apart:
+        summary += f"（箱が交わらず数えなかった重なり {apart}）"
+    return result(name, "fail" if problems else "pass", summary, problems)
 
 
 ALIGN_NAMES = {"beat": "拍", "downbeat": "小節頭"}
