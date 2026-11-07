@@ -5,7 +5,7 @@ import wave
 from pathlib import Path
 
 from . import pipeline, validate
-from .io import PipelineError, atomic_json, read_json, safe_path
+from .io import PipelineError, atomic_json, read_json
 from .runner import project_lock
 
 
@@ -203,23 +203,16 @@ def _workflow_parser(commands):
     restore.add_argument("stage", choices=["beats", "lyrics"])
 
 
-def workflow_command(args):
-    from . import workflow
+# ---- 実行 ------------------------------------------------------------------
+#
+# どのコマンドも「引数 → 結果（dict / list / str / Path / None）」の関数で、_run が stdout への出力と
+# 例外の 1 行化を引き受ける。検査の不合格など「結果は出すが終了コードは 1」は args.failed で伝える。
 
-    if args.workflow_command == "plan":
-        return workflow.create_plan(args.target, args.purpose, args.out, args.lyrics, args.inspection)
-    if args.workflow_command == "omit":
-        return workflow.omit(args.plan, args.stage, args.reason)
-    if args.workflow_command == "restore":
-        return workflow.restore(args.plan, args.stage)
-    report = workflow.check(args.plan, args.run, args.gate_config, args.out, args.inspect_report)
-    args.failed = 0 if report["overall"] in {"complete", "complete_with_omissions"} else 1
-    return report
+CLI_ERRORS = (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error)
 
 
-def _run_workflow(args):
-    code = _run_json(workflow_command, args)
-    return code if code else getattr(args, "failed", 0)
+def _progress(message):
+    print(message, file=sys.stderr, flush=True)
 
 
 def _require_fx():
@@ -231,9 +224,27 @@ def _require_fx():
         raise PipelineError("fx には opencv-python-headless が必要です。`uv sync --locked --extra fx` を実行してください") from error
 
 
-def _progress(message):
-    print(message, file=sys.stderr, flush=True)
+def _print_result(result):
+    if isinstance(result, str):
+        print(result)
+    elif isinstance(result, (dict, list)):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(str(result or "OK"))
 
+
+def _run(function, args):
+    """function(args) の結果を stdout に出して終了コードを返す。例外は stderr に 1 行で出して 1。"""
+    try:
+        result = function(args)
+    except CLI_ERRORS as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    _print_result(result)
+    return getattr(args, "failed", 0)
+
+
+# ---- 実験的なサブコマンド群（project_lock を通らない） -------------------------
 
 def fx_command(args):
     """fx サブコマンドを実行して結果の辞書を返す。fx の import はここで遅延させる（既存コマンドは cv2 なしで動く）。"""
@@ -280,7 +291,7 @@ def dance_command(args):
 
 
 def gate_command(args):
-    """gate サブコマンドを実行して結果の辞書を返す。"""
+    """gate サブコマンドを実行して結果の辞書を返す。check の不合格は args.failed=1。"""
     if args.gate_command == "lines":
         from .gate import lines
         return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
@@ -303,104 +314,77 @@ def inspect_command(args):
     return run.summarize(result, out)
 
 
-def _run_gate(args):
-    code = _run_json(gate_command, args)
-    return code if code else getattr(args, "failed", 0)
+def workflow_command(args):
+    """workflow サブコマンド。check で必須工程が未実施・未確認なら args.failed=1。"""
+    from . import workflow
+
+    if args.workflow_command == "plan":
+        return workflow.create_plan(args.target, args.purpose, args.out, args.lyrics, args.inspection)
+    if args.workflow_command == "omit":
+        return workflow.omit(args.plan, args.stage, args.reason)
+    if args.workflow_command == "restore":
+        return workflow.restore(args.plan, args.stage)
+    report = workflow.check(args.plan, args.run, args.gate_config, args.out, args.inspect_report)
+    args.failed = 0 if report["overall"] in {"complete", "complete_with_omissions"} else 1
+    return report
 
 
-def _run_json(function, args):
-    try:
-        result = function(args)
-        print(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
-    except (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error) as error:
-        print(f"Error: {error}", file=sys.stderr)
-        return 1
+GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
+                  "inspect": inspect_command, "workflow": workflow_command}
+
+
+# ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------
+
+def _demo(root, args):
+    from .demo import create
+    return create(root, args.width, args.height)
+
+
+def _validate(root, args):
+    *_, warnings = validate.bundle(root, args.profile)
+    return {"valid": True, "warnings": warnings}
+
+
+def _confirm_assets(root, args):
+    result = {"changed": [], "review_required": []}
+    atomic_json(root / "work/asset-review.json", result)
+    return result
+
+
+PROJECT_COMMANDS = {
+    "init": lambda root, a: pipeline.initialize(root, a.audio, a.lyrics, a.start, a.duration, a.fps, a.width, a.height),
+    "demo": _demo,
+    "analyze": lambda root, a: pipeline.analyze(root),
+    "export-brief": lambda root, a: pipeline.export_brief(root),
+    "import-storyboard": lambda root, a: pipeline.import_storyboard(root, a.file),
+    "import-assets": lambda root, a: pipeline.import_assets(root, a.file),
+    "import-alignment": lambda root, a: pipeline.import_alignment(root, a.file),
+    "apply-edits": lambda root, a: pipeline.import_edits(root, a.file),
+    "update-lyrics": lambda root, a: pipeline.update_lyrics(root, a.file),
+    "render": lambda root, a: pipeline.render(root, a.profile),
+    "preview": lambda root, a: pipeline.render(root, a.profile, a.studio),
+    "validate": _validate,
+    "verify": lambda root, a: pipeline.verify(root),
+    "resume": lambda root, a: pipeline.resume(root),
+    "status": lambda root, a: read_json(root / "job.json"),
+    "confirm-assets": _confirm_assets,
+    "run-adapter": lambda root, a: pipeline.run_adapter(root, a.config, a.kind),
+}
+
+
+def project_command(args):
+    """`mv <command> PROJECT` を project_lock の中で実行し、結果を返す。"""
+    function = PROJECT_COMMANDS.get(args.command)
+    if function is None:
+        raise PipelineError(f"Unsupported command: {args.command}")
+    root = args.project.resolve()
+    with project_lock(root):
+        return function(root, args)
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    if args.command == "fx":
-        return _run_json(fx_command, args)
-    if args.command == "dance":
-        return _run_json(dance_command, args)
-    if args.command == "gate":
-        return _run_gate(args)
-    if args.command == "inspect":
-        return _run_json(inspect_command, args)
-    if args.command == "workflow":
-        return _run_workflow(args)
-    root = args.project.resolve()
-    try:
-        with project_lock(root):
-            command = args.command
-            if command == "init":
-                result = pipeline.initialize(root, args.audio, args.lyrics, args.start, args.duration, args.fps, args.width, args.height)
-            elif command == "demo":
-                from .demo import create
-                result = create(root, args.width, args.height)
-            elif command == "analyze":
-                result = pipeline.analyze(root)
-            elif command == "export-brief":
-                result = pipeline.export_brief(root)
-            elif command.startswith("import-") or command in {"apply-edits", "update-lyrics"}:
-                function = {"import-storyboard": pipeline.import_storyboard, "import-assets": pipeline.import_assets,
-                            "import-alignment": pipeline.import_alignment, "apply-edits": pipeline.import_edits,
-                            "update-lyrics": pipeline.update_lyrics}[command]
-                result = function(root, args.file)
-            elif command == "render" or command == "preview":
-                result = pipeline.render(root, args.profile, getattr(args, "studio", False))
-            elif command == "validate":
-                *_, warnings = validate.bundle(root, args.profile)
-                result = {"valid": True, "warnings": warnings}
-            elif command == "verify":
-                result = pipeline.verify(root)
-            elif command == "resume":
-                result = pipeline.resume(root)
-            elif command == "status":
-                result = read_json(root / "job.json")
-            elif command == "confirm-assets":
-                result = {"changed": [], "review_required": []}
-                atomic_json(root / "work/asset-review.json", result)
-            elif command == "run-adapter":
-                from .adapters.external import invoke
-                from .io import sha256
-                from .runner import Runner, cache_key
-                config = read_json(args.config)
-                a = read_json(root / "analysis.json")
-                validate.analysis(a, root)
-                adapter_audio = safe_path(root, config.get("input_audio", a["audio"]["path"]))
-                validate.require(adapter_audio.is_file(), "Adapter audio is missing")
-                if config.get("input_audio"):
-                    validate.require(sha256(adapter_audio) == config.get("input_sha256"), "Adapter input audio hash mismatch")
-                output = root / "work" / ("alignment.adapter.json" if args.kind == "alignment" else "vocals.wav")
-                def action():
-                    temporary = output.with_name("pending-" + output.name)
-                    # A stale temporary file must never pass as a new adapter result.
-                    temporary.unlink(missing_ok=True)
-                    invoke(config, audio=adapter_audio, lyrics=root / "inputs/lyrics.txt", output=temporary,
-                           log=root / "work/adapter.log", analysis=root / "work/analysis.raw.json")
-                    if args.kind == "alignment":
-                        from .normalize import alignment
-                        validate.analysis(alignment(read_json(root / "work/analysis.raw.json"), read_json(temporary)), root)
-                    else:
-                        from .media import probe
-                        validate.require(any(s["codec_type"] == "audio" for s in probe(temporary)["streams"]), "Separator produced no audio")
-                        validate.require(isinstance(config.get("offset_s"), (int, float)), "Separator must declare offset_s")
-                    temporary.replace(output)
-                    atomic_json(root / "work" / f"{args.kind}.provenance.json", {"audio_sha256": a["audio"]["sha256"], "config": config})
-                    return [output.relative_to(root).as_posix(), f"work/{args.kind}.provenance.json"]
-                Runner(root).execute(args.kind, cache_key(args.kind, [a["audio"]["sha256"], sha256(adapter_audio), sha256(root / "inputs/lyrics.txt")], config), action)
-                if args.kind == "alignment":
-                    pipeline.import_alignment(root, output)
-                result = output
-            else:
-                raise PipelineError(f"Unsupported command: {command}")
-        print(json.dumps(result, ensure_ascii=False, indent=2) if isinstance(result, (dict, list)) else str(result or "OK"))
-        return 0
-    except (PipelineError, OSError, ValueError, KeyError, ImportError, wave.Error) as error:
-        print(f"Error: {error}", file=sys.stderr)
-        return 1
+    return _run(GROUP_COMMANDS.get(args.command, project_command), args)
 
 
 if __name__ == "__main__":
