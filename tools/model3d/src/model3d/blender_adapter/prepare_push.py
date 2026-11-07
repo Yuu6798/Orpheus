@@ -14,6 +14,8 @@ settings.json（render.prepare_push が書く。長さは m で、シーンの s
   いちばん大きい拡大で割る）、穴（付け根や口）をふさぎ、面の向きをそろえる。
   体積が負（内向き）なら裏返して外向きにする。筒のままだと、穴のふちの面の向きで中か外かを読み違えるため。
 - 面を decimate の割合に減らし、すべての面をなめらかにする（ふさいだ口の平らな面のふちで、向きが混ざるように）。
+  写しに付いてきた形状キーは先に外す（キーのあるメッシュは面を減らせない。元のメッシュは変えない。写しは骨でだけ動く）。
+- 体積は、物体の中で測った値に、変換の行列式の大きさと scale_length³ を掛けて、世界の L で報告する。
 - 元の Armature モディファイアと同じアーマチュア・設定（頂点の組の絞りと反転も）で動かす（親と変換は元のまま）。カメラ・影・反射などには写さない
   （透明な材質も付ける）。model3d_collider の印を付け、look.toon の既定のメッシュ選びから外す（hide_render は付けない）。
 押し出す頂点の組（試作の帯の印と同じ手順）:
@@ -117,6 +119,11 @@ def local_distance(world, distance):
     return distance / scale if scale > 0 else distance
 
 
+def world_litres(local_volume, world, unit):
+    """物体の中で測った体積を、世界の体積（L）に直す: |体積| × |det(world の 3×3)| × scale_length³ × 1000。"""
+    return abs(local_volume) * abs(float(np.linalg.det(np.asarray(world, float)[:3, :3]))) * unit ** 3 * 1000
+
+
 ARMATURE_KEYS = ("use_deform_preserve_volume", "use_vertex_groups", "use_bone_envelopes", "vertex_group", "invert_vertex_group")
 
 
@@ -144,7 +151,7 @@ def hidden_material(bpy):
     return mat
 
 
-def make_collider(bpy, bmesh, spec, material):
+def make_collider(bpy, bmesh, spec, material, unit=1.0):
     """当たりの写しを 1 つ作る。戻り: 報告の中身。"""
     src = bpy.data.objects.get(spec["from"])
     if src is None or src.type != "MESH":
@@ -157,6 +164,10 @@ def make_collider(bpy, bmesh, spec, material):
     px.name = spec["name"]
     px.modifiers.clear()
     bpy.context.scene.collection.objects.link(px)
+    dropped = 0
+    if px.data.shape_keys:                               # 写しに付いてきた形状キーは外す（面を減らせないため。元のメッシュは変えない）
+        dropped = len(px.data.shape_keys.key_blocks)
+        px.shape_key_clear()
     bm = bmesh.new()
     bm.from_mesh(px.data)
     weld = local_distance(np.array(src.matrix_world), spec["weld"])   # bmesh は物体の中の座標なので、物体の拡大で直す
@@ -189,7 +200,8 @@ def make_collider(bpy, bmesh, spec, material):
         setattr(px, key, False)
     px[COLLIDER_MARK] = True                             # look.toon などの既定のメッシュ選びから外す印（hide_render は付けない）
     return {"name": px.name, "from": src.name, "armature": source_armature.object.name if source_armature else None,
-            "filled_edges": len(holes), "open_edges": open_left, "volume_l": round(abs(volume) * 1000, 3),
+            "filled_edges": len(holes), "open_edges": open_left,
+            "volume_l": round(world_litres(volume, np.array(src.matrix_world), unit), 3), "shape_keys_dropped": dropped,
             "flipped": bool(volume < 0), "vertices": len(px.data.vertices), "faces": len(px.data.polygons), "weld_local": weld}
 
 
@@ -269,7 +281,7 @@ def main(argv=None):
     colliders, groups = [], []
     material = hidden_material(bpy) if settings.get("colliders") else None
     for spec in settings.get("colliders", []):
-        colliders.append(make_collider(bpy, bmesh, {**spec, "weld": spec["weld"] / unit}, material))
+        colliders.append(make_collider(bpy, bmesh, {**spec, "weld": spec["weld"] / unit}, material, unit))
     for spec in settings.get("groups", []):
         groups.append(make_groups(bpy, {**spec, "top": spec["top"] / unit, "fade": spec["fade"] / unit,
                                         "weld": spec["weld"] / unit}, fallback))

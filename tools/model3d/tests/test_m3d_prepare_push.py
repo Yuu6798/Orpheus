@@ -211,3 +211,10 @@ def test_the_weld_distance_is_turned_into_the_objects_own_units():
 def test_the_collider_mark_is_the_one_look_toon_skips():
     from model3d.blender_adapter import toon_look
     assert pp.COLLIDER_MARK == toon_look.COLLIDER_MARK == "model3d_collider"
+
+
+def test_the_volume_is_reported_in_world_litres():
+    assert pp.world_litres(1.0, np.eye(4), 1.0) == 1000.0                              # 1 m³ = 1000 L
+    assert pp.world_litres(1.0, np.diag([2.0, 2.0, 2.0, 1.0]), 1.0) == pytest.approx(8000.0)   # 2 倍の物体は 8 倍
+    assert pp.world_litres(-1.0, np.diag([-1.0, 1.0, 1.0, 1.0]), 1.0) == 1000.0       # 鏡に映した物体・内向きの面でも正
+    assert pp.world_litres(1.0, np.eye(4), 0.01) == pytest.approx(0.001)              # 1 単位 = 1 cm のシーン
