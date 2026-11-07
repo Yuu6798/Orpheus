@@ -457,8 +457,10 @@ def events(signals, clip, fps):
     for members in groups.values():
         primary, categories = classify(members)
         lead = max((s for s in members if s["category"] == primary), key=lambda s: (s["kind"] != "step", _strength(s)))
-        # 区間は、組になった信号と区間の信号から取る（変わり目だけの信号は、戻りのコマを区間に足してしまうことがある）
-        spans = [s["frames"] for s in members if s["kind"] != "step"] or [s["frames"] for s in members]
+        # 区間は全部の信号から取る。ただし、組になった信号の戻りのコマにある変わり目だけの信号（戻りの動きを別に拾ったもの）は除く。
+        # それ以外の変わり目（近くの別の不具合）は区間に入れる（直す場所から漏らさない）
+        returns = {s["frames"][1] for s in members if s["kind"] == "pair"}
+        spans = [s["frames"] for s in members if not (s["kind"] == "step" and s["frames"][0] in returns)]
         a, b = min(f[0] for f in spans), max(f[1] for f in spans)
         evidence = "estimated" if all(s["check"] == "vlm" for s in members) else "measured"
         out.append({"clip": clip, "frames": [a, b], "peak": lead["peak"],

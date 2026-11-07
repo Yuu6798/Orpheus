@@ -185,6 +185,14 @@ def test_signals_of_one_moment_merge_and_the_priority_picks_the_category():
     assert events[0]["categories"] == ["continuity", "shape", "motion"]
 
 
+def test_an_independent_step_next_to_a_short_event_stays_inside_what_to_fix():
+    """塊の分離 [30, 33) と、すぐ後の背景の切り替わり（変わり目だけ。コマ 34）がまとまっても、34 を区間から落とさない。"""
+    events = detect.events([_signal("fragment", "shape", (30, 33), kind="segment"), _signal("jump", "continuity", (34, 35), kind="step")], "c", 24)
+    assert len(events) == 1 and events[0]["frames"] == [30, 35] and events[0]["peak"] == 34 and events[0]["category"] == "continuity"
+    back = detect.events([_signal("teleport", "motion", (84, 86)), _signal("motion_spike", "motion", (86, 87), kind="step")], "c", 24)
+    assert [e["frames"] for e in back] == [[84, 86]]          # 組の戻りのコマの変わり目は区間に足さない
+
+
 def test_a_clip_wide_duplicate_cadence_does_not_swallow_a_glitch_inside_it():
     events = detect.events([_signal("duplicate_cadence", "continuity", (3, 95), kind="segment", value=18, threshold=3),
                             _signal("glitch", "continuity", (30, 31))], "c", 24)
