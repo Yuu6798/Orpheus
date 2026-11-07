@@ -233,11 +233,12 @@ class Session:
     with を抜けるまで <out> のロックを持つ。本体が例外で抜けたら、running のままの run を failed にして例外をそのまま通す。
     技術検査に落ちた run は本体が run.finish(False, message) で閉じてから PipelineError を投げる。
     cache=False は index.json を読まず書かず、再利用もしない（legacy のようにキャッシュしない run）。
+    accept_reuse(run_dir, manifest) -> bool を渡すと、再利用の前に出力がそろっているかなどを呼び出し側が確かめられる（False なら描き直す）。
     """
 
-    def __init__(self, out, key, kind, log_name, *, say, tag, force=False, cache=True):
+    def __init__(self, out, key, kind, log_name, *, say, tag, force=False, cache=True, accept_reuse=None):
         self.out, self.key, self.kind, self.log_name = Path(out), key, kind, log_name
-        self.say, self.tag, self.force, self.cache = say, tag, force, cache
+        self.say, self.tag, self.force, self.cache, self.accept_reuse = say, tag, force, cache, accept_reuse
         self.index = self.run = self.reused = self.reused_dir = None
         self._stack = ExitStack()
 
@@ -250,6 +251,9 @@ class Session:
             if self.cache:
                 self.index = load_index(self.out)
                 manifest = None if self.force else reusable(self.out, self.index, self.key)
+            if manifest and self.accept_reuse is not None and not self.accept_reuse(self.out / manifest["run_id"], manifest):
+                self.say(f"{self.tag} 同じ入力の成功 run {manifest['run_id']} がありますが、出力がそろっていないので描き直します")
+                manifest = None
             if manifest:
                 self.say(f"{self.tag} 同じ入力の成功 run を再利用します: {manifest['run_id']}（作り直すには --force）")
                 self.reused, self.reused_dir = manifest, self.out / manifest["run_id"]

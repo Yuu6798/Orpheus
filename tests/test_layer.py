@@ -38,14 +38,18 @@ def test_render_is_recorded_with_hashes_versions_and_timing(tmp_path, monkeypatc
     assert rec["inputs"]["entry"]["path"] == "renderer/src/layer-index.tsx" and rec["inputs"]["props"]["sha256"] == sha256(tmp_path / "props.json")
     assert rec["inputs"]["public"]["files"] == {"font.ttf": sha256(public / "font.ttf")} and rec["inputs"]["remotion_version"] == "4.0.532"
     assert rec["inputs"]["renderer"]["sha256"] == sha256(STANDIN) and rec["inputs"]["composition"] == "LyricLayer"
+    assert "renderer/src/LyricLayer.tsx" in rec["inputs"]["entry"]["sources"] and "concurrency" not in rec["inputs"]
     assert rec["frames_manifest"] == {"path": "frames.json", "count": 6, "sha256": sha256(run_dir / "frames.json")}
     assert rec["browser"] == {"status": "no-browser", "path": None, "version": None} and rec["render_seconds"] > 0
     assert manifest["warnings"] == ["描画スクリプトの Remotion の版 standin が node_modules の 4.0.532 と違います"]
-    assert "standin render log line" not in (run_dir / "render.log").read_text(encoding="utf-8")     # 標準出力は記録に、標準エラーは log に
     assert str(tmp_path) not in json.dumps(rec["inputs"])                                               # 個人のパスを書かない
     assert read_json(tmp_path / "runs" / "index.json")["runs"][manifest["key"]]["run_id"] == result["run_id"]
     again = _run(tmp_path, public=public)
     assert again["reused"] is True and again["run_id"] == result["run_id"]
+    (run_dir / "frames" / "element-03.png").write_bytes(b"broken")          # 連番が壊れていれば再利用しない
+    fresh = _run(tmp_path, public=public)
+    assert fresh["reused"] is False and fresh["run_id"] != result["run_id"]
+    assert "standin render log line" in (run_dir / "render.log").read_text(encoding="utf-8")      # 標準出力も log に残す
 
 
 def test_twice_records_determinism_and_always_renders(tmp_path, monkeypatch):
@@ -63,10 +67,27 @@ def test_twice_records_determinism_and_always_renders(tmp_path, monkeypatch):
     assert rec["same"] is False and rec["differing_frames"] == list(range(6))
 
 
+def test_a_failing_second_render_is_recorded_not_fatal(tmp_path, monkeypatch):
+    monkeypatch.setattr(layer, "remotion_version", lambda: "4.0.532")
+    _props(tmp_path / "props.json")
+    flaky = tmp_path / "flaky.py"
+    flaky.write_text(f"import sys, pathlib, runpy\nmarker = pathlib.Path({str(tmp_path / 'once')!r})\n"
+                     "if marker.exists():\n    sys.exit(7)\nmarker.write_text('x')\n"
+                     f"sys.argv[0] = {str(STANDIN)!r}\nrunpy.run_path({str(STANDIN)!r}, run_name='__main__')\n", encoding="utf-8")
+    result = layer.run_render(tmp_path / "props.json", out=tmp_path / "runs", renderer=flaky, twice=True)
+    assert result["status"] == "succeeded" and result["deterministic"] is None and result["frames"] == 6
+    manifest = read_json(Path(result["run_dir"]) / "manifest.json")
+    assert manifest["layer"]["deterministic"]["same"] is None and "終了コード 7" in manifest["layer"]["deterministic"]["error"]
+    assert any("決定論" in w for w in manifest["warnings"])
+
+
 def test_bad_inputs_and_a_failing_renderer(tmp_path, monkeypatch):
     monkeypatch.setattr(layer, "remotion_version", lambda: "4.0.532")
     with pytest.raises(PipelineError, match="--props"):
         layer.run_render(tmp_path / "missing.json", renderer=STANDIN)
+    atomic_json(tmp_path / "wrong.json", {"foo": 1})
+    with pytest.raises(PipelineError, match="remotion-props/0.1"):
+        layer.run_render(tmp_path / "wrong.json", out=tmp_path / "runs", renderer=STANDIN)
     _props(tmp_path / "props.json")
     with pytest.raises(PipelineError, match="--public"):
         layer.run_render(tmp_path / "props.json", public=tmp_path / "nope", out=tmp_path / "runs", renderer=STANDIN)

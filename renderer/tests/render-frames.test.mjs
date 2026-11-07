@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
-import {renderLayer} from '../render-frames.mjs';
+import {parseArgs, renderLayer} from '../render-frames.mjs';
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'orpheus-layer-test-'));
@@ -56,4 +56,12 @@ test('a failure is reported with its phase before the bundle is removed', async 
   assert.ok(line.startsWith('[orpheus-render-error] '));
   assert.equal(JSON.parse(line.slice('[orpheus-render-error] '.length)).phase, 'renderFrames');
   await assert.rejects(fs.access(f.bundleDir()), {code: 'ENOENT'});
+});
+
+test('arguments are checked before any bundling', () => {
+  assert.deepEqual(parseArgs(['--entry', 'e.tsx', '--composition', 'X', '--props', 'p.json', '--out', 'o', '--concurrency', '3']),
+    {entry: 'e.tsx', composition: 'X', props: 'p.json', out: 'o', concurrency: 3});
+  assert.throws(() => parseArgs(['--entryy', 'e.tsx']), /unknown flag/);
+  assert.throws(() => parseArgs(['--entry', 'e.tsx', '--composition', 'X', '--props', 'p.json', '--out', 'o', '--concurrency', 'two']), /positive integer/);
+  assert.throws(() => parseArgs(['--entry', 'e.tsx']), /--composition is required/);
 });

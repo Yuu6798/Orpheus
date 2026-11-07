@@ -10,8 +10,9 @@ Remotion の連番の描画（renderer/render-frames.mjs）を工程として包
                                 連番の manifest の sha256、描画時間、--twice のときは 2 回目の連番との一致（deterministic）
     render.log                  node の標準エラー（[orpheus-render-error] の行を含む）
 
-- key（台帳の鍵）はエントリ・props・public の sha256、コンポジション名、Remotion の版、描画スクリプトの sha256 から作る。
-  同じ入力の成功 run は再利用する（--force で描き直す。--twice は常に描く）。
+- key（台帳の鍵）はエントリと import するコード（renderer/src・renderer/presets）・props・public の sha256、コンポジション名、Remotion の版、
+  描画スクリプトの sha256、ORPHEUS_BROWSER から作る。同じ入力の成功 run は、連番が frames.json のとおり残っていれば再利用する
+  （--force で描き直す。--twice は常に描く）。
 - --twice は同じ入力で 2 回描き、コマごとの sha256 が全部一致するかを manifest に残す（決定論の確認。2 回目の連番は消す）。
 - --renderer は描画スクリプト（node の .mjs か任意の実行ファイル）の差し替え。同じ引数（--entry --composition --props --out [--public]）を
   受け取り、標準出力の最後の行に JSON を出す決まり。テストは Remotion を呼ばない代役で確かめる。
@@ -20,6 +21,7 @@ Remotion の連番の描画（renderer/render-frames.mjs）を工程として包
 Remotion の利用条件（個人と小さな組織は無料。確認日つき）は docs/dependencies.md。
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -34,6 +36,8 @@ from .io import REPO, PipelineError, atomic_json, read_json, sha256
 DEFAULT_ENTRY = REPO / "renderer/src/layer-index.tsx"
 DEFAULT_COMPOSITION = "LyricLayer"
 DEFAULT_RENDERER = REPO / "renderer/render-frames.mjs"
+RENDERER_SOURCES = (REPO / "renderer/src", REPO / "renderer/presets")   # 既定のエントリが import するコード。key に入れる
+PROPS_SCHEMA = "remotion-props/0.1"
 FRAME_PATTERN = re.compile(r"^element-(\d+)\.png$")
 
 
@@ -45,6 +49,40 @@ def _files_record(folder):
     if not folder.is_dir():
         raise PipelineError(f"--public のフォルダーが見つかりません: {folder}")
     return {p.relative_to(folder).as_posix(): sha256(p) for p in sorted(folder.rglob("*")) if p.is_file()}
+
+
+def _source_tree(entry):
+    """エントリが import しうるコードの {相対パス: sha256}。リポジトリの renderer/ の中のエントリなら renderer/src と renderer/presets の
+    .ts / .tsx / .mjs を全部（LyricLayer.tsx などを変えても key が変わる）。外のエントリなら、同じフォルダーの .ts / .tsx。"""
+    entry = Path(entry)
+    folders = RENDERER_SOURCES if entry.is_relative_to(REPO / "renderer") else (entry.parent,)
+    files = sorted(p for folder in folders if folder.is_dir() for p in folder.rglob("*") if p.is_file() and p.suffix in (".ts", ".tsx", ".mjs"))
+    base = REPO if entry.is_relative_to(REPO) else entry.parent
+    return {p.relative_to(base).as_posix(): sha256(p) for p in files}
+
+
+def _check_props(props_path, entry):
+    data = read_json(props_path)
+    if not isinstance(data, dict):
+        raise PipelineError("--props は JSON オブジェクトにしてください")
+    if Path(entry) == DEFAULT_ENTRY:    # 既定のエントリは remotion-props/0.1 を読む。描く前に形を確かめる（bundle の後で落ちない）
+        if data.get("schema_version") != PROPS_SCHEMA:
+            raise PipelineError(f"既定のエントリは {PROPS_SCHEMA} の props（mv export remotion-props の出力）を読みます: schema_version={data.get('schema_version')!r}")
+        missing = [key for key in ("fps", "width", "height", "duration_frames", "lines") if key not in data]
+        if missing:
+            raise PipelineError(f"props.json に {', '.join(missing)} がありません")
+    return data
+
+
+def frames_intact(run_dir):
+    """run の連番が frames.json のとおりに残っているか（再利用の前に確かめる）。"""
+    run_dir = Path(run_dir)
+    try:
+        manifest = read_json(run_dir / "frames.json")
+        return all((run_dir / "frames" / item["name"]).is_file() and sha256(run_dir / "frames" / item["name"]) == item["sha256"]
+                   for item in manifest["frames"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def remotion_version():
@@ -98,9 +136,10 @@ def _run_renderer(renderer, entry, composition, props, out_dir, public, concurre
         log.write(f"$ {' '.join(argv)}\n")
         started = time.monotonic()
         run = subprocess.run(argv, cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        log.write(run.stdout)       # 標準出力も残す（Remotion の情報や代役の診断はこちらに出る）
         log.write(run.stderr)
         if run.returncode != 0:
-            raise PipelineError(f"描画スクリプトが終了コード {run.returncode} で失敗しました。ログ: {log_path}\n{run.stderr[-1500:]}")
+            raise PipelineError(f"描画スクリプトが終了コード {run.returncode} で失敗しました。ログ: {log_path}\n{(run.stdout + run.stderr)[-1500:]}")
     lines = [line for line in run.stdout.strip().splitlines() if line.strip()]
     try:
         report = json.loads(lines[-1]) if lines else {}
@@ -122,21 +161,25 @@ def run_render(props, entry=None, composition=DEFAULT_COMPOSITION, public=None, 
     for label, path in (("--props", props), ("--entry", entry), ("--renderer", renderer)):
         if not path.is_file():
             raise PipelineError(f"{label} のファイルが見つかりません: {path}")
-    if not isinstance(read_json(props), dict):
-        raise PipelineError("--props は JSON オブジェクトにしてください")
+    _check_props(props, entry)
     if int(concurrency) < 1:
         raise PipelineError(f"--concurrency は 1 以上にしてください: {concurrency}")
     public = None if public is None else Path(public).resolve()
     version = remotion_version()
-    inputs = {"entry": {"path": str(entry.relative_to(REPO)) if entry.is_relative_to(REPO) else entry.name, "sha256": sha256(entry)},
+    # key: 描く絵に効く入力だけ（エントリと import するコード・props・public・コンポジション・描画スクリプト・Remotion の版・
+    # 指定したブラウザー）。concurrency は絵に効かないので入れない
+    inputs = {"entry": {"path": str(entry.relative_to(REPO)) if entry.is_relative_to(REPO) else entry.name, "sha256": sha256(entry),
+                        "sources": _source_tree(entry)},
               "props": {"name": props.name, "sha256": sha256(props)},
               "public": None if public is None else {"name": public.name, "files": _files_record(public)},
               "composition": composition,
               "renderer": {"path": str(renderer.relative_to(REPO)) if renderer.is_relative_to(REPO) else renderer.name, "sha256": sha256(renderer)},
-              "remotion_version": version, "concurrency": int(concurrency)}
+              "remotion_version": version, "browser_executable": os.environ.get("ORPHEUS_BROWSER")}
     key = runs.content_key_for("layer-render", inputs)
     out = (Path(out) if out else props.parent / "layer_runs").resolve()
-    with runs.Session(out, key, "layer-render", "render.log", say=say, tag="[layer]", force=force or twice) as session:
+    # 台帳の照合は frames.json の sha256 だけなので、連番そのものが残っているかも確かめてから再利用する
+    with runs.Session(out, key, "layer-render", "render.log", say=say, tag="[layer]", force=force or twice,
+                      accept_reuse=lambda run_dir, manifest: frames_intact(run_dir)) as session:
         if session.reused:
             return _summarize(session.reused_dir, session.reused, reused=True, began=began)
         run = session.run
@@ -169,15 +212,23 @@ def run_render(props, entry=None, composition=DEFAULT_COMPOSITION, public=None, 
         if twice:
             again_dir = run.dir / "frames-again"
             again_dir.mkdir()
-            second = _run_renderer(renderer, entry, composition, props, again_dir, public, concurrency, run.log_path)
-            again = frames_manifest(again_dir)
-            same = [a["sha256"] == b["sha256"] for a, b in zip(manifest["frames"], again["frames"])]
-            layer["deterministic"] = {"same": all(same) and again["count"] == manifest["count"], "frames_compared": len(same),
-                                      "differing_frames": [a["frame"] for a, ok in zip(manifest["frames"], same) if not ok][:50],
-                                      "second_render_seconds": second["seconds"]}
-            shutil.rmtree(again_dir, ignore_errors=True)
-            run.log(f"twice: same={layer['deterministic']['same']} differing={len(layer['deterministic']['differing_frames'])}")
-            say(f"[layer] 2 回目: {'全コマ一致' if layer['deterministic']['same'] else '一致しないコマあり'}")
+            try:
+                second = _run_renderer(renderer, entry, composition, props, again_dir, public, concurrency, run.log_path)
+                again = frames_manifest(again_dir)
+            except PipelineError as error:   # 2 回目の失敗は記録であって、1 回目の成功した連番を失う理由にはしない
+                layer["deterministic"] = {"same": None, "frames_compared": 0, "differing_frames": [], "error": str(error)[:1000]}
+                run.manifest["warnings"].append("2 回目の描画が失敗したため、決定論は確かめられていません")
+                run.log(f"twice: second render failed: {error}")
+                say("[layer] 2 回目の描画が失敗しました（1 回目の連番は残します）")
+            else:
+                same = [a["sha256"] == b["sha256"] for a, b in zip(manifest["frames"], again["frames"])]
+                layer["deterministic"] = {"same": all(same) and again["count"] == manifest["count"], "frames_compared": len(same),
+                                          "differing_frames": [a["frame"] for a, ok in zip(manifest["frames"], same) if not ok][:50],
+                                          "second_render_seconds": second["seconds"]}
+                run.log(f"twice: same={layer['deterministic']['same']} differing={len(layer['deterministic']['differing_frames'])}")
+                say(f"[layer] 2 回目: {'全コマ一致' if layer['deterministic']['same'] else '一致しないコマあり'}")
+            finally:
+                shutil.rmtree(again_dir, ignore_errors=True)
         # 台帳の再利用は variants の path（ファイル）の sha256 で確かめるので、連番の manifest を出力の代表にする
         run.manifest["variants"]["frames"] = {"path": "frames.json", "frames": manifest["count"], "sha256": layer["frames_manifest"]["sha256"],
                                               "technical_pass": True, "checks": {"pass": True, "failures": [], "kind": "frames_manifest"}}
