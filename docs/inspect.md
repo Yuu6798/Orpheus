@@ -134,7 +134,7 @@ uv run mv inspect check inspect.json --vlm-response response.json     # 手で�
 - **見せるコマ**: 出来事の山のコマを先に、残りは `vlm.every_s`（1 秒）ごとの見本。合わせて `vlm.max_frames`（24）まで。長い辺 `vlm.max_side`（768）の JPEG。設定画も同じ大きさの PNG で入れる。
 - **依頼の束**（`vlm/request.json`、`inspect-vlm-request/0.1`）: `instructions`（`vlm.language` が `ja` か `en`）、`categories`（分類の定義。数値の検査の `checks` によらず 4 つと `other`）、`reference`、`frames`（`id` = `クリップ@コマ`・クリップ・コマ・秒・`why`・`file`）、`response_schema`。画像ごとの `sha256` も入れるので、素材を同じ名前で差し替えると依頼の sha256 も変わり、古い返答は取り込まない。
 - **返答**（`inspect-vlm-response/0.1`）: `tool`（`name`・`version`・`model`）、`request_sha256`（依頼の束の sha256。違えば止める。無ければ警告）、`findings`（`frame_id`・`category`（4 つか `other`）・`description`・`box`（正規化。任意））。依頼に無いコマの id は止める。拒否・打ち切り・失敗で見られなかったコマは `x_unreviewed`（`[{frame_id, reason}]`）に書くと、警告として報告に残る（指摘が無いこととは違う）。
-- **取り込み**: 同じクリップの近いコマ（1 コマ以内）に数値の出来事があればそれに添え（`evidence: measured+estimated`。主な分類は数値の規則のまま、VLM の分類は `categories` に足す。隣のコマの指摘なら出来事の区間をそのコマまで広げ、秒・直す場所・手当ての候補を作り直す）、無ければ VLM だけの出来事（`estimated`）を作る。どちらも直す場所と修正計画に入り、VLM が衣装と言った出来事には衣装の手当ての候補も付く。合否には使わない。
+- **取り込み**: 同じクリップの近いコマ（区間か前後 1 コマ）に、添えてよい数値の出来事（3 コマ以下か分類が同じもの。重複コマの周期は除く）があればそれに添え（`evidence: measured+estimated`。主な分類は数値の規則のまま、VLM の分類は `categories` に足す。隣のコマの指摘なら出来事の区間をそのコマまで広げ、秒・直す場所・手当ての候補を作り直す）、無ければ VLM だけの出来事（`estimated`）を作る。どちらも直す場所と修正計画に入り、VLM が衣装と言った出来事には衣装の手当ての候補も付く。合否には使わない。
 - **設定**（`--vlm` の JSON。`docs/adapters.md` と同じ約束）: `tool`・`version`・`argv`（`argv[0]` は存在する絶対パス。シェルは使わない。`{request}`・`{output}`・`{packet}` を置き換える）・**`sends_data`（必須）**・`timeout_s`（既定 900）。**argv はローカルで実行するプログラム**なので、中身を確かめた設定だけを使う。`sends_data: true` の設定は `--allow-send` が無いと、重い処理の前に止まる。
 - **代役**（`scripts/vlm_standin.py`）: 画像を読まず、ネットワークにも出ない。`--flag 'id:分類:説明'`・`--echo-events 分類`・`--unreviewed id` で返答の形を確かめる（テストと CI 用）。
 - **Claude のアダプタの例**（`scripts/vlm_claude.py`）: 設定画とコマを Messages API の画像入力で送り、構造化出力（`output_config.format`）で返答の形を縛る。既定のモデルはスクリプトの `DEFAULT_MODEL`（`--model` で変える）・effort `high`・6 枚ずつ。設定画はどのバッチでも同じ前置きにしてキャッシュに載せる。拒否されたときの別モデルでの再実行（`fallbacks: "default"`）を有効にしている。拒否・打ち切り・失敗のバッチのコマは `x_unreviewed` に残す。anthropic の SDK を入れた**別の Python**で動かし、鍵は SDK の既定の探し方（`ANTHROPIC_API_KEY` など）で読む。**送信と課金が起きる**ので、設定には `"sends_data": true` を書く。`--dry-run` で送らずにバッチの数を見られる。**このリポジトリの開発環境では API を呼んでいない（未検証）**。偽の client で依頼の組み立てと返答の整え方だけをテストした。
@@ -153,7 +153,7 @@ uv run mv inspect check inspect.json --vlm-response response.json     # 手で�
 | `inspect_report.md` | 一覧（クリップ × 分類の数・設定画との重なり・見ていない検査）、クリップごとの出来事の表（ID・コマ・秒・分類・内容・根拠・直す場所・静止画）、修正計画、見ていない検査、VLM、設定画の主な色 |
 | `inspect_report.json` | `inspect-report/0.1`。`overall`・設定の sha256・エンジンの版と指紋・ライブラリの版・しきい値・設定画の要約・クリップ（復号の結果・見た範囲・切り抜き・人物のいたコマの数・設定画との重なりの中央値と最小）・`events`・`unused`・`skipped`・`notes`・`vlm` |
 | `fix_plan.json` | 修正計画（上） |
-| `stills/<出来事>.jpg` | 前のコマ・山のコマ（赤い箱 = 数値の場所、黄色の箱 = VLM の場所）・後のコマ。設定画の信号があれば設定画も並べる（字は ASCII だけ） |
+| `stills/<出来事>.jpg` | コマの順に前のコマ・山のコマ（赤い箱 = 数値の場所）・VLM の指摘のコマ（黄色の箱。指摘したコマにだけ描く。最大 4 枚）・後のコマ。設定画の信号があれば設定画も並べる（字は ASCII だけ） |
 | `anchors/<クリップ>_f<コマ>.png` | 修正計画の前後のコマ（元の大きさ） |
 | `metrics/<クリップ>.csv` | コマごとの数値（明るさ・差・構造の差・人物の面積と重心と高さ・塊の数・輪郭と面積と重心と配色の変化・動きの p95・設定画との重なり）。しきい値を自作に合わせて直す材料 |
 | `vlm/` | 依頼の束（`request.json`・`frames/`・`reference/`）、返答（`response.json`）、`adapter.log` |

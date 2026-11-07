@@ -17,6 +17,7 @@ from PIL import Image
 
 from ..io import PipelineError, atomic_json, read_json, sha256
 from . import CATEGORIES, video
+from .detect import SHORT   # この長さ以下の出来事は、分類が違っても同じ時の指摘として添える
 
 REQUEST_SCHEMA = "inspect-vlm-request/0.1"
 RESPONSE_SCHEMA = "inspect-vlm-response/0.1"
@@ -221,8 +222,19 @@ def read_response(path, request, request_sha):
     return response, warnings
 
 
+def _hosts(event, item, category):
+    """VLM の指摘を添えてよい出来事か: 同じクリップで、指摘のコマが区間か前後 1 コマにあり、重複コマの周期ではなく、
+    短い（SHORT コマ以下）か分類が同じもの。長い出来事に分類の違う一点の指摘を混ぜると、その指摘の位置と手当てが埋もれるため。"""
+    a, b = event["frames"]
+    if event["clip"] != item["clip"] or not a - 1 <= item["frame"] <= b:
+        return False
+    if any(s["check"] == "duplicate_cadence" for s in event["signals"]):
+        return False
+    return b - a <= SHORT or category in event["categories"]
+
+
 def attach(events, response, request, clips):
-    """返答の指摘を出来事に添える（近い数値の出来事が無ければ VLM だけの出来事を作る）。→ 新しい出来事の列。
+    """返答の指摘を出来事に添える（添えてよい出来事が無ければ VLM だけの出来事を作る。_hosts）。→ 新しい出来事の列。
 
     添えた出来事の区間は、指摘のコマを含むように広げる（秒・直す場所・手当ての候補は呼んだ側で作り直す）。"""
     frames = {item["id"]: item for item in request["frames"]}
@@ -235,9 +247,7 @@ def attach(events, response, request, clips):
                   "frames": [item["frame"], item["frame"] + 1], "peak": item["frame"], "value": None, "baseline": None, "threshold": None,
                   "unit": None, "z": None, "region": finding.get("box"), "detail": finding["description"],
                   "tool": tool.get("name"), "model": tool.get("model"), "frame_id": finding["frame_id"]}
-        host = next((e for e in events if e["clip"] == item["clip"] and e["frames"][0] - 1 <= item["frame"] <= e["frames"][1]), None)
-        if host is None:
-            host = next((e for e in added if e["clip"] == item["clip"] and e["frames"][0] - 1 <= item["frame"] <= e["frames"][1]), None)
+        host = next((e for e in events + added if _hosts(e, item, finding["category"])), None)
         if host is not None:
             host["signals"].append(signal)
             if finding["category"] not in host["categories"]:

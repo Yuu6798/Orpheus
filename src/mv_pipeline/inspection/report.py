@@ -35,23 +35,36 @@ def _box(panel, box, color):
     cv2.rectangle(panel, (max(0, x0), max(0, y0)), (min(width - 1, max(x0, x1 - 1)), min(height - 1, max(y0, y1 - 1))), color, 2)
 
 
+MAX_VLM_PANELS = 4
+
+
+def _vlm_frames(event):
+    """VLM の指摘のコマ（指摘の順。山・前・後のコマと重なってもよい）。"""
+    return list(dict.fromkeys(s["peak"] for s in event["signals"] if s["check"] == "vlm"))
+
+
 def contact_sheet(event, frames, palettes):
-    """[前のコマ | 山のコマ（赤い箱 = 数値の場所、黄色の箱 = VLM の場所）| 後のコマ]（設定画の信号があれば設定画も）。"""
+    """コマの順に [前のコマ | 山のコマ | VLM の指摘のコマ… | 後のコマ]（設定画の信号があれば設定画も）。
+
+    赤い箱 = 数値の場所（山のコマ）、黄色の箱 = VLM の場所（その指摘のコマにだけ描く）。"""
     a, b = event["frames"]
-    picks = [("before", a - 1), ("peak", event["peak"]), ("after", b)]
+    named = {a - 1: "", b: ""}
+    for number in _vlm_frames(event)[:MAX_VLM_PANELS]:
+        named[number] = " VLM"
+    named[event["peak"]] = " PEAK"
     panels = []
     width = min(STILL_WIDTH, next(iter(frames.values())).shape[1])
-    for name, number in picks:
+    for number in sorted(named):
         image = frames.get(number)
         if image is None:
             continue
         panel = _panel(image, width)
-        if name == "peak":
+        if number == event["peak"]:
             _box(panel, event["region"], RED)
-            for signal in event["signals"]:
-                if signal["check"] == "vlm":
-                    _box(panel, signal["region"], YELLOW)
-        stamp(panel, label_patch(f"f{number}" + (" PEAK" if name == "peak" else ""), panel.shape[0]), 0, 0)
+        for signal in event["signals"]:
+            if signal["check"] == "vlm" and signal["peak"] == number:
+                _box(panel, signal["region"], YELLOW)
+        stamp(panel, label_patch(f"f{number}{named[number]}", panel.shape[0]), 0, 0)
         panels.append(panel)
     used = {s.get("reference") for s in event["signals"] if s["check"].startswith("reference_")}
     for palette in palettes:
@@ -71,11 +84,11 @@ def contact_sheet(event, frames, palettes):
 
 
 def needed_frames(events, plan_segments):
-    """{クリップ: {コマ番号, …}}。出来事の前・山・後と、修正計画の前後のコマ。"""
+    """{クリップ: {コマ番号, …}}。出来事の前・山・後・VLM の指摘のコマと、修正計画の前後のコマ。"""
     wanted = {}
     for event in events:
         a, b = event["frames"]
-        wanted.setdefault(event["clip"], set()).update({a - 1, event["peak"], b})
+        wanted.setdefault(event["clip"], set()).update({a - 1, event["peak"], b, *_vlm_frames(event)[:MAX_VLM_PANELS]})
     for segment in plan_segments:
         for side in ("before", "after"):
             if segment["anchors"][side]:

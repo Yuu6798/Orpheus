@@ -417,6 +417,45 @@ def test_a_vlm_remark_on_the_frame_after_an_event_widens_what_to_fix(small_demo,
     assert segment["event_frames"] == [30, 32] and segment["source_frames"][1] >= 32
 
 
+def _vlm_signal(frame, category, box=None):
+    return {"check": "vlm", "category": category, "label": "VLM の指摘", "kind": "point", "frames": [frame, frame + 1], "peak": frame,
+            "value": None, "baseline": None, "threshold": None, "unit": None, "z": None, "region": box, "detail": "x"}
+
+
+def test_the_still_draws_each_vlm_box_on_the_frame_it_describes():
+    from mv_pipeline.inspection import report
+
+    event = {"id": "c-F01", "clip": "c", "frames": [30, 32], "peak": 30, "region": [0.1, 0.1, 0.4, 0.4],
+             "signals": [_signal("glitch", "continuity", (30, 31)), _vlm_signal(31, "shape", [0.5, 0.5, 0.9, 0.9])]}
+    assert report.needed_frames([event], [])["c"] == {29, 30, 31, 32}
+    frames = {n: np.full((64, 40, 3), 90, np.uint8) for n in (29, 30, 31, 32)}
+    sheet = report.contact_sheet(event, frames, [])
+    panels = [sheet[:, k * (40 + report.GAP):k * (40 + report.GAP) + 40] for k in range(4)]     # コマ 29・30・31・32
+    yellow = [int(((p[..., 0] > 200) & (p[..., 1] > 180) & (p[..., 2] < 100)).sum()) for p in panels]
+    red = [int(((p[..., 0] > 200) & (p[..., 1] < 100) & (p[..., 2] < 100)).sum()) for p in panels]
+    assert yellow[2] > 0 and yellow[0] == yellow[1] == yellow[3] == 0                      # VLM の箱はコマ 31 だけ
+    assert red[1] > 0 and red[2] == 0                                                       # 数値の箱は山のコマ 30
+
+
+def test_vlm_remarks_join_only_short_events_or_events_of_the_same_kind_and_never_a_cadence():
+    def event(frames, category, check):
+        return {"clip": "c", "frames": list(frames), "category": category, "categories": [category], "evidence": "measured",
+                "signals": [_signal(check, category, frames, kind="segment")]}
+
+    cadence, costume, glitch = event((3, 95), "continuity", "duplicate_cadence"), event((60, 75), "costume", "costume_pop"), event((30, 31), "continuity", "glitch")
+    request = {"frames": [{"id": f"c@{f}", "clip": "c", "frame": f} for f in (31, 62, 70, 10)]}
+    response = {"tool": {"name": "t"}, "findings": [
+        {"frame_id": "c@31", "category": "shape", "description": "短い出来事の次のコマ"},
+        {"frame_id": "c@62", "category": "other", "description": "衣装の出来事の中の別の種類"},
+        {"frame_id": "c@70", "category": "costume", "description": "衣装の出来事の中の同じ種類"},
+        {"frame_id": "c@10", "category": "shape", "description": "周期の中の局所の指摘"}]}
+    added = vlm.attach([cadence, costume, glitch], response, request, [{"id": "c", "fps": 24.0}])
+    assert glitch["frames"] == [30, 32] and "shape" in glitch["categories"]
+    assert [s["frame_id"] for s in costume["signals"] if s["check"] == "vlm"] == ["c@70"]
+    assert not any(s["check"] == "vlm" for s in cadence["signals"])
+    assert sorted(e["frames"][0] for e in added) == [10, 62] and all(e["evidence"] == "estimated" for e in added)
+
+
 def _load_claude_adapter():
     spec = importlib.util.spec_from_file_location("vlm_claude", CLAUDE)
     module = importlib.util.module_from_spec(spec)

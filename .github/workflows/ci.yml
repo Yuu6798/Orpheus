@@ -87,11 +87,12 @@ jobs:
           import json, sys
           report = json.load(open(sys.argv[1] + "/inspect_report/inspect_report.json"))
           expected = json.load(open(sys.argv[1] + "/expected.json"))
-          events = report["events"]
+          events = [e for e in report["events"] if e["evidence"] != "estimated"]   # 代役の VLM だけの出来事は数えない
           for anomaly in expected["anomalies"]:
               hits = [e for e in events if min(e["frames"][1], anomaly["frames"][1]) > max(e["frames"][0], anomaly["frames"][0])]
               assert len(hits) == 1 and hits[0]["category"] == anomaly["category"], (anomaly, hits)
           assert len(events) == len(expected["anomalies"]) and report["vlm"]["status"] == "run", report["summary"]
+          assert any(e["evidence"] == "measured+estimated" for e in events), "代役の指摘が短い出来事に添えられていません"
           PY
 
       # model3d (自作 3D ツール) の一気通貫: 合成素材 -> 押し出し・結合・貫通の補正・検査・OBJ -> run の status。
