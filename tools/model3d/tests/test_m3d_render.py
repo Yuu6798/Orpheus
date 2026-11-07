@@ -427,3 +427,17 @@ def test_the_armature_vertex_group_mask_blends_the_bone_motion_per_vertex():
     assert out[0] == pytest.approx(turn[0]) and out[1] == pytest.approx(np.eye(3))
     assert out[2] == pytest.approx(0.5 * (np.eye(3) + turn[0]))
     assert stage_render.masked_rotation(turn, rest, [1.0, 1.0, 1.0]) is turn                   # 絞りが無ければそのまま
+
+
+def test_collider_faces_are_turned_outward_for_mirrored_or_inside_out_meshes():
+    cube = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]     # 外向き
+    assert stage_render.signed_volume(cube, faces) == pytest.approx(1.0)
+    assert stage_render.outward_polygons(cube, faces) == (faces, False)
+    mirrored = cube * [-1, 1, 1]                                         # 鏡に映すと、同じ並びで体積が負になる
+    assert stage_render.signed_volume(mirrored, faces) == pytest.approx(-1.0)
+    turned, flipped = stage_render.outward_polygons(mirrored, faces)
+    assert flipped and stage_render.signed_volume(mirrored, turned) == pytest.approx(1.0)
+    inside_out = [tuple(reversed(f)) for f in faces]
+    assert stage_render.outward_polygons(cube, inside_out) == (faces, True)
+    assert stage_render.signed_volume(cube, []) == 0.0

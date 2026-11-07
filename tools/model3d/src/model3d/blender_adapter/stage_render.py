@@ -220,6 +220,23 @@ def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
             "ビューポートで切ってください（測るのはビューポートの形）")
 
 
+def signed_volume(points, polys):
+    """閉じたメッシュの、面の並びの向きでの体積（外向きなら正）。面は扇に三角に分ける。"""
+    tris = [(p[0], p[i], p[i + 1]) for p in polys for i in range(1, len(p) - 1)]
+    if not tris:
+        return 0.0
+    points, t = np.asarray(points, float), np.asarray(tris)
+    return float(np.einsum("ij,ij->i", points[t[:, 0]], np.cross(points[t[:, 1]], points[t[:, 2]])).sum() / 6.0)
+
+
+def outward_polygons(points, polys):
+    """当たりの面の並びを、体積が正（面が外向き）になる向きにそろえる。鏡に映した変換（行列の向きが裏返る）や裏返った
+    メッシュでは面の向きが内向きになり、clearly_outside の近道が、深く入った頂点を外と読み違えるため。戻り: (面, 裏返したか)。"""
+    if signed_volume(points, polys) >= 0:
+        return polys, False
+    return [tuple(reversed(p)) for p in polys], True
+
+
 def push_margin(offsets, unit):
     """当たりの箱を広げる幅（Blender 単位）: PUSH_MARGIN_M と、いちばん大きい離す量（offsets は動かすメッシュごとの
     頂点の離す量の並び、Blender 単位）の大きい方。箱の外でも、離す量より近い頂点は直すので、それより狭くしない。"""
@@ -653,6 +670,7 @@ class Push:
         trees = []
         for collider in self.colliders:
             co, polys = evaluated_points(bpy, collider)
+            polys, _ = outward_polygons(co, polys)       # 面は外向きにそろえて使う（鏡に映した当たり・裏返った当たり）
             trees.append((BVHTree.FromPolygons([tuple(c) for c in co], polys), co.min(0) - margin, co.max(0) + margin))
         stats = {}
         for t in self.targets:
@@ -769,7 +787,8 @@ def make_pushes(bpy, specs, unit):
         notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx)), "armature": t.arm.name if t.arm else None,
                                    "without_bones": int((t.W.sum(1) <= 0).sum()) if t.arm else int(len(t.idx))}
                                   for t in targets], "skipped": skipped, "separated": separated,
-                      "colliders": [{"object": c.name, "open_edges": open_edges(c)} for c in colliders],
+                      "colliders": [{"object": c.name, "open_edges": open_edges(c),
+                                     "reversed": outward_polygons(*evaluated_points(bpy, c))[1]} for c in colliders],
                       "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
                       "smooth": int(spec.get("smooth", 6))})
     problem = push_overlap([([t.ob.name for t in p.targets], [c.name for c in p.colliders]) for p in pushes])
