@@ -17,6 +17,7 @@ settings.json（look.toon が書く）:
   saturation、width_mm（法線の向きに太らせる量。描くときにカメラの距離で上書きする）、hand_attribute と hand_line（その属性の
   所の線の太さの割合）。
 
+塗り方の違うメッシュ（セル調・顔・塗らないメッシュ）と分け合う材質は、塗り方ごとに写して付け替えてから書き換える。
 セル調の塗り（リポジトリ外の試作の手順）:
 - 絵の色（Principled BSDF の Base Color）を出し、影は決まった向きの光と面の向きの内積で 2 段に分ける（境は smoothstep で
   threshold ± soft）。影の側は、影の色に舞台の色（共有のノードグループ model3d_stage_tone の a）を tint だけ混ぜた色を掛ける。
@@ -94,6 +95,31 @@ def base_color(nt, bsdf):
     rgb = nt.nodes.new("ShaderNodeRGB")
     rgb.outputs[0].default_value = tuple(bsdf.inputs["Base Color"].default_value)
     return rgb.outputs[0]
+
+
+def principled(m):
+    return m is not None and m.use_nodes and any(n.type == "BSDF_PRINCIPLED" for n in m.node_tree.nodes)
+
+
+def own_materials(bpy, names, tag):
+    """names のメッシュの、Principled BSDF のある材質の並び（重ならない）。ほかのメッシュ（別の塗り方か、塗らないメッシュ）と
+    分け合う材質は、この塗り方用に写して付け替える（書き換えがほかのメッシュに及ばないように）。戻り: 材質の並びと、写した材質の名前"""
+    group, copies, todo = set(names), {}, []
+    for name in names:
+        for slot in bpy.data.objects[name].material_slots:
+            m = slot.material
+            if not principled(m):
+                continue
+            users = {o.name for o in bpy.data.objects if o.type == "MESH" for s_ in o.material_slots if s_.material == m}
+            if not users <= group:
+                if m.name not in copies:
+                    copies[m.name] = m.copy()
+                    copies[m.name].name = f"{m.name}.{tag}"
+                slot.material = copies[m.name]
+                m = copies[m.name]
+            if m not in todo:
+                todo.append(m)
+    return todo, sorted(copies)
 
 
 def toon_material(bpy, m, tone, t):
@@ -374,8 +400,7 @@ def main(argv=None):
         o = bpy.data.objects.get(name)
         if o is None or o.type != "MESH":
             raise SystemExit(f"メッシュがありません: {name}")
-        if not o.material_slots or o.active_material is None or not o.active_material.use_nodes or not any(
-                n.type == "BSDF_PRINCIPLED" for n in o.active_material.node_tree.nodes):
+        if not any(principled(slot.material) for slot in o.material_slots):
             raise SystemExit(f"{name} の材質に Principled BSDF がありません")
     lined = meshes if settings["outline"]["meshes"] is None else list(settings["outline"]["meshes"])
     for name in lined:
@@ -385,22 +410,13 @@ def main(argv=None):
         raise SystemExit(f"同じメッシュを meshes と faces の両方に入れています: {sorted(set(meshes) & set(faces))}")
     t, f, o = settings["toon"], settings["face"], settings["outline"]
     tone = tone_group(bpy, t["rim_colors"], t["rim_gain"])
-    done, seen = [], set()
-    for name in meshes:
-        for slot in bpy.data.objects[name].material_slots:
-            m = slot.material
-            if m is None or m.name in seen or not m.use_nodes or not any(n.type == "BSDF_PRINCIPLED" for n in m.node_tree.nodes):
-                continue
-            seen.add(m.name)
-            toon_material(bpy, m, tone, t)
-            done.append(m.name)
-    face_done = []
-    for name in faces:
-        m = bpy.data.objects[name].active_material
-        if m.name not in seen:
-            seen.add(m.name)
-            face_material(m, f)
-            face_done.append(m.name)
+    toon_list, toon_copies = own_materials(bpy, meshes, "toon")      # 塗り方ごとに材質を分けてから書き換える
+    face_list, face_copies = own_materials(bpy, faces, "face")
+    for m in toon_list:
+        toon_material(bpy, m, tone, t)
+    for m in face_list:                                  # 顔は全部の材質の枠を塗る
+        face_material(m, f)
+    done, face_done = [m.name for m in toon_list], [m.name for m in face_list]
     hulls = []
     if o["enabled"]:
         bpy.ops.object.mode_set(mode="OBJECT") if bpy.context.object and bpy.context.object.mode != "OBJECT" else None
@@ -410,7 +426,8 @@ def main(argv=None):
                           "ratio": float(o["ratio"].get(name, 1.0))})
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
     report = {"schema_version": "model3d-toon-look/0.1", "blender": bpy.app.version_string, "meshes": meshes, "faces": faces,
-              "toon_materials": done, "face_materials": face_done, "outline_hulls": hulls, "tone_group": TONE,
+              "toon_materials": done, "face_materials": face_done, "copied_materials": toon_copies + face_copies,
+              "outline_hulls": hulls, "tone_group": TONE,
               "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
