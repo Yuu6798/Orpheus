@@ -105,6 +105,17 @@ def outline_width(distance, lens, sensor_height, line_px, reference_height, res_
     return line_px * (res_y / reference_height) / px_per_m
 
 
+def hull_strength(width_bu, unit, per, scale):
+    """輪郭線の写しの Displace の強さ（中の単位。外へ太らせるので負）。width_bu は Blender 単位の太さ。unit（シーンの
+    scale_length。1 Blender 単位が何 m か）で m に直してから、写しの換算 per（中の単位 1 が何 m か）で割る。"""
+    return -(width_bu * unit / per) * scale
+
+
+def tone_values(spec, initial):
+    """そのコマの塗りの共有グループの値: .blend の最初の値に、トラックの値を重ねる（省いた値は、前のコマでなく最初の値に戻る）。"""
+    return {**initial, **spec.get("tone", {})}
+
+
 def static_values(tone_colors, stripe_floor):
     """トラックに無いコマの、動かない光と壁の値（色は塗りの共有グループの a・b）。"""
     a, b = (list(c) for c in tone_colors)
@@ -373,9 +384,10 @@ def main(argv=None):
     handles = build_stage(bpy, stage) if stage["enabled"] else None
     apply_render(bpy, settings)
     tone = bpy.data.node_groups.get(TONE)
-    tone_colors = ((tuple(tone.nodes["a"].outputs[0].default_value)[:3], tuple(tone.nodes["b"].outputs[0].default_value)[:3])
-                   if tone is not None else (VIOLET, PINK))
-    static = static_values(tone_colors, stage["stripe_floor"])
+    tone_initial = ({"a": list(tone.nodes["a"].outputs[0].default_value)[:3], "b": list(tone.nodes["b"].outputs[0].default_value)[:3],
+                     "gain": tone.nodes["gain"].outputs[0].default_value} if tone is not None else None)
+    static = static_values((tone_initial["a"], tone_initial["b"]) if tone is not None else (VIOLET, PINK), stage["stripe_floor"])
+    unit = float(sc.unit_settings.scale_length)          # 1 Blender 単位が何 m か
     cam_d = bpy.data.cameras.new("model3d_cam")
     cam_d.sensor_fit, cam_d.sensor_height, cam_d.lens = "VERTICAL", cam_s["sensor_height"], cam_s["lens"]
     cam = bpy.data.objects.new("model3d_cam", cam_d)
@@ -409,12 +421,11 @@ def main(argv=None):
             values = frame_values(spec, static, stage["stripe_floor"])
             set_stage(handles, values["stage"])
             set_lights(handles, values)
-        if tone is not None and "tone" in spec:
-            for key in ("a", "b"):
-                if key in spec["tone"]:
-                    tone.nodes[key].outputs[0].default_value = (*spec["tone"][key], 1)
-            if "gain" in spec["tone"]:
-                tone.nodes["gain"].outputs[0].default_value = spec["tone"]["gain"]
+        if tone is not None:                             # 毎コマ入れ直す（前のコマの値を引き継がない）
+            values_t = tone_values(spec, tone_initial)
+            tone.nodes["a"].outputs[0].default_value = (*values_t["a"], 1)
+            tone.nodes["b"].outputs[0].default_value = (*values_t["b"], 1)
+            tone.nodes["gain"].outputs[0].default_value = values_t["gain"]
         if "camera" in spec:
             loc, target = Vector(spec["camera"]["location"]), Vector(spec["camera"]["target"])
             cam_d.lens = spec["camera"].get("lens", cam_s["lens"])
@@ -426,13 +437,13 @@ def main(argv=None):
             cam_d.lens = cam_s["lens"]
         cam.location = loc
         cam.rotation_quaternion = (target - loc).to_track_quat("-Z", "Y")
-        d = (loc - arm.matrix_world @ hips.head).length
-        distances.append(d)
+        d = (loc - arm.matrix_world @ hips.head).length    # Blender 単位
+        distances.append(d * unit)
         if hulls:
             wid = outline_width(d, cam_d.lens, cam_d.sensor_height, line["line_px"], line["reference_height"], res_y)
-            widths.append(wid)
+            widths.append(wid * unit)
             for _, mod, per, scale in hulls:
-                mod.strength = -(wid / per) * scale
+                mod.strength = hull_strength(wid, unit, per, scale)
         bpy.context.view_layer.update()
         sc.render.filepath = file
         bpy.ops.render.render(write_still=True)

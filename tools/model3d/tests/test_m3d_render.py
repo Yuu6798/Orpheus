@@ -51,6 +51,21 @@ def test_outline_width_keeps_the_line_the_same_on_screen():
     assert stage_render.outline_width(1.8, 50.0, 24.0, 1.6, 1920, 1920) == pytest.approx(w * 0.5 * 35.0 / 50.0)
 
 
+def test_hull_strength_converts_blender_units_to_the_hull_units():
+    width = stage_render.outline_width(360.0, 35.0, 24.0, 2.4, 1920, 192)     # 1 単位 = 1 cm のシーンで 3.6 m 先
+    assert width == pytest.approx(0.30857, abs=1e-5)                           # Blender 単位（cm）で 0.31 = 3.1 mm
+    assert stage_render.hull_strength(width, 0.01, 0.01, 1.0) == pytest.approx(-width)          # 拡大 1 の写しの中の単位も cm
+    assert stage_render.hull_strength(width, 0.01, 0.005, 1.0) == pytest.approx(-2 * width)     # 0.5 倍の写しは中の単位で 2 倍
+    assert stage_render.hull_strength(0.002, 1.0, 1.0, 0.7) == pytest.approx(-0.0014)           # m のシーン、拡大 1、髪の 0.7 倍
+
+
+def test_tone_values_fall_back_to_the_first_values_not_the_previous_frame():
+    initial = {"a": [0.3, 0.09, 1.0], "b": [1.0, 0.05, 0.45], "gain": 0.35}
+    assert stage_render.tone_values({"tone": {"gain": 2.0}}, initial) == {**initial, "gain": 2.0}
+    assert stage_render.tone_values({}, initial) == initial                    # 省いたコマは最初の値
+    assert stage_render.tone_values({"tone": {"a": [1, 1, 1]}}, initial)["gain"] == 0.35
+
+
 def test_frame_values_layer_the_track_over_the_static_lights():
     static = stage_render.static_values(((0.3, 0.09, 1.0), (1.0, 0.05, 0.45)), 0.02)
     assert static["wall"]["dark"] == pytest.approx([0.006, 0.0018, 0.02]) and static["rims"][1]["color"] == [1.0, 0.05, 0.45]
