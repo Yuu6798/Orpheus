@@ -22,6 +22,8 @@ settings.json（render.prepare_push が書く。長さは m で、シーンの s
 - 種は、bones の骨とその子孫の骨に重みのある頂点。高さ top より下で、種とつながった部分（同じ位置の頂点はつながる）を選ぶ。
 - 重みは、高さ z で smoothstep((top - z) / fade)（上の端で 0、fade 下で 1）を 1/64 に丸めたもの（0 の頂点は入れない）。
 - 頂点の法線がキャラの前（-Y）を向けば front、ほかは back の組に入れる。
+- メッシュをほかの物体と分け合う（リンク複製）なら、先にこの物体だけのメッシュにする（重みはメッシュに付くので、分け合ったまま
+  だと、高さの違うほかの物体の重みまで変わる）。分け合っていた物体を報告に載せる。
 高さと法線は世界の座標（メッシュの静止の形）。
 **検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じ写しと頂点の組になることを確かめた（docs/model3d.md）。
 """
@@ -214,6 +216,9 @@ def make_groups(bpy, spec, fallback_armature):
     for name in (spec["front"], spec["back"]):
         if name in ob.vertex_groups:
             raise SystemExit(f"{ob.name} に頂点の組 {name} がもうあります")
+    sharing = sorted(o.name for o in bpy.data.objects if o.data == ob.data and o.name != ob.name)
+    if sharing:                                          # リンク複製は、この物体だけのメッシュにしてから組を足す（重みは
+        ob.data = ob.data.copy()                         # メッシュに付くので、ほかの物体の重みまで変わるため）
     modifier = armature_of(ob)
     arm = modifier.object if modifier is not None else fallback_armature
     if arm is None:
@@ -257,7 +262,8 @@ def make_groups(bpy, spec, fallback_armature):
     return {"mesh": ob.name, "armature": arm.name, "bones": sorted(bones), "seeds": int(seeds.sum()), "pieces": pieces,
             "chosen": int(len(chosen)), "front": {"name": spec["front"], "vertices": counts[spec["front"]]},
             "back": {"name": spec["back"], "vertices": counts[spec["back"]]},
-            "left_out": int((levels == 0).sum()), "z": [round(float(co[chosen, 2].min()), 4), round(float(co[chosen, 2].max()), 4)]}
+            "left_out": int((levels == 0).sum()), "z": [round(float(co[chosen, 2].min()), 4), round(float(co[chosen, 2].max()), 4)],
+            "separated_from": sharing}
 
 
 def main(argv=None):
