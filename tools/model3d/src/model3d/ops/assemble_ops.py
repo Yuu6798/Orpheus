@@ -52,6 +52,8 @@ def assemble_command(ffmpeg, frames_dir, first, count, fps, out, audio=None, aud
         if audio_offset > 0:
             argv += ["-ss", seconds(audio_offset)]
         argv += ["-i", str(audio)]
+    # 流れは名指しする（音の入力に映像の流れがあると、ffmpeg は大きい方の映像を選ぶので、描いたコマでない映像になりうる）
+    argv += ["-map", "0:v:0"] + (["-map", "1:a:0"] if audio is not None else [])
     argv += ["-vf", ",".join(fade_filters(fade_in, fade_out, first, fps) + [YUV]), *TAGS,
              "-c:v", "libx264", "-crf", str(crf), "-preset", preset, "-frames:v", str(count)]
     if audio is not None:

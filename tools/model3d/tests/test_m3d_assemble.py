@@ -27,7 +27,8 @@ def test_fades_are_written_in_window_seconds_and_shifted_to_the_first_frame():
 def test_the_ffmpeg_arguments_follow_the_bt709_recipe():
     argv = asm.assemble_command("ffmpeg", "frames", 1, 960, 30, "out.mp4", audio="song.wav", fade_out={"start": 31.4, "duration": 0.6})
     assert argv == ["ffmpeg", "-y", "-v", "error", "-framerate", "30", "-start_number", "1", "-i", str(Path("frames") / "f%04d.png"),
-                    "-i", "song.wav", "-vf", "fade=t=out:st=31.4:d=0.6," + asm.YUV, *asm.TAGS, "-c:v", "libx264", "-crf", "18",
+                    "-i", "song.wav", "-map", "0:v:0", "-map", "1:a:0", "-vf", "fade=t=out:st=31.4:d=0.6," + asm.YUV, *asm.TAGS,
+                    "-c:v", "libx264", "-crf", "18",
                     "-preset", "medium", "-frames:v", "960", "-c:a", "aac", "-b:a", "192k", "-shortest", "out.mp4"]
     later = asm.assemble_command("ffmpeg", "frames", 843, 118, 30, "d.mp4", audio="song.wav", audio_offset=28.066666666666666)
     assert later[later.index("-ss") + 1] == "28.066667" and later.index("-ss") < later.index("song.wav")
@@ -206,3 +207,23 @@ def test_an_audio_shorter_than_the_frames_keeps_every_frame(tmp_path):
     report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
     assert report["audio"]["padded"] is True and report["audio"]["seconds"] == 0.5 and step["observations"][0]["audio_padded"]
     assert asm.seconds_of(report["probe"]["duration"]) == pytest.approx(1.0, abs=0.05)
+
+
+def test_the_rendered_frames_stay_the_video_when_the_soundtrack_has_a_bigger_video(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+    import imageio_ffmpeg
+    import subprocess
+    from model3d import executor
+    silent = asm.assemble_command("ffmpeg", "frames", 1, 3, 10, "s.mp4")
+    assert silent[silent.index("-map") + 1] == "0:v:0" and "1:a:0" not in silent
+    _frames(tmp_path / "frames")                                       # 32×48 のコマ
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x96:d=1:r=10", "-f", "lavfi",
+                    "-i", "sine=frequency=440:duration=1", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(tmp_path / "song.mp4")],
+                   check=True)                                         # 映像（64×96）と音の入った曲のファイル
+    result = executor.run_recipe(_recipe(tmp_path, {"frames_dir": "frames", "range": [1, 3], "fps": 10},
+                                         {"song": {"path": "song.mp4"}}, {"audio": "$inputs.song"}), tmp_path / "runs")
+    assert result["status"] == "succeeded"
+    report = json.loads(Path(result["steps"]["assemble"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    video = [line for line in report["probe"]["streams"] if "Video:" in line]
+    assert len(video) == 1 and "32x48" in video[0]                    # 前は大きい方の 64×96 の映像を選びえた
+    assert any("Audio:" in line for line in report["probe"]["streams"])
