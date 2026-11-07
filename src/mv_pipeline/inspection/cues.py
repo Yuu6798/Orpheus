@@ -4,8 +4,8 @@
 - `cuts`: カットの秒の並び。`moves`: カメラが速く動く区間 [[始め, 終わり], …]。`lights`: 照明の演出の区間か秒。
 - `beats`: 拍の格子 {"period", "k0_time"}（拍 k は k0_time + period × k 秒）か、拍の秒の並び。
 - `track`: model3d の `render.stage` のトラック（model3d-stage-track/0.1。1 つか並び。並びはつないでから読むので、クリップの
-  境目のカットも見る）。コマ T と T+1 の間でカメラが飛んだ所をカット、速く動くコマを動きの区間、光（壁・輪郭光・光の柱・塗りの
-  縁の強さ）が相対で LIGHT_REL 以上跳ねた所と、色・模様が切り替わった所を照明の演出にする。camera を省いたコマ（描く側の
+  境目のカットも見る）。コマ T と T+1 の間でカメラが飛んだ所をカット、速く動くコマを動きの区間、光の強さ（壁・左右の輪郭光
+  それぞれ・光の柱・塗りの縁）が相対で LIGHT_REL 以上跳ねた所と、色・模様が切り替わった所を照明の演出にする。camera を省いたコマ（描く側の
   既定のカメラ）を含む組は、カットと動きを見ない（照明は見る）。
   `light_keys`: model3d の光のキー（model3d-light-keys/0.1）の拍の格子。
 - `tolerance_s`（既定 0.05 秒）: カット・区間との時刻の許し。`beat_tolerance`（既定 0.1 拍）: 拍との許し。
@@ -58,14 +58,15 @@ def _intervals(value, where):
 
 
 def _light_levels(frame):
-    """トラックの 1 コマの光の強さ（壁・輪郭光の和・光の柱・塗りの縁）と、描く色と模様。
+    """トラックの 1 コマの光の強さと、描く色と模様。描く側（render.stage の set_lights と塗りの縁）がコマごとに当てる値を、
+    光ごとに全部並べる（コマごとに続けて動く値、壁の模様のずれと光の柱の向きは、切り替えではないので入れない）。
+    - 強さ: 壁・輪郭光（左と右を別々に。体の反対の側を照らす別の光）・光の柱・塗りの縁。
+    - 色と模様: 模様・壁の明るい帯と暗い帯・輪郭光（左右）・光の柱（8 本）・塗りの縁の a と b。
     省いた強さと模様は、描く側と同じく STAGE_DEFAULTS にする（前のコマの値でなく既定に戻る）。塗りの縁の強さの既定は .blend で
-    決まるので None（片方のコマだけ書いた組は比べない）。省いた色は空（.blend の塗りの縁の色から作る既定の色）。
-    色は描く側（render.stage）がコマごとに当てるもの全部: 壁の明るい帯と暗い帯・輪郭光・光の柱・塗りの縁の a と b。
-    コマごとに続けて動く値（壁の模様のずれ・光の柱の向き）は切り替えではないので入れない。"""
+    決まるので None（片方のコマだけ書いた組は比べない）。省いた色は空（.blend の塗りの縁の色から作る既定の色）。"""
     wall, beams, tone = frame.get("wall") or {}, frame.get("beams") or {}, frame.get("tone") or {}
-    rims = frame.get("rims") or [{}, {}]
-    levels = (wall.get("strength", STAGE_DEFAULTS["wall_strength"]), sum(r.get("energy", STAGE_DEFAULTS["rim_energy"]) for r in rims),
+    rims = [*(frame.get("rims") or [])[:2], {}, {}][:2]               # 左・右（省いた側は既定）
+    levels = (wall.get("strength", STAGE_DEFAULTS["wall_strength"]), *(r.get("energy", STAGE_DEFAULTS["rim_energy"]) for r in rims),
               beams.get("gain", STAGE_DEFAULTS["beam_gain"]), tone.get("gain"))
     look = (frame.get("stage", STAGE_DEFAULTS["stage"]), tuple(wall.get("color") or ()), tuple(wall.get("dark") or ()),
             tuple(tuple(r.get("color") or ()) for r in rims), tuple(tuple(c) for c in beams.get("colors") or ()),

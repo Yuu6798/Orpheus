@@ -1212,6 +1212,14 @@ def test_omitted_light_values_are_the_renderers_defaults():
     assert cues.from_track(toned, 30.0)[2] == []
 
 
+def test_each_rim_light_is_compared_on_its_own():
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:                                               # 左右の輪郭光が入れ替わる（和は同じ 3000 のまま）
+        frame["rims"] = [{"energy": 3000.0}, {"energy": 0.0}] if frame["T"] <= 40 else [{"energy": 0.0}, {"energy": 3000.0}]
+    assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)]
+
+
 def test_the_light_defaults_are_the_renderers():
     stage_render = pytest.importorskip("model3d.blender_adapter.stage_render")   # model3d の extra のある環境（CI も）で確かめる
     from mv_pipeline.inspection import cues
