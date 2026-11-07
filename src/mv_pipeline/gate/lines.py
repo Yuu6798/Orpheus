@@ -53,13 +53,31 @@ def read_lines(path):
     return lines
 
 
-def envelope(path):
-    """(dB の音量 10ms 刻み, 95% 点が 0 dB)。"""
+def _read_audio(path):
+    """(float32 の (サンプル, ch), レート)。soundfile があればそれで、無ければ PCM の WAV だけ標準ライブラリで読む。"""
     try:
         import soundfile
-    except ModuleNotFoundError as error:
-        raise PipelineError("--vocals には soundfile が必要です。`uv sync --locked --extra analysis` を実行してください") from error
-    audio, rate = soundfile.read(path, dtype="float32", always_2d=True)
+    except ModuleNotFoundError:
+        soundfile = None
+    if soundfile is not None:
+        return soundfile.read(path, dtype="float32", always_2d=True)
+    if Path(path).suffix.lower() != ".wav":
+        raise PipelineError("--vocals に WAV 以外を渡すには soundfile が必要です。`uv sync --locked --extra analysis` を実行してください")
+    import wave
+    with wave.open(str(path), "rb") as stream:
+        channels, width, rate = stream.getnchannels(), stream.getsampwidth(), stream.getframerate()
+        raw = stream.readframes(stream.getnframes())
+    if width not in (1, 2, 4):
+        raise PipelineError(f"--vocals の WAV は 8 / 16 / 32 bit の PCM にしてください（{width * 8} bit）")
+    dtype = {1: np.uint8, 2: "<i2", 4: "<i4"}[width]
+    samples = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+    samples = (samples - 128.0) / 128.0 if width == 1 else samples / float(2 ** (width * 8 - 1))
+    return samples.reshape(-1, channels), rate
+
+
+def envelope(path):
+    """(dB の音量 10ms 刻み, 95% 点が 0 dB)。"""
+    audio, rate = _read_audio(path)
     mono = audio.mean(axis=1)
     hop, frame = int(HOP_S * rate), int(FRAME_S * rate)
     power = np.concatenate([[0.0], np.cumsum(mono.astype(np.float64) ** 2)])

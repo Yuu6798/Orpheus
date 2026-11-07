@@ -75,6 +75,31 @@ jobs:
           cat "$RUNNER_TEMP/dance-render.json"
           uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); assert r['status'] == 'succeeded' and r['technical_pass'] is True, r" "$RUNNER_TEMP/dance-render.json"
 
+      # gate (書き出し前の検査) の一気通貫: 正解の分かっている合成素材 -> 行・秒の確認表 -> 検査 -> expected.json と照合。
+      # 声の代役は倍音だけの合成音で、実曲の歌い出しの推定精度ではない。check は既定のずらしで不合格（終了コード 1）が正解。
+      - name: gate smoke (demo -> lines -> check -> expected)
+        run: |
+          uv run --no-sync mv gate demo "$RUNNER_TEMP/gatedemo"
+          uv run --no-sync mv gate lines "$RUNNER_TEMP/gatedemo/lyrics.lrc" "$RUNNER_TEMP/gatedemo/lines" --vocals "$RUNNER_TEMP/gatedemo/vocals.wav"
+          code=0; uv run --no-sync mv gate check "$RUNNER_TEMP/gatedemo/gate.json" > "$RUNNER_TEMP/gate-check.json" || code=$?
+          cat "$RUNNER_TEMP/gate-check.json"
+          test "$code" -eq 1
+          uv run --no-sync python - "$RUNNER_TEMP/gatedemo" <<'PY'
+          import json, sys
+          root = sys.argv[1]
+          expected = json.load(open(root + "/expected.json"))
+          report = json.load(open(root + "/gate_report/gate_report.json"))
+          by_name = {c["check"]: c for c in report["checks"]}
+          measured = json.load(open(root + "/lines/lines_measured.json"))
+          for row, found in zip(expected["lines"], measured):
+              assert found["method"] == "vocals_onset" and abs(found["start"] - row["true_onset"]) <= expected["measure_tolerance_s"], (row, found)
+          for name, status in expected["checks"].items():
+              assert by_name[name]["status"] == status, (name, by_name[name])
+          assert [p["text"] for p in by_name["歌詞の時刻"]["problems"]] == expected["failing_lines"], by_name["歌詞の時刻"]
+          assert [p["t"] for p in by_name["拍"]["problems"]] == expected["failing_flashes"], by_name["拍"]
+          assert report["overall"] == "fail", report["overall"]
+          PY
+
       # inspect (生成動画の検品) の一気通貫: 合成素材 (異常を 7 か所に入れた緑背景の人物と設定画) -> 検品 -> 入れたコマと分類で見つかる。
       # 合成素材で働くことの確かめで、実作品での見落とし・誤検出の少なさや作品の採否ではない。VLM は代役 (画像を読まず、送信しない) だけを呼ぶ。
       - name: inspect smoke (demo -> check -> injected anomalies found)
