@@ -147,6 +147,20 @@ def test_the_same_color_missing_while_the_compared_view_switches_is_one_interval
     assert [(s["frames"], s["color"], s["view"]) for s in missing] == [([0, 12], "#d39bcd", "front")]
 
 
+def test_two_colors_of_one_sheet_never_share_a_group_through_another_sheet():
+    """別の設定画の中間の色（L 50）が同じ設定画の 2 色（L 20 と 80）の両方に近くても、その 2 色は別の組のまま。
+    2 色が順に欠けたら、色ごとの区間と値 0.0 を残す（Codex の指摘の例）。"""
+    front = {"rel": "a.png", "view": "front", "label": "a.png（front）", "weights": np.array([0.5, 0.5]), "hex": ["#333333", "#cccccc"],
+             "colors": np.array([[20, 0, 0], [80, 0, 0]], np.float32), "bands": [1, 1]}
+    back = {"rel": "a.png", "view": "back", "label": "a.png（back）", "weights": np.array([1.0]), "hex": ["#777777"],
+            "colors": np.array([[50, 0, 0]], np.float32), "bands": [1]}
+    groups = reference.color_groups([front, back], inspect_config.THRESHOLDS)
+    assert sorted(groups) == [[(0, 0), (1, 0)], [(0, 1)]]                    # 近い順（同じ差なら番号順）に、1 枚から 1 色ずつ
+    stats = [[_fake_stats(front, [0.0, 0.5] if i < 12 else [0.5, 0.0], 0.0), _fake_stats(back, [0.0], 0.0)] for i in range(24)]
+    missing = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert sorted((s["frames"][0], s["frames"][1], s["color"], s["value"]) for s in missing) == [(0, 12, "#333333", 0.0), (12, 24, "#cccccc", 0.0)]
+
+
 def test_the_markdown_names_the_other_colors_of_the_same_check(checked):
     import copy
 

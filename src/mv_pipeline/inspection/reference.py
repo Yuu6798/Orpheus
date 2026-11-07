@@ -229,22 +229,26 @@ def summary(features, palettes):
 def color_groups(palettes, th):
     """設定画をまたいで同じ色とみなす組 → [[(設定画の番号, 色の番号), …], …]。
 
-    向き違いの設定画の色は k-means の中心が少しずつ違うので、別の設定画の色と ΔE ref_match_de 以内ならつなぐ（同じ設定画の色どうしは
-    直接つながない）。比べる設定画がコマごとに入れ替わっても、同じ色の欠けを 1 本の区間で数えるため。"""
+    向き違いの設定画の色は k-means の中心が少しずつ違うので、別の設定画の色と ΔE ref_match_de 以内なら、近い組み合わせから順に
+    つなぐ。1 つの組には 1 枚の設定画から 1 色しか入れない（同じ設定画の別の色は、間に別の設定画の色を挟んでも同じ組にしない）。
+    比べる設定画がコマごとに入れ替わっても、同じ色の欠けを 1 本の区間で数え、別の色の欠けは別の区間に残すため。"""
     members = [(r, c) for r, palette in enumerate(palettes) for c in range(len(palette["weights"]))]
-    group = {member: number for number, member in enumerate(members)}
+    links = []
     for i, (r, c) in enumerate(members):
         for q, k in members[i + 1:]:
-            if q == r or group[(q, k)] == group[(r, c)]:
+            if q == r:
                 continue
             gap = float(distance(np.asarray(palettes[r]["colors"][c], np.float32)[None], np.asarray(palettes[q]["colors"][k], np.float32)[None])[0, 0])
             if gap <= th["ref_match_de"]:
-                old, new = group[(q, k)], group[(r, c)]
-                group = {member: new if number == old else number for member, number in group.items()}
-    out = {}
-    for member in members:
-        out.setdefault(group[member], []).append(member)
-    return list(out.values())
+                links.append((gap, (r, c), (q, k)))
+    group = {member: frozenset([member]) for member in members}
+    for _, one, other in sorted(links):
+        a, b = group[one], group[other]
+        if a == b or {r for r, _ in a} & {r for r, _ in b}:        # 同じ設定画の色が 2 つ入るつなぎはしない
+            continue
+        for member in a | b:
+            group[member] = a | b
+    return [sorted(found) for found in dict.fromkeys(group[member] for member in members)]
 
 
 def signals(features, palettes, th, fps):
