@@ -277,3 +277,81 @@ def test_the_operation_needs_blender_and_both_outputs(tmp_path):
         call(tmp_path, {})
     with pytest.raises(ToolError, match="report"):
         call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN))}, {"frames": "frames.json"})
+
+
+# ---------- 描く直前の押し出し（push）----------
+
+def test_push_weights_take_the_largest_weight_and_the_first_listed_groups_offset():
+    groups = [("front", 0.007), ("back", 0.004)]
+    assert stage_render.push_weights({"front": 0.5, "back": 1.0}, groups) == (1.0, 0.007)
+    assert stage_render.push_weights({"back": 0.3, "spine": 1.0}, groups) == (0.3, 0.004)
+    assert stage_render.push_weights({}, groups) is None and stage_render.push_weights({"front": 0.0}, groups) is None
+
+
+def test_push_correction_moves_inside_points_out_and_near_points_away():
+    q = np.array([0.0, 0.0, 0.01])                                       # 当たりの面のいちばん近い点
+    inside = stage_render.push_correction(np.zeros(3), q, 0.01, 0.004, True)
+    assert inside == pytest.approx([0, 0, 0.014])                        # 面を越えて 4 mm 外へ
+    near = stage_render.push_correction(np.array([0, 0, 0.012]), q, 0.002, 0.004, False)
+    assert near == pytest.approx([0, 0, 0.002])                          # 外でも 4 mm より近いので離す
+    assert stage_render.push_correction(np.array([0, 0, 0.02]), q, 0.01, 0.004, False) is None
+    up = np.array([0.0, 0.0, 1.0])
+    assert stage_render.clearly_outside(np.array([0, 0, 0.02]), q, up, 0.01, 0.004)
+    assert not stage_render.clearly_outside(np.array([0.01, 0, 0.01]), q, up, 0.01, 0.004)   # 横に離れている点は光線で調べる
+    assert not stage_render.clearly_outside(np.array([0, 0, 0.012]), q, up, 0.002, 0.004)
+
+
+def test_spread_push_smooths_along_the_surface_but_keeps_each_need():
+    need = np.array([[0, 0, 0.01], [0, 0, 0], [0, 0, 0]], float)
+    edges = np.array([[0, 1], [1, 2]])
+    d, mag = stage_render.spread_push(need, edges, 6)
+    assert mag == pytest.approx([0.01, 0, 0]) and d[0, 2] >= 0.01 - 1e-12 and 0 < d[2, 2] < d[1, 2] < d[0, 2]
+    assert np.array_equal(stage_render.spread_push(need, edges, 0)[0], need)
+    assert np.array_equal(stage_render.spread_push(need, np.zeros((0, 2), int), 6)[0], need)
+    assert not stage_render.spread_push(np.zeros((3, 3)), edges, 6)[0].any()
+
+
+def test_weld_keeps_split_seam_vertices_together():
+    groups = stage_render.weld_groups([[0, 0, 0], [1, 0, 0], [0, 0, 0.000001]])
+    assert groups[0] == groups[2] != groups[1]
+    d = stage_render.weld_mean(np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]), groups)
+    assert d[0] == pytest.approx([0.5, 0, 0.5]) and d[2] == pytest.approx([0.5, 0, 0.5]) and d[1] == pytest.approx([0, 1, 0])
+
+
+PUSH = {"meshes": ["cloth"], "colliders": ["leg_l", "leg_r"],
+        "groups": [{"name": "sash_front", "offset_mm": 7}, {"name": "sash_back", "offset_mm": 4}], "smooth": 6}
+
+
+def test_the_operation_passes_the_push_to_the_script(tmp_path):
+    from model3d import executor
+    params = {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "push": [PUSH, {**PUSH, "meshes": ["skirt"],
+                                                                                               "outlines": False}]}
+    result = executor.run_recipe(_recipe(tmp_path, params), tmp_path / "runs")
+    report = json.loads(Path(result["steps"]["render"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["settings"]["push"] == [
+        {"meshes": ["cloth"], "colliders": ["leg_l", "leg_r"],
+         "groups": [{"name": "sash_front", "offset_mm": 7.0}, {"name": "sash_back", "offset_mm": 4.0}], "smooth": 6},
+        {"meshes": ["skirt"], "colliders": ["leg_l", "leg_r"],
+         "groups": [{"name": "sash_front", "offset_mm": 7.0}, {"name": "sash_back", "offset_mm": 4.0}], "smooth": 6,
+         "outlines": False}]
+    assert stage_render.merged({})["push"] == []
+
+
+@pytest.mark.parametrize("push, message", [
+    ({"meshes": ["cloth"]}, "並び"),
+    ([], "並び"),
+    ([{**PUSH, "glue": 1}], "知らない鍵"),
+    ([{"meshes": ["cloth"], "colliders": ["leg"]}], "groups が要ります"),
+    ([{**PUSH, "meshes": []}], "meshes"),
+    ([{**PUSH, "colliders": ["cloth"]}], "同じメッシュ"),
+    ([PUSH, PUSH], "重なっています"),
+    ([{**PUSH, "groups": [{"name": "sash_front"}]}], "groups"),
+    ([{**PUSH, "groups": [{"name": "a", "offset_mm": 7}, {"name": "a", "offset_mm": 4}]}], "groups"),
+    ([{**PUSH, "groups": [{"name": "a", "offset_mm": 0}]}], "offset_mm"),
+    ([{**PUSH, "smooth": -1}], "smooth"),
+    ([{**PUSH, "smooth": 1.5}], "smooth"),
+    ([{**PUSH, "outlines": "yes"}], "outlines"),
+])
+def test_the_operation_rejects_bad_push_settings(tmp_path, push, message):
+    with pytest.raises(ToolError, match=message):
+        call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "push": push})

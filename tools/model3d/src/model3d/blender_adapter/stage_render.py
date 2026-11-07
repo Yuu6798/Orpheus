@@ -14,6 +14,11 @@ settings.json（render.stage が書く）:
 - stage: enabled（舞台・光・空を作る）、stripe_floor（壁の暗い帯の明るさ。明るい帯の色に掛ける）、stripe_soft（帯の境の幅）
 - background: 省くと舞台の空か .blend の空。"transparent" は透けの RGBA の PNG、{"color": [R, G, B]}（0〜255）はその色の背景
   （緑抜き用。透けで描いて合成で敷くので、背景の色で人物を照らさない。ディザーは 0）。どちらも stage.enabled を false にする
+- push: 描く直前の押し出しの並び。各要素は meshes（動かすメッシュ。outlines が true なら、その輪郭線の写しも）、colliders
+  （当たり。閉じたメッシュ）、groups（動かす頂点の組の名前と離す量 offset_mm。並べた順で最初に重みのある組の量）、smooth
+  （動かす量をならす回数）。コマごとに、組の頂点のうち当たりの中か近くにある所を、当たりの面から offset_mm だけ外へ出す。
+  中か外かは 5 本の光線が当たりの面と奇数回交わる向きの多さで決める。動かす量は面のつながりでならし、組の重みを掛け、骨で
+  動かす前の差に直してシェイプキー model3d_push に書く（リポジトリ外の試作の帯の直しと同じ手順）
 - only: 描くコマの T（省くと全部）
 track.json（model3d-stage-track/0.1）: 描くコマの並びと、コマごとのカメラ・舞台・光・塗りの値。省くと、.blend のシーンの
 全コマを T = 1 から順に、既定のカメラと動かない光で描く。
@@ -51,12 +56,18 @@ DEFAULTS = {
     "outline": {"line_px": 2.4, "reference_height": 1920, "scale": {}},
     "stage": {"enabled": True, "stripe_floor": 0.02, "stripe_soft": 0.0},
     "background": None,
+    "push": [],
     "only": None,
 }
 TONE = "model3d_stage_tone"
 WAVE = {"led": ("X", 1.5, 1.6), "led_diag": ("DIAGONAL", 6.0, 3.0), "void": ("X", 1.5, 1.6)}   # 帯の向き・Distortion・Scale
 VIOLET, PINK = (0.30, 0.09, 1.0), (1.0, 0.05, 0.45)       # 塗りの共有グループが無いときの、既定の縁の色
 BEAMS = 8
+PUSH_RAYS = ((1, 0.13, 0.07), (-0.11, 1, 0.05), (0.06, -0.09, 1), (-1, -0.08, -0.12), (0.1, -1, -0.07))   # 中か外かを調べる光線
+PUSH_MARGIN_M = 0.02      # 当たりの箱をこれだけ広げた中の頂点だけを調べる
+PUSH_STEP_M = 1e-5        # 光線が面を越えて次の面を探すときに進める長さ
+PUSH_MOVED_M = 0.001      # 報告で「動かした」と数える量
+PUSH_KEY = "model3d_push"
 
 
 def parse_args(argv):
@@ -150,6 +161,65 @@ def frame_values(spec, static, stripe_floor):
     out["rims"] = [{**s, **t} for s, t in zip(static["rims"], spec.get("rims", [{}, {}]))]
     out["beams"] = {**static["beams"], **spec.get("beams", {})}
     return out
+
+
+def push_weights(vertex_groups, groups):
+    """頂点の {組の名前: 重み} と、組の並び [(名前, 離す量), ...] から (動かす割合, 離す量)。割合は組の重みの最大、離す量は
+    並べた順で最初に重みのある組の量。どの組にも重みが無ければ None。"""
+    w = max(vertex_groups.get(name, 0.0) for name, _ in groups)
+    if w <= 0:
+        return None
+    return w, next(offset for name, offset in groups if vertex_groups.get(name, 0.0) > 0)
+
+
+def clearly_outside(p, q, normal, dist, offset):
+    """当たりの面のいちばん近い点 q から、面の外側の向きにはっきり離れている頂点 p（光線で調べなくてよい）。"""
+    return dist > offset and (p - q) @ normal / max(dist, 1e-9) > 0.5
+
+
+def push_correction(p, q, dist, offset, inside):
+    """頂点 p を、当たりの面のいちばん近い点 q から offset だけ外へ出す動き。中なら面を越えて外へ、外でも offset より近ければ
+    離す。どちらでもなければ None。"""
+    if inside:
+        u = (q - p) / max(dist, 1e-9)
+    elif dist < offset:
+        u = (p - q) / max(dist, 1e-9)
+    else:
+        return None
+    return q + u * offset - p
+
+
+def spread_push(need, edges, iterations):
+    """動かす量を、面のつながり（edges は頂点の組の番号の対）でならす。iterations 回、隣の平均と半々に混ぜ、各頂点の要る
+    向きの量は下回らないようにする。戻り: (ならした動き, 要った量の大きさ)。"""
+    need = np.asarray(need, float)
+    mag = np.linalg.norm(need, axis=1)
+    dirs = need / np.maximum(mag[:, None], 1e-9)
+    d = need.copy()
+    if len(edges) and mag.max(initial=0.0) > 0:
+        deg = np.bincount(edges.ravel(), minlength=len(need)).astype(float)
+        for _ in range(iterations):
+            acc = np.zeros_like(d)
+            np.add.at(acc, edges[:, 0], d[edges[:, 1]])
+            np.add.at(acc, edges[:, 1], d[edges[:, 0]])
+            avg = np.where(deg[:, None] > 0, acc / np.maximum(deg[:, None], 1), d)
+            d = 0.5 * d + 0.5 * avg
+            short = np.maximum(mag - (d * dirs).sum(1), 0)
+            d = d + dirs * short[:, None]
+    return d, mag
+
+
+def weld_groups(points, tol=1e-5):
+    """同じ位置の頂点（UV の継ぎ目で分かれた頂点）の組の番号。"""
+    _, inverse = np.unique(np.round(np.asarray(points, float) / tol).astype(np.int64), axis=0, return_inverse=True)
+    return inverse.ravel()
+
+
+def weld_mean(d, groups):
+    """同じ位置の頂点の動きを、その組の平均にそろえる（継ぎ目で裂けないように）。"""
+    acc = np.zeros((groups.max() + 1, 3))
+    np.add.at(acc, groups, d)
+    return (acc / np.bincount(groups).astype(float)[:, None])[groups]
 
 
 # ---------- ここから下は Blender の中でだけ動く ----------
@@ -393,6 +463,181 @@ def hip_path(bpy, arm, hips, frames, sigma):
     return {f: p for f, p in zip(frames, gauss_smooth(points, sigma))}
 
 
+def evaluated_points(bpy, ob):
+    """評価した（モディファイアをかけた）メッシュの頂点の世界の座標と、面の頂点の並び。"""
+    ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    me = ev.to_mesh()
+    co = np.zeros(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    polys = [tuple(p.vertices) for p in me.polygons]
+    ev.to_mesh_clear()
+    M = np.array(ob.matrix_world)
+    return co.reshape(-1, 3) @ M[:3, :3].T + M[:3, 3], polys
+
+
+def inside_mesh(tree, p, rays, step):
+    """点 p が閉じたメッシュ（BVH の tree）の中か。光線ごとに面と交わる数を数え、奇数の向きが 3 本以上なら中。"""
+    from mathutils import Vector
+    votes = 0
+    for d in rays:
+        hits, o = 0, Vector(p)
+        for _ in range(12):
+            loc, _, _, _ = tree.ray_cast(o, d)
+            if loc is None:
+                break
+            hits += 1
+            o = loc + d * step
+        votes += hits % 2
+    return votes >= 3
+
+
+def open_edges(ob):
+    """面 1 枚にしか使われない辺の数（0 なら閉じている）。"""
+    count = {}
+    for poly in ob.data.polygons:
+        for key in poly.edge_keys:
+            count[key] = count.get(key, 0) + 1
+    return sum(1 for v in count.values() if v == 1)
+
+
+class PushTarget:
+    """押し出すメッシュ 1 つ: 組に重みのある頂点、その割合と離す量（Blender 単位）、骨の重み、面のつながり、継ぎ目の組、
+    シェイプキー。"""
+
+    def __init__(self, ob, arm, groups, key):
+        self.ob, self.arm = ob, arm
+        me = ob.data
+        names = {vg.index: vg.name for vg in ob.vertex_groups}
+        deform = {b.name for b in arm.data.bones if b.use_deform}
+        idx, wt, off, dw = [], [], [], []
+        for v in me.vertices:
+            gs = {names[g.group]: g.weight for g in v.groups}
+            picked = push_weights(gs, groups)
+            if picked is None:
+                continue
+            idx.append(v.index)
+            wt.append(picked[0])
+            off.append(picked[1])
+            dw.append({k: x for k, x in gs.items() if k in deform and x > 0})
+        self.idx, self.w, self.off = np.array(idx, int), np.array(wt), np.array(off)
+        self.bones = sorted({b for d in dw for b in d})
+        column = {b: i for i, b in enumerate(self.bones)}
+        self.W = np.zeros((len(idx), len(self.bones)))
+        for r, d in enumerate(dw):
+            for b, x in d.items():
+                self.W[r, column[b]] = x
+        self.W /= np.maximum(self.W.sum(1, keepdims=True), 1e-9)
+        pos = {v: i for i, v in enumerate(idx)}
+        edges = [(pos[a], pos[b]) for a, b in (tuple(e.vertices) for e in me.edges) if a in pos and b in pos]
+        self.edges = np.array(edges) if edges else np.zeros((0, 2), int)
+        co = np.zeros(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", co)
+        self.basis = co.reshape(-1, 3)
+        self.weld = weld_groups(self.basis[self.idx]) if len(idx) else np.zeros(0, int)
+        self.key = None
+        if not len(idx):                                 # 動かす頂点が無ければ、シェイプキーも足さない
+            return
+        if me.shape_keys is None:
+            ob.shape_key_add(name="Basis", from_mix=False)
+        blocks = me.shape_keys.key_blocks
+        self.key = blocks[key] if key in blocks else ob.shape_key_add(name=key, from_mix=False)
+        self.key.value = 1.0
+
+    def deform_rot(self):
+        """頂点ごとに、骨で動かす前の形の差を、動かした後の世界の差に直す 3×3 行列（骨の重みで混ぜた骨の動き）。"""
+        A = np.array(self.arm.matrix_world)[:3, :3]
+        Mb = np.array([np.array(self.arm.pose.bones[b].matrix @ self.arm.data.bones[b].matrix_local.inverted())[:3, :3]
+                       for b in self.bones])
+        Bv = np.einsum("vb,bij->vij", self.W, Mb)
+        return A @ Bv @ np.linalg.inv(A) @ np.array(self.ob.matrix_world)[:3, :3]
+
+
+class Push:
+    """押し出し 1 つ（当たりと、動かすメッシュの並び）。apply() で今のコマを直す。"""
+
+    def __init__(self, bpy, targets, colliders, smooth, unit):
+        from mathutils import Vector
+        self.bpy, self.targets, self.colliders, self.smooth, self.unit = bpy, targets, colliders, smooth, unit
+        self.rays = [Vector(d).normalized() for d in PUSH_RAYS]
+
+    def apply(self):
+        """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。"""
+        from mathutils import Vector
+        from mathutils.bvhtree import BVHTree
+        bpy, unit = self.bpy, self.unit
+        for t in self.targets:                            # 直す前の形で測る
+            t.key.value = 0.0
+        bpy.context.view_layer.update()
+        margin, step = PUSH_MARGIN_M / unit, PUSH_STEP_M / unit
+        trees = []
+        for collider in self.colliders:
+            co, polys = evaluated_points(bpy, collider)
+            trees.append((BVHTree.FromPolygons([tuple(c) for c in co], polys), co.min(0) - margin, co.max(0) + margin))
+        stats = {}
+        for t in self.targets:
+            co, _ = evaluated_points(bpy, t.ob)
+            p = co[t.idx]
+            need = np.zeros_like(p)
+            for tree, lo, hi in trees:
+                for k in np.where(np.all((p > lo) & (p < hi), axis=1))[0]:
+                    q, n, _, dist = tree.find_nearest(Vector(p[k]))
+                    if q is None:
+                        continue
+                    q, n = np.array(q), np.array(n)
+                    if clearly_outside(p[k], q, n, dist, t.off[k]):
+                        continue
+                    v = push_correction(p[k], q, dist, t.off[k], inside_mesh(tree, p[k], self.rays, step))
+                    if v is not None and np.linalg.norm(v) > np.linalg.norm(need[k]):
+                        need[k] = v
+            d, mag = spread_push(need, t.edges, self.smooth)
+            d = weld_mean(d, t.weld) * t.w[:, None]
+            rest = np.einsum("vij,vj->vi", np.linalg.inv(t.deform_rot()), d)
+            kco = t.basis.copy()
+            kco[t.idx] += rest
+            t.key.data.foreach_set("co", kco.ravel())
+            t.key.value = 1.0
+            stats[t.ob.name] = (int((mag > PUSH_MOVED_M / unit).sum()), round(float(mag.max(initial=0.0) * unit * 1000), 1))
+        bpy.context.view_layer.update()
+        return stats
+
+
+def make_pushes(bpy, specs, arm, unit):
+    """設定の push から、押し出しの並びと、報告に載せる中身。"""
+    pushes, notes = [], []
+    for n, spec in enumerate(specs):
+        groups = [(g["name"], g["offset_mm"] / 1000.0 / unit) for g in spec["groups"]]
+        group_names = [name for name, _ in groups]
+        colliders = []
+        for name in spec["colliders"]:
+            ob = bpy.data.objects.get(name)
+            if ob is None or ob.type != "MESH":
+                raise SystemExit(f"push[{n}] の当たりのメッシュがありません: {name}")
+            colliders.append(ob)
+        targets, skipped = [], []
+        for name in spec["meshes"]:
+            ob = bpy.data.objects.get(name)
+            if ob is None or ob.type != "MESH":
+                raise SystemExit(f"push[{n}] の動かすメッシュがありません: {name}")
+            objects = [(ob, True)]
+            if spec.get("outlines", True):
+                objects += [(o, False) for o in bpy.data.objects if o.type == "MESH" and o.get("model3d_outline") == name]
+            for o, named in objects:
+                modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None), None)
+                target = PushTarget(o, modifier.object if modifier else arm, groups, PUSH_KEY)
+                if not len(target.idx):
+                    if named:
+                        raise SystemExit(f"push[{n}]: {o.name} に、{group_names} の組の重みのある頂点がありません")
+                    skipped.append(o.name)
+                    continue
+                targets.append(target)
+        pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit))
+        notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx))} for t in targets], "skipped": skipped,
+                      "colliders": [{"object": c.name, "open_edges": open_edges(c)} for c in colliders],
+                      "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
+                      "smooth": int(spec.get("smooth", 6))})
+    return pushes, notes
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
@@ -453,6 +698,8 @@ def main(argv=None):
             if mod is not None:
                 hulls.append((o, mod, float(o.get("model3d_outline_m_per_local", 1.0)),
                               float(line["scale"].get(o["model3d_outline"], 1.0))))
+    pushes, push_notes = make_pushes(bpy, settings["push"], arm, unit) if settings["push"] else ([], [])
+    push_frames = []
     only = set(settings["only"]) if settings["only"] else None
     os.makedirs(a.frames_dir, exist_ok=True)
     res_y = settings["resolution"][1]
@@ -495,6 +742,11 @@ def main(argv=None):
             for _, mod, per, scale in hulls:
                 mod.strength = hull_strength(wid, unit, per, scale)
         bpy.context.view_layer.update()
+        if pushes:                                       # 描く直前に押し出す（輪郭線の太さを入れた後の形で測る）
+            moved = {}
+            for push in pushes:
+                moved.update(push.apply())
+            push_frames.append({"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}})
         sc.render.filepath = file
         bpy.ops.render.render(write_still=True)
         rendered.append(T)
@@ -513,6 +765,9 @@ def main(argv=None):
                         "display": sc.display_settings.display_device},
               "camera": {"from_track": from_track, "default": len(rendered) - from_track, "distance_to_hips_m": span(distances)},
               "outline": {"hulls": len(hulls), "width_mm": span(widths, 1000.0)},
+              "push": ({"pushes": push_notes, "frames": push_frames,
+                        "max_mm": {name: max(fr["objects"][name][1] for fr in push_frames)
+                                   for name in (push_frames[0]["objects"] if push_frames else {})}} if pushes else None),
               "stage": bool(stage["enabled"]), "background": settings.get("background"), "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
