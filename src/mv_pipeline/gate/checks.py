@@ -26,6 +26,7 @@ warn があれば pass_with_warnings、なければ pass。
 
 timeline は dance-timeline/0.1 と 0.2 の両方を読む。dance/dance_timeline.schema.json で検証し、知らない欄は無視する。
 """
+import bisect
 import itertools
 import json
 import math
@@ -318,37 +319,65 @@ def check_hook_overlap(timeline, th):
     return result(name, "fail" if problems else "pass", f"入れ替わり {changes} 回、超過 {len(problems)}", problems)
 
 
+ALIGN_NAMES = {"beat": "拍", "downbeat": "小節頭"}
+
+
 def _beat_events(timeline):
-    """[(種類, 時刻, 対象外か)]。0.1 の timeline は数値の配列だけを持つ。blend の切れ目の時刻は blend の開始時刻。"""
-    flashes = [("フラッシュ", f["t"], f["beat_exempt"]) for f in timeline["flash_info"]] if "flash_info" in timeline \
-        else [("フラッシュ", t, False) for t in timeline.get("flashes", [])]
-    seams = [("切れ目", item["t"], item["beat_exempt"]) for item in timeline["seam_info"]] if "seam_info" in timeline \
-        else [("切れ目", t, False) for t in timeline.get("seams", [])]
+    """[(種類, 時刻, 対象外か, 照合先)]。照合先は flash_info / seam_info の align（無ければ beat。値はスキーマで検証済み）。
+    0.1 の timeline は数値の配列だけを持つ。blend の切れ目の時刻は blend の開始時刻。"""
+    flashes = [("フラッシュ", f["t"], f["beat_exempt"], f.get("align", "beat")) for f in timeline["flash_info"]] if "flash_info" in timeline \
+        else [("フラッシュ", t, False, "beat") for t in timeline.get("flashes", [])]
+    seams = [("切れ目", item["t"], item["beat_exempt"], item.get("align", "beat")) for item in timeline["seam_info"]] if "seam_info" in timeline \
+        else [("切れ目", t, False, "beat") for t in timeline.get("seams", [])]
     return flashes + seams
 
 
+def _grids(analysis):
+    """{照合先: (時刻の配列, 実際に比べる種類)}。拍が無ければ小節頭で代用する（小節頭は拍の部分集合）。
+    小節頭が無いときの "downbeat" は代用せず、配列を空にして「見ていない」にする。"""
+    beats = sorted(analysis.get("beats") or analysis.get("beats_s") or [])
+    downbeats = sorted(analysis.get("downbeats") or [])
+    return {"beat": (beats, "beat") if beats else (downbeats, "downbeat"), "downbeat": (downbeats, "downbeat")}
+
+
+def _nearest(grid, t):
+    """昇順の grid でいちばん近い時刻との差。"""
+    i = bisect.bisect_left(grid, t)
+    return min(abs(t - g) for g in grid[max(0, i - 1):i + 1])
+
+
 def check_beats(timeline, analysis, th):
+    """フラッシュと切れ目が、拍（align が downbeat のものは小節頭）から 1 コマ以内か。"""
     name = "拍"
     analysis = analysis if analysis is not None else timeline.get("beats")
     if analysis is None:
         return skip(name, "beats")
-    grid = analysis.get("downbeats") or analysis.get("beats") or analysis.get("beats_s")
-    if not grid:
+    grids = _grids(analysis)
+    if not grids["beat"][0]:
         return skip(name, "beats の downbeats / beats / beats_s 配列")
-    events = _beat_events(timeline)
     limit = th["beat_frames"] / timeline["fps"]
-    problems, exempt = [], 0
-    for label, t, excused in events:
-        off = min(abs(t - g) for g in grid)
+    problems, exempt, unseen, counted = [], 0, 0, {"beat": 0, "downbeat": 0}
+    for label, t, excused, align in _beat_events(timeline):
         if excused:
             exempt += 1
-        elif off > limit + EPS:
-            problems.append({"t": t, "text": label, "detail": f"拍から {off:.3f} 秒ずれています（許容 {limit:.3f} 秒）"})
-    kind = "小節頭" if analysis.get("downbeats") else "拍"
-    summary = f"{len(events) - exempt} 件を{kind}と照合、ずれ {len(problems)}"
+            continue
+        grid, kind = grids[align]
+        if not grid:     # align: "downbeat" なのに小節頭の配列が無い。拍で代用すると求めた検査をしたことになるので、見ていない扱い
+            unseen += 1
+            problems.append({"t": t, "text": label, "detail": "小節頭の配列が無く、小節頭との照合をしていません（beats に downbeats を入れてください）"})
+            continue
+        counted[kind] += 1
+        off = _nearest(grid, t)
+        if off > limit + EPS:
+            problems.append({"t": t, "text": label, "detail": f"{ALIGN_NAMES[kind]}から {off:.3f} 秒ずれています（許容 {limit:.3f} 秒）"})
+    parts = [f"{counted[kind]} 件を{ALIGN_NAMES[kind]}と照合" for kind in ("beat", "downbeat") if counted[kind]]
+    summary = "、".join(parts or ["0 件を拍と照合"]) + f"、ずれ {len(problems) - unseen}"
     if exempt:
         summary += f"（対象外（意図）{exempt} 件）"
-    return result(name, "fail" if problems else "pass", summary, problems)
+    if unseen:
+        summary += f"（小節頭の配列が無く見ていない {unseen} 件）"
+    status = "fail" if len(problems) > unseen else "warn" if unseen else "pass"
+    return result(name, status, summary, problems)
 
 
 def _info(path):

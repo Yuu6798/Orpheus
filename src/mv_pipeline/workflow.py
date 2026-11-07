@@ -255,6 +255,8 @@ def _timeline_matches(sp, record, manifest):
     from .gate.checks import _validate_timeline
     data = sp.data
     _validate_timeline(record)
+    # align は後から足した任意の欄。無い timeline（前の版の run）は "beat" として比べる
+    record = {**record, **{key: [{"align": "beat", **item} for item in record[key]] for key in ("seam_info", "flash_info") if key in record}}
     size = [data["output"]["width"], data["output"]["height"]]
     fps, duration = data["output"]["fps"], data["duration_s"]
     interval = {"start": 0.0, "duration": duration, "frames": frame_count(duration, fps)}
@@ -269,8 +271,9 @@ def _timeline_matches(sp, record, manifest):
         expected.update(
             beats=None if data["beats"] is None else {key: data["beats"][key] for key in ("beats", "downbeats")},
             layers=[{key: layer[key] for key in ("name", "z", "exclusive", "sung", "follow_camera")} for layer in data["lyrics"]["layers"]],
-            seam_info=[{"t": t, "from": left, "to": right, "kind": clips[right]["transition_in"]["type"], "beat_exempt": clips[right]["beat_exempt"]} for t, left, right in seams],
-            flash_info=[{key: f[key] for key in ("t", "strength", "decay_s", "mode", "beat_exempt")} for f in data["flashes"]],
+            seam_info=[{"t": t, "from": left, "to": right, "kind": clips[right]["transition_in"]["type"], "beat_exempt": clips[right]["beat_exempt"],
+                        "align": clips[right]["align"]} for t, left, right in seams],
+            flash_info=[{key: f[key] for key in ("t", "strength", "decay_s", "mode", "beat_exempt", "align")} for f in data["flashes"]],
             camera_seams=[{key: s[key] for key in ("t", "span_s", "pre_s", "post_s", "zoom", "rotate_deg", "rotate_post_deg", "pivot", "blur")} for s in data["camera"]["seams"]],
         )
     for key, value in expected.items():

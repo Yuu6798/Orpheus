@@ -104,6 +104,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `clips[].placement`（`fit` の後に掛ける）: `offset`（[dx, dy]。出力の正規化座標）、`scale`（倍率。`anchor` のまわり）、`flip_x`（全体の `flip_x` と重ねると元に戻る）。
 - `clips[].transition_in`: `{"type": "cut"}`（既定）か `{"type": "blend", "frames": 3}`。blend は clip の start から frames コマの間、前のクリップの再生を続け（素材の終わりを越えたら最後のフレームを保つ）、両方をそれぞれの配置で置いて、前乗算の色とアルファを smoothstep で重ねる。前のクリップと隙間なく接していること。
 - `clips[].beat_exempt`: この切れ目は意図して拍から外している（`mv gate check` が対象外として数える）。
+- `clips[].align`: この切れ目を `mv gate check` が照合する相手。`"beat"`（既定。拍）か `"downbeat"`（小節頭）。timeline の `seam_info[].align` に写す。
 - `stage`: 画像（png/jpg/webp）か動画。出力の縦横比に cover で中央に合わせる（余る側を切る。縮尺の計算は 1 回だけ）。動画は `source_start`（秒）から再生し、`loop`（既定 true）で折り返す。false なら最後のフレームを保つ。読み出しは人物と同じく前方向だけ。`parallax`（既定 1.0）はステージだけの視差（下の「カメラ」）。
 - `lyrics.fonts` = `{"名前": {"path": …, "index": 0}}`。`lyrics.font` は既定の書体名。`fonts` が無ければ `font` はパスで、`font_index` とあわせて `fonts["default"]` になる（0.1 の書き方）。ASCII 以外の歌詞には書体が要る（フォントファイルを spec の隣に置く。素材と同じく sha256 が記録される）。無ければ Pillow の既定の欧文フォントを使う。
 
@@ -192,6 +193,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `mode: "add_display"`: 表示用の値に strength·exp(−経過/decay)·color を足す（線形光のままではなく、sRGB に符号化した値に足す）。
 - **同じ値でも `lerp_linear` は暗部で強く見える**（線形光の補間は暗部の持ち上がりが表示空間で足す方式の 2〜3 倍になる。計算値）。旧来の実制作レンダラと同じ見え方が欲しければ `add_display` を使う。
 - `beat_exempt`: 意図して拍から外している（`mv gate check` が対象外として数える）。
+- `align`: `mv gate check` が照合する相手。`"beat"`（既定。拍）か `"downbeat"`（小節頭）。timeline の `flash_info[].align` に写す。
 
 ## 仕上げの受け渡し口
 
@@ -278,11 +280,11 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 - `layers`: `[{name, z, exclusive, sung, follow_camera}]`。
 - `lyrics[]`: `sung`・`reveal`・`exclusive`・`words`（`[{text, t, row, box}]`）。`fade_in_s`・`fade_out_s` は enter・exit を含めた出入りの長さ。
 - `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`。
-- `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt}]`（from・to は clip の番号）。
+- `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt, align}]`（from・to は clip の番号。align は次の clip の `align`）。
 - `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
 - `analysis`: クリップごとの `{path, sha256, p90_height, median_cx, ground, file}`。
 - `camera_seams`: seams の設定（pre_s・post_s・zoom・rotate・pivot・blur）。`accents`: 解決した時刻と設定。
-- `flash_info`: `[{t, strength, decay_s, mode, beat_exempt}]`。
+- `flash_info`: `[{t, strength, decay_s, mode, beat_exempt, align}]`。
 - `audio`: `{fit, end_s}`。
 - `finished`: 仕上げの記録 `{hooks: {path, sha256}}` か null。
 

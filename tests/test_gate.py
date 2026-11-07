@@ -575,3 +575,51 @@ def test_a_close_second_candidate_is_marked_ambiguous(tmp_path):
     lines_table.write(rows, tmp_path)
     assert json.loads((tmp_path / "lines_measured.json").read_text(encoding="utf-8"))[0]["ambiguous"] is True
     assert "要確認" in (tmp_path / "lines_table.csv").read_text(encoding="utf-8-sig")
+
+
+def _grid_120bpm():
+    """120 BPM: 拍 0.5 秒刻み、小節頭は 4 拍ごと。"""
+    beats = [i * 0.5 for i in range(32)]
+    return {"beats": beats, "downbeats": beats[::4]}
+
+
+def _flashes(times, **extra):
+    return [{"t": t, "strength": 0.5, "decay_s": 0.1, "mode": "lerp_linear", "beat_exempt": False, **extra} for t in times]
+
+
+def test_flashes_on_beats_pass_even_when_downbeats_exist():
+    """GATE-3: 小節頭があっても、既定の照合先は拍。拍に置いた 5 件のフラッシュは合格（直す前は「小節頭と照合、ずれ 4」で不合格だった）。"""
+    tl = timeline(seams=[], flash_info=_flashes([5.5, 6.0, 6.5, 7.0, 7.5]), seam_info=[], duration_s=16.0)
+    check = gate.check_beats(tl, _grid_120bpm(), TH)
+    assert check["status"] == "pass" and check["summary"] == "5 件を拍と照合、ずれ 0"
+
+
+def test_align_downbeat_compares_with_downbeats_and_names_them():
+    tl = timeline(seams=[], flash_info=_flashes([5.5, 6.0, 6.5, 7.0, 7.5], align="downbeat"), seam_info=[], duration_s=16.0)
+    check = gate.check_beats(tl, _grid_120bpm(), TH)
+    assert check["status"] == "fail" and len(check["problems"]) == 4
+    assert sorted(p["detail"].split(" 秒")[0] for p in check["problems"]) == ["小節頭から 0.500", "小節頭から 0.500", "小節頭から 0.500", "小節頭から 1.000"]
+    assert check["summary"] == "5 件を小節頭と照合、ずれ 4"
+
+
+def test_mixed_aligns_are_counted_separately_and_seams_take_align_too():
+    tl = timeline(seams=[], duration_s=16.0, flash_info=_flashes([5.5, 6.0]) + _flashes([6.0], align="downbeat"),
+                  seam_info=[{"t": 6.5, "from": 0, "to": 1, "kind": "cut", "beat_exempt": False, "align": "downbeat"}])
+    check = gate.check_beats(tl, _grid_120bpm(), TH)
+    assert check["summary"] == "2 件を拍と照合、2 件を小節頭と照合、ずれ 1"
+    assert check["problems"][0]["text"] == "切れ目" and check["problems"][0]["detail"].startswith("小節頭から")
+
+
+def test_without_beats_the_downbeats_stand_in_and_are_named():
+    """拍の配列が無いときだけ小節頭で代用し、文面も「小節頭から」になる。"""
+    tl = timeline(seams=[], flash_info=_flashes([3.2]), seam_info=[], duration_s=6.0)
+    check = gate.check_beats(tl, {"downbeats": [1.0, 3.0, 5.0]}, TH)
+    assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("小節頭から") and "小節頭と照合" in check["summary"]
+
+
+def test_align_downbeat_without_downbeats_is_unseen_not_a_pass():
+    """小節頭に合わせたいのに小節頭の配列が無い出来事は、拍で代用せず「見ていない」（要確認）。"""
+    tl = timeline(seams=[], flash_info=_flashes([3.0]) + _flashes([3.2], align="downbeat"), seam_info=[], duration_s=6.0)
+    check = gate.check_beats(tl, {"beats": [3.0]}, TH)
+    assert check["status"] == "warn" and check["summary"] == "1 件を拍と照合、ずれ 0（小節頭の配列が無く見ていない 1 件）"
+    assert "照合をしていません" in check["problems"][0]["detail"]

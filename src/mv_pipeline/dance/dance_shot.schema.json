@@ -258,6 +258,9 @@
               },
               "beat_exempt": {
                 "type": "boolean"
+              },
+              "align": {
+                "enum": ["beat", "downbeat"]
               }
             }
           }
@@ -577,6 +580,9 @@
           },
           "beat_exempt": {
             "type": "boolean"
+          },
+          "align": {
+            "enum": ["beat", "downbeat"]
           }
         }
       }
