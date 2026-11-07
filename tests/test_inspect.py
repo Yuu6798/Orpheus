@@ -1074,6 +1074,26 @@ def test_a_publish_that_cannot_be_rolled_back_keeps_the_backup_for_the_next_run(
     assert _snapshot(out) == before and any("入れ替えの途中" in note for note in notes)
 
 
+def test_a_second_run_on_the_same_output_leaves_a_run_in_progress_alone(small_demo, tmp_path):
+    from mv_pipeline.runner import project_lock
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    active = "20261107T000000Z-live"                                  # 測っている途中の実行（出力先のロックを持っている）
+    (out / f".staging-{active}" / "metrics").mkdir(parents=True)
+    run._record_run(out, {"run_id": active, "status": "running", "started_at": "2026-11-07T00:00:00+00:00"})
+    with project_lock(out):
+        with pytest.raises(PipelineError, match="ほかの mv inspect の実行が使っています"):
+            run.run(small_demo / "inspect.json", out)
+        code, _, err = run_cli("inspect", "check", small_demo / "inspect.json", "--out", out, "--quiet")
+        assert code == 1 and "ほかの mv inspect の実行が使っています" in err
+    assert (out / f".staging-{active}" / "metrics").is_dir() and _snapshot(out) == before   # 作業用フォルダーも前の結果もそのまま
+    assert [r["status"] for r in run.runs(out)] == ["succeeded", "running"]               # 動いている実行を止まった扱いにしない
+    run.run(small_demo / "inspect.json", out)                         # ロックが外れた後なら、止まった実行の跡として片付ける
+    assert next(r for r in run.runs(out) if r["run_id"] == active)["status"] == "failed"
+    assert not (out / f".staging-{active}").exists()
+
+
 def test_a_vlm_response_without_the_request_hash_needs_the_legacy_flag(small_demo, tmp_path):
     run.run(small_demo / "inspect.json", tmp_path / "first", vlm_packet=True)
     unbound = {"schema_version": vlm.RESPONSE_SCHEMA, "tool": {"name": "hand"},
