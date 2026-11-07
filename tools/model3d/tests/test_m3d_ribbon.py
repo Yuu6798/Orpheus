@@ -173,6 +173,22 @@ def test_a_raised_thigh_pushes_the_ribbon_out_in_front():
     assert held[:, 0, -1, 1].min() < free[:, 0, -1, 1].min()            # 先は前（-y）へ乗り越える
 
 
+def test_a_ribbon_on_a_capsule_axis_still_gets_out_with_no_front_bias():
+    a, b = np.array([0.0, 0.0, 1.0]), np.array([0.0, 0.0, 0.6])        # 縦のカプセル
+    cap = {"pa": np.tile(a, (10, 1)), "pb": np.tile(b, (10, 1)), "ra": 0.05, "rb": 0.05, "qa": a, "qb": b}
+    nodes = np.array([[[0.3, 0.0, 1.06], [0.3, 0.0, 1.0], [0.3, 0.0, 0.94]]])   # 静止では当たりから離れている
+    targets = np.repeat(np.array([[[0.0, 0.0, 1.06], [0.0, 0.0, 1.0], [0.0, 0.0, 0.94]]])[None], 10, axis=0)   # 狙いは軸の上
+    hips = {"x": np.tile([1.0, 0, 0], (10, 1)), "fwd": np.tile([0, -1.0, 0], (10, 1)), "up": np.tile([0, 0, 1.0], (10, 1))}
+    kw = dict(gravity=0.0, over=0.0, root_move=0.0, settle=0.0)
+    sim = sb.simulate_ribbon(nodes, targets, [cap], hips, **kw)
+    stuck = prototype_ribbon(nodes, targets, [cap], hips["x"], hips["fwd"], hips["up"], gravity=0.0, over=0.0, root_move=0.0)
+    off_axis = lambda s_, n: np.hypot(s_[-1, 0, n, 0], s_[-1, 0, n, 1])
+    assert max(off_axis(stuck, 1), off_axis(stuck, 2)) < 1e-9           # 試作の式では押す向きが 0 で、軸の上に残る
+    assert sb.surface_clear(sim[-1:], [cap])[0, 0, 1] > -0.002          # 1 つ目の節は当たりの面まで出る
+    assert sim[-1, 0, 1, 1] < 0 and off_axis(sim, 2) > 0.01             # 腰の前（-y）へ。2 つ目も軸から離れる
+    # （この場面は狙いが当たりの中を通る無理な形なので、2 つ目は当たりの中に少し残る）
+
+
 def test_fit_capsules_measures_slices_of_a_tube_around_the_bones():
     rng = np.random.default_rng(1)
     heads = [np.array([0.0, 0, 1.0]), np.array([0.0, 0, 0.6]), np.array([0.0, 0, 0.2])]

@@ -304,6 +304,9 @@ def simulate_ribbon(nodes, targets, colliders, hips, fps=30, substeps=8, f_root=
             u = u + over * pref
             u = u - (u @ axn)[:, None] * axn
             u /= np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-9)
+            stuck = np.linalg.norm(u, axis=1) < 0.5                        # 向きが決まらない（軸の上の節で over が 0、など）
+            if stuck.any():                                                # 腰の前と上の側、それも無ければ軸に直角な向きへ
+                u[stuck] = pref if np.linalg.norm(pref) > 0.5 else (perpendicular(axn) if not sphere else hu)
             dpar = d if sphere else d - (d @ (ab / np.linalg.norm(ab)))[:, None] * (ab / np.linalg.norm(ab))
             # 端の丸い所（軸に投げた位置が 0 か 1 に切られた節）では、軸の向きの成分を残して球の面までを解く。試作は除いて
             # 無限の円柱として解いていたので、端の先の節を横へ押しすぎた。ただし、次のカプセルへ続く継ぎ目（open_a・open_b）は
