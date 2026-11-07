@@ -10,7 +10,8 @@ DIR に書くもの:
     timeline.json     手書きの dance-timeline/0.1（層 band の行・フラッシュ・拍の格子。lyric_fade は after）
     beats.json        拍の格子（bpm から作る。--no-downbeats で小節頭を省く）
     gate.json         `mv gate check` の設定（timeline・measured_lines・lyric_layer・beats）
-    expected.json     正解: 行ごとの true_onset・declared・期待する lead と合否、フラッシュごとの照合先からのずれと合否、検査ごとの期待する結果
+    expected.json     正解: 行ごとの true_onset・declared・期待する lead と合否（境目は uncertain）、フラッシュごとの照合先からのずれと合否、
+                      検査ごとの期待する結果と overall・終了コード
 
 使い方（出力の後に）:
     uv run mv gate lines DIR/lyrics.lrc DIR/lines --vocals DIR/vocals.wav
@@ -27,6 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from ..io import PipelineError, atomic_json
+from .checks import EPS, _nearest
 
 RATE = 48000
 LEAD_S = 0.1                 # 宣言した行の時刻は正解の歌い出しのこれだけ前（gate の許容 0〜0.2 秒の中）
@@ -37,6 +39,7 @@ DEFAULT_FLASHES = (5.5, 6.0, 6.5, 7.0, 7.5)
 NOTE_S = 1.2                 # 1 行の音の長さ（次の行の 0.3 秒前まで）
 RELEASE_S = 0.08
 MEASURE_TOLERANCE_S = 0.04   # 歌い出しの推定が正解からこれ以上ずれない前提で合否を予想する（合成素材での実測は約 -0.02 秒）
+MAX_SHIFT_S = 0.6            # 宣言のずらしの上限。gate lines の探索窓（既定 0.8 秒）の中に正解が残り、隣の行と入れ替わらない範囲
 
 
 def _floats(value, name):
@@ -82,10 +85,6 @@ def beat_grid(bpm, duration, beats_per_bar=4, downbeats=True):
     return {"bpm": bpm, "beats": beats, "downbeats": beats[::beats_per_bar] if downbeats else []}
 
 
-def _nearest(grid, t):
-    return min(abs(t - g) for g in grid) if grid else None
-
-
 def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbeats=True, shifts=None, flashes=None,
            flash_align="beat", attack_ms=30.0, floor_db=-40.0, width=1080, height=1920):
     directory = Path(directory)
@@ -97,6 +96,11 @@ def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbea
     if len(shifts) < len(onsets):
         shifts = shifts + [0.0] * (len(onsets) - len(shifts))
     shifts = shifts[:len(onsets)]
+    for index, (onset, shift) in enumerate(zip(onsets, shifts)):
+        if abs(shift - LEAD_S) > MAX_SHIFT_S + EPS:   # 宣言 = 正解 - LEAD_S + shift。正解からの距離で見る
+            raise PipelineError(f"行 {index + 1} の宣言が正解から {abs(shift - LEAD_S):.3f} 秒離れます（上限 {MAX_SHIFT_S} 秒。gate lines の探索窓の中に正解が残る範囲）")
+        if onset - LEAD_S + shift < 0:
+            raise PipelineError(f"行 {index + 1} の宣言した時刻が負になります（正解 {onset} 秒、ずらし {shift:+.3f} 秒）")
     flashes = _floats(flashes, "--flashes") if flashes is not None else [f for f in DEFAULT_FLASHES if f < duration]
     if flash_align not in ("beat", "downbeat"):
         raise PipelineError(f"--flash-align は beat か downbeat にしてください: {flash_align!r}")
@@ -112,6 +116,8 @@ def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbea
         declared = round(onset - LEAD_S + shift, 3)
         nxt = onsets[index + 1] - LEAD_S + shifts[index + 1] if index + 1 < len(onsets) else duration
         end = round(min(declared + 2.0, nxt - 0.2, duration), 3)
+        if end <= declared:
+            raise PipelineError(f"行 {index + 1} の表示の終わり {end} 秒が始まり {declared} 秒より前になります（隣の行と近すぎます）")
         lead = round(onset - declared, 3)        # 正 = 字が歌より先に出る。gate の許容は 0〜0.2
         margin = min(lead - 0.0, 0.2 - lead)
         status = "pass" if margin >= MEASURE_TOLERANCE_S else "fail" if margin <= -MEASURE_TOLERANCE_S else "uncertain"
@@ -127,7 +133,7 @@ def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbea
         compared = "downbeat" if flash_align == "downbeat" else "beat"
         off = _nearest(grid["downbeats"] if compared == "downbeat" else grid["beats"], t)
         flash_rows.append({"t": t, "align": flash_align, "compared_with": compared, "offset_s": round(off, 6),
-                           "status": "pass" if off <= limit + 1e-6 else "fail"})
+                           "status": "pass" if off <= limit + EPS else "fail"})
     timeline = {
         "schema_version": "dance-timeline/0.1", "size": [width, height], "fps": fps, "duration_s": duration,
         "lyric_fade": "after",
@@ -143,7 +149,9 @@ def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbea
     atomic_json(directory / "beats.json", {"bpm": bpm, "beats": grid["beats"], "downbeats": grid["downbeats"]})
     atomic_json(directory / "gate.json", {"timeline": "timeline.json", "measured_lines": "lines/lines_measured.json",
                                            "lyric_layer": "band", "beats": "beats.json"})
-    lyric_status = "fail" if any(r["status"] == "fail" for r in rows) else "pass"
+    # uncertain の行（許容の境目から推定の誤差の範囲）がある限り、歌詞の時刻の合否は予想しない
+    lyric_status = ("fail" if any(r["status"] == "fail" for r in rows)
+                    else "uncertain" if any(r["status"] == "uncertain" for r in rows) else "pass")
     beat_status = ("fail" if any(f["status"] == "fail" for f in flash_rows)
                    else "warn" if any(f["status"] == "unseen" for f in flash_rows) else "pass")
     expected = {
@@ -153,6 +161,9 @@ def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbea
         "lines": rows, "flashes": flash_rows,
         "beats": {"bpm": bpm, "beats_per_bar": beats_per_bar, "downbeats": bool(grid["downbeats"])},
         "checks": {"歌詞の時刻": lyric_status, "拍": beat_status},
+        # 確認済みの時刻・字と顔・揺れ・書き出しは材料が無く skip になるので、fail が無ければ pass_with_skips
+        "overall": "fail" if "fail" in (lyric_status, beat_status) else "uncertain" if lyric_status == "uncertain" else "pass_with_skips",
+        "exit_code": 1 if "fail" in (lyric_status, beat_status) else 0,
         "failing_lines": [r["text"] for r in rows if r["status"] == "fail"],
         "uncertain_lines": [r["text"] for r in rows if r["status"] == "uncertain"],
         "failing_flashes": [f["t"] for f in flash_rows if f["status"] == "fail"],
@@ -161,5 +172,5 @@ def create(directory, duration=10.0, fps=30, bpm=120.0, beats_per_bar=4, downbea
     }
     atomic_json(directory / "expected.json", expected)
     return {"dir": str(directory), "lines": len(rows), "flashes": len(flashes), "downbeats": bool(grid["downbeats"]),
-            "expected": expected["checks"], "failing_lines": expected["failing_lines"], "failing_flashes": expected["failing_flashes"],
-            "commands": expected["commands"]}
+            "expected": expected["checks"], "overall": expected["overall"], "failing_lines": expected["failing_lines"],
+            "uncertain_lines": expected["uncertain_lines"], "failing_flashes": expected["failing_flashes"], "commands": expected["commands"]}

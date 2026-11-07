@@ -57,7 +57,7 @@ def _read_audio(path):
     """(float32 の (サンプル, ch), レート)。soundfile があればそれで、無ければ PCM の WAV だけ標準ライブラリで読む。"""
     try:
         import soundfile
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, OSError):   # 無い、または libsndfile を読み込めない
         soundfile = None
     if soundfile is not None:
         return soundfile.read(path, dtype="float32", always_2d=True)
