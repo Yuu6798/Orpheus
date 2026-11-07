@@ -164,6 +164,8 @@ def _inspect_parser(commands):
     check.add_argument("--allow-send", action="store_true", help="allow a VLM adapter with sends_data: true to send frames and sheets")
     check.add_argument("--vlm-packet", action="store_true", help="write the VLM request packet only (nothing is sent)")
     check.add_argument("--vlm-response", type=Path, help="import a VLM response written for this run's request packet")
+    check.add_argument("--vlm-legacy-response", action="store_true",
+                       help="accept a VLM response without request_sha256 (old format; not bound to this request). Recorded in the report")
     check.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
     demo = sub.add_parser("demo", help="write a synthetic clip with known anomalies, a design sheet and inspect.json")
     demo.add_argument("dir", type=Path)
@@ -293,7 +295,7 @@ def inspect_command(args):
         return demo.create(args.dir, args.width, args.height, args.fps, args.duration)
     from .inspection import run
     result, out = run.run(args.config, args.out, args.vlm, args.allow_send, args.vlm_packet, args.vlm_response,
-                          None if args.quiet else _progress)
+                          None if args.quiet else _progress, vlm_legacy=args.vlm_legacy_response)
     return run.summarize(result, out)
 
 

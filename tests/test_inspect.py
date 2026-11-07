@@ -733,10 +733,14 @@ def test_a_hanging_vlm_program_is_stopped_and_its_output_is_logged(small_demo, t
     path = tmp_path / "slow.json"
     path.write_text(json.dumps({"tool": "slow", "version": "0", "sends_data": False, "timeout_s": 1,
                                 "argv": [sys.executable, "-c", "import time; print('working', flush=True); time.sleep(30)"]}), encoding="utf-8")
-    with pytest.raises(PipelineError, match="終わりませんでした"):
+    with pytest.raises(PipelineError, match="終わりませんでした") as error:
         run.run(small_demo / "inspect.json", tmp_path / "out", vlm_config=path)
-    log = (tmp_path / "out" / "vlm" / "adapter.log").read_text(encoding="utf-8")
+    logs = list((tmp_path / "out" / "failed").glob("*/adapter.log"))     # 失敗した実行のログは failed/<run_id>/ に残る
+    assert len(logs) == 1 and str(logs[0]) in str(error.value)            # エラーの文は残した場所を指す
+    log = logs[0].read_text(encoding="utf-8")
     assert log.startswith("timeout after 1") and "b'" not in log
+    record = run.runs(tmp_path / "out")[-1]
+    assert record["status"] == "failed" and record["kept"] == [str(logs[0])] and not (tmp_path / "out" / "vlm").exists()
 
 
 def test_the_vlm_request_is_bound_to_the_frame_contents_and_offers_every_category(tmp_path):
@@ -945,3 +949,89 @@ def test_cli_demo_then_check(tmp_path):
     assert Path(summary["report"]).is_file() and Path(summary["fix_plan"]).is_file()
     code, _, err = run_cli("inspect", "check", made["config"], "--vlm", tmp_path / "missing.json")
     assert code == 1 and "VLM の設定が見つかりません" in err
+
+
+def _snapshot(out):
+    """出力先の報告の run_id と、静止画などのファイルの一覧と中身の sha256。"""
+    files = {str(p.relative_to(out)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.rglob("*"))
+             if p.is_file() and p.name not in (run.RUNS, run.MARKER) and not p.relative_to(out).parts[0].startswith(".")}
+    return read_json(out / "inspect_report.json")["run"]["id"], files
+
+
+def test_a_failed_rerun_keeps_the_last_good_report_and_its_files(small_demo, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    first, _ = run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    assert before[0] == first["run"]["id"] and any(name.startswith("stills") for name in before[1])
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("静止画を書く途中で止まった")
+    monkeypatch.setattr(run.report, "write_anchors", broken)
+    with pytest.raises(RuntimeError, match="途中で止まった"):
+        run.run(small_demo / "inspect.json", out)
+    assert _snapshot(out) == before                                   # 前の成功した報告と、その静止画・計測がそのまま
+    assert not list(out.glob(".staging-*")) and not list(out.glob(".previous-*"))
+    records = run.runs(out)
+    assert [r["status"] for r in records] == ["succeeded", "failed"] and "途中で止まった" in records[-1]["error"]
+    assert records[0]["run_id"] == first["run"]["id"] and records[0]["inputs"] == first["run"]["inputs"]
+
+
+def test_the_report_records_the_run_and_its_input_hashes(small_demo, tmp_path):
+    result, out = run.run(small_demo / "inspect.json", tmp_path / "out")
+    roles = {item["role"]: item for item in result["run"]["inputs"]}
+    assert roles["config"]["sha256"] == result["config_sha256"] and roles["clip"]["sha256"] == result["clips"][0]["sha256"]
+    assert roles["reference"]["sha256"] == hashlib.sha256((small_demo / "sheet.png").read_bytes()).hexdigest()
+    assert result["run"]["started_at"] <= result["run"]["finished_at"] and result["run"]["id"] in (out / "inspect_report.md").read_text(encoding="utf-8")
+    assert run.runs(out)[-1]["run_id"] == result["run"]["id"] and run.summarize(result, out)["run_id"] == result["run"]["id"]
+
+
+def test_a_run_stopped_while_measuring_is_recorded_as_failed_and_its_work_is_cleared(small_demo, tmp_path):
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    stopped = "20261107T000000Z-dead"                                 # 強制終了した実行の跡: 作業用フォルダーと running の記録
+    (out / f".staging-{stopped}" / "stills").mkdir(parents=True)
+    (out / f".staging-{stopped}" / "stills" / "half.jpg").write_bytes(b"half")
+    run._record_run(out, {"run_id": stopped, "status": "running", "started_at": "2026-11-07T00:00:00+00:00"})
+    assert _snapshot(out) == before                                   # 止まった実行は前の結果に触れていない
+    result, _ = run.run(small_demo / "inspect.json", out)
+    entry = next(r for r in run.runs(out) if r["run_id"] == stopped)
+    assert entry["status"] == "failed" and entry["interrupted"] is True
+    assert not list(out.glob(".staging-*")) and any(stopped in note for note in result["notes"])
+
+
+def test_a_publish_stopped_halfway_is_rolled_back_to_the_last_good_result(small_demo, tmp_path):
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    old = [name for name in run.OUTPUTS if (out / name).exists()]
+    assert "vlm" not in old
+    backup = out / ".previous-halfway"                                # 前の結果を外し、新しい結果を一部だけ入れた所で止まった
+    backup.mkdir()
+    for name in ("inspect_report.json", "inspect_report.md", "stills"):
+        (out / name).rename(backup / name)
+    (out / "stills").mkdir()
+    (out / "stills" / "new.jpg").write_bytes(b"new")
+    (out / "vlm").mkdir()                                             # 前には無かった、新しい結果のフォルダー
+    (out / ".staging-halfway").mkdir()
+    (out / run.JOURNAL).write_text(json.dumps({"run_id": "halfway", "staging": ".staging-halfway", "backup": backup.name, "old": old}),
+                                   encoding="utf-8")
+    notes = run.recover(out)
+    assert _snapshot(out) == before and not (out / "vlm").exists()   # 前の結果に戻り、途中まで入れた新しい結果は消える
+    assert not (out / run.JOURNAL).exists() and not backup.exists() and not (out / ".staging-halfway").exists()
+    assert any("halfway" in note for note in notes)
+
+
+def test_a_vlm_response_without_the_request_hash_needs_the_legacy_flag(small_demo, tmp_path):
+    run.run(small_demo / "inspect.json", tmp_path / "first", vlm_packet=True)
+    unbound = {"schema_version": vlm.RESPONSE_SCHEMA, "tool": {"name": "hand"},
+               "findings": [{"frame_id": "demo@30", "category": "continuity", "description": "どの依頼への返答か分からない指摘"}]}
+    (tmp_path / "unbound.json").write_text(json.dumps(unbound), encoding="utf-8")
+    with pytest.raises(PipelineError, match="--vlm-legacy-response"):
+        run.run(small_demo / "inspect.json", tmp_path / "second", vlm_response=tmp_path / "unbound.json")
+    result, out = run.run(small_demo / "inspect.json", tmp_path / "third", vlm_response=tmp_path / "unbound.json", vlm_legacy=True)
+    assert result["vlm"]["status"] == "imported" and result["vlm"]["legacy_response"] is True and result["vlm"]["findings"] == 1
+    assert any("互換の扱い" in w for w in result["vlm"]["warnings"])
+    assert "互換の扱い" in (out / "inspect_report.md").read_text(encoding="utf-8")
+    roles = {item["role"]: item for item in result["run"]["inputs"]}
+    assert roles["vlm_response"]["sha256"] == hashlib.sha256((tmp_path / "unbound.json").read_bytes()).hexdigest()
