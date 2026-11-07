@@ -9,8 +9,8 @@
     inspect_runs.json（実行ごとの run_id・状態（running / succeeded / failed）・入力の sha256）
 
 1 回の実行は出力先の中の作業用フォルダー（.staging-<run_id>）に全部を書き、最後まで済んだときだけ前の結果と入れ替える。
-途中で失敗・中断すると、前の成功した結果（報告と静止画など）がそのまま残る。入れ替えの途中で止まったときは、次の実行の
-初めに前の結果へ戻す。
+途中で失敗・中断すると、前の成功した結果（報告と静止画など）がそのまま残る。入れ替えの途中で失敗したとき（ファイルが
+開かれていて動かせない・Ctrl+C など）は、その場で前の結果へ戻す。強制終了などで戻せなかったときは、次の実行の初めに戻す。
 
 overall は review（要確認の出来事か復号のエラーがある）/ clean_with_skips（見つけた所は無いが、見ていない検査がある）/ clean。
 どれも合否ではない（終了コードは設定や入力の誤りのときだけ 1）。
@@ -204,18 +204,27 @@ def _record_run(out, entry):
 def publish(out, staging, run_id):
     """作業用フォルダーの結果を出力先へ入れ替える。前の結果はいったん BACKUP へ動かし、全部そろってから消す。
     報告の JSON を先に外して最後に置くので、報告が見える間は、その報告の静止画などがそろっている。
-    途中で止まったときのために、前からあったものの一覧を JOURNAL に書いておく（recover が前の結果へ戻す）。"""
+    途中で失敗したとき（ファイルが開かれていて動かせない・Ctrl+C など）は、その場で前の結果へ戻してから止まる。
+    戻せなかったとき（強制終了など）のために、前からあったものの一覧を JOURNAL に書いておく（次の実行の初めに recover が戻す）。"""
     out, staging = Path(out), Path(staging)
     backup = out / f"{BACKUP}{run_id}"
     old = [name for name in OUTPUTS if (out / name).exists()]
-    atomic_json(out / JOURNAL, {"run_id": run_id, "staging": staging.name, "backup": backup.name, "old": old})
-    backup.mkdir()
-    for name in reversed(OUTPUTS):                   # 報告の JSON から外す
-        if (out / name).exists():
-            os.replace(out / name, backup / name)
-    for name in OUTPUTS:                             # 報告の JSON を最後に置く
-        if (staging / name).exists():
-            os.replace(staging / name, out / name)
+    try:
+        atomic_json(out / JOURNAL, {"run_id": run_id, "staging": staging.name, "backup": backup.name, "old": old})
+        backup.mkdir()
+        for name in reversed(OUTPUTS):               # 報告の JSON から外す
+            if (out / name).exists():
+                os.replace(out / name, backup / name)
+        for name in OUTPUTS:                         # 報告の JSON を最後に置く
+            if (staging / name).exists():
+                os.replace(staging / name, out / name)
+    except BaseException as error:                   # Ctrl+C も含む。前の結果へ戻してから、元の失敗のまま止まる
+        try:
+            _rollback(out)
+        except Exception as again:                   # 戻せなければ、控えと前の結果を残す（次の実行の初めに recover が戻す）
+            error.add_note(f"前の結果へ戻せませんでした（{type(again).__name__}: {again}）。{backup.name} に残したので、"
+                           "次の実行の初めに戻します")
+        raise
     (out / JOURNAL).unlink()
     shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging, ignore_errors=True)
@@ -237,6 +246,35 @@ def _keep_failure_logs(out, staging, run_id):
     return kept
 
 
+def _rollback(out):
+    """入れ替えの途中で止まった跡（JOURNAL）から、前の結果を戻し、途中まで入れた新しい結果を消す。→ 止まった実行の run_id
+    （跡が無ければ None）。途中で失敗しても JOURNAL は残るので、もう一度呼べば続きから戻せる。"""
+    out = Path(out)
+    journal = out / JOURNAL
+    if not journal.is_file():
+        return None
+    try:
+        data = read_json(journal)
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    backup = out / str(data.get("backup", ""))
+    old = set(data.get("old", []))
+    if data.get("backup") and backup.is_dir():
+        for name in OUTPUTS:
+            target = out / name
+            if (backup / name).exists():                           # まだ戻していない前の結果
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+                os.replace(backup / name, target)
+            elif name not in old and target.exists():              # 前には無く、途中まで入れた新しい結果
+                shutil.rmtree(target) if target.is_dir() else target.unlink()
+        shutil.rmtree(backup, ignore_errors=True)
+    journal.unlink()
+    return data.get("run_id", "?")
+
+
 def recover(out):
     """前の実行が途中で止まった跡を片付ける。→ 報告の注意に足す文の列。
     - 入れ替えの途中で止まった（JOURNAL がある）: 前の結果を戻し、途中まで入れた新しい結果を消す。
@@ -244,29 +282,9 @@ def recover(out):
     - 記録が running のまま: failed（interrupted）にする。"""
     out = Path(out)
     notes = []
-    journal = out / JOURNAL
-    if journal.is_file():
-        try:
-            data = read_json(journal)
-        except (ValueError, UnicodeDecodeError):
-            data = {}
-        backup = out / str(data.get("backup", ""))
-        old = set(data.get("old", []))
-        if data.get("backup") and backup.is_dir():
-            for name in OUTPUTS:
-                if (backup / name).exists():                       # まだ戻していない前の結果
-                    target = out / name
-                    if target.is_dir():
-                        shutil.rmtree(target)
-                    elif target.exists():
-                        target.unlink()
-                    os.replace(backup / name, target)
-                elif name not in old and (out / name).exists():    # 前には無く、途中まで入れた新しい結果
-                    target = out / name
-                    shutil.rmtree(target) if target.is_dir() else target.unlink()
-            shutil.rmtree(backup, ignore_errors=True)
-        journal.unlink()
-        notes.append(f"前の実行（{data.get('run_id', '?')}）が結果の入れ替えの途中で止まっていたので、その前の結果に戻しました")
+    stopped_run = _rollback(out)
+    if stopped_run is not None:
+        notes.append(f"前の実行（{stopped_run}）が結果の入れ替えの途中で止まっていたので、その前の結果に戻しました")
     for leftover in sorted(out.glob(f"{STAGING}*")) + sorted(out.glob(f"{BACKUP}*")):
         shutil.rmtree(leftover, ignore_errors=True)
     entries = runs(out)
@@ -343,8 +361,8 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
         message = str(error)
         for old_path, new_path in kept.items():                  # エラーの文のログの場所を、残した場所に直す
             message = message.replace(old_path, new_path)
-        _record_run(out, {**record, "status": "failed", "finished_at": _now(), "error": f"{type(error).__name__}: {message}"[:600],
-                          "kept": sorted(kept.values())})
+        detail = " ".join([f"{type(error).__name__}: {message}", *getattr(error, "__notes__", [])])   # 注は前の結果へ戻せなかったときなど
+        _record_run(out, {**record, "status": "failed", "finished_at": _now(), "error": detail[:600], "kept": sorted(kept.values())})
         if isinstance(error, PipelineError) and message != str(error):
             raise PipelineError(message) from error
         raise
