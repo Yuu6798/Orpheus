@@ -201,7 +201,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `motion.sleeve_bones` | blend → blend, report | 袖口の骨（`sleeves` の `bone`）を、関節（`follow`。前腕など）の曲げの `ratio` 倍に、減衰つきのばねで少し遅れて付いて行かせる（[袖口を曲げに遅れて付いて行かせる](#袖口を曲げに遅れて付いて行かせる)）。ねじれは入れない。焼き付けた向きを確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `motion.ribbon_bones` | blend → blend, report | 帯の垂れの鎖の骨（`chains`。長さは鎖ごとに違ってよい）を、重力で垂れて太ももの上を前へ乗り越えるように揺らす（[帯の垂れを揺らす](#帯の垂れを揺らす)）。狙いは `follow` に `thigh`（下ほど太もも）を混ぜられる。当たりは `colliders` と、メッシュの輪切りから作る `fitted`。押す向きは腰（`hips`）の前と上へ寄せる。焼き付けた骨を確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `look.toon` | blend → blend, report | キャラに描く前のセル調の塗りと輪郭線を付ける（[セル調の塗りと輪郭線を付ける](#セル調の塗りと輪郭線を付ける)）。体は決まった向きの光で影を 2 段に分け、舞台の色と縁の光を足して Emission で出す。顔（`faces`）は光を少し受けて絵の色を出す。輪郭線は反転ハル。舞台の色と縁の強さは共有のノードグループ `model3d_stage_tone`。Blender が要り、再利用しない（毎回実行） |
-| `render.stage` | blend, track → frames, report | キャラを舞台と光の中でコマごとに PNG に描く（[舞台で描く](#舞台で描く)）。床・LED の壁・トラス・光の柱とスポット 4 つ、EEVEE と光のにじみ。トラック（`model3d-stage-track/0.1`）のコマの並びとカメラ・光・塗りの値で描き、無ければ腰を追う正面のカメラと動かない光。輪郭線の太さはカメラの距離で画面の上にそろえる。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（`model3d-frames/0.1`）。Blender が要り、再利用しない（毎回実行） |
+| `render.stage` | blend, track → frames, report | キャラを舞台と光の中でコマごとに PNG に描く（[舞台で描く](#舞台で描く)）。床・LED の壁・トラス・光の柱とスポット 4 つ、EEVEE と光のにじみ。トラック（`model3d-stage-track/0.1`）のコマの並びとカメラ・光・塗りの値で描き、無ければ腰を追う正面のカメラと動かない光。輪郭線の太さはカメラの距離で画面の上にそろえる。舞台を切って `background` で緑背景か透けにも描ける。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（`model3d-frames/0.1`）。Blender が要り、再利用しない（毎回実行） |
 | `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
 | `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
@@ -885,6 +885,9 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   - 舞台のメッシュは、1/`scale_length` 倍の親 `model3d_stage_root` の下に m のまま作る（壁の帯や光の柱の模様は物体の中の座標で決まるので、そのまま）。
   - 光は Blender 単位の距離の 2 乗で弱まるので、強さを 1/`scale_length`² 倍、影の半径を 1/`scale_length` 倍にする。カメラの写る範囲と画面の反射の厚みも直す。
 - **描き方**: EEVEE（`samples` 既定 64、`raytracing` で画面の光線追跡）、色の変換は Standard（Look なし）、`bloom` で合成の Glare の Bloom、`resolution` 既定 1080×1920、PNG（RGB・8 bit）。
+- **背景**（`background`。省くと舞台の空か、舞台なしなら .blend の空）: 人物だけを緑背景か透けで描き、`mv dance` で合成したり `mv inspect` で検品したりするため。どちらも `stage.enabled: false` が要る（舞台の床や壁が背景を隠すので、そうでなければ止める）。
+  - `{"color": [R, G, B]}`（0〜255 の sRGB）: その色の背景。透けで描いてから合成で色を敷くので、背景の色で人物を照らさない。ディザーを 0 にして、背景を画素まで決まった色にする（緑抜きのキーの色と同じ値になる）。輪郭のなじみは、透けの縁に色を敷いた形（実物の緑背景と同じく、抜くときの `softness` で扱う）。
+  - `"transparent"`: 透けの RGBA の PNG。
 - **コマ**:
   - トラックがあれば、その並びで描く（T は書き出す番号、f は動きのコマ。同じ f を続ければ止まり、とばせば速くなる）。無ければ、シーンの全コマを T = 1 から描く。
   - ファイルは `f<T>.png`。`only` で T を選ぶ。すでにあるファイルはとばすので、続きから描ける（描き直すときはファイルを消す）。
@@ -918,6 +921,11 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   - 同じ大きさの場面を 1 単位 = 1 m と 1 単位 = 1 cm で作り、同じトラック（m）で舞台ごと描いて比べた。
     - 報告の距離（2.52〜3.62 m）と線の太さ（1.51〜3.11 mm）は同じ。
     - 画はほぼ同じで、1/255 より違う画素は 2 コマで 0.3%・1.2%（最大 2/255・7/255）。直していない EEVEE の細かな長さの設定（影など）のぶんと見ている。
+- 2026-11-07 に Windows の Blender 4.5.15 で、背景（`background`）を確かめた。本番と同じキャラ（クリップ D）に `look.toon` を当て、舞台なしで描いた。
+  - `{"color": [0, 255, 0]}`: 101 コマ（540×960・16 標本）を 132 秒で描いた。背景はどのコマも画素まで (0, 255, 0) で、`mv inspect` の緑抜きで人物を切り抜けた（docs/inspect.md の「3 回目」）。
+  - `"transparent"`: RGBA の PNG で、人物の外の透けは 0。
+  - 背景を使わない描画は変わらない: 舞台ありの 1 コマを、直す前と後の台本で描くと、画素まで同じ（差 0）。
+  - 舞台も背景もなしで描くと、キャラ（look.toon なしの .blend）は黒い影絵になった（その .blend に光も空もないため。塗りは Emission の `look.toon` を当てる）。
 
 ## Orpheus との接続（受け渡し）
 
