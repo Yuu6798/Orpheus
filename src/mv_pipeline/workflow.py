@@ -255,6 +255,8 @@ def _timeline_matches(sp, record, manifest):
     from .gate.checks import _validate_timeline
     data = sp.data
     _validate_timeline(record)
+    # align は後から足した任意の欄。無い timeline（前の版の run）は "beat" として比べる
+    record = {**record, **{key: [{"align": "beat", **item} for item in record[key]] for key in ("seam_info", "flash_info") if key in record}}
     size = [data["output"]["width"], data["output"]["height"]]
     fps, duration = data["output"]["fps"], data["duration_s"]
     interval = {"start": 0.0, "duration": duration, "frames": frame_count(duration, fps)}

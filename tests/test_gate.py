@@ -611,16 +611,15 @@ def test_mixed_aligns_are_counted_separately_and_seams_take_align_too():
 
 
 def test_without_beats_the_downbeats_stand_in_and_are_named():
-    """拍の配列が無いときだけ小節頭で代用し、文面も「小節頭から」になる。逆（小節頭が無い align: downbeat）は拍で代用する。"""
+    """拍の配列が無いときだけ小節頭で代用し、文面も「小節頭から」になる。"""
     tl = timeline(seams=[], flash_info=_flashes([3.2]), seam_info=[], duration_s=6.0)
     check = gate.check_beats(tl, {"downbeats": [1.0, 3.0, 5.0]}, TH)
     assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("小節頭から") and "小節頭と照合" in check["summary"]
-    tl = timeline(seams=[], flash_info=_flashes([3.0], align="downbeat"), seam_info=[], duration_s=6.0)
+
+
+def test_align_downbeat_without_downbeats_is_unseen_not_a_pass():
+    """小節頭に合わせたいのに小節頭の配列が無い出来事は、拍で代用せず「見ていない」（要確認）。"""
+    tl = timeline(seams=[], flash_info=_flashes([3.0]) + _flashes([3.2], align="downbeat"), seam_info=[], duration_s=6.0)
     check = gate.check_beats(tl, {"beats": [3.0]}, TH)
-    assert check["status"] == "pass" and check["summary"] == "1 件を拍と照合、ずれ 0"
-
-
-def test_an_unknown_align_is_an_error_not_a_pass():
-    tl = timeline(seams=[], flash_info=_flashes([3.0], align="bar"), seam_info=[], duration_s=6.0)
-    with pytest.raises(gate.PipelineError, match="align"):
-        gate.check_beats(tl, {"beats": [3.0]}, TH)
+    assert check["status"] == "warn" and check["summary"] == "1 件を拍と照合、ずれ 0（小節頭の配列が無く見ていない 1 件）"
+    assert "照合をしていません" in check["problems"][0]["detail"]

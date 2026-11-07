@@ -392,3 +392,14 @@ def test_a_broken_inspection_record_fails_and_a_bad_mode_is_refused(mv, tmp_path
     assert rows(report)["inspection"]["status"] == "fail" and "inspection" in report["failed"]
     with pytest.raises(PipelineError, match="inspection"):
         workflow.create_plan(root, "lyric-mv", out=tmp_path / "bad.json", inspection="sometimes")
+
+
+def test_a_timeline_rendered_before_align_existed_still_matches_the_spec(dance):
+    """seam_info / flash_info に align の無い run（前の版）も、"beat" として比べて完了になる。"""
+    root, plan, run = dance
+    record = read_json(run / "timeline.json")
+    for key in ("seam_info", "flash_info"):
+        for item in record[key]:
+            item.pop("align", None)
+    atomic_json(run / "timeline.json", record)
+    assert dance_check(dance)["overall"] == "complete"

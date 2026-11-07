@@ -279,12 +279,12 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 - `beats`: `{"beats": […], "downbeats": […]}`（spec にあれば）。
 - `layers`: `[{name, z, exclusive, sung, follow_camera}]`。
 - `lyrics[]`: `sung`・`reveal`・`exclusive`・`words`（`[{text, t, row, box}]`）。`fade_in_s`・`fade_out_s` は enter・exit を含めた出入りの長さ。
-- `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`・`align`。
-- `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt}]`（from・to は clip の番号）。
+- `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`。
+- `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt, align}]`（from・to は clip の番号。align は次の clip の `align`）。
 - `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
 - `analysis`: クリップごとの `{path, sha256, p90_height, median_cx, ground, file}`。
 - `camera_seams`: seams の設定（pre_s・post_s・zoom・rotate・pivot・blur）。`accents`: 解決した時刻と設定。
-- `flash_info`: `[{t, strength, decay_s, mode, beat_exempt}]`。
+- `flash_info`: `[{t, strength, decay_s, mode, beat_exempt, align}]`。
 - `audio`: `{fit, end_s}`。
 - `finished`: 仕上げの記録 `{hooks: {path, sha256}}` か null。
 
