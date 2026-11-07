@@ -90,7 +90,9 @@ def _fake_features(stats):
 
 
 def _fake_palette(view, weights, hexes):
-    return {"rel": "turn.png", "view": view, "label": f"turn.png（{view}）", "weights": np.array(weights), "hex": hexes, "bands": [2, 1, 1]}
+    rgb = np.array([[[int(h[i:i + 2], 16) for i in (1, 3, 5)] for h in hexes]], np.uint8)
+    return {"rel": "turn.png", "view": view, "label": f"turn.png（{view}）" if view else "turn.png", "weights": np.array(weights),
+            "hex": hexes, "colors": reference.to_lab(rgb).reshape(-1, 3), "bands": [2, 1, 1]}
 
 
 def _fake_stats(palette, coverage, extra):
@@ -116,12 +118,47 @@ def test_with_several_views_a_frame_that_one_view_explains_is_not_flagged():
     assert extra[0]["reference"] == "turn.png（front）" and "ほかの設定画にも無い色" in extra[0]["detail"]
 
 
-def test_a_missing_color_names_the_other_colors_missing_with_it_and_a_single_sheet_says_nothing_of_other_sheets():
-    front = _fake_palette("front", [0.5, 0.4, 0.1], ["#f0d0c8", "#703e80", "#d39bcd"])
-    stats = [[_fake_stats(front, [0.5, 0.05, 0.0], 0.0)] for _ in range(12)]
-    missing = reference.signals(_fake_features(stats), [front], inspect_config.THRESHOLDS, 24.0)
-    assert len(missing) == 1 and missing[0]["color"] == "#703e80" and missing[0]["colors"] == ["#703e80", "#d39bcd"]   # 割合の大きい色を主に
-    assert "ほかに #d39bcd も少ない" in missing[0]["detail"] and "ほかの設定画" not in missing[0]["detail"]
+def test_each_missing_color_keeps_its_own_frames_and_value():
+    """別の色が続けて欠けても、同時に欠けても、色ごとの区間と、その区間だけで測った値を残す（1 本にまとめて値を薄めない）。"""
+    sheet = _fake_palette(None, [0.4, 0.35, 0.25], ["#f0d0c8", "#703e80", "#2050c0"])
+    stats = []
+    for i in range(48):
+        coverage = [0.4, 0.35, 0.25]
+        for c in ([i // 12] if i < 36 else [0, 1]):          # コマ 0〜35 は 12 コマずつ順に 1 色、36〜47 は 2 色が同時に欠ける
+            coverage[c] = 0.0
+        stats.append([_fake_stats(sheet, coverage, 0.0)])
+    missing = reference.signals(_fake_features(stats), [sheet], inspect_config.THRESHOLDS, 24.0)
+    found = sorted((s["frames"][0], s["frames"][1], s["color"]) for s in missing)
+    assert found == [(0, 12, "#f0d0c8"), (12, 24, "#703e80"), (24, 36, "#2050c0"), (36, 48, "#703e80"), (36, 48, "#f0d0c8")], found
+    assert all(s["value"] == 0.0 for s in missing)
+    assert all("ほかの設定画" not in s["detail"] and s["reference"] == "turn.png" for s in missing)     # 設定画 1 枚なら書かない
+
+
+def test_the_same_color_missing_while_the_compared_view_switches_is_one_interval():
+    """向き違いの同じ色（正面と背面の薄紫）は 1 つの色として数える。比べる向きが 3 コマごとに入れ替わっても区間は切れない。"""
+    front = _fake_palette("front", [0.5, 0.3, 0.2], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.5, 0.3, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    stats = []
+    for i in range(12):
+        near = 0.3 if (i // 3) % 2 == 0 else 0.2           # 重なりの大きい向きが 3 コマごとに入れ替わる
+        stats.append([_fake_stats(front, [0.5, near, 0.0], 0.0), _fake_stats(back, [0.5, 0.5 - near, 0.0], 0.0)])
+    assert [reference.explaining(item, [front, back], inspect_config.THRESHOLDS)[0] for item in stats[:6]] == [0, 0, 0, 1, 1, 1]
+    missing = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert [(s["frames"], s["color"], s["view"]) for s in missing] == [([0, 12], "#d39bcd", "front")]
+
+
+def test_the_markdown_names_the_other_colors_of_the_same_check(checked):
+    import copy
+
+    from mv_pipeline.inspection import report
+
+    _, result, out, _ = checked
+    result = copy.deepcopy(result)
+    costume = next(e for e in result["events"] if e["category"] == "costume")
+    primary = next(s for s in costume["signals"] if s["detail"] == costume["summary"])
+    costume["signals"].append({**primary, "color": "#123456", "detail": "同じ検査で、別の色 #123456 の信号"})
+    text = report.markdown(result, read_json(out / "fix_plan.json"))
+    assert "同じ検査のほかの色: #123456" in text
 
 
 def test_the_same_sheet_used_twice_without_a_view_gets_numbered_labels_and_a_cutout(tmp_path):

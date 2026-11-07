@@ -226,31 +226,52 @@ def summary(features, palettes):
                                for r in range(len(palettes))]}
 
 
+def color_groups(palettes, th):
+    """設定画をまたいで同じ色とみなす組 → [[(設定画の番号, 色の番号), …], …]。
+
+    向き違いの設定画の色は k-means の中心が少しずつ違うので、別の設定画の色と ΔE ref_match_de 以内ならつなぐ（同じ設定画の色どうしは
+    直接つながない）。比べる設定画がコマごとに入れ替わっても、同じ色の欠けを 1 本の区間で数えるため。"""
+    members = [(r, c) for r, palette in enumerate(palettes) for c in range(len(palette["weights"]))]
+    group = {member: number for number, member in enumerate(members)}
+    for i, (r, c) in enumerate(members):
+        for q, k in members[i + 1:]:
+            if q == r or group[(q, k)] == group[(r, c)]:
+                continue
+            gap = float(distance(np.asarray(palettes[r]["colors"][c], np.float32)[None], np.asarray(palettes[q]["colors"][k], np.float32)[None])[0, 0])
+            if gap <= th["ref_match_de"]:
+                old, new = group[(q, k)], group[(r, c)]
+                group = {member: new if number == old else number for member, number in group.items()}
+    out = {}
+    for member in members:
+        out.setdefault(group[member], []).append(member)
+    return list(out.values())
+
+
 def signals(features, palettes, th, fps):
     """設定画の色の欠け（reference_missing）と設定画に無い色（reference_extra）の区間の信号。
 
-    コマごとに explaining で比べる設定画を選ぶので、区間の中で比べる設定画が入れ替わってもよい。
-    書く色は、区間でいちばん多く欠けた（設定画, 色）。同じ設定画でほかにも半分以上のコマで欠けた色があれば添える。"""
+    コマごとに explaining で比べる設定画を選ぶ（区間の中で入れ替わってもよい）。欠けは色ごと（color_groups の組ごと）に区間を作り、
+    その色が欠けたコマの割合だけで値を書く（別の色が続けて欠けても、色ごとの場所と値を残す）。"""
     minimum = max(1, int(round(th["min_segment_s"] * fps)))
     picks = [explaining(stats, palettes, th) for stats in features.ref]
+    several = "。ほかの設定画でも欠けなく説明できないコマ" if len(palettes) > 1 else ""
     out = []
-    flagged = np.array([bool(pick and pick[1]) for pick in picks])
-    for a, b in detect.runs(flagged, minimum, gap=1):
-        counts = Counter((picks[i][0], c) for i in range(a, b) if picks[i] for c in picks[i][1])
-        r, c = max(counts, key=lambda pair: (counts[pair], float(palettes[pair[0]]["weights"][pair[1]]), -pair[0], -pair[1]))
-        palette, weight, hex_color, band = palettes[r], float(palettes[r]["weights"][c]), palettes[r]["hex"][c], palettes[r]["bands"][c]
-        compared = [i for i in range(a, b) if picks[i] and picks[i][0] == r]
-        covered = [features.ref[i][r]["coverage"][c] for i in compared]
-        peak = min(compared, key=lambda i: (features.ref[i][r]["coverage"][c], i))
-        others = [palette["hex"][k] for (q, k), count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-                  if q == r and k != c and count * 2 >= len(compared)][:2]
-        out.append(detect.make_signal(
-            "reference_missing", "costume", features, a, b, "segment", peak, value=float(np.median(covered)),
-            baseline=weight, threshold=th["ref_missing_ratio"] * weight, unit="割合", region=detect.band_box(features, peak, band),
-            detail=f"設定画の色 {hex_color}（設定画の {weight:.0%}・{('頭', '上半身', '下半身')[band]}）が {np.median(covered):.1%} しかありません"
-                   + (f"。ほかに {'・'.join(others)} も少ない" if others else "")
-                   + f"（{palette['label']} と照合{'。ほかの設定画でも欠けなく説明できないコマ' if len(palettes) > 1 else ''}）",
-            extra={"color": hex_color, "colors": [hex_color, *others], "reference": palette["label"], "view": palette["view"]}))
+    for members in color_groups(palettes, th):
+        own = set(members)
+        flagged = np.array([bool(pick) and any((pick[0], c) in own for c in pick[1]) for pick in picks])
+        for a, b in detect.runs(flagged, minimum, gap=1):
+            counts = Counter((picks[i][0], c) for i in range(a, b) if flagged[i] for c in picks[i][1] if (picks[i][0], c) in own)
+            r, c = max(counts, key=lambda pair: (counts[pair], float(palettes[pair[0]]["weights"][pair[1]]), -pair[0], -pair[1]))
+            palette, weight, hex_color, band = palettes[r], float(palettes[r]["weights"][c]), palettes[r]["hex"][c], palettes[r]["bands"][c]
+            compared = [i for i in range(a, b) if picks[i] and picks[i][0] == r]
+            covered = [features.ref[i][r]["coverage"][c] for i in compared]
+            peak = min(compared, key=lambda i: (features.ref[i][r]["coverage"][c], i))
+            out.append(detect.make_signal(
+                "reference_missing", "costume", features, a, b, "segment", peak, value=float(np.median(covered)),
+                baseline=weight, threshold=th["ref_missing_ratio"] * weight, unit="割合", region=detect.band_box(features, peak, band),
+                detail=f"設定画の色 {hex_color}（設定画の {weight:.0%}・{('頭', '上半身', '下半身')[band]}）が {np.median(covered):.1%} しかありません"
+                       f"（{palette['label']} と照合{several}）",
+                extra={"color": hex_color, "reference": palette["label"], "view": palette["view"]}))
     flagged = np.array([bool(pick) and features.ref[i][pick[2]]["extra"] >= th["ref_extra_min"] for i, pick in enumerate(picks)])
     for a, b in detect.runs(flagged, minimum, gap=1):
         counts = Counter(picks[i][2] for i in range(a, b) if flagged[i])

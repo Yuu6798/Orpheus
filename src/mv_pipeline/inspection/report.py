@@ -224,8 +224,10 @@ def markdown(report, plan):
             kind = CATEGORY_LABELS[event["category"]] + (f"（ほかに {'・'.join(others)}）" if others else "")
             remarks = list(dict.fromkeys(s["detail"] for s in event["signals"] if s["check"] == "vlm" and s["detail"] != event["summary"]))
             checks = sorted({s["label"] for s in event["signals"] if not (remarks and s["check"] == "vlm")} - {event["label"]})
-            detail = (f"{event['label']}: {event['summary']}" + (f"（ほかの信号: {'・'.join(checks)}）" if checks else "")
-                      + "".join(f"（VLM の指摘: {remark}）" for remark in remarks))
+            colors = list(dict.fromkeys(s["color"] for s in event["signals"]           # 同じ検査で別の色（欠けた色が 2 つなど）
+                                        if s["label"] == event["label"] and s["detail"] != event["summary"] and s.get("color")))
+            detail = (f"{event['label']}: {event['summary']}" + (f"（同じ検査のほかの色: {'・'.join(colors)}）" if colors else "")
+                      + (f"（ほかの信号: {'・'.join(checks)}）" if checks else "") + "".join(f"（VLM の指摘: {remark}）" for remark in remarks))
             lines.append(f"| {event['id']} | {_frames_text(event['frames'])} | {_seconds_text(event['t'])} | {kind} | {_cell(detail)} | "
                          f"{EVIDENCE[event['evidence']]} | {_cell(_where(event))} | {event.get('still', '')} |")
     if report["unused"]:
