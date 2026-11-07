@@ -243,10 +243,12 @@ def uniform_scale(matrix):
 def capsules_from_fit(points, moves, margin):
     """fit_capsules の点の並びをつないだカプセル。両端は、その点の骨の静止から今への変換 moves[骨]（コマ, 4, 4）で動かす。"""
     out = []
-    for (j1, p1, r1), (j2, p2, r2) in zip(points[:-1], points[1:]):
+    last = len(points) - 2
+    for k, ((j1, p1, r1), (j2, p2, r2)) in enumerate(zip(points[:-1], points[1:])):
         m1, m2 = moves[j1], moves[j2]
         out.append({"pa": m1[:, :3, :3] @ p1 + m1[:, :3, 3], "pb": m2[:, :3, :3] @ p2 + m2[:, :3, 3], "ra": r1 + margin,
-                    "rb": r2 + margin, "qa": p1, "qb": p2})
+                    "rb": r2 + margin, "qa": p1, "qb": p2,
+                    "open_a": k > 0, "open_b": k < last})          # 前・次のカプセルへ続く端（継ぎ目）
     return out
 
 
@@ -303,6 +305,12 @@ def simulate_ribbon(nodes, targets, colliders, hips, fps=30, substeps=8, f_root=
             u = u - (u @ axn)[:, None] * axn
             u /= np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-9)
             dpar = d if sphere else d - (d @ (ab / np.linalg.norm(ab)))[:, None] * (ab / np.linalg.norm(ab))
+            # 端の丸い所（軸に投げた位置が 0 か 1 に切られた節）では、軸の向きの成分を残して球の面までを解く。試作は除いて
+            # 無限の円柱として解いていたので、端の先の節を横へ押しすぎた。ただし、次のカプセルへ続く継ぎ目（open_a・open_b）は
+            # 試作どおり円柱として解く（継ぎ目の先は次のカプセルが続き、球として解くと押し出しが弱まって帯が中に残った）。
+            # 軸の途中の節では d は軸に垂直なので、どちらでも同じ
+            free_end = ((t <= 0) & (not c.get("open_a", False))) | ((t >= 1) & (not c.get("open_b", False)))
+            dpar = np.where(free_end[:, None], d, dpar)
             b_ = (dpar * u).sum(1)                                         # 出す向きに沿って、面までの距離を解く
             c_ = (dpar * dpar).sum(1) - rc * rc
             s_ = -b_ + np.sqrt(np.maximum(b_ * b_ - c_, 0))
@@ -604,7 +612,7 @@ def main(argv=None):
         moves = [poses[b] @ np.linalg.inv(rest(b)) for b in spec["bones"][:-1]]
         for c in capsules_from_fit(points, moves, settings.get("fit_margin_mm", 0.0) / 1000):
             colliders.append({"pa": to_world(c["pa"]), "pb": to_world(c["pb"]), "ra": c["ra"], "rb": c["rb"],
-                              "qa": to_world(c["qa"]), "qb": to_world(c["qb"])})
+                              "qa": to_world(c["qa"]), "qb": to_world(c["qb"]), "open_a": c["open_a"], "open_b": c["open_b"]})
 
     sims, target_rots, extra_report = [], [], {}
     if model == "hair":

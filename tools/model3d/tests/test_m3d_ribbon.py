@@ -122,11 +122,31 @@ def ribbon(frames=30, lift=0.15):
     return nodes, targets, thigh, hips
 
 
-def test_simulate_ribbon_matches_the_prototype():
+def test_simulate_ribbon_matches_the_prototype_where_capsules_continue():
     nodes, targets, thigh, hips = ribbon()
-    sim = sb.simulate_ribbon(nodes, targets, [thigh], hips)
+    joined = {**thigh, "open_a": True, "open_b": True}                  # 両端が継ぎ目なら、試作と同じ解き方
+    sim = sb.simulate_ribbon(nodes, targets, [joined], hips)
     expected = prototype_ribbon(nodes, targets, [thigh], hips["x"], hips["fwd"], hips["up"])
     np.testing.assert_array_equal(sim, expected)
+
+
+def end_cap_push(open_end):
+    """端から軸の向きに 97 mm 先の節（半径 100 mm のカプセル、実際の半径は 98 mm）を、1 刻みで押した量（m）"""
+    a, b = np.array([0.0, 0.0, 1.0]), np.array([0.0, 0.0, 0.6])
+    cap = {"pa": np.stack([a, a]), "pb": np.stack([b, b]), "ra": 0.1, "rb": 0.1, "qa": a, "qb": b,
+           "open_a": False, "open_b": open_end}
+    nodes = np.array([[[0.3, 0.0, 1.0], [0.3, 0.0, 0.94]]])            # 静止では当たりから離れている
+    targets = np.repeat(np.array([[[0.0, 0.0, 0.563], [0.0, 0.0, 0.503]]])[None], 2, axis=0)   # 2 つ目の節は端の 97 mm 先
+    hips = {"x": np.tile([1.0, 0, 0], (2, 1)), "fwd": np.tile([0, -1.0, 0], (2, 1)), "up": np.tile([0, 0, 1.0], (2, 1))}
+    sim = sb.simulate_ribbon(nodes, targets, [cap], hips, gravity=0.0, lane=0.0, root_move=0.0, settle=0.0, substeps=1)
+    return np.linalg.norm(sim[1, 0, 1] - targets[1, 0, 1])
+
+
+def test_a_free_capsule_end_is_solved_as_a_sphere():
+    free, joined = end_cap_push(False), end_cap_push(True)
+    # 1 回の押しは、端では球の面までの約 14 mm、継ぎ目では円柱として 98 mm。押した後に長さの戻しで回り込むので、
+    # 1 コマの後の動きは、それぞれ約 30 mm と約 77 mm になる
+    assert free < 0.04 and joined > 0.06
 
 
 def test_a_ribbon_keeps_its_lengths_hangs_from_its_root_and_droops_under_gravity():
