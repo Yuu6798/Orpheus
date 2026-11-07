@@ -1194,6 +1194,33 @@ def test_a_color_only_change_in_any_rendered_light_is_a_light_cue():
     assert cues.from_track(turning, 30.0)[2] == []
 
 
+def test_omitted_light_values_are_the_renderers_defaults():
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:                                               # 省いた壁の強さは既定の 1（描く側と同じ）。T 41 から 0
+        frame["wall"] = {"color": [1, 0, 0], **({"strength": 0} if frame["T"] >= 41 else {})}
+    assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)]
+    same = _track()["frames"]
+    for frame in same:                                                 # 既定と同じ値を書いたコマ（模様の led・輪郭光の 1500）は変わらない
+        if frame["T"] >= 41:
+            frame.update(stage="led", rims=[{"energy": 1500.0}, {}])
+    assert cues.from_track(same, 30.0)[2] == []
+    toned = _track()["frames"]
+    for frame in toned:                                                # 塗りの縁の強さの既定は .blend で決まる: 片方だけ書いた組は比べない
+        if frame["T"] >= 41:
+            frame["tone"] = {"gain": 0.2}
+    assert cues.from_track(toned, 30.0)[2] == []
+
+
+def test_the_light_defaults_are_the_renderers():
+    stage_render = pytest.importorskip("model3d.blender_adapter.stage_render")   # model3d の extra のある環境（CI も）で確かめる
+    from mv_pipeline.inspection import cues
+    static = stage_render.static_values(((0.1, 0.2, 0.3), (0.4, 0.5, 0.6)), 0.02)
+    assert cues.STAGE_DEFAULTS == {"stage": static["stage"], "wall_strength": static["wall"]["strength"],
+                                   "rim_energy": static["rims"][0]["energy"], "beam_gain": static["beams"]["gain"]}
+    assert static["rims"][1]["energy"] == static["rims"][0]["energy"]
+
+
 def test_a_track_may_leave_out_the_camera_or_its_lens(tmp_path):
     from mv_pipeline.inspection import cues
     frames = _track()["frames"]

@@ -25,6 +25,9 @@ BEAT_TOLERANCE = 0.1
 CUT_M, CUT_DEG, CUT_LENS_MM = 0.5, 15.0, 2.0       # トラックのカット: コマ間のカメラの飛び（位置・向き・レンズ）
 MOVE_M, MOVE_DEG = 0.05, 1.0                       # トラックの速い動き: コマあたりの移動・向きの変化
 LIGHT_REL = 0.5                                    # トラックの照明の演出: 光の強さの、コマ間の相対の跳ね（|差| / 大きい方）
+# render.stage（tools/model3d の blender_adapter/stage_render.py の static_values・frame_values）が、トラックで省いた値に
+# コマごとに当てる既定のうち、.blend によらない定数（塗りの縁の値と色の既定は .blend で決まり、トラックからは分からない）
+STAGE_DEFAULTS = {"stage": "led", "wall_strength": 1.0, "rim_energy": 1500.0, "beam_gain": 0.9}
 # 演出の種類ごとに、重なりを見る信号（None は全部）。カットは画面全体が変わるので、どの信号でも重なりを書く
 KIND_CHECKS = {
     "cut": None,
@@ -55,12 +58,16 @@ def _intervals(value, where):
 
 
 def _light_levels(frame):
-    """トラックの 1 コマの光の強さ（壁・輪郭光の和・光の柱・塗りの縁）と、描く色と模様。無い欄は None。
+    """トラックの 1 コマの光の強さ（壁・輪郭光の和・光の柱・塗りの縁）と、描く色と模様。
+    省いた強さと模様は、描く側と同じく STAGE_DEFAULTS にする（前のコマの値でなく既定に戻る）。塗りの縁の強さの既定は .blend で
+    決まるので None（片方のコマだけ書いた組は比べない）。省いた色は空（.blend の塗りの縁の色から作る既定の色）。
     色は描く側（render.stage）がコマごとに当てるもの全部: 壁の明るい帯と暗い帯・輪郭光・光の柱・塗りの縁の a と b。
     コマごとに続けて動く値（壁の模様のずれ・光の柱の向き）は切り替えではないので入れない。"""
-    wall, rims, beams, tone = frame.get("wall") or {}, frame.get("rims") or [], frame.get("beams") or {}, frame.get("tone") or {}
-    levels = (wall.get("strength"), sum(r.get("energy", 0.0) for r in rims) if rims else None, beams.get("gain"), tone.get("gain"))
-    look = (frame.get("stage"), tuple(wall.get("color") or ()), tuple(wall.get("dark") or ()),
+    wall, beams, tone = frame.get("wall") or {}, frame.get("beams") or {}, frame.get("tone") or {}
+    rims = frame.get("rims") or [{}, {}]
+    levels = (wall.get("strength", STAGE_DEFAULTS["wall_strength"]), sum(r.get("energy", STAGE_DEFAULTS["rim_energy"]) for r in rims),
+              beams.get("gain", STAGE_DEFAULTS["beam_gain"]), tone.get("gain"))
+    look = (frame.get("stage", STAGE_DEFAULTS["stage"]), tuple(wall.get("color") or ()), tuple(wall.get("dark") or ()),
             tuple(tuple(r.get("color") or ()) for r in rims), tuple(tuple(c) for c in beams.get("colors") or ()),
             tuple(tone.get("a") or ()), tuple(tone.get("b") or ()))
     return levels, look
