@@ -49,6 +49,7 @@ def parser():
     _inspect_parser(commands)
     _workflow_parser(commands)
     _export_parser(commands)
+    _sheet_parser(commands)
     return p
 
 
@@ -352,6 +353,25 @@ def export_command(args):
         return remotion_props.export(args.project.resolve(), args.out, args.beats, args.beats_per_bar, args.downbeat_phase,
                                      storyboard=not args.no_storyboard)
     raise PipelineError(f"Unsupported export command: {args.export_command}")
+def _sheet_parser(commands):
+    """見るためのシート（docs/sheet.md）。検査ではなく閲覧の道具で、合否は出さない。`project` 引数を持たず、project_lock も通らない。"""
+    sheet = commands.add_parser("sheet", help="contact sheet of frames at given times or timeline events (viewing aid, no pass/fail)")
+    sheet.add_argument("source", type=Path, help="video file or PNG sequence folder")
+    sheet.add_argument("--out", type=Path, required=True, help="sheet PNG to write (a .json with the cells is written beside it)")
+    sheet.add_argument("--at", type=float, nargs="+", help="times in seconds")
+    sheet.add_argument("--events", type=Path, help="timeline.json; frames at line starts, flashes and seams")
+    sheet.add_argument("--kinds", default="lyrics,flashes,seams", help="comma-separated event kinds to take from --events")
+    sheet.add_argument("--fps", type=float, help="fps of a PNG sequence (default: the timeline's fps)")
+    sheet.add_argument("--backgrounds", default="white,black,gray", help="comma-separated backgrounds for transparent frames")
+    sheet.add_argument("--cell-width", type=int, default=320)
+    sheet.add_argument("--columns", type=int, default=4, help="columns for opaque sources (transparent ones use one column per background)")
+
+
+def sheet_command(args):
+    from . import sheet
+    split = lambda value: tuple(v.strip() for v in value.split(",") if v.strip())  # noqa: E731
+    return sheet.build(args.source, args.out, args.at, args.events, args.fps, split(args.backgrounds), args.cell_width, args.columns,
+                       split(args.kinds))
 
 
 def workflow_command(args):
@@ -370,7 +390,7 @@ def workflow_command(args):
 
 
 GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
-                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command}
+                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command, "sheet": sheet_command}
 
 
 # ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------
