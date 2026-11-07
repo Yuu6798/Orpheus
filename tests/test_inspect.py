@@ -161,6 +161,19 @@ def test_two_colors_of_one_sheet_never_share_a_group_through_another_sheet():
     assert sorted((s["frames"][0], s["frames"][1], s["color"], s["value"]) for s in missing) == [(0, 12, "#333333", 0.0), (12, 24, "#cccccc", 0.0)]
 
 
+def test_a_missing_color_is_measured_only_on_the_frames_where_it_is_missing():
+    """区間が欠けの無いコマをはさんでつながり、比べる向きも入れ替わるとき、値は書く色が欠けたコマだけで測る（Codex の指摘の例）。"""
+    front = _fake_palette("front", [0.4, 0.4, 0.2], ["#f0d0c8", "#703e80", "#d39bcd"])
+    back = _fake_palette("back", [0.4, 0.4, 0.2], ["#f0d0c8", "#4b3151", "#c58ec2"])
+    kinds = {"front_missing": ([0.4, 0.4, 0.0], [0.4, 0.3, 0.0]), "back_missing": ([0.4, 0.3, 0.0], [0.4, 0.4, 0.0]),
+             "healthy": ([0.4, 0.4, 0.2], [0.4, 0.4, 0.15])}
+    order = ["front_missing", "healthy", "back_missing", "healthy"] * 3
+    stats = [[_fake_stats(front, kinds[k][0], 0.0), _fake_stats(back, kinds[k][1], 0.0)] for k in order]
+    missing = reference.signals(_fake_features(stats), [front, back], inspect_config.THRESHOLDS, 24.0)
+    assert [(s["frames"], s["color"], s["value"]) for s in missing] == [([0, 11], "#d39bcd", 0.0)]
+    assert missing[0]["peak"] in (0, 4, 8)
+
+
 def test_the_markdown_names_the_other_colors_of_the_same_check(checked):
     import copy
 

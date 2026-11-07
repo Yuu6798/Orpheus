@@ -255,7 +255,8 @@ def signals(features, palettes, th, fps):
     """設定画の色の欠け（reference_missing）と設定画に無い色（reference_extra）の区間の信号。
 
     コマごとに explaining で比べる設定画を選ぶ（区間の中で入れ替わってもよい）。欠けは色ごと（color_groups の組ごと）に区間を作り、
-    その色が欠けたコマの割合だけで値を書く（別の色が続けて欠けても、色ごとの場所と値を残す）。"""
+    値と山は、書く色が実際に欠けたコマだけで測る（別の色が続けて欠けても、区間が欠けの無いコマをはさんでつながっても、
+    欠けの値を薄めない）。"""
     minimum = max(1, int(round(th["min_segment_s"] * fps)))
     picks = [explaining(stats, palettes, th) for stats in features.ref]
     several = "。ほかの設定画でも欠けなく説明できないコマ" if len(palettes) > 1 else ""
@@ -267,7 +268,7 @@ def signals(features, palettes, th, fps):
             counts = Counter((picks[i][0], c) for i in range(a, b) if flagged[i] for c in picks[i][1] if (picks[i][0], c) in own)
             r, c = max(counts, key=lambda pair: (counts[pair], float(palettes[pair[0]]["weights"][pair[1]]), -pair[0], -pair[1]))
             palette, weight, hex_color, band = palettes[r], float(palettes[r]["weights"][c]), palettes[r]["hex"][c], palettes[r]["bands"][c]
-            compared = [i for i in range(a, b) if picks[i] and picks[i][0] == r]
+            compared = [i for i in range(a, b) if flagged[i] and picks[i][0] == r and c in picks[i][1]]   # その色が欠けたコマだけで測る
             covered = [features.ref[i][r]["coverage"][c] for i in compared]
             peak = min(compared, key=lambda i: (features.ref[i][r]["coverage"][c], i))
             out.append(detect.make_signal(
