@@ -365,13 +365,14 @@ def _sheet_parser(commands):
     sheet.add_argument("--backgrounds", default="white,black,gray", help="comma-separated backgrounds for transparent frames")
     sheet.add_argument("--cell-width", type=int, default=320)
     sheet.add_argument("--columns", type=int, default=4, help="columns for opaque sources (transparent ones use one column per background)")
+    sheet.add_argument("--font", type=Path, help="TTF/TTC for the labels (default: a common Japanese font if found, else ASCII labels)")
 
 
 def sheet_command(args):
     from . import sheet
     split = lambda value: tuple(v.strip() for v in value.split(",") if v.strip())  # noqa: E731
     return sheet.build(args.source, args.out, args.at, args.events, args.fps, split(args.backgrounds), args.cell_width, args.columns,
-                       split(args.kinds))
+                       split(args.kinds), args.font)
 
 
 def workflow_command(args):

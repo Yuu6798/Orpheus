@@ -32,7 +32,9 @@ def test_transparent_sequence_is_laid_over_each_background_with_labels(tmp_path)
     assert image.shape[1] == 3 * 64 and image.shape[0] == result["size"][1]
     record = read_json(tmp_path / "sheet.json")
     assert [c["background"] for c in record["cells"]] == ["white", "black", "gray"] * 2
-    assert [c["frame"] for c in record["cells"]][::3] == [0, 12] and record["cells"][3]["event"] == "指定"
+    assert [c["frame"] for c in record["cells"]][::3] == [0, 12] and record["cells"][3]["event"] == "指定" and record["cells"][3]["event_ascii"] == "given"
+    assert record["cells"][3]["sha256"] == __import__("hashlib").sha256((tmp_path / "frames" / "f_0012.png").read_bytes()).hexdigest()
+    assert record["labels"] in ("full", "ascii") and record["fps_origin"] == "--fps"
     band = record["size"][1] // 2 - 1
     row2 = image[record["size"][1] // 2:, :, :]      # 2 行目（0.5 秒 = コマ 12）
     label_band = max(14, int(round(H * 64 / W * 0.11)))
@@ -49,7 +51,8 @@ def test_events_come_from_the_timeline_and_out_of_range_times_are_listed(tmp_pat
     result = sheet.build(tmp_path / "frames", tmp_path / "s.png", events_path=tmp_path / "timeline.json", backgrounds=("white",), cell_width=64)
     record = read_json(tmp_path / "s.json")
     assert [c["event"] for c in record["cells"]] == ["行の開始: one", "切れ目", "フラッシュ"] and result["missing"] == 1
-    assert record["missing"][0]["t"] == 5.0 and record["events"]["kinds"] == list(sheet.KINDS) and record["fps"] == FPS
+    assert [c["event_ascii"] for c in record["cells"]] == ["line 1", "seam", "flash"]
+    assert record["missing"][0]["t"] == 5.0 and record["events"]["kinds"] == list(sheet.KINDS) and record["fps"] == FPS and record["fps_origin"] == "timeline"
     result = sheet.build(tmp_path / "frames", tmp_path / "t.png", events_path=tmp_path / "timeline.json", backgrounds=("white",), kinds=("flashes",))
     assert result["cells"] == 1
 
@@ -62,9 +65,10 @@ def test_opaque_video_wraps_times_into_columns(tmp_path):
     assert result["cells"] == 5 and result["rows"] == 3 and result["transparent"] is False
     record = read_json(tmp_path / "v.json")
     assert [c["frame"] for c in record["cells"]] == [0, 6, 12, 18, 23] and record["source"]["kind"] == "video" and "files" not in record["source"]
-    assert record["size"] == [128, record["size"][1]]
+    assert record["size"] == [128, record["size"][1]] and all(len(c["sha256"]) == 64 for c in record["cells"])
     with pytest.raises(PipelineError, match="--fps"):
         sheet.build(tmp_path / "v.mp4", tmp_path / "x.png", at=[0.0], fps=FPS + 1)
+    assert sheet.build(tmp_path / "v.mp4", tmp_path / "y.png", at=[0.0], fps=FPS * 1.001, cell_width=64)["cells"] == 1   # 1% 未満の差は通す
 
 
 def test_arguments_are_checked(tmp_path):
@@ -77,6 +81,37 @@ def test_arguments_are_checked(tmp_path):
         sheet.build(tmp_path / "frames", tmp_path / "x.png", at=[0.0], fps=FPS, backgrounds=("pink",))
     with pytest.raises(PipelineError, match="どの時刻も"):
         sheet.build(tmp_path / "frames", tmp_path / "x.png", at=[9.0], fps=FPS)
+
+
+def test_unpadded_names_palette_without_transparency_and_uneven_sizes(tmp_path):
+    folder = tmp_path / "unpadded"
+    folder.mkdir()
+    for i in range(12):
+        rgba = np.zeros((H, W, 4), np.uint8)
+        rgba[0, 0] = (i, 0, 0, 255)
+        Image.fromarray(rgba, "RGBA").save(folder / f"frame{i}.png")
+    source = sheet.describe_source(folder, fps=FPS)
+    assert [p.name for p in source["files"]] == [f"frame{i}.png" for i in range(12)]
+    assert int(sheet._load_frames(source, [10])[10][0][0, 0][0]) == 10
+    palette = tmp_path / "palette"
+    palette.mkdir()
+    Image.new("P", (W, H)).save(palette / "f0.png")
+    assert sheet.describe_source(palette, fps=FPS)["transparent"] is False
+    uneven = tmp_path / "uneven"
+    uneven.mkdir()
+    Image.new("RGBA", (W, H)).save(uneven / "f0.png")
+    Image.new("RGBA", (W, H + 8)).save(uneven / "f1.png")
+    with pytest.raises(PipelineError, match="寸法がそろっていません"):
+        sheet.build(uneven, tmp_path / "u.png", at=[0.0, 1 / FPS], fps=FPS, cell_width=64)
+
+
+def test_labels_fall_back_to_ascii_without_a_cjk_font(tmp_path, monkeypatch):
+    _sequence(tmp_path / "frames")
+    monkeypatch.setattr(sheet, "FONT_CANDIDATES", ())
+    result = sheet.build(tmp_path / "frames", tmp_path / "s.png", at=[0.0], fps=FPS, backgrounds=("white",), cell_width=64)
+    assert result["labels"] == "ascii" and read_json(tmp_path / "s.json")["label_font"] is None
+    with pytest.raises(PipelineError, match="--font"):
+        sheet.build(tmp_path / "frames", tmp_path / "t.png", at=[0.0], fps=FPS, font=tmp_path / "missing.ttf")
 
 
 def test_cli(tmp_path):
