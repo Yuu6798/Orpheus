@@ -9,8 +9,9 @@
     inspect_runs.json（実行ごとの run_id・状態（running / succeeded / failed）・入力の sha256）
 
 1 回の実行は出力先の中の作業用フォルダー（.staging-<run_id>）に全部を書き、最後まで済んだときだけ前の結果と入れ替える。
-途中で失敗・中断すると、前の成功した結果（報告と静止画など）がそのまま残る。入れ替えの途中で止まったときは、次の実行の
-初めに前の結果へ戻す。
+途中で失敗・中断すると、前の成功した結果（報告と静止画など）がそのまま残る。入れ替えの途中で失敗したとき（ファイルが
+開かれていて動かせない・Ctrl+C など）は、その場で前の結果へ戻す。強制終了などで戻せなかったときは、次の実行の初めに戻す。
+同じ出力先では 1 つの実行だけが動く（出力先の .lock。ほかの実行が使っている間は、何も触らずに止まる）。
 
 overall は review（要確認の出来事か復号のエラーがある）/ clean_with_skips（見つけた所は無いが、見ていない検査がある）/ clean。
 どれも合否ではない（終了コードは設定や入力の誤りのときだけ 1）。
@@ -20,11 +21,13 @@ import re
 import shutil
 import time
 import uuid
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..fx import probe
 from ..io import PipelineError, atomic_json, read_json, sha256
+from ..runner import project_lock
 from . import CATEGORIES, REPORT_SCHEMA, VERSION, config, cues, detect, features, fingerprint, reference, report, targets, video, vlm
 
 
@@ -219,18 +222,27 @@ def _replace(source, target, tries=8):
 def publish(out, staging, run_id):
     """作業用フォルダーの結果を出力先へ入れ替える。前の結果はいったん BACKUP へ動かし、全部そろってから消す。
     報告の JSON を先に外して最後に置くので、報告が見える間は、その報告の静止画などがそろっている。
-    途中で止まったときのために、前からあったものの一覧を JOURNAL に書いておく（recover が前の結果へ戻す）。"""
+    途中で失敗したとき（ファイルが開かれていて動かせない・Ctrl+C など）は、その場で前の結果へ戻してから止まる。
+    戻せなかったとき（強制終了など）のために、前からあったものの一覧を JOURNAL に書いておく（次の実行の初めに recover が戻す）。"""
     out, staging = Path(out), Path(staging)
     backup = out / f"{BACKUP}{run_id}"
     old = [name for name in OUTPUTS if (out / name).exists()]
-    atomic_json(out / JOURNAL, {"run_id": run_id, "staging": staging.name, "backup": backup.name, "old": old})
-    backup.mkdir()
-    for name in reversed(OUTPUTS):                   # 報告の JSON から外す
-        if (out / name).exists():
-            _replace(out / name, backup / name)
-    for name in OUTPUTS:                             # 報告の JSON を最後に置く
-        if (staging / name).exists():
-            _replace(staging / name, out / name)
+    try:
+        atomic_json(out / JOURNAL, {"run_id": run_id, "staging": staging.name, "backup": backup.name, "old": old})
+        backup.mkdir()
+        for name in reversed(OUTPUTS):               # 報告の JSON から外す
+            if (out / name).exists():
+                _replace(out / name, backup / name)
+        for name in OUTPUTS:                         # 報告の JSON を最後に置く
+            if (staging / name).exists():
+                _replace(staging / name, out / name)
+    except BaseException as error:                   # Ctrl+C も含む。前の結果へ戻してから、元の失敗のまま止まる
+        try:
+            _rollback(out)
+        except Exception as again:                   # 戻せなければ、控えと前の結果を残す（次の実行の初めに recover が戻す）
+            error.add_note(f"前の結果へ戻せませんでした（{type(again).__name__}: {again}）。{backup.name} に残したので、"
+                           "次の実行の初めに戻します")
+        raise
     (out / JOURNAL).unlink()
     shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging, ignore_errors=True)
@@ -252,36 +264,46 @@ def _keep_failure_logs(out, staging, run_id):
     return kept
 
 
+def _rollback(out):
+    """入れ替えの途中で止まった跡（JOURNAL）から、前の結果を戻し、途中まで入れた新しい結果を消す。→ 止まった実行の run_id
+    （跡が無ければ None）。途中で失敗しても JOURNAL は残るので、もう一度呼べば続きから戻せる。"""
+    out = Path(out)
+    journal = out / JOURNAL
+    if not journal.is_file():
+        return None
+    try:
+        data = read_json(journal)
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    backup = out / str(data.get("backup", ""))
+    old = set(data.get("old", []))
+    if data.get("backup") and backup.is_dir():
+        for name in OUTPUTS:
+            target = out / name
+            if (backup / name).exists():                           # まだ戻していない前の結果
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+                _replace(backup / name, target)
+            elif name not in old and target.exists():              # 前には無く、途中まで入れた新しい結果
+                shutil.rmtree(target) if target.is_dir() else target.unlink()
+        shutil.rmtree(backup, ignore_errors=True)
+    journal.unlink()
+    return data.get("run_id", "?")
+
+
 def recover(out):
-    """前の実行が途中で止まった跡を片付ける。→ 報告の注意に足す文の列。
+    """前の実行が途中で止まった跡を片付ける。→ 報告の注意に足す文の列。出力先のロック（project_lock）を持って呼ぶ
+    （ロックがあれば、ほかに動いている実行は無いので、残った作業用フォルダーと running の記録は止まった実行の跡）。
     - 入れ替えの途中で止まった（JOURNAL がある）: 前の結果を戻し、途中まで入れた新しい結果を消す。
     - 作業用フォルダーが残っている（測る途中で止まった）: 消す（前の結果はそのまま）。
     - 記録が running のまま: failed（interrupted）にする。"""
     out = Path(out)
     notes = []
-    journal = out / JOURNAL
-    if journal.is_file():
-        try:
-            data = read_json(journal)
-        except (ValueError, UnicodeDecodeError):
-            data = {}
-        backup = out / str(data.get("backup", ""))
-        old = set(data.get("old", []))
-        if data.get("backup") and backup.is_dir():
-            for name in OUTPUTS:
-                if (backup / name).exists():                       # まだ戻していない前の結果
-                    target = out / name
-                    if target.is_dir():
-                        shutil.rmtree(target)
-                    elif target.exists():
-                        target.unlink()
-                    _replace(backup / name, target)
-                elif name not in old and (out / name).exists():    # 前には無く、途中まで入れた新しい結果
-                    target = out / name
-                    shutil.rmtree(target) if target.is_dir() else target.unlink()
-            shutil.rmtree(backup, ignore_errors=True)
-        journal.unlink()
-        notes.append(f"前の実行（{data.get('run_id', '?')}）が結果の入れ替えの途中で止まっていたので、その前の結果に戻しました")
+    stopped_run = _rollback(out)
+    if stopped_run is not None:
+        notes.append(f"前の実行（{stopped_run}）が結果の入れ替えの途中で止まっていたので、その前の結果に戻しました")
     for leftover in sorted(out.glob(f"{STAGING}*")) + sorted(out.glob(f"{BACKUP}*")):
         shutil.rmtree(leftover, ignore_errors=True)
     entries = runs(out)
@@ -294,12 +316,19 @@ def recover(out):
 
 
 def _inputs(cfg, result, adapter, vlm_response):
-    """この実行の入力と sha256 の一覧（設定・動画・設定画・dance の spec・VLM の設定と返答）。"""
+    """この実行の入力と sha256 の一覧（設定・動画・設定画・dance の spec・演出の時刻のファイル・VLM の設定と返答）。"""
     items = [{"role": "config", "path": str(cfg.path), "sha256": cfg.sha256}]
     if cfg.dance_spec:
         items.append({"role": "dance_spec", "path": str(cfg.dance_spec), "sha256": sha256(cfg.dance_spec)})
     items += [{"role": "clip", "id": clip["id"], "path": clip["path"], "sha256": clip["sha256"]} for clip in result["clips"]]
     items += [{"role": "reference", "path": entry["rel"], "sha256": sha256(entry["path"])} for entry in cfg.references]
+    for clip in result["clips"]:                     # 演出の時刻のファイル（cues.track・cues.light_keys。全体の cues はクリップごとに同じ）
+        for source in (clip.get("cues") or {}).get("sources", []):
+            files = zip(source["paths"], source["sha256"]) if source["kind"] == "track" else [(source["path"], source["sha256"])]
+            for path, digest in files:
+                item = {"role": f"cues_{source['kind']}", "path": path, "sha256": digest}
+                if item not in items:
+                    items.append(item)
     if adapter:
         items.append({"role": "vlm_adapter", "path": adapter["path"], "sha256": adapter["sha256"]})
     if vlm_response:
@@ -334,37 +363,43 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
     if stale and not (out / MARKER).is_file():
         raise PipelineError(f"出力先 {out} に、inspect の出力ではない {', '.join(p.name for p in stale)} があります。"
                             "上書きしないので、別の --out を指定してください")
-    (out / MARKER).write_text("mv inspect の出力先。stills/・anchors/・metrics/・references/・vlm/ と報告は、実行が最後まで済んだときだけ"
-                              "入れ替える\n", encoding="utf-8")
-    cfg.notes.extend(recover(out))                               # 前の実行が途中で止まっていれば、前の結果に戻し、失敗として記録する
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
-    staging = out / f"{STAGING}{run_id}"
-    staging.mkdir()
-    record = {"run_id": run_id, "status": "running", "started_at": _now(), "pid": os.getpid(), "config": str(cfg.path),
-              "config_sha256": cfg.sha256}
-    _record_run(out, record)
-    try:
-        result, plan = _inspect(cfg, staging, adapter, allow_send, vlm_packet, vlm_response, response_bytes, vlm_legacy, say)
-        inputs = _inputs(cfg, result, adapter, vlm_response)
-        result["run"] = {"id": run_id, "started_at": record["started_at"], "finished_at": _now(), "inputs": inputs}
-        result["seconds"] = round(time.monotonic() - began, 1)
-        atomic_json(staging / "fix_plan.json", plan)
-        atomic_json(staging / "inspect_report.json", result)
-        (staging / "inspect_report.md").write_text(report.markdown(result, plan), encoding="utf-8")
-        publish(out, staging, run_id)
-    except BaseException as error:                               # Ctrl+C も含む。前の結果はそのまま
-        kept = _keep_failure_logs(out, staging, run_id)
-        shutil.rmtree(staging, ignore_errors=True)
-        message = str(error)
-        for old_path, new_path in kept.items():                  # エラーの文のログの場所を、残した場所に直す
-            message = message.replace(old_path, new_path)
-        _record_run(out, {**record, "status": "failed", "finished_at": _now(), "error": f"{type(error).__name__}: {message}"[:600],
-                          "kept": sorted(kept.values())})
-        if isinstance(error, PipelineError) and message != str(error):
-            raise PipelineError(message) from error
-        raise
-    _record_run(out, {**record, "status": "succeeded", "finished_at": result["run"]["finished_at"], "overall": result["overall"],
-                      "events": result["summary"]["events"], "inputs": inputs})
+    with ExitStack() as stack:
+        try:                                                     # 同じ出力先では 1 つの実行だけ（fx・dance と同じ出力先のロック。強制終了でも外れる）。
+            stack.enter_context(project_lock(out))              # 動いている実行の作業用フォルダーを、止まった実行の跡と取り違えて消さない
+        except PipelineError as error:
+            raise PipelineError(f"出力先 {out} は、ほかの mv inspect の実行が使っています（{error}）。終わるのを待つか、"
+                                "別の --out を指定してください") from error
+        (out / MARKER).write_text("mv inspect の出力先。stills/・anchors/・metrics/・references/・vlm/ と報告は、実行が最後まで済んだときだけ"
+                                  "入れ替える\n", encoding="utf-8")
+        cfg.notes.extend(recover(out))                           # 前の実行が途中で止まっていれば、前の結果に戻し、失敗として記録する
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+        staging = out / f"{STAGING}{run_id}"
+        staging.mkdir()
+        record = {"run_id": run_id, "status": "running", "started_at": _now(), "pid": os.getpid(), "config": str(cfg.path),
+                  "config_sha256": cfg.sha256}
+        _record_run(out, record)
+        try:
+            result, plan = _inspect(cfg, staging, adapter, allow_send, vlm_packet, vlm_response, response_bytes, vlm_legacy, say)
+            inputs = _inputs(cfg, result, adapter, vlm_response)
+            result["run"] = {"id": run_id, "started_at": record["started_at"], "finished_at": _now(), "inputs": inputs}
+            result["seconds"] = round(time.monotonic() - began, 1)
+            atomic_json(staging / "fix_plan.json", plan)
+            atomic_json(staging / "inspect_report.json", result)
+            (staging / "inspect_report.md").write_text(report.markdown(result, plan), encoding="utf-8")
+            publish(out, staging, run_id)
+        except BaseException as error:                           # Ctrl+C も含む。前の結果はそのまま
+            kept = _keep_failure_logs(out, staging, run_id)
+            shutil.rmtree(staging, ignore_errors=True)
+            message = str(error)
+            for old_path, new_path in kept.items():              # エラーの文のログの場所を、残した場所に直す
+                message = message.replace(old_path, new_path)
+            detail = " ".join([f"{type(error).__name__}: {message}", *getattr(error, "__notes__", [])])   # 注は前の結果へ戻せなかったときなど
+            _record_run(out, {**record, "status": "failed", "finished_at": _now(), "error": detail[:600], "kept": sorted(kept.values())})
+            if isinstance(error, PipelineError) and message != str(error):
+                raise PipelineError(message) from error
+            raise
+        _record_run(out, {**record, "status": "succeeded", "finished_at": result["run"]["finished_at"], "overall": result["overall"],
+                          "events": result["summary"]["events"], "inputs": inputs})
     return result, out
 
 

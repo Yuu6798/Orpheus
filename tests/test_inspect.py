@@ -5,6 +5,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -1022,6 +1023,79 @@ def test_a_publish_stopped_halfway_is_rolled_back_to_the_last_good_result(small_
     assert any("halfway" in note for note in notes)
 
 
+def _locked(out, phase, error):
+    """入れ替えの途中で 1 つだけ動かせない os.replace（ほかのアプリが開いている静止画・Ctrl+C など）。
+    phase が old なら前の stills/ を外す所で、new なら新しい metrics/ を置く所で止まる。"""
+    real = os.replace
+
+    def replace(source, target):
+        source = Path(source)
+        if (phase == "old" and source == out / "stills") or (
+                phase == "new" and source.name == "metrics" and source.parent.name.startswith(run.STAGING)):
+            raise error("開かれていて動かせない")
+        return real(source, target)
+    return replace
+
+
+@pytest.mark.parametrize("phase, error", [("old", PermissionError), ("new", PermissionError), ("new", KeyboardInterrupt)])
+def test_a_publish_that_fails_is_rolled_back_at_once(small_demo, tmp_path, monkeypatch, phase, error):
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    monkeypatch.setattr(run.time, "sleep", lambda seconds: None)     # 開かれたままのファイル: _replace が待ってやり直しても動かせない
+    monkeypatch.setattr(run.os, "replace", _locked(out, phase, error))
+    with pytest.raises(error):
+        run.run(small_demo / "inspect.json", out)
+    monkeypatch.undo()
+    assert (out / "inspect_report.json").is_file() and _snapshot(out) == before   # 次の実行を待たずに、前の結果が公開の場所に戻る
+    assert not (out / run.JOURNAL).exists() and not list(out.glob(".staging-*")) and not list(out.glob(".previous-*"))
+    assert [r["status"] for r in run.runs(out)] == ["succeeded", "failed"]
+
+
+def test_a_publish_that_cannot_be_rolled_back_keeps_the_backup_for_the_next_run(small_demo, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    real_rollback = run._rollback
+
+    def stuck(out):                                                   # 戻す跡（控え）があるときだけ戻せない（実行の初めの recover は本物）
+        if (Path(out) / run.JOURNAL).is_file():
+            raise PermissionError("戻す所も開かれている")
+        return real_rollback(out)
+    monkeypatch.setattr(run.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(run.os, "replace", _locked(out, "new", PermissionError))
+    monkeypatch.setattr(run, "_rollback", stuck)
+    with pytest.raises(PermissionError) as caught:
+        run.run(small_demo / "inspect.json", out)
+    monkeypatch.undo()
+    assert str(caught.value) == "開かれていて動かせない"                            # 元の失敗のまま止まり、戻せなかったことは注に書く
+    assert "前の結果へ戻せませんでした" in caught.value.__notes__[0]
+    assert (out / run.JOURNAL).is_file() and len(list(out.glob(".previous-*"))) == 1   # 前の結果は控えと一緒に残す
+    assert "前の結果へ戻せませんでした" in run.runs(out)[-1]["error"]
+    notes = run.recover(out)                                                       # 次の実行の初めに戻す
+    assert _snapshot(out) == before and any("入れ替えの途中" in note for note in notes)
+
+
+def test_a_second_run_on_the_same_output_leaves_a_run_in_progress_alone(small_demo, tmp_path):
+    from mv_pipeline.runner import project_lock
+    out = tmp_path / "out"
+    run.run(small_demo / "inspect.json", out)
+    before = _snapshot(out)
+    active = "20261107T000000Z-live"                                  # 測っている途中の実行（出力先のロックを持っている）
+    (out / f".staging-{active}" / "metrics").mkdir(parents=True)
+    run._record_run(out, {"run_id": active, "status": "running", "started_at": "2026-11-07T00:00:00+00:00"})
+    with project_lock(out):
+        with pytest.raises(PipelineError, match="ほかの mv inspect の実行が使っています"):
+            run.run(small_demo / "inspect.json", out)
+        code, _, err = run_cli("inspect", "check", small_demo / "inspect.json", "--out", out, "--quiet")
+        assert code == 1 and "ほかの mv inspect の実行が使っています" in err
+    assert (out / f".staging-{active}" / "metrics").is_dir() and _snapshot(out) == before   # 作業用フォルダーも前の結果もそのまま
+    assert [r["status"] for r in run.runs(out)] == ["succeeded", "running"]               # 動いている実行を止まった扱いにしない
+    run.run(small_demo / "inspect.json", out)                         # ロックが外れた後なら、止まった実行の跡として片付ける
+    assert next(r for r in run.runs(out) if r["run_id"] == active)["status"] == "failed"
+    assert not (out / f".staging-{active}").exists()
+
+
 def test_a_vlm_response_without_the_request_hash_needs_the_legacy_flag(small_demo, tmp_path):
     run.run(small_demo / "inspect.json", tmp_path / "first", vlm_packet=True)
     unbound = {"schema_version": vlm.RESPONSE_SCHEMA, "tool": {"name": "hand"},
@@ -1103,6 +1177,82 @@ def test_cuts_and_fast_moves_are_read_from_a_model3d_track(tmp_path):
         cues.load({"track": "bad.json"}, tmp_path)
 
 
+def test_a_color_only_change_in_any_rendered_light_is_a_light_cue():
+    from mv_pipeline.inspection import cues
+    red, green, blue = [1, 0, 0], [0, 1, 0], [0, 0, 1]
+    for key, before, after in (("tone", {"a": red, "b": blue, "gain": 0.5}, {"a": green, "b": blue, "gain": 0.5}),
+                               ("wall", {"strength": 0.2, "color": red, "dark": [0.1, 0, 0]},
+                                {"strength": 0.2, "color": red, "dark": [0, 0, 0.1]}),
+                               ("beams", {"gain": 1.0, "colors": [red] * 8}, {"gain": 1.0, "colors": [red] * 7 + [green]})):
+        frames = _track()["frames"]
+        for frame in frames:                                           # 明るさはそのままで、色だけが T 41 で切り替わる
+            frame[key] = after if frame["T"] >= 41 else before
+        assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)], key
+    turning = _track()["frames"]
+    for frame in turning:                                              # 壁の模様のずれは毎コマ動くが、切り替えではない
+        frame["wall"] = {"strength": 0.2, "color": red, "scroll": 0.01 * frame["T"]}
+    assert cues.from_track(turning, 30.0)[2] == []
+
+
+def test_omitted_light_values_are_the_renderers_defaults():
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:                                               # 省いた壁の強さは既定の 1（描く側と同じ）。T 41 から 0
+        frame["wall"] = {"color": [1, 0, 0], **({"strength": 0} if frame["T"] >= 41 else {})}
+    assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)]
+    same = _track()["frames"]
+    for frame in same:                                                 # 既定と同じ値を書いたコマ（模様の led・輪郭光の 1500）は変わらない
+        if frame["T"] >= 41:
+            frame.update(stage="led", rims=[{"energy": 1500.0}, {}])
+    assert cues.from_track(same, 30.0)[2] == []
+    toned = _track()["frames"]
+    for frame in toned:                                                # 塗りの縁の強さの既定は .blend で決まる: 片方だけ書いた組は比べない
+        if frame["T"] >= 41:
+            frame["tone"] = {"gain": 0.2}
+    assert cues.from_track(toned, 30.0)[2] == []
+
+
+def test_each_rim_light_is_compared_on_its_own():
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:                                               # 左右の輪郭光が入れ替わる（和は同じ 3000 のまま）
+        frame["rims"] = [{"energy": 3000.0}, {"energy": 0.0}] if frame["T"] <= 40 else [{"energy": 0.0}, {"energy": 3000.0}]
+    assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)]
+
+
+def test_the_light_defaults_are_the_renderers():
+    stage_render = pytest.importorskip("model3d.blender_adapter.stage_render")   # model3d の extra のある環境（CI も）で確かめる
+    from mv_pipeline.inspection import cues
+    static = stage_render.static_values(((0.1, 0.2, 0.3), (0.4, 0.5, 0.6)), 0.02)
+    assert cues.STAGE_DEFAULTS == {"stage": static["stage"], "wall_strength": static["wall"]["strength"],
+                                   "rim_energy": static["rims"][0]["energy"], "beam_gain": static["beams"]["gain"]}
+    assert static["rims"][1]["energy"] == static["rims"][0]["energy"]
+
+
+def test_a_track_may_leave_out_the_camera_or_its_lens(tmp_path):
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:
+        del frame["camera"]["lens"]                                    # レンズを省いたコマ（描く側の既定のレンズ）
+    assert cues.from_track(frames, 30.0)[:2] == ([round(20 / 30, 4)], [[round(39 / 30, 4), round(45 / 30, 4)]])   # 位置と向きは見る
+    mixed = _track()["frames"]
+    for frame in mixed:                                                # 前半はレンズを省き、後半だけ 50 mm（片方だけ省いた組は比べない）
+        if frame["T"] <= 30:
+            del frame["camera"]["lens"]
+        else:
+            frame["camera"]["lens"] = 50
+    assert cues.from_track(mixed, 30.0)[0] == [round(20 / 30, 4)]
+    bare = _track()["frames"]
+    for frame in bare:
+        if frame["T"] >= 15:
+            del frame["camera"]                                        # カメラを省いたコマ（描く側の、腰を追う既定のカメラ）
+        frame["wall"] = {"strength": 0.6 if frame["T"] == 31 else 0.2}
+    cut_times, moves, lights = cues.from_track(bare, 30.0)
+    assert cut_times == [] and moves == [] and lights == [round(30 / 30, 4), round(31 / 30, 4)]   # カットと動きは見ず、照明は見る
+    (tmp_path / "bare.json").write_text(json.dumps({**_track(), "frames": bare}), encoding="utf-8")
+    assert cues.load({"track": "bare.json"}, tmp_path)["sources"][0]["frames_without_camera"] == 46
+
+
 def _cue_signal(check, frames, peak=None):
     return {"check": check, "frames": list(frames), "peak": frames[0] if peak is None else peak}
 
@@ -1138,11 +1288,38 @@ def test_events_at_cues_stay_as_candidates_and_say_which_cue(small_demo, tmp_pat
     assert result["clips"][0]["cues"]["cuts"] == 1
     text = (out / "inspect_report.md").read_text(encoding="utf-8")
     assert "演出の時刻と重なる: カット 1.25 秒" in text and "重ならない出来事から見てください" in text
+    for md in (tmp_path / "plain" / "inspect_report.md", out / "inspect_report.md"):   # 冒頭の箇条書きと一覧の表の間は空行（md の表として読まれる）
+        lines = md.read_text(encoding="utf-8").splitlines()
+        header = next(i for i, line in enumerate(lines) if line.startswith("| クリップ |"))
+        assert lines[header - 1] == ""
 
 
 def _write(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def test_the_cue_files_are_in_the_run_inputs(small_demo, tmp_path):
+    config = read_json(small_demo / "inspect.json")
+    config["clips"][0]["path"] = str(small_demo / config["clips"][0]["path"])
+    config["reference"][0]["path"] = str(small_demo / config["reference"][0]["path"])
+    track = _write(tmp_path / "track.json", _track(fps=24.0))
+    keys = _write(tmp_path / "keys.json", {"schema_version": "model3d-light-keys/0.1", "fps": 24, "frames": 96,
+                                           "grid": {"period": 0.5, "k0_time": 0.0}, "low": [0], "mid": [0], "high": [0]})
+    config["cues"] = {"track": "track.json", "light_keys": "keys.json"}       # 全体の cues
+    result, _ = run.run(_write(tmp_path / "cues.json", config), tmp_path / "global")
+    roles = {item["role"]: item for item in result["run"]["inputs"]}
+    assert roles["cues_track"] == {"role": "cues_track", "path": "track.json", "sha256": hashlib.sha256(track.read_bytes()).hexdigest()}
+    assert roles["cues_light_keys"]["sha256"] == hashlib.sha256(keys.read_bytes()).hexdigest()
+    edited = _track(fps=24.0)
+    edited["frames"][30]["camera"]["location"][0] += 3.0                      # その場で書き換えたトラック
+    _write(track, edited)
+    del config["cues"]
+    config["clips"][0]["cues"] = {"track": "track.json"}                     # クリップごとの cues
+    again, _ = run.run(_write(tmp_path / "cues.json", config), tmp_path / "clip")
+    after = [item for item in again["run"]["inputs"] if item["role"] == "cues_track"]
+    assert after == [{"role": "cues_track", "path": "track.json", "sha256": hashlib.sha256(track.read_bytes()).hexdigest()}]
+    assert after[0]["sha256"] != roles["cues_track"]["sha256"]                # 書き換えたトラックは、記録の sha256 で見分けられる
 
 
 def test_cues_are_refused_with_a_dance_spec(dance_root, tmp_path):

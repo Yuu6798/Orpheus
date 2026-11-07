@@ -173,6 +173,17 @@ def test_the_operation_needs_blender_and_both_outputs(tmp_path):
         call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN))}, {"blend": "o.blend"})
 
 
+def test_collider_proxies_are_left_out_of_the_default_meshes():
+    from model3d.blender_adapter import prepare_push
+
+    class Thing(dict):                                   # Blender の物体の custom property（get）のまね
+        pass
+
+    proxy, body = Thing({prepare_push.COLLIDER_MARK: True}), Thing()
+    assert toon_look.COLLIDER_MARK == prepare_push.COLLIDER_MARK      # 写しを作る側と選ぶ側で同じ印
+    assert toon_look.is_collider(proxy) and not toon_look.is_collider(body)
+
+
 SHADING = {"bands": [{"at": 0.55, "soft": 0.05, "weight": 0.2}, {"at": 0.10, "soft": 0.04, "weight": 0.6},
                      {"at": -0.40, "soft": 0.05, "weight": 0.2}],
            "face_shadow": 0.35, "skin_meshes": ["body"], "skin_shade": [0.86, 0.6, 0.56],
