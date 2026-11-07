@@ -25,6 +25,7 @@
 | DANCE-CUT-1 | dance の spec にカットの概念を足す | P3 | 試作ではカメラのキーの並びでショットを手書きした。`mv gate` の拍の検査もカットを見ていない |
 | DANCE-HOOK-1 | `fit` を使わないクリップでも人物の足元と中心の列を hooks に渡す | P3 | 試作では `ground.json` と `rows.npy` を手で作った |
 | DANCE-AUDIO-1 | 動画の音が曲のどこかを相関で探す処理を部品にする | P3 | 曲を入れて生成した動画なら毎回使える。試作の 1 本で音ずれ +0.0 ms（実測） |
+| GATE-4 | `mv gate lines` の歌い出しの推定の偏り（約 −20 ms。docs/gate.md の表）を補正するか決める | P3 | 2026-11-08 に `mv gate demo` の素材で測定。原因は 30 ms の窓の掛かり始め。実曲では未測定。補正を入れるならしきい値の合否が変わるので、docs に「変わる挙動」を書く |
 | GATE-2 | `mv gate` に明滅の検査を足す | P3 | hooks で足した光は timeline に載らないので、完成動画から測る |
 | HANDOFF-1 | 受け渡しの決まり（PC へのアクセスの確認、元データの経路、分割と照合）を決めて書く | P2 | ユーザーの資料の段階 1 で未着手の項目 |
 | GATE-1 | `mv gate check` で 0 秒ちょうどの問題のコマに静止画が付かない | P3 | PR #12 の Codex の指摘で、ユーザーの判断で見送り（スレッドは開いたまま）。合否と問題の一覧には影響しない。書き出し検査の問題が t=0 を「コマなし」の印に使っているので、直すならそこも分ける |
@@ -48,7 +49,10 @@ Date は UTC（日本時間では #2・#6 は 2026-10-25 未明）。
 | PR | Title | Date | Phase |
 |---|---|---|---|
 | （この PR） | `mv gate timeline`: 透過の連番から、字が見えているコマと箱を α で実測して dance-timeline/0.1 を書き、宣言（props）との差を行ごとに出す（行ごとの連番か hints の箱で切り分け。Remotion のテロップのデモで timeline を手で書くしかなかったことから） | 2026-11-08 | 検査 |
-| （この PR） | GATE-3: 拍の検査の照合先を既定で拍にし、`align: "downbeat"` のものだけ小節頭と照合。文面と集計も照合先ごとに分けた（Remotion のテロップのデモで拍のフラッシュが不合格になった問題から） | 2026-11-08 | 検査 |
+| #71 | `mv export remotion-props`: analysis / storyboard からコマ番号だけの props.json（remotion-props/0.1）を書く。丸めは `validate.frame_span` / `frame_at` に 1 か所化し、`mv render` の字幕と共有。TS の型 `renderer/src/lyric-props.ts`（Remotion のテロップのデモで秒→コマの丸めを TS に書き直す必要があったことから） | 2026-11-08 | Remotion 連携 |
+| #70 | `mv gate demo`: 正解の分かっている試験素材（声の代役・宣言した行の時刻・timeline・拍の格子・expected.json）と CI の smoke（demo → lines → check → 照合）。`gate lines` の歌い出しの推定の偏り（約 −20 ms。窓の掛かり始め）を docs/gate.md に表で記録（補正は入れず、ユウ判断）。WAV は soundfile 無しで読める（Remotion のテロップのデモから） | 2026-11-08 | 検査 |
+| #69 | 字の重なりの検査がフェードアウトを数える（手書きの timeline は `[start, end + fade_out_s]`。dance の timeline は `lyric_fade: inside` を書き `[start, end]`。`box_intersects` を添え、`overlap_mode: time_and_box` で箱が交わるときだけ数える。Remotion のテロップのデモから） | 2026-11-08 | 検査 |
+| #68 | GATE-3: 拍の検査の照合先を既定で拍にし、`align: "downbeat"` のものだけ小節頭と照合。文面と集計も照合先ごとに分けた（Remotion のテロップのデモで拍のフラッシュが不合格になった問題から） | 2026-11-08 | 検査 |
 | （この PR） | INSPECT-6: Windows と Blender の描画で `mv inspect` を確かめた（合成素材の 7 つ・本番の 32 秒の描画・緑背景で描いた描画にわざと入れた 7 つ）。`render.stage` に `background`（緑背景・透け）を足し、離れた塊の見落とし（2% → 1%）と人物が戻ったコマの動きの誤検出を直した | 2026-11-07 | 検品 |
 | #55 | `mv inspect` の 2 回目のドッグフーディング: 手当ての規則（速い動きの崩れに補間）・静止画のメモリ（60 秒で 2.1→0.6 GB）・VLM のトークン数とキャッシュ・緑抜きの注意・表に設定画の色を出す | 2026-11-07 | 検品 |
 | #54 | `mv inspect` を実素材で確かめ、設定画の向き違いでの衣装の誤検出を直す（そのコマをいちばんよく説明する設定画と比べる）。設定画の名前と切り抜きの画像、数値の出来事に添えた VLM の指摘の文を報告に出す | 2026-11-07 | 検品 |

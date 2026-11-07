@@ -56,22 +56,29 @@ def test_separate_sequences_per_line_measure_boxes_and_frames_exactly(tmp_path):
 
 
 def test_one_sequence_with_hints_and_a_line_that_never_appears(tmp_path):
-    _props(tmp_path / "props.json", flash_frames=[12, 36])
+    _props(tmp_path / "props.json")
     _sequence(tmp_path / "all", [(6, 18, BOX_A), (20, 42, BOX_B)])   # 2 行目は 2 コマ長い
     hints = tmp_path / "hints.json"
     atomic_json(hints, {"lyric-001": [0, 0, 1, 0.5], "lyric-002": [0, 0.5, 1, 1]})
-    timeline, measured = frames_timeline.build([str(tmp_path / "all")], tmp_path / "props.json", "band", hints_path=hints)
+    timeline, measured = frames_timeline.build([str(tmp_path / "all")], tmp_path / "props.json", "band", hints_path=hints, flashes=[0.5, 1.5])
     rows = {row["id"]: row for row in measured["lines"]}
     assert rows["lyric-001"]["note"] == "宣言と一致" and rows["lyric-002"]["note"] == "終了が 2 コマ遅い"
     assert timeline["lyrics"][1]["box_px"] == list(BOX_B) and timeline["flashes"] == [0.5, 1.5]
     assert timeline["measured"]["sources"]["hints"]["path"] == str(hints)
     with pytest.raises(PipelineError, match="--hints"):
         frames_timeline.build([str(tmp_path / "all")], tmp_path / "props.json", "band")
+    with pytest.raises(PipelineError, match="使われません"):      # 全部の連番に id が付いているのに hints
+        frames_timeline.build([f"{tmp_path / 'all'}:lyric-001"], tmp_path / "props.json", "band", hints_path=hints)
     _props(tmp_path / "three.json", lines=(LINE_A, LINE_B, {**LINE_B, "id": "lyric-003", "text": "three", "start_frame": 42, "end_frame": 46}))
     atomic_json(hints, {"lyric-001": [0, 0, 1, 0.5], "lyric-002": [0, 0.5, 1, 1], "lyric-003": [0, 0.9, 1, 1]})
-    _, measured = frames_timeline.build([str(tmp_path / "all")], tmp_path / "three.json", "band", hints_path=hints)
+    timeline, measured = frames_timeline.build([str(tmp_path / "all")], tmp_path / "three.json", "band", hints_path=hints)
     rows = {row["id"]: row for row in measured["lines"]}
     assert rows["lyric-003"]["measured"] is None and "見えているコマがありません" in rows["lyric-003"]["note"]
+    assert measured["unseen_lines"] == ["lyric-003"] and len(timeline["lyrics"]) == 3     # 行数は props と揃える
+    unseen = timeline["lyrics"][2]
+    assert unseen["measured"] is False and (unseen["start"], unseen["end"]) == (42 / FPS, 46 / FPS)
+    assert unseen["box"] == [0.0, round(round(0.9 * H) / H, 5), 1.0, 1.0]      # hints の箱（画素に丸めてから正規化）
+    gate._validate_timeline(timeline)
 
 
 def test_alpha_threshold_gaps_and_mismatches(tmp_path):
@@ -84,22 +91,53 @@ def test_alpha_threshold_gaps_and_mismatches(tmp_path):
     assert measured["lines"][0]["measured"] is None
     _sequence(tmp_path / "short", [(6, 18, BOX_A)], count=N - 1)
     _props(tmp_path / "two.json")
-    with pytest.raises(PipelineError, match="コマ数が合いません"):
+    with pytest.raises(PipelineError, match="duration_frames"):
         frames_timeline.build([f"{tmp_path / 'faint'}:lyric-001", f"{tmp_path / 'short'}:lyric-002"], tmp_path / "two.json", "band")
-    with pytest.raises(PipelineError, match="2 つの連番に"):
+    with pytest.raises(PipelineError, match="2 つの連番に付けて"):
         frames_timeline.build([f"{tmp_path / 'faint'}:lyric-001", f"{tmp_path / 'faint'}:lyric-001"], tmp_path / "two.json", "band")
-    with pytest.raises(PipelineError, match="props にありません"):
+    with pytest.raises(PipelineError, match="--frames のフォルダが見つかりません"):   # props に無い id は id と見なさない
         frames_timeline.build([f"{tmp_path / 'faint'}:lyric-009"], tmp_path / "props.json", "band")
+    opaque = tmp_path / "opaque"
+    opaque.mkdir()
+    for i in range(N):
+        Image.new("RGB", (W, H), (1, 2, 3)).save(opaque / f"f_{i:04d}.png")
+    with pytest.raises(PipelineError, match="アルファがありません"):
+        frames_timeline.build([str(opaque)], tmp_path / "props.json", "band")
     (tmp_path / "bad.json").write_text(json.dumps({"schema_version": "other"}), encoding="utf-8")
     with pytest.raises(PipelineError, match="remotion-props/0.1"):
         frames_timeline.build([str(tmp_path / "faint")], tmp_path / "bad.json", "band")
 
 
-def test_frames_argument_parsing_keeps_windows_drives_and_paths():
-    assert frames_timeline.parse_frames_arg("out/frames:lyric-001") == (frames_timeline.Path("out/frames"), "lyric-001")
-    assert frames_timeline.parse_frames_arg("out/frames") == (frames_timeline.Path("out/frames"), None)
-    assert frames_timeline.parse_frames_arg("C:\\work\\frames") == (frames_timeline.Path("C:\\work\\frames"), None)
-    assert frames_timeline.parse_frames_arg("C:\\work\\frames:lyric-002") == (frames_timeline.Path("C:\\work\\frames"), "lyric-002")
+def test_frames_argument_parsing_uses_the_known_line_ids():
+    ids = {"lyric-001", "lyric-002"}
+    assert frames_timeline.parse_frames_arg("out/frames:lyric-001", ids) == (frames_timeline.Path("out/frames"), "lyric-001")
+    assert frames_timeline.parse_frames_arg("out/frames", ids) == (frames_timeline.Path("out/frames"), None)
+    assert frames_timeline.parse_frames_arg("a:lyric-002", ids) == (frames_timeline.Path("a"), "lyric-002")           # 1 文字のフォルダも可
+    assert frames_timeline.parse_frames_arg("C:\\work\\frames", ids) == (frames_timeline.Path("C:\\work\\frames"), None)
+    assert frames_timeline.parse_frames_arg("out/2026-11-08T12:30", ids) == (frames_timeline.Path("out/2026-11-08T12:30"), None)
+    assert frames_timeline.natural_key("frame10.png") > frames_timeline.natural_key("frame2.png")
+
+
+def test_frames_rendered_from_a_real_props_export_measure_back_to_the_declared_frames(tmp_path):
+    """mv export remotion-props の出力をそのまま --lyrics に渡し、宣言どおりに描いた連番が宣言と一致する。"""
+    from mv_pipeline import remotion_props
+    from mv_pipeline.demo import create
+    project = create(tmp_path / "song", 64, 36)
+    props = remotion_props.build(project, storyboard=False)
+    atomic_json(tmp_path / "props.json", props)
+    folder = tmp_path / "frames"
+    folder.mkdir()
+    for i in range(props["duration_frames"]):
+        rgba = np.zeros((36, 64, 4), np.uint8)
+        for k, line in enumerate(props["lines"]):
+            if line["start_frame"] <= i < line["end_frame"]:
+                rgba[4 + 14 * k:12 + 14 * k, 8:56] = (255, 255, 255, 255)
+        Image.fromarray(rgba, "RGBA").save(folder / f"element-{i:04d}.png")
+    hints = tmp_path / "hints.json"
+    atomic_json(hints, {props["lines"][0]["id"]: [0, 0, 1, 0.5], props["lines"][1]["id"]: [0, 0.5, 1, 1]})
+    timeline, measured = frames_timeline.build([str(folder)], tmp_path / "props.json", "band", hints_path=hints)
+    assert all(row["note"] == "宣言と一致" for row in measured["lines"]) and measured["unseen_lines"] == []
+    assert [(ln["start"], ln["end"]) for ln in timeline["lyrics"]] == [(ln["start_frame"] / 30, ln["end_frame"] / 30) for ln in props["lines"]]
 
 
 def test_cli_writes_the_timeline_and_the_measured_report_and_gate_check_reads_it(tmp_path):
@@ -108,9 +146,12 @@ def test_cli_writes_the_timeline_and_the_measured_report_and_gate_check_reads_it
     _sequence(tmp_path / "b", [(20, 40, BOX_B)])
     out = tmp_path / "timeline.json"
     code, result, err = run_cli("gate", "timeline", "--frames", f"{tmp_path / 'a'}:lyric-001", "--frames", f"{tmp_path / 'b'}:lyric-002",
-                                "--lyrics", tmp_path / "props.json", "--layer", "band", "--out", out)
+                                "--lyrics", tmp_path / "props.json", "--layer", "band", "--out", out, "--flashes", "0.5,1.0")
     assert code == 0, err
     assert result["differing"] == [] and result["lines"] == 2 and result["measured"] == str(tmp_path / "timeline_measured.json")
+    assert result["flashes"] == 2 and result["unseen_lines"] == []
+    assert run_cli("gate", "timeline", "--frames", str(tmp_path / "a"), "--lyrics", tmp_path / "props.json", "--layer", "band", "--out", out,
+                   "--flashes", "x")[0] == 1
     atomic_json(tmp_path / "gate.json", {"timeline": "timeline.json"})
     report, _ = gate.run(tmp_path / "gate.json")
     by_name = {c["check"]: c for c in report["checks"]}

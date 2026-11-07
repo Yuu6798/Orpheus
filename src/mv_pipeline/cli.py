@@ -48,6 +48,7 @@ def parser():
     _gate_parser(commands)
     _inspect_parser(commands)
     _workflow_parser(commands)
+    _export_parser(commands)
     return p
 
 
@@ -152,6 +153,18 @@ def _gate_parser(commands):
     lines.add_argument("--vocals", type=Path, help="vocal stem; measures each line start near the estimate")
     lines.add_argument("--window", type=float, default=0.8)
     lines.add_argument("--offset", type=float, default=0.0, help="seconds added to every estimate")
+    demo = sub.add_parser("demo", help="write synthetic test material with known answers (vocals stand-in, lyrics, timeline, beats, expected.json)")
+    demo.add_argument("dir", type=Path)
+    demo.add_argument("--duration", type=float, default=10.0)
+    demo.add_argument("--fps", type=int, default=30)
+    demo.add_argument("--bpm", type=float, default=120.0)
+    demo.add_argument("--beats-per-bar", type=int, default=4)
+    demo.add_argument("--no-downbeats", action="store_true", help="omit the downbeat grid")
+    demo.add_argument("--shifts", help="comma-separated seconds added to each declared line time (default 0,-0.333,0,0.15)")
+    demo.add_argument("--flashes", help="comma-separated flash times in seconds (default 5.5,6,6.5,7,7.5)")
+    demo.add_argument("--flash-align", choices=["beat", "downbeat"], default="beat", help="what the flashes should be compared with")
+    demo.add_argument("--attack-ms", type=float, default=30.0, help="rise time of each line's tone")
+    demo.add_argument("--floor-db", type=float, default=-40.0, help="background noise relative to the tone")
     tl = sub.add_parser("timeline", help="measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check")
     tl.add_argument("--frames", action="append", default=[], required=True,
                     help="PNG sequence folder; 'DIR:lyric-001' binds the folder to one line. Repeatable")
@@ -159,6 +172,7 @@ def _gate_parser(commands):
     tl.add_argument("--layer", required=True, help="layer name written into the timeline (e.g. band)")
     tl.add_argument("--hints", type=Path, help="JSON {line id: normalized box} when one sequence holds several lines")
     tl.add_argument("--alpha-threshold", type=int, default=64, help="a pixel is visible when alpha is above this (0-254)")
+    tl.add_argument("--flashes", help="comma-separated flash times in seconds to write into the timeline (props have none)")
     tl.add_argument("--out", type=Path, required=True, help="timeline.json to write (plus <stem>_measured.json)")
 
 
@@ -304,9 +318,18 @@ def gate_command(args):
     if args.gate_command == "lines":
         from .gate import lines
         return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
+    if args.gate_command == "demo":
+        from .gate import demo
+        return demo.create(args.dir, args.duration, args.fps, args.bpm, args.beats_per_bar, not args.no_downbeats, args.shifts,
+                           args.flashes, args.flash_align, args.attack_ms, args.floor_db)
     if args.gate_command == "timeline":
         from .gate import frames_timeline
-        return frames_timeline.write(args.frames, args.lyrics, args.layer, args.out, args.hints, args.alpha_threshold)
+        flashes = [v for v in (args.flashes or "").split(",") if v.strip()]
+        try:
+            flashes = [float(v) for v in flashes]
+        except ValueError as error:
+            raise PipelineError(f"--flashes は秒をコンマで区切って指定してください: {args.flashes!r}") from error
+        return frames_timeline.write(args.frames, args.lyrics, args.layer, args.out, args.hints, args.alpha_threshold, flashes)
     from .gate import checks
     report, out = checks.run(args.config, args.out)
     args.failed = 1 if report["overall"] == "fail" else 0
@@ -326,6 +349,28 @@ def inspect_command(args):
     return run.summarize(result, out)
 
 
+def _export_parser(commands):
+    """外のレンダラへ渡すファイルの書き出し。読むだけなので project_lock を通らない。"""
+    export = commands.add_parser("export", help="write files for external renderers (read-only)")
+    sub = export.add_subparsers(dest="export_command", required=True)
+    props = sub.add_parser("remotion-props", help="frame-based props.json (remotion-props/0.1) from analysis.json and storyboard.json")
+    props.add_argument("project", type=Path)
+    props.add_argument("--out", type=Path, required=True, help="props.json to write")
+    props.add_argument("--beats", type=Path, help='beat grid JSON with "beats" and "downbeats" (gate / dance format)')
+    props.add_argument("--beats-per-bar", type=int, help="derive downbeats from analysis beats_s every N beats")
+    props.add_argument("--downbeat-phase", type=int, default=0, help="index of the first downbeat within beats_s (with --beats-per-bar)")
+    props.add_argument("--no-storyboard", action="store_true", help="do not include storyboard scenes even if storyboard.json exists")
+
+
+def export_command(args):
+    """export サブコマンド。プロジェクトのファイルを読むだけで、書くのは --out だけ。"""
+    from . import remotion_props
+    if args.export_command == "remotion-props":
+        return remotion_props.export(args.project.resolve(), args.out, args.beats, args.beats_per_bar, args.downbeat_phase,
+                                     storyboard=not args.no_storyboard)
+    raise PipelineError(f"Unsupported export command: {args.export_command}")
+
+
 def workflow_command(args):
     """workflow サブコマンド。check で必須工程が未実施・未確認なら args.failed=1。"""
     from . import workflow
@@ -342,7 +387,7 @@ def workflow_command(args):
 
 
 GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
-                  "inspect": inspect_command, "workflow": workflow_command}
+                  "inspect": inspect_command, "workflow": workflow_command, "export": export_command}
 
 
 # ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------
