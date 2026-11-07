@@ -23,6 +23,9 @@ FILES = {
     "initial-model": "initial_model.schema.json",
     "stage-track": "stage_track.schema.json",
     "frames": "frames.schema.json",
+    "stage-plan": "stage_plan.schema.json",
+    "light-keys": "light_keys.schema.json",
+    "bone-path": "bone_path.schema.json",
 }
 
 KINDS = tuple(FILES)

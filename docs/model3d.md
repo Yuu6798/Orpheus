@@ -78,6 +78,9 @@ uv run model3d run projects/model3d-demo/recipe_generate.json   # 合成の設�
 | preset `model3d-preset/0.1` | キャラごとの対応表と値（`tools/model3d/presets/README.md`） |
 | stage track `model3d-stage-track/0.1` | `render.stage` が描くコマの並び（書き出す T と動きのコマ f）と、コマごとのカメラ（位置・狙う点・レンズ）・舞台の模様・壁・輪郭光・光の柱・塗りの共有グループの値 |
 | frames `model3d-frames/0.1` | 描いたコマのフォルダとファイル（T・f・sha256・大きさ）、fps・解像度、描いていない T |
+| stage plan `model3d-stage-plan/0.1` | `plan.stage` の段取り表: 時刻の印（秒か拍）と色の名前、カメラ（区間ごとの方位・距離・高さ・レンズ・狙う点と動き、寄りと揺れ、骨の通り道のならし方）、舞台の模様の区間、光（色・強さ・拍と印の信号・落とす区間・光ごとの係数） |
+| light keys `model3d-light-keys/0.1` | 曲の音の帯ごとの強さ（low・mid・high。コマごとに 0〜1）と拍の格子（period・k0_time）、fps とコマの数 |
+| bone path `model3d-bone-path/0.1` | 動きのコマごとの骨の付け根の位置（世界の座標、m）、シーンの scale_length、アーマチュアの名前 |
 | handoff `model3d-handoff/0.1` | Orpheus へ渡す成果物 1 つの控え（run・レシピ・成果物の sha256） |
 | initial model `model3d-initial-model/0.1` | 設定画から生成した初期モデルの記録: 入力のハッシュ、前処理の条件、生成器の素性（版・重みの sha256・ライセンス・実行ファイルの sha256）、パラメーター、生成物のハッシュ、幾何と構造の検査。review は常に needs_review |
 
@@ -201,6 +204,8 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `motion.sleeve_bones` | blend → blend, report | 袖口の骨（`sleeves` の `bone`）を、関節（`follow`。前腕など）の曲げの `ratio` 倍に、減衰つきのばねで少し遅れて付いて行かせる（[袖口を曲げに遅れて付いて行かせる](#袖口を曲げに遅れて付いて行かせる)）。ねじれは入れない。焼き付けた向きを確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `motion.ribbon_bones` | blend → blend, report | 帯の垂れの鎖の骨（`chains`。長さは鎖ごとに違ってよい）を、重力で垂れて太ももの上を前へ乗り越えるように揺らす（[帯の垂れを揺らす](#帯の垂れを揺らす)）。狙いは `follow` に `thigh`（下ほど太もも）を混ぜられる。当たりは `colliders` と、メッシュの輪切りから作る `fitted`。押す向きは腰（`hips`）の前と上へ寄せる。焼き付けた骨を確かめ、合わなければ止まる。Blender が要り、再利用しない（毎回実行） |
 | `look.toon` | blend → blend, report | キャラに描く前のセル調の塗りと輪郭線を付ける（[セル調の塗りと輪郭線を付ける](#セル調の塗りと輪郭線を付ける)）。体は決まった向きの光で影を 2 段に分け、舞台の色と縁の光を足して Emission で出す。顔（`faces`）は光を少し受けて絵の色を出す。輪郭線は反転ハル。舞台の色と縁の強さは共有のノードグループ `model3d_stage_tone`。Blender が要り、再利用しない（毎回実行） |
+| `motion.bone_path` | blend [, track] → path | 動きのコマごとに、骨（既定は腰と頭）の付け根の位置を m で測る（[段取りを組む](#段取りを組む)）。track（描くコマの並び）があればその動きのコマを重ねず小さい順に、無ければ `frame_range` か .blend のシーンの全コマ。path は `model3d-bone-path/0.1`。Blender が要り、再利用しない（毎回実行） |
+| `plan.stage` | plan, keys, bones [, cut] → track [, report] | 段取り表（`model3d-stage-plan/0.1`）と光のキー（`model3d-light-keys/0.1`）と骨の通り道から、`render.stage` のトラックを作る（[段取りを組む](#段取りを組む)）。コマごとに、カメラ（区間・動き・寄りと揺れ）、壁の模様、光と塗りの縁の値を決める。cut（T と f のトラック）があればその並びで。計算だけで、同じ入力なら再利用する。report は区間ごとのコマの範囲 |
 | `render.stage` | blend, track → frames, report | キャラを舞台と光の中でコマごとに PNG に描く（[舞台で描く](#舞台で描く)）。床・LED の壁・トラス・光の柱とスポット 4 つ、EEVEE と光のにじみ。トラック（`model3d-stage-track/0.1`）のコマの並びとカメラ・光・塗りの値で描き、無ければ腰を追う正面のカメラと動かない光。輪郭線の太さはカメラの距離で画面の上にそろえる。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（`model3d-frames/0.1`）。Blender が要り、再利用しない（毎回実行） |
 | `generate.prepare_reference` | image → prepared, metadata | 設定画（RGBA）を前景の矩形で切り出し（互換のため最後の行と列は含まない）、正方形の中央に置き、`foreground_ratio`（既定 0.85）で余白を足し、アルファを灰色 0.5 に合成した RGB の PNG にする |
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
@@ -875,7 +880,7 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
 
 ## 舞台で描く
 
-`render.stage` は、塗りと輪郭線を付けたキャラ（`look.toon` の blend）を、舞台と光の中で、コマごとに PNG に描く。リポジトリ外の試作で 32 秒の本番を描いた舞台と光の組み方を移した。コマごとのカメラと光の値は、トラック（`model3d-stage-track/0.1`）で受け取る。曲に合わせてトラックを作る段取りの道具は、次の工程。
+`render.stage` は、塗りと輪郭線を付けたキャラ（`look.toon` の blend）を、舞台と光の中で、コマごとに PNG に描く。リポジトリ外の試作で 32 秒の本番を描いた舞台と光の組み方を移した。コマごとのカメラと光の値は、トラック（`model3d-stage-track/0.1`）で受け取る。曲に合わせてトラックを作るのは `plan.stage`（[段取りを組む](#段取りを組む)）。
 - **入力**: `blend`（必須）と `track`（任意）。
 - **舞台**（`stage.enabled`、既定 true）:
   - 床（40 m の暗い板。EEVEE の画面の反射を受ける）、背面の LED の壁（帯の模様を Emission で出す）、上のトラスと両脇の塔、光の柱 8 本（発光する半透明の円錐）、ほぼ黒の空。
@@ -918,6 +923,85 @@ uv run model3d mesh compare a.obj b.obj                            # 頂点番�
   - 同じ大きさの場面を 1 単位 = 1 m と 1 単位 = 1 cm で作り、同じトラック（m）で舞台ごと描いて比べた。
     - 報告の距離（2.52〜3.62 m）と線の太さ（1.51〜3.11 mm）は同じ。
     - 画はほぼ同じで、1/255 より違う画素は 2 コマで 0.3%・1.2%（最大 2/255・7/255）。直していない EEVEE の細かな長さの設定（影など）のぶんと見ている。
+
+## 段取りを組む
+
+`plan.stage` は、段取り表（`model3d-stage-plan/0.1`）と光のキー（`model3d-light-keys/0.1`）と骨の通り道（`model3d-bone-path/0.1`）から、`render.stage` のトラックを作る。リポジトリ外の試作で 32 秒の本番のカメラと光を決めた計算を、曲によらない形に移した。曲ごとの時刻と値は、段取り表としてリポジトリの外のレシピに置く。
+
+**流れ**（レシピの工程）:
+1. `motion.bone_path`（blend [, track] → path）: 動きのコマごとに、骨の付け根の位置を m で測る。
+   - 骨は `bones`（既定は `Hips` と `Head`）に `bone_prefix`（既定 `mixamorig:`）を前に付けた名前。アーマチュアは `armature`（省くと最初のアーマチュア。`render.stage` と同じ）。
+   - `track`（描くコマの並び）があればその動きのコマを、無ければ `frame_range` か .blend のシーンの全コマを測る。
+   - 骨だけを動かして測る（メッシュの変形は止める）。.blend は保存しない。
+2. `plan.stage`（plan, keys, bones [, cut] → track [, report]）: コマごとにカメラ・舞台・光の値を決める。
+   - `cut`（T と f だけのトラック）があればその並び、無ければ骨の通り道のコマを T = 1 から順に。
+   - コマ T の時刻は (T - 1) / fps 秒（fps は光のキー）。光のキーより後のコマは最後の値を使い、その数を報告する。
+3. `render.stage` でそのトラックを描く。
+
+**段取り表**（省いた部分は既定の値。既定は試作の値）:
+- 時刻は、秒の数・印（`marks` の名前）・拍 `{"beat": k}` のどれか。拍は光のキーの格子で k0_time + period × k 秒。
+- 色は、`colors` の名前か RGB。
+- `camera`:
+  - `base`: 方位 `az`（度。0 で正面、正で +X 側。キャラは -Y を向く）、水平の距離 `dist` と高さ `height`（m）、レンズ `lens`（mm）、狙う点 `target`。
+    - 既定は、`render.stage` の既定のカメラと同じ（正面の 3.6 m・高さ 1.1 m・35 mm。腰の通り道の 0.6 倍の所の、高さ 0.95 m を狙う）。
+  - `shots`: カメラの区間の並び。値は `base` に重ねる。
+    - 区間の頭は、前の区間の `until`（最初は 0 秒）。最後の区間だけ `until` を省ける（その先ずっと）。
+    - `to` を書くと、区間の頭から `over` 秒（省くと区間の長さ）かけて、`to` の値まで `ease`（`smooth` か `linear`）で動く。
+    - 狙う点は次のどれか。高さも、頭からの高さ `{"head": 0.05}` で書ける。
+      - 腰の通り道の `hips` 倍の所の、高さ `z`（`{"hips": 0.6, "z": 0.95}`。0 に近いほど腰の揺れを追わない）
+      - 頭から上へ `head` m（`{"head": -0.1}`）
+      - 決まった点（`{"point": [x, y, z]}`）
+    - `effects: false` の区間では、下の寄りと揺れを入れない。
+  - `smooth`: 骨の通り道をならすガウス（コマ）。
+    - 既定は、腰が σ 6（幅 ±round(2σ)）、頭が σ 1.5・幅 ±6。`z` で上下だけ別にならせる。
+    - ならすのは、描くコマの動きのコマを、重ねず小さい順に並べた列。
+  - `effects`（並べた順に掛ける）:
+    - `whip`: `at` の `before` 秒前から寄りながら回り、`hold` 秒そのまま回り続け、`after` 秒で戻る（距離の縮み `zoom`、回る角度 `turn`）。
+    - `push`: `at`（1 つか並び）から `length` 秒、距離に 1 - `amount` × exp(-経過 / `tau`) を掛ける。
+    - `shake`: `at` から `length` 秒、横と上下に揺らす（`x`・`z` は [振れ幅 m, 角周波数]）。
+    - `beat_push`: `from`〜`until` の拍ごとに寄る（`every` の倍数の拍は `strong`、ほかは `weak`）。
+  - カメラの位置は、狙う点 + (sin(az) × dist + 横の揺れ, -cos(az) × dist)。高さは height + 上下の揺れ。
+- `stage`: 区間ごとの壁の模様（led・led_diag・void）。`fade`（[頭, 終わり]）で、壁の明るさに掛ける割合を変える。
+- `lights`:
+  - `palette`: 区間ごとの縁の色 a・b。
+    - 壁・左の輪郭光・塗りの a は a、右の輪郭光・塗りの b は b。光の柱は交互（奇数番が a）。
+  - `level`: 舞台の光の強さ。`segments` の最初に当たる区間の値（[頭, 終わり] なら変わる）。どれにも当たらなければ `default`（既定 1）。
+  - 信号:
+    - `low`・`mid`・`high` は、光のキーのそのコマの値。
+    - `hit` は、直前の拍から `hit.frames`（既定 9）コマで 1 → 0。
+    - `punch` は、直前の `punch.at` から `punch.frames`（既定 12）コマで 1 → 0。
+  - 明るさ（`wall`・`rims` の 2 つ・`beams`・`tone`）= (`base` + Σ 係数 × 信号) × 舞台の光の強さ（`level` が true のとき）× 落とす割合。負になったら止める。
+    - `dims`: 光を落とす区間。数なら掛ける。`{"level": x}` なら、舞台の光の強さの代わりに x を使う。
+    - `wall` には、舞台の `fade` と、レンズが `closeup.lens` 以上のときの `closeup.scale` も掛ける。模様の横のずれは `scroll` × T。
+    - `tone`（塗りの縁）は、既定では舞台の光の強さを掛けない。`scale` を掛ける。
+  - `beams` の向き: `phase` からの拍 b で、柱 j（0〜7。0〜3 は左）を振る。
+    - 下向きに `tilt.base` + `tilt.swing` × sin(2π b / `tilt.period` + j × `tilt.step`) 度。
+    - 横に ±`pan.spread`（左は -）+ `pan.swing` × sin(2π b / `pan.period` + j × `pan.step`) 度。
+
+**出力**:
+- `track`: `model3d-stage-track/0.1`。コマごとのカメラ（位置・狙う点・レンズ）、舞台の模様、塗りの a・b・gain、壁（明るさ・色・模様のずれ）、輪郭光、光の柱。
+  - 壁の暗い帯の色は書かない（`render.stage` が、明るい帯の色 × `stripe_floor` にする）。
+- `report`（任意）: `model3d-stage-plan-report/0.1`。区間（カメラ・舞台・色）ごとの時刻と T の範囲とコマの数、使った骨、光のキーより後のコマの数。
+
+光のキーを曲から作る道具は、まだ公開版に無い（リポジトリ外の試作の道具で作り、`schema_version` を足して使った）。
+
+**確かめたこと**:
+- CI（Blender なし）では、次を確かめた。
+  - 時刻の読み方（秒・印・拍）、区間の並び、なめらかさ、ガウス、直前の出来事からの秒。
+  - カメラ: 既定のカメラ、頭と決まった点の狙い、動き、whip・push・shake・beat_push、寄りと揺れを切る区間、描くコマだけでならすこと。
+  - 光: 色・強さ・拍と印の信号・落とす区間、壁の fade とアップ、模様のずれ、光の柱の向き。
+  - 悪い段取り表と、食い違う入力を止めること。3 つの契約。
+  - 工程の受け渡しと再利用、`motion.bone_path` の設定と引数（代役の Blender）。
+- 2026-11-07 に、リポジトリ外の試作（32 秒の本番。案 2 のカメラ）で確かめた。
+  - 試作のカメラと光の決め方を、段取り表（15 の区間、5 つの寄りと揺れ）に書き直した。
+  - 試作の台本から計算の関数をそのまま取り出し、作り物の骨の通り道で、32 秒の全 960 コマを突き合わせた。カメラ・舞台の模様・光・塗りの値の差は 1e-12 より小さかった（浮動小数の丸めだけ）。
+  - Windows の Blender 4.5.15 で、5 つのクリップ（合わせて 960 コマ）の動きの .blend から `motion.bone_path` で腰と頭を測った。`plan.stage` で作ったトラックを、試作が Blender の中で計算した値と比べた。
+    - 全コマで、差は float32 の丸めの範囲（相対 1e-7 未満）だった。
+    - float32 にすると、光と塗りの値はすべて同じ。カメラの位置の y だけが 1 ulp（0.24 µm）違う（試作は Blender の float32 のベクトルで足すため）。
+  - 最後のクリップの 2 コマ（T 880・920）を、そのトラックで描いて試作の画と比べた。
+    - 1/255 より違う画素は 131 と 116（207 万 3,600 画素の 0.006%）で、最大 6/255。カメラの位置の 1 ulp のぶんと見ている。
+    - 2/255 以上違う画素の 85〜97% は、まわり 3×3 の明暗の差が 40/255 以上の縁（線や輪郭）にあった。
+    - 試作が書き出した値のトラックで描くと、画素まで同じになる（[舞台で描く](#舞台で描く)）。
 
 ## Orpheus との接続（受け渡し）
 

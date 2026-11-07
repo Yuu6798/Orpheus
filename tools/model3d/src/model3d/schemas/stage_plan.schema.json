@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-stage-plan/0.1",
+  "title": "model3d stage plan",
+  "description": "plan.stage の段取り表: 時刻ごとのカメラ（区間・動き・寄りや揺れ）、舞台の模様、光（色・強さ・拍や印への反応）。時刻は秒の数、印（marks）の名前、拍 {\"beat\": k}（光のキーの拍の格子）のどれか。長さは m、角度は度、レンズは mm。省いた部分は既定の値（docs/model3d.md）。曲ごとの時刻と値はリポジトリの外のレシピに置く。",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {"const": "model3d-stage-plan/0.1"},
+    "notes": {"type": "string"},
+    "marks": {
+      "description": "時刻の名前 → 秒の数か拍 {\"beat\": k}（印から印は引けない）",
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/plain_time"}
+    },
+    "colors": {
+      "description": "色の名前 → RGB（0 以上）",
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {"$ref": "#/$defs/rgb"}
+    },
+    "camera": {"$ref": "#/$defs/camera"},
+    "stage": {
+      "description": "区間ごとの壁の模様。最後の区間だけ until を省ける（その先ずっと）",
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/stage_part"}
+    },
+    "lights": {"$ref": "#/$defs/lights"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "plain_time": {
+      "oneOf": [
+        {"type": "number"},
+        {"type": "object", "required": ["beat"], "properties": {"beat": {"type": "number"}}, "additionalProperties": false}
+      ]
+    },
+    "time": {
+      "oneOf": [
+        {"type": "number"},
+        {"type": "string", "minLength": 1},
+        {"type": "object", "required": ["beat"], "properties": {"beat": {"type": "number"}}, "additionalProperties": false}
+      ]
+    },
+    "times": {
+      "oneOf": [
+        {"$ref": "#/$defs/time"},
+        {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/time"}}
+      ]
+    },
+    "rgb": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
+    "color": {"oneOf": [{"type": "string", "minLength": 1}, {"$ref": "#/$defs/rgb"}]},
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "pair": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+    "ease": {"enum": ["smooth", "linear"]},
+    "target": {
+      "description": "狙う点: 腰の通り道（ならしたもの）の hips 倍の所の高さ z / 頭（ならしたもの）から上へ head / 決まった点 point",
+      "oneOf": [
+        {"type": "object", "required": ["hips", "z"],
+         "properties": {"hips": {"type": "number", "minimum": 0, "maximum": 1}, "z": {"type": "number"}}, "additionalProperties": false},
+        {"type": "object", "required": ["head"], "properties": {"head": {"type": "number"}}, "additionalProperties": false},
+        {"type": "object", "required": ["point"], "properties": {"point": {"$ref": "#/$defs/vec3"}}, "additionalProperties": false}
+      ]
+    },
+    "height": {
+      "description": "カメラの高さ: m の数か、頭（ならしたもの）からの高さ {\"head\": dz}",
+      "oneOf": [
+        {"type": "number"},
+        {"type": "object", "required": ["head"], "properties": {"head": {"type": "number"}}, "additionalProperties": false}
+      ]
+    },
+    "view": {
+      "type": "object",
+      "properties": {
+        "az": {"description": "方位（度。0 で正面、正で +X 側）", "type": "number"},
+        "dist": {"description": "狙う点からの水平の距離（m）", "type": "number", "exclusiveMinimum": 0},
+        "height": {"$ref": "#/$defs/height"},
+        "lens": {"type": "number", "exclusiveMinimum": 0},
+        "target": {"$ref": "#/$defs/target"}
+      },
+      "additionalProperties": false
+    },
+    "smooth": {
+      "description": "骨の通り道をならすガウス（コマ）: sigma、radius（省くと round(2 sigma)）、z（上下だけ別に）",
+      "type": "object",
+      "required": ["sigma"],
+      "properties": {
+        "sigma": {"type": "number", "exclusiveMinimum": 0},
+        "radius": {"type": "integer", "minimum": 0},
+        "z": {
+          "type": "object",
+          "required": ["sigma"],
+          "properties": {"sigma": {"type": "number", "exclusiveMinimum": 0}, "radius": {"type": "integer", "minimum": 0}},
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "shot": {
+      "description": "カメラの区間。値は base に重ねる。to を書くと、区間の頭から over 秒（省くと区間の長さ）かけて to の値へ動く",
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "until": {"$ref": "#/$defs/time"},
+        "az": {"type": "number"},
+        "dist": {"type": "number", "exclusiveMinimum": 0},
+        "height": {"$ref": "#/$defs/height"},
+        "lens": {"type": "number", "exclusiveMinimum": 0},
+        "target": {"$ref": "#/$defs/target"},
+        "to": {"$ref": "#/$defs/view"},
+        "over": {"type": "number", "exclusiveMinimum": 0},
+        "ease": {"$ref": "#/$defs/ease"},
+        "effects": {"description": "false の区間では effects を入れない", "type": "boolean"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "effect": {
+      "oneOf": [
+        {"description": "つなぎ目の寄りと回り込み: at の before 秒前から寄りながら回り、hold 秒そのまま回り続け、after 秒で戻る",
+         "type": "object", "required": ["kind", "at"],
+         "properties": {"kind": {"const": "whip"}, "at": {"$ref": "#/$defs/time"}, "before": {"type": "number", "exclusiveMinimum": 0},
+                        "hold": {"type": "number", "minimum": 0}, "after": {"type": "number", "exclusiveMinimum": 0},
+                        "zoom": {"type": "number", "minimum": 0, "exclusiveMaximum": 1}, "turn": {"$ref": "#/$defs/pair"},
+                        "ease": {"$ref": "#/$defs/ease"}},
+         "patternProperties": {"^x_": {}}, "additionalProperties": false},
+        {"description": "短い寄り: at から length 秒、距離に 1 - amount × exp(-経過 / tau) を掛ける",
+         "type": "object", "required": ["kind", "at"],
+         "properties": {"kind": {"const": "push"}, "at": {"$ref": "#/$defs/times"}, "amount": {"type": "number", "exclusiveMaximum": 1},
+                        "tau": {"type": "number", "exclusiveMinimum": 0}, "length": {"type": "number", "exclusiveMinimum": 0}},
+         "patternProperties": {"^x_": {}}, "additionalProperties": false},
+        {"description": "揺れ: at から length 秒、横に x[0] × exp(-経過 / tau) × sin(経過 × x[1])、上下に z[0] × … × cos(経過 × z[1])（m）",
+         "type": "object", "required": ["kind", "at"],
+         "properties": {"kind": {"const": "shake"}, "at": {"$ref": "#/$defs/times"}, "tau": {"type": "number", "exclusiveMinimum": 0},
+                        "length": {"type": "number", "exclusiveMinimum": 0}, "x": {"$ref": "#/$defs/pair"}, "z": {"$ref": "#/$defs/pair"}},
+         "patternProperties": {"^x_": {}}, "additionalProperties": false},
+        {"description": "拍ごとの寄り: from〜until の拍 k ごとに、距離に 1 - (k が every の倍数なら strong、ほかは weak) × exp(-拍からの経過 / tau) を掛ける",
+         "type": "object", "required": ["kind", "from", "until"],
+         "properties": {"kind": {"const": "beat_push"}, "from": {"$ref": "#/$defs/time"}, "until": {"$ref": "#/$defs/time"},
+                        "strong": {"type": "number", "exclusiveMaximum": 1}, "weak": {"type": "number", "exclusiveMaximum": 1},
+                        "every": {"type": "integer", "minimum": 1}, "tau": {"type": "number", "exclusiveMinimum": 0}},
+         "patternProperties": {"^x_": {}}, "additionalProperties": false}
+      ]
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "base": {"$ref": "#/$defs/view"},
+        "smooth": {
+          "type": "object",
+          "properties": {"hips": {"$ref": "#/$defs/smooth"}, "head": {"$ref": "#/$defs/smooth"}},
+          "additionalProperties": false
+        },
+        "shots": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/shot"}},
+        "effects": {"type": "array", "items": {"$ref": "#/$defs/effect"}}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "stage_part": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "until": {"$ref": "#/$defs/time"},
+        "kind": {"enum": ["led", "led_diag", "void"]},
+        "fade": {"description": "壁の明るさに掛ける割合（区間の頭 → 終わり）", "$ref": "#/$defs/pair"},
+        "ease": {"$ref": "#/$defs/ease"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "formula": {
+      "description": "明るさ = base + Σ 係数 × 信号（low・mid・high は光のキー、hit は拍、punch は印）。level が true なら舞台の光の強さを掛ける",
+      "type": "object",
+      "properties": {
+        "base": {"type": "number"}, "low": {"type": "number"}, "mid": {"type": "number"}, "high": {"type": "number"},
+        "hit": {"type": "number"}, "punch": {"type": "number"}, "level": {"type": "boolean"}
+      }
+    },
+    "swing": {
+      "type": "object",
+      "properties": {
+        "base": {"type": "number"}, "spread": {"type": "number"}, "swing": {"type": "number"},
+        "period": {"description": "1 往復の拍の数", "type": "number", "exclusiveMinimum": 0}, "step": {"type": "number"}
+      },
+      "additionalProperties": false
+    },
+    "dim": {
+      "description": "光を落とす割合: 数なら掛ける。{\"level\": x} なら舞台の光の強さの代わりに x を使う（scale も掛けられる）",
+      "oneOf": [
+        {"type": "number", "minimum": 0},
+        {"type": "object", "properties": {"level": {"type": "number", "minimum": 0}, "scale": {"type": "number", "minimum": 0}},
+         "minProperties": 1, "additionalProperties": false}
+      ]
+    },
+    "lights": {
+      "type": "object",
+      "properties": {
+        "palette": {
+          "description": "区間ごとの縁の色 a・b（壁と左の輪郭光は a、右の輪郭光は b、光の柱は交互）。最後の区間だけ until を省ける",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object", "required": ["a", "b"],
+            "properties": {"until": {"$ref": "#/$defs/time"}, "a": {"$ref": "#/$defs/color"}, "b": {"$ref": "#/$defs/color"}},
+            "patternProperties": {"^x_": {}}, "additionalProperties": false
+          }
+        },
+        "level": {
+          "description": "舞台の光の強さ: segments の最初に当たる区間の値（[頭, 終わり] なら ease で変わる）、どれにも当たらなければ default",
+          "type": "object",
+          "properties": {
+            "default": {"type": "number", "minimum": 0},
+            "segments": {
+              "type": "array",
+              "items": {
+                "type": "object", "required": ["from", "value"],
+                "properties": {
+                  "from": {"$ref": "#/$defs/time"}, "until": {"$ref": "#/$defs/time"},
+                  "value": {"oneOf": [{"type": "number", "minimum": 0},
+                                      {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 2, "maxItems": 2}]},
+                  "ease": {"$ref": "#/$defs/ease"}
+                },
+                "patternProperties": {"^x_": {}}, "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "hit": {
+          "description": "拍の信号: 1 - 直前の拍からのコマ数 / frames（0 より下は 0）",
+          "type": "object", "properties": {"frames": {"type": "number", "exclusiveMinimum": 0}}, "additionalProperties": false
+        },
+        "punch": {
+          "description": "印の信号: 1 - 直前の at からのコマ数 / frames（0 より下は 0）",
+          "type": "object",
+          "properties": {"at": {"type": "array", "items": {"$ref": "#/$defs/time"}}, "frames": {"type": "number", "exclusiveMinimum": 0}},
+          "additionalProperties": false
+        },
+        "dims": {
+          "description": "光を落とす区間（最初に当たるものを使う）。wall・rims・beams・tone ごとの割合",
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["from", "until"],
+            "properties": {"from": {"$ref": "#/$defs/time"}, "until": {"$ref": "#/$defs/time"}, "wall": {"$ref": "#/$defs/dim"},
+                           "rims": {"$ref": "#/$defs/dim"}, "beams": {"$ref": "#/$defs/dim"}, "tone": {"$ref": "#/$defs/dim"}},
+            "patternProperties": {"^x_": {}}, "additionalProperties": false
+          }
+        },
+        "wall": {
+          "description": "LED の壁の明るさ（× 舞台の fade）。scroll はコマ T ごとの模様の横のずれ、closeup はレンズが lens 以上のときに掛ける割合",
+          "allOf": [{"$ref": "#/$defs/formula"}],
+          "properties": {
+            "base": true, "low": true, "mid": true, "high": true, "hit": true, "punch": true, "level": true,
+            "scroll": {"type": "number"},
+            "closeup": {"type": "object", "required": ["lens", "scale"],
+                        "properties": {"lens": {"type": "number", "exclusiveMinimum": 0}, "scale": {"type": "number", "minimum": 0}},
+                        "additionalProperties": false}
+          },
+          "additionalProperties": false
+        },
+        "rims": {
+          "description": "左右の輪郭光のエネルギー（W）",
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {
+            "allOf": [{"$ref": "#/$defs/formula"}],
+            "properties": {"base": true, "low": true, "mid": true, "high": true, "hit": true, "punch": true, "level": true},
+            "additionalProperties": false
+          }
+        },
+        "beams": {
+          "description": "光の柱の明るさと向き。phase からの拍で、柱 j を tilt（下向きの角度）と pan（横の角度）で振る",
+          "allOf": [{"$ref": "#/$defs/formula"}],
+          "properties": {
+            "base": true, "low": true, "mid": true, "high": true, "hit": true, "punch": true, "level": true,
+            "phase": {"$ref": "#/$defs/time"}, "tilt": {"$ref": "#/$defs/swing"}, "pan": {"$ref": "#/$defs/swing"}
+          },
+          "additionalProperties": false
+        },
+        "tone": {
+          "description": "セル調の塗りの縁の強さ（× scale）",
+          "allOf": [{"$ref": "#/$defs/formula"}],
+          "properties": {
+            "base": true, "low": true, "mid": true, "high": true, "hit": true, "punch": true, "level": true,
+            "scale": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
+  }
+}
