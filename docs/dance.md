@@ -279,6 +279,7 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 - `beats`: `{"beats": […], "downbeats": […]}`（spec にあれば）。
 - `layers`: `[{name, z, exclusive, sung, follow_camera}]`。
 - `lyrics[]`: `sung`・`reveal`・`exclusive`・`words`（`[{text, t, row, box}]`）。`fade_in_s`・`fade_out_s` は enter・exit を含めた出入りの長さ。
+- `lyric_fade`: `"inside"`。行は `end` の直前まで見え、`fade_out_s` は `end` の前で終わる（`mv gate check` の字の重なりはこれを読んで `[start, end]` で数える。無い timeline は `after` = `[start, end + fade_out_s]`）。
 - `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`。
 - `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt, align}]`（from・to は clip の番号。align は次の clip の `align`）。
 - `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
