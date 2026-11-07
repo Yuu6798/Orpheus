@@ -355,3 +355,37 @@ def test_the_operation_passes_the_push_to_the_script(tmp_path):
 def test_the_operation_rejects_bad_push_settings(tmp_path, push, message):
     with pytest.raises(ToolError, match=message):
         call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "push": push})
+
+
+def test_vertices_without_bone_weights_keep_the_identity_bone_motion():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    weights = np.array([[1.0, 0.0], [0.5, 0.5], [0.0, 0.0]])
+    out = stage_render.blend_bone_rotations(weights, np.array([np.eye(3), turn]))
+    assert out[0] == pytest.approx(np.eye(3)) and out[1] == pytest.approx(0.5 * (np.eye(3) + turn))
+    assert out[2] == pytest.approx(np.eye(3))                            # 骨の重みが無い頂点は骨で動かない
+    assert np.linalg.matrix_rank(out[2]) == 3
+    no_bones = stage_render.blend_bone_rotations(np.zeros((2, 0)), np.zeros((0, 3, 3)))
+    assert no_bones == pytest.approx(np.tile(np.eye(3), (2, 1, 1)))
+    assert stage_render.blend_bone_rotations(np.zeros((0, 2)), np.array([np.eye(3), turn])).shape == (0, 3, 3)
+
+
+def test_every_push_is_reset_before_any_push_measures():
+    from types import SimpleNamespace
+    log = []
+
+    class FakePush:
+        def __init__(self, name, keys):
+            self.name, self.targets = name, [SimpleNamespace(key=SimpleNamespace(value=1.0)) for _ in range(keys)]
+
+        def apply(self, reset=True):
+            log.append((self.name, reset, [t.key.value for p in pushes for t in p.targets]))
+            for t in self.targets:
+                t.key.value = 1.0
+            return {self.name: (1, 2.0)}
+
+    bpy = SimpleNamespace(context=SimpleNamespace(view_layer=SimpleNamespace(update=lambda: log.append("update"))))
+    pushes = [FakePush("first", 1), FakePush("second", 2)]
+    moved = stage_render.apply_pushes(bpy, pushes)
+    assert moved == {"first": (1, 2.0), "second": (1, 2.0)}
+    # 前のコマの直し（値 1）は、最初の押し出しが測る前に、後の押し出しの分も 0 に戻っている
+    assert log == ["update", ("first", False, [0.0, 0.0, 0.0]), ("second", False, [1.0, 0.0, 0.0])]

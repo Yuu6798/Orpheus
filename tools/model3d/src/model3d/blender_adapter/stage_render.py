@@ -209,6 +209,17 @@ def spread_push(need, edges, iterations):
     return d, mag
 
 
+def blend_bone_rotations(weights, bone_rots):
+    """頂点ごとの骨の重み（行の和が 1。骨の重みの無い頂点は 0 の行）と、骨ごとの 3×3 の動きから、頂点ごとの 3×3（重みで
+    混ぜた線形の骨の動き）。骨の重みの無い頂点と、骨の無いときは、骨で動かないので単位行列にする。"""
+    weights = np.asarray(weights, float)
+    out = np.tile(np.eye(3), (len(weights), 1, 1))
+    if len(weights) and len(bone_rots):
+        rigged = weights.sum(1) > 0
+        out[rigged] = np.einsum("vb,bij->vij", weights[rigged], np.asarray(bone_rots, float))
+    return out
+
+
 def weld_groups(points, tol=1e-5):
     """同じ位置の頂点（UV の継ぎ目で分かれた頂点）の組の番号。"""
     _, inverse = np.unique(np.round(np.asarray(points, float) / tol).astype(np.int64), axis=0, return_inverse=True)
@@ -502,13 +513,13 @@ def open_edges(ob):
 
 class PushTarget:
     """押し出すメッシュ 1 つ: 組に重みのある頂点、その割合と離す量（Blender 単位）、骨の重み、面のつながり、継ぎ目の組、
-    シェイプキー。"""
+    シェイプキー。arm はメッシュを動かすアーマチュア（Armature モディファイアが無ければ None。骨で動かない）。"""
 
     def __init__(self, ob, arm, groups, key):
         self.ob, self.arm = ob, arm
         me = ob.data
         names = {vg.index: vg.name for vg in ob.vertex_groups}
-        deform = {b.name for b in arm.data.bones if b.use_deform}
+        deform = {b.name for b in arm.data.bones if b.use_deform} if arm is not None else set()
         idx, wt, off, dw = [], [], [], []
         for v in me.vertices:
             gs = {names[g.group]: g.weight for g in v.groups}
@@ -544,12 +555,15 @@ class PushTarget:
         self.key.value = 1.0
 
     def deform_rot(self):
-        """頂点ごとに、骨で動かす前の形の差を、動かした後の世界の差に直す 3×3 行列（骨の重みで混ぜた骨の動き）。"""
+        """頂点ごとに、骨で動かす前の形の差を、動かした後の世界の差に直す 3×3 行列（骨の重みで混ぜた骨の動き）。骨の重みの
+        無い頂点と、アーマチュアで動かないメッシュは、物体の行列だけ。"""
+        O = np.array(self.ob.matrix_world)[:3, :3]
+        if self.arm is None or not self.bones:
+            return np.tile(O, (len(self.idx), 1, 1))
         A = np.array(self.arm.matrix_world)[:3, :3]
         Mb = np.array([np.array(self.arm.pose.bones[b].matrix @ self.arm.data.bones[b].matrix_local.inverted())[:3, :3]
                        for b in self.bones])
-        Bv = np.einsum("vb,bij->vij", self.W, Mb)
-        return A @ Bv @ np.linalg.inv(A) @ np.array(self.ob.matrix_world)[:3, :3]
+        return A @ blend_bone_rotations(self.W, Mb) @ np.linalg.inv(A) @ O
 
 
 class Push:
@@ -560,14 +574,14 @@ class Push:
         self.bpy, self.targets, self.colliders, self.smooth, self.unit = bpy, targets, colliders, smooth, unit
         self.rays = [Vector(d).normalized() for d in PUSH_RAYS]
 
-    def apply(self):
-        """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。"""
+    def apply(self, reset=True):
+        """戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。reset が false なら、直す前の形へ戻すのは呼ぶ側
+        （apply_pushes）がすでにした。"""
         from mathutils import Vector
         from mathutils.bvhtree import BVHTree
         bpy, unit = self.bpy, self.unit
-        for t in self.targets:                            # 直す前の形で測る
-            t.key.value = 0.0
-        bpy.context.view_layer.update()
+        if reset:
+            reset_pushes(bpy, [self])                     # 直す前の形で測る
         margin, step = PUSH_MARGIN_M / unit, PUSH_STEP_M / unit
         trees = []
         for collider in self.colliders:
@@ -601,8 +615,27 @@ class Push:
         return stats
 
 
-def make_pushes(bpy, specs, arm, unit):
-    """設定の push から、押し出しの並びと、報告に載せる中身。"""
+def reset_pushes(bpy, pushes):
+    """押し出しのシェイプキーを全部 0 にして、直す前の形に戻す。"""
+    for push in pushes:
+        for t in push.targets:
+            t.key.value = 0.0
+    bpy.context.view_layer.update()
+
+
+def apply_pushes(bpy, pushes):
+    """今のコマの押し出し: 先に全部の押し出しを直す前の形に戻し（ある押し出しの当たりが別の押し出しで動かすメッシュでも、
+    前のコマの直しで測らない）、並べた順に当てる。戻り: メッシュの名前 → (動かした頂点の数, 要った最大の量 mm)。"""
+    reset_pushes(bpy, pushes)
+    moved = {}
+    for push in pushes:
+        moved.update(push.apply(reset=False))
+    return moved
+
+
+def make_pushes(bpy, specs, unit):
+    """設定の push から、押し出しの並びと、報告に載せる中身。動かすメッシュの骨の動きは、その Armature モディファイアの
+    アーマチュア（無ければ骨で動かない）で直す。"""
     pushes, notes = [], []
     for n, spec in enumerate(specs):
         groups = [(g["name"], g["offset_mm"] / 1000.0 / unit) for g in spec["groups"]]
@@ -622,8 +655,9 @@ def make_pushes(bpy, specs, arm, unit):
             if spec.get("outlines", True):
                 objects += [(o, False) for o in bpy.data.objects if o.type == "MESH" and o.get("model3d_outline") == name]
             for o, named in objects:
-                modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None), None)
-                target = PushTarget(o, modifier.object if modifier else arm, groups, PUSH_KEY)
+                modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None
+                                 and m.show_viewport and m.show_render), None)
+                target = PushTarget(o, modifier.object if modifier else None, groups, PUSH_KEY)
                 if not len(target.idx):
                     if named:
                         raise SystemExit(f"push[{n}]: {o.name} に、{group_names} の組の重みのある頂点がありません")
@@ -631,7 +665,9 @@ def make_pushes(bpy, specs, arm, unit):
                     continue
                 targets.append(target)
         pushes.append(Push(bpy, targets, colliders, int(spec.get("smooth", 6)), unit))
-        notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx))} for t in targets], "skipped": skipped,
+        notes.append({"targets": [{"object": t.ob.name, "vertices": int(len(t.idx)), "armature": t.arm.name if t.arm else None,
+                                   "without_bones": int((t.W.sum(1) <= 0).sum()) if t.arm else int(len(t.idx))}
+                                  for t in targets], "skipped": skipped,
                       "colliders": [{"object": c.name, "open_edges": open_edges(c)} for c in colliders],
                       "groups": [{"name": g["name"], "offset_mm": g["offset_mm"]} for g in spec["groups"]],
                       "smooth": int(spec.get("smooth", 6))})
@@ -698,7 +734,7 @@ def main(argv=None):
             if mod is not None:
                 hulls.append((o, mod, float(o.get("model3d_outline_m_per_local", 1.0)),
                               float(line["scale"].get(o["model3d_outline"], 1.0))))
-    pushes, push_notes = make_pushes(bpy, settings["push"], arm, unit) if settings["push"] else ([], [])
+    pushes, push_notes = make_pushes(bpy, settings["push"], unit) if settings["push"] else ([], [])
     push_frames = []
     only = set(settings["only"]) if settings["only"] else None
     os.makedirs(a.frames_dir, exist_ok=True)
@@ -743,9 +779,7 @@ def main(argv=None):
                 mod.strength = hull_strength(wid, unit, per, scale)
         bpy.context.view_layer.update()
         if pushes:                                       # 描く直前に押し出す（輪郭線の太さを入れた後の形で測る）
-            moved = {}
-            for push in pushes:
-                moved.update(push.apply())
+            moved = apply_pushes(bpy, pushes)
             push_frames.append({"T": T, "f": f, "objects": {k: list(v) for k, v in moved.items()}})
         sc.render.filepath = file
         bpy.ops.render.render(write_still=True)
