@@ -84,8 +84,9 @@ def test_band_over_the_main_face_fails_but_the_back_layer_and_others_do_not():
 
 
 def test_overlap_only_during_the_fade_is_allowed():
+    """dance の timeline（lyric_fade: inside）は end の前でフェードアウトするので、その間の顔との重なりは可。"""
     face = {"start": 2.85, "end": 2.95, "box": [0.4, 0.05, 0.6, 0.15]}
-    assert gate.check_faces(timeline(), [face])["status"] == "pass"
+    assert gate.check_faces(timeline(lyric_fade="inside"), [face])["status"] == "pass"
 
 
 def test_text_in_a_ui_region_fails_with_a_frame_count():
@@ -169,7 +170,10 @@ def test_hooks_may_not_overlap_for_long():
     overlapping = timeline()
     overlapping["lyrics"][0]["end"] = 3.2
     assert gate.check_hook_overlap(overlapping, TH)["status"] == "fail"
-    overlapping["lyrics"][0]["end"] = 3.0      # フェードアウト 0.08 秒だけ重なる
+    overlapping["lyrics"][0]["end"] = 3.05     # 0.05 秒 + フェードアウト 0.08 秒 = 0.130 秒（前は end で切って 0.05 秒で合格だった）
+    check = gate.check_hook_overlap(overlapping, TH)
+    assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("0.130 秒")
+    overlapping["lyrics"][0]["end"] = 3.0      # フェードアウト 0.08 秒だけ重なる（許容 0.1 秒以内）
     assert gate.check_hook_overlap(overlapping, TH)["status"] == "pass"
 
 
@@ -192,6 +196,22 @@ def test_a_dance_timeline_fades_out_inside_the_line_so_the_same_times_pass():
     assert check["status"] == "fail" and check["problems"][0]["detail"].startswith("0.200 秒") and "end まで" in check["problems"][0]["detail"]
     with pytest.raises(gate.PipelineError, match="lyric_fade"):
         gate.check_hook_overlap(timeline(lyric_fade="outside"), TH)
+
+
+def test_the_fade_out_does_not_extend_past_the_rendered_interval():
+    """区間に切った行は、フェードアウト込みの見えている終わりも区間の端で止める（区間の外の重なりは数えない）。"""
+    tl = timeline(interval={"start": 0.0, "duration": 3.0, "frames": 72})
+    tl["lyrics"][0].update(start=1.0, end=5.0, fade_out_s=0.3)
+    tl["lyrics"][1].update(start=2.95, end=5.0)
+    assert gate.check_hook_overlap(gate._scoped(tl), TH)["status"] == "pass"      # 区間の中では 0.05 秒
+    assert gate.check_hook_overlap(tl, TH)["status"] == "fail"                    # 全体では 0.35 秒
+
+
+def test_after_fade_keeps_the_line_stable_until_end_for_the_face_check():
+    """lyric_fade が after の行は end まで止まって見えるので、end の直前の顔との重なりを数える（inside なら出入りの間で可）。"""
+    face = {"start": 2.85, "end": 2.95, "box": [0.4, 0.05, 0.6, 0.15]}
+    assert gate.check_faces(timeline(lyric_fade="inside"), [face])["status"] == "pass"
+    assert gate.check_faces(timeline(), [face])["status"] == "fail"
 
 
 def test_time_and_box_mode_ignores_lines_in_different_columns():

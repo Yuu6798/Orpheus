@@ -77,10 +77,12 @@ def _window(timeline):
 
 
 def _scoped(timeline):
-    """描いた区間に出るものだけを残した timeline。区間をまたぐ字の時間は区間に切る。"""
+    """描いた区間に出るものだけを残した timeline。区間をまたぐ字の時間（見えている終わり visible_until も）は区間に切る。"""
     first, last = _window(timeline)
+    fade = _lyric_fade(timeline)
     lyrics = [{**ln, "start": max(ln["start"], first), "end": min(ln["end"], last),
-               "stable": [max(_stable(ln)[0], first), min(_stable(ln)[1], last)]}
+               "stable": [max(_stable(ln, fade)[0], first), min(_stable(ln, fade)[1], last)],
+               "visible_until": min(_visible_end(ln, fade), last)}
               for ln in timeline["lyrics"] if ln["start"] < last and ln["end"] > first]
     inside = lambda times: [t for t in times if first <= t < last]  # noqa: E731
     within = {key: [item for item in timeline[key] if first <= item["t"] < last] for key in ("seam_info", "flash_info") if key in timeline}
@@ -91,12 +93,31 @@ def _intersects(a, b):
     return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
 
 
-def _stable(line):
+LYRIC_FADES = ("inside", "after")   # fade_out_s が end の前にあるか（dance の描画）、end の後に続くか（手書きの timeline の既定）
+
+
+def _lyric_fade(timeline):
+    fade = timeline.get("lyric_fade", "after")
+    if fade not in LYRIC_FADES:
+        raise PipelineError(f"timeline の lyric_fade は {' か '.join(LYRIC_FADES)} にしてください: {fade!r}")
+    return fade
+
+
+def _visible_end(line, fade):
+    """字が画面から消える時刻。lyric_fade が after なら end + fade_out_s（フェードアウトの間も見えている）、
+    inside なら end（dance は end の前でフェードアウトを終える）。区間に切った行は visible_until を持つ。"""
+    if "visible_until" in line:
+        return line["visible_until"]
+    return line["end"] + (line.get("fade_out_s", 0) if fade == "after" else 0)
+
+
+def _stable(line, fade="inside"):
     """字が動いていない時間 [開始, 終了)。「字が動く途中の一瞬は可」のため、出入りの間は除く。
+    フェードアウトが end の前（inside）なら end - fade_out_s まで、end の後（after）なら end まで。
     区間に切った行は、元の時刻から求めた値を使う（切った時刻から求めると区間の端に出入りがあることになる）。"""
     if "stable" in line:
         return tuple(line["stable"])
-    return line["start"] + line.get("fade_in_s", 0), line["end"] - line.get("fade_out_s", 0)
+    return line["start"] + line.get("fade_in_s", 0), line["end"] - (line.get("fade_out_s", 0) if fade == "inside" else 0)
 
 
 def _is_confirmed(line, confirmed, th):
@@ -166,12 +187,13 @@ def check_faces(timeline, faces):
     if faces is None:
         return skip(name, "faces")
     fps = timeline["fps"]
+    fade = _lyric_fade(timeline)
     behind = _behind_layers(timeline)
     problems, measured = [], 0
     for line in timeline["lyrics"]:
         if line["layer"] in behind:      # 人物の後ろの字は顔に隠れるので重なっても読みに関係しない
             continue
-        a, b = _stable(line)
+        a, b = _stable(line, fade)
         for face in faces:
             if face.get("role", "main") != "main":
                 continue
@@ -303,27 +325,13 @@ def check_seams(timeline, poses, th):
 
 
 OVERLAP_MODES = ("time", "time_and_box")
-LYRIC_FADES = ("inside", "after")   # fade_out_s が end の前にあるか（dance の描画）、end の後に続くか（手書きの timeline の既定）
-
-
-def _lyric_fade(timeline):
-    fade = timeline.get("lyric_fade", "after")
-    if fade not in LYRIC_FADES:
-        raise PipelineError(f"timeline の lyric_fade は {' か '.join(LYRIC_FADES)} にしてください: {fade!r}")
-    return fade
-
-
-def _visible(line, fade):
-    """字が画面に見えている時間。lyric_fade が after なら [start, end + fade_out_s]（フェードアウトの間も見えている）、
-    inside なら [start, end]（dance は end の前でフェードアウトを終える）。"""
-    return line["start"], line["end"] + (line.get("fade_out_s", 0) if fade == "after" else 0)
 
 
 def check_hook_overlap(timeline, th):
     """同時に 1 行だけの層（exclusive）ごとに、行の重なりを見る。exclusive の無い timeline は back だけ。
 
-    見えている区間は _visible（timeline の lyric_fade。無ければ after = フェードアウト込み）。問題の行には 2 行の箱が交わるか
-    （box_intersects）を添える。thresholds.overlap_mode が time_and_box なら、箱が交わるときだけ数える（別の列に置いた 2 行は重なりではない）。"""
+    見えている区間は [start, _visible_end]（timeline の lyric_fade。無ければ after = フェードアウト込み）。問題の行には 2 行の箱が
+    交わるか（box_intersects）を添える。thresholds.overlap_mode が time_and_box なら、箱が交わるときだけ数える（別の列の 2 行は重なりではない）。"""
     name = "字の重なり"
     mode = th.get("overlap_mode", "time")
     if mode not in OVERLAP_MODES:
@@ -332,13 +340,13 @@ def check_hook_overlap(timeline, th):
     grouped = {}
     for line in timeline["lyrics"]:
         if line.get("exclusive", line["layer"] == "back"):
-            grouped.setdefault(line["layer"], []).append(line)
+            grouped.setdefault(line["layer"], []).append((line, _visible_end(line, fade)))
     problems, changes, apart = [], 0, 0
     for lines in grouped.values():
-        lines = sorted(lines, key=lambda ln: ln["start"])
+        lines = sorted(lines, key=lambda item: item[0]["start"])
         changes += max(0, len(lines) - 1)
-        for left, right in itertools.combinations(lines, 2):
-            shared = min(_visible(left, fade)[1], _visible(right, fade)[1]) - right["start"]
+        for (left, left_until), (right, right_until) in itertools.combinations(lines, 2):
+            shared = min(left_until, right_until) - right["start"]
             if shared <= th["hook_overlap_s"] + EPS:
                 continue
             crossing = _intersects(left["box"], right["box"])

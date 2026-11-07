@@ -278,6 +278,8 @@ def _timeline_matches(sp, record, manifest):
         )
     for key, value in expected.items():
         validate.require(record.get(key) == value, f"timeline {key} does not match the current full-size/full-duration spec")
+    # dance は end の前でフェードアウトを終える。lyric_fade の無い前の版の run は通すが、after と書いた timeline は dance の描画ではない
+    validate.require(record.get("lyric_fade", "inside") == "inside", "timeline lyric_fade must be inside for a dance render")
     lines, _ = dance_lyrics.prepare(data, sp.resolve, size)
     validate.require(len(record["lyrics"]) == len(lines), "timeline lyric count differs from spec")
     for row, line in zip(record["lyrics"], lines):
