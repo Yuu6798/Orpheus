@@ -370,11 +370,19 @@ def test_a_required_inspection_needs_a_report_of_the_final_video(mv, tmp_path):
 
 def test_a_dance_inspection_of_the_current_spec_sources_is_recorded(dance, tmp_path):
     root, plan, run = dance
-    sources = inspect_report(tmp_path / "sources.json", ["2" * 64], spec_sha256=sha256(root / "spec.json"))
+    sources = inspect_report(tmp_path / "sources.json", [sha256(root / "figure.png")], spec_sha256=sha256(root / "spec.json"))
     row = rows(workflow.check(plan, run_dir=run, gate_config=root / "gate.json", inspect_reports=[sources]))["inspection"]
     assert row["status"] == "pass" and row["inspections"][0]["target"] == "spec_sources"
     output = inspect_report(tmp_path / "output.json", [sha256(run / "dance.mp4")])
     assert rows(workflow.check(plan, run_dir=run, gate_config=root / "gate.json", inspect_reports=[output]))["inspection"]["inspections"][0]["target"] == "final_video"
+
+
+def test_a_spec_inspection_of_replaced_sources_is_stale(dance, tmp_path):
+    root, plan, run = dance
+    before = inspect_report(tmp_path / "before.json", [sha256(root / "figure.png")], spec_sha256=sha256(root / "spec.json"))
+    Image.new("RGBA", (30, 60), (80, 150, 230, 255)).save(root / "figure.png")   # 同じパスで素材を差し替えた（spec の sha256 は同じ）
+    row = rows(workflow.check(plan, run_dir=run, gate_config=root / "gate.json", inspect_reports=[before]))["inspection"]
+    assert row["status"] == "pending" and row["inspection_state"] == "stale" and row["inspections"][0]["target"] is None
 
 
 def test_a_broken_inspection_record_fails_and_a_bad_mode_is_refused(mv, tmp_path):

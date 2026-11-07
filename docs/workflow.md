@@ -135,7 +135,7 @@ uv run mv workflow check projects/dance-a/workflow.json --run … --gate-config 
 - **検品の行**（`inspection`）は、計画の `inspection` が `optional` か `required` のとき、または `--inspect-report` を渡したとき（`optional` として）だけ出る。必須にするかは制作ごとに決める（`required` なら、合う検品の記録が無いと `incomplete`）。
 - **照合**: 渡した報告（`inspect-report/0.1`。何度でも渡せる）が、今の何を見たものかを sha256 で確かめる。
   - 最終動画（標準 MV の `runs/<run_id>/video.mp4`、dance の run の `dance.mp4`）を見た報告 → `final_video`
-  - dance で、今の spec の素材を見た報告（報告の `run.inputs` の spec の sha256 が今の spec と同じ）→ `spec_sources`
+  - dance で、今の spec の素材を見た報告（報告の `run.inputs` の spec の sha256 が今の spec と同じで、見た動画がどれも今の素材の sha256 に入る）→ `spec_sources`。spec の JSON は素材をパスで指すだけなので、同じパスで差し替えた素材は spec の sha256 では見分けられず、見た動画の sha256 も照らす
   - 見た動画がどれも今の素材の sha256 に入る報告 → `assets`
   - どれにも合わない報告は、古いか別の動画の検品として `stale`（`pending`）。
 - **状態**（`inspection_state`）: `not_run`（未実施）・`review`（検品済み・要確認の出来事あり）・`clean_with_skips`（見つけた所は無いが、見ていない検査あり）・`clean`・`stale`。要約に、検品の run_id と時刻、要確認の数（演出の時刻と重ならない数）、見ていない検査の数、VLM に見せなかった出来事の数を書く（`inspections` に報告ごとの値）。

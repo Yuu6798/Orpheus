@@ -439,11 +439,12 @@ def _inspection(rows, reports, media):
         seen = {clip.get("sha256") for clip in data.get("clips", [])}
         run = data.get("run") or {}
         spec = next((item.get("sha256") for item in run.get("inputs", []) if item.get("role") == "dance_spec"), None)
+        current = bool(seen) and bool(media.get("assets")) and seen <= media["assets"]   # 見た動画がどれも今の素材
         if final and final in seen:
             target = "final_video"
-        elif spec and spec == media.get("spec_sha256"):
-            target = "spec_sources"
-        elif seen and media.get("assets") and seen <= media["assets"]:
+        elif spec and spec == media.get("spec_sha256") and current:     # spec の JSON は素材をパスで指すだけ。同じパスで差し替えた
+            target = "spec_sources"                                     # 素材は spec の sha256 では分からないので、見た動画も照らす
+        elif current:
             target = "assets"
         else:
             target = None
