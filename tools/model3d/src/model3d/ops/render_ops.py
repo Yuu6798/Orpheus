@@ -1,4 +1,5 @@
-"""描く: 塗りと輪郭線を付けたキャラを、舞台と光の中で、コマごとに PNG に描く（Blender の中で）。"""
+"""描く: 塗りと輪郭線を付けたキャラを、舞台と光の中で、コマごとに PNG に描く（Blender の中で）。描く直前の押し出し（push）
+の準備として、当たりの写しと押し出す頂点の組も足す（render.prepare_push）。"""
 from pathlib import Path
 
 from ..io import ToolError, atomic_json, resolve_path, sha256
@@ -218,4 +219,102 @@ def stage_render(inputs, parameters, outputs, context):
                    "frames": len(manifest["frames"]), "missing": len(manifest["missing"])}
     if report.get("push"):
         observation["push_max_mm"] = report["push"].get("max_mm")
+    return StepResult(observations=[observation])
+
+
+PREPARE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "prepare_push.py"
+PREPARE_PARAMETERS = {"blender", "bone_prefix", "armature", "colliders", "groups", "timeout"}
+COLLIDER_KEYS = {"from", "name", "weld_mm", "decimate"}
+GROUP_KEYS = {"mesh", "bones", "top", "fade", "front", "back", "weld_mm"}
+
+
+def _name(value, where):
+    if not isinstance(value, str) or not value:
+        raise ToolError(f"{where} は名前（空でない文字列）にしてください: {value!r}")
+    return value
+
+
+def _prepare_settings(parameters):
+    """当たりの写し（colliders）と押し出す頂点の組（groups）の並びを確かめ、既定で埋める（長さは m）。"""
+    from .motion_ops import _bone_prefix
+    prefix = _bone_prefix(parameters)
+    colliders, groups = parameters.get("colliders", []), parameters.get("groups", [])
+    if not isinstance(colliders, list) or not isinstance(groups, list) or not (colliders or groups):
+        raise ToolError("render.prepare_push には colliders（当たりの写し）か groups（押し出す頂点の組）の並びが要ります")
+    s, names = {"colliders": [], "groups": []}, set()
+    for n, spec in enumerate(colliders):
+        where = f"colliders[{n}]"
+        if not isinstance(spec, dict) or "from" not in spec or set(spec) - COLLIDER_KEYS:
+            raise ToolError(f"{where} は {{\"from\": 写す元のメッシュ, …}}（使える鍵は {sorted(COLLIDER_KEYS)}）にしてください: {spec!r}")
+        source = _name(spec["from"], f"{where}.from")
+        name = _name(spec.get("name", "proxy_" + source), f"{where}.name")
+        if name in names or name == source:
+            raise ToolError(f"{where}.name（{name}）が、ほかの写しか写す元と重なっています")
+        names.add(name)
+        decimate = number(spec, "decimate", 0.25, minimum=0, exclusive=True)
+        if decimate > 1:
+            raise ToolError(f"{where}.decimate は面を残す割合（0 より大きく 1 以下）にしてください: {decimate!r}")
+        s["colliders"].append({"from": source, "name": name,
+                               "weld": float(number(spec, "weld_mm", 0.02, minimum=0, exclusive=True)) / 1000,
+                               "decimate": float(decimate)})
+    for n, spec in enumerate(groups):
+        where = f"groups[{n}]"
+        if not isinstance(spec, dict) or set(spec) - GROUP_KEYS or not {"mesh", "bones", "top", "front", "back"} <= set(spec):
+            raise ToolError(f"{where} は {{\"mesh\", \"bones\", \"top\", \"front\", \"back\"}}（任意で fade・weld_mm）にしてください: "
+                            f"{spec!r}")
+        mesh = _name(spec["mesh"], f"{where}.mesh")
+        if mesh in names:
+            raise ToolError(f"{where}.mesh（{mesh}）は当たりの写しの名前です")
+        bones = _names(spec["bones"], f"{where}.bones")
+        front, back = _name(spec["front"], f"{where}.front"), _name(spec["back"], f"{where}.back")
+        if front == back:
+            raise ToolError(f"{where} の front と back は別の名前にしてください: {front!r}")
+        top = spec["top"]
+        if isinstance(top, bool) or not isinstance(top, (int, float)):
+            raise ToolError(f"{where}.top は上の端の高さ（m）にしてください: {top!r}")
+        s["groups"].append({"mesh": mesh, "bones": [prefix + b for b in bones], "top": float(top),
+                            "fade": float(number(spec, "fade", 0.02, minimum=0, exclusive=True)),
+                            "weld": float(number(spec, "weld_mm", 0.01, minimum=0, exclusive=True)) / 1000,
+                            "front": front, "back": back})
+    meshes = [g["mesh"] for g in s["groups"]]
+    if len(set(meshes)) != len(meshes):
+        raise ToolError(f"groups の mesh が重なっています: {meshes}（1 つのメッシュには 1 つにまとめてください）")
+    armature = parameters.get("armature")
+    if armature is not None:
+        s["armature"] = _name(armature, "armature")
+    return s
+
+
+@register("render.prepare_push", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="render.stage の push（描く直前の押し出し）の準備（Blender の中で）。colliders: 元のメッシュ（脚など）を写し、"
+                  "穴をふさいで外向きの閉じた当たりにし、面を減らしてなめらかにし、元と同じ骨で動かす（描かない）。groups: 骨"
+                  "（bones とその子孫）に重みのある頂点を種に、高さ top より下でつながった部分（帯の垂れなど）を選び、上の端から "
+                  "fade で重みを 0 → 1 にして、法線の前と後ろで front と back の頂点の組にする。リポジトリ外の試作の手順と同じ。"
+                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def prepare_push(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "render.prepare_push")
+    unknown = set(parameters) - PREPARE_PARAMETERS
+    if unknown:
+        raise ToolError(f"render.prepare_push の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(PREPARE_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"render.prepare_push には outputs の {', '.join(missing)} が要ります")
+    settings = _prepare_settings(parameters)
+    blender = _blender(parameters, context, "render.prepare_push")
+    settings_path = Path(context.step_dir) / "prepare_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--settings", str(settings_path)]
+    record = launcher.run_blender(blender, PREPARE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    observation = {"kind": "prepare_push", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   "colliders": [{k: c.get(k) for k in ("name", "from", "open_edges", "flipped", "faces")}
+                                 for c in report.get("colliders", [])],
+                   "groups": [{"mesh": g.get("mesh"), "pieces": g.get("pieces"), "front": (g.get("front") or {}).get("vertices"),
+                               "back": (g.get("back") or {}).get("vertices")} for g in report.get("groups", [])]}
     return StepResult(observations=[observation])
