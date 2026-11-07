@@ -405,7 +405,8 @@ SPRING_PARAMETERS = {"blender", "chains", "colliders", "links", "target", "follo
 SPRING_TOLERANCE = {"direction_deg": 0.01, "root_mm": 0.1}
 
 
-def _spring_settings(parameters):
+def _chain_settings(parameters, f_root, f_tip, damping):
+    """鎖の骨の工程（髪・帯）に共通の設定: 鎖・当たりのカプセル・狙いの形・付いて行く骨とばねの数"""
     chains = parameters.get("chains")
     if not isinstance(chains, list) or not chains or not all(isinstance(n, str) and n for n in chains) or len(set(chains)) != len(chains):
         raise ToolError(f"chains は鎖の根元の骨の名前（空でない・重ならない文字列）の配列にしてください: {chains!r}")
@@ -418,11 +419,6 @@ def _spring_settings(parameters):
             raise ToolError(f"colliders の各項目は {{from: 骨, to: 骨, radius_mm: 数}} にしてください: {c!r}")
         checked.append({"from": c["from"], "to": c["to"],
                         "radius_mm": float(number(c, "radius_mm", minimum=0, exclusive=True))})
-    links = parameters.get("links", [])
-    if not isinstance(links, list) or not all(
-            isinstance(pair, list) and len(pair) == 2 and all(isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(chains)
-                                                             for i in pair) and pair[0] != pair[1] for pair in links):
-        raise ToolError(f"links は chains の番号の組（[i, j]、i と j は違う）の配列にしてください: {links!r}")
     target = parameters.get("target", "rest")
     if target not in ("rest", "animation"):
         raise ToolError(f"target は rest か animation: {target!r}")
@@ -435,37 +431,93 @@ def _spring_settings(parameters):
         raise ToolError(f"follow の height_m は、骨ごとに違う高さにしてください: {follow!r}")
     if follow and target != "rest":
         raise ToolError("follow は target が rest のときだけ使えます")
+    return {"chains": chains, "colliders": checked, "target": target, "follow": follow,
+            "f_root_hz": float(number(parameters, "f_root_hz", f_root, minimum=0, exclusive=True)),
+            "f_tip_hz": float(number(parameters, "f_tip_hz", f_tip, minimum=0, exclusive=True)),
+            "damping": float(number(parameters, "damping", damping, minimum=0)),
+            "substeps": number(parameters, "substeps", 8, minimum=1, integer=True),
+            "settle_s": float(number(parameters, "settle_s", 1.0, minimum=0))}
+
+
+def _spring_settings(parameters):
+    settings = _chain_settings(parameters, 3.2, 1.1, 0.30)
+    links = parameters.get("links", [])
+    if not isinstance(links, list) or not all(
+            isinstance(pair, list) and len(pair) == 2 and all(isinstance(i, int) and not isinstance(i, bool)
+                                                             and 0 <= i < len(settings["chains"]) for i in pair)
+            and pair[0] != pair[1] for pair in links):
+        raise ToolError(f"links は chains の番号の組（[i, j]、i と j は違う）の配列にしてください: {links!r}")
     bend = float(number(parameters, "bend", 0.12, minimum=0))
     push = float(number(parameters, "push", 0.3, minimum=0, exclusive=True))
     if bend > 1 or push > 1:
         raise ToolError(f"bend と push は 1 以下にしてください: bend {bend!r}, push {push!r}")
-    return {"chains": chains, "colliders": checked, "links": links, "target": target, "follow": follow,
-            "f_root_hz": float(number(parameters, "f_root_hz", 3.2, minimum=0, exclusive=True)),
-            "f_tip_hz": float(number(parameters, "f_tip_hz", 1.1, minimum=0, exclusive=True)),
-            "damping": float(number(parameters, "damping", 0.30, minimum=0)), "bend": bend,
-            "substeps": number(parameters, "substeps", 8, minimum=1, integer=True), "push": push,
-            "settle_s": float(number(parameters, "settle_s", 1.0, minimum=0))}
+    return {**settings, "links": links, "bend": bend, "push": push}
 
 
-@register("motion.spring_bones", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
-          summary="骨へ移した動き（blend）で、鎖の骨（髪など。chains に根元の骨）を、ばねで体の動きに遅れて揺らし、回転のキーに"
-                  "焼き付ける（Blender の中で）。狙いは、親に固く付いた形（rest。follow で骨と高さの並びに沿わせる）か、鎖にある動き"
-                  "（animation）。根元ほどばねが強く毛先ほど弱い。節の間の長さを保ち、隣の鎖（links）と離れすぎず、"
-                  "当たりのカプセル（colliders）の外へ押し出す。焼き付けた後に骨を測り直し、骨の向きと根元がばねの節と合わなければ止まる。"
-                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
-def spring_bones(inputs, parameters, outputs, context):
+def _fraction(parameters, key, default):
+    value = float(number(parameters, key, default, minimum=0))
+    if value > 1:
+        raise ToolError(f"{key} は 0〜1 にしてください: {value!r}")
+    return value
+
+
+def _ribbon_settings(parameters):
+    settings = _chain_settings(parameters, 4.0, 1.8, 0.35)
+    thigh = parameters.get("thigh")
+    if thigh is not None:
+        if not isinstance(thigh, dict) or set(thigh) != {"bone", "weight", "from_height_m", "span_m"} or not (
+                isinstance(thigh["bone"], str) and thigh["bone"]):
+            raise ToolError(f"thigh は {{bone: 骨, weight: 割合, from_height_m: 高さ, span_m: 幅}} にしてください: {thigh!r}")
+        thigh = {"bone": thigh["bone"], "weight": _fraction(thigh, "weight", None),
+                 "from_height_m": float(number(thigh, "from_height_m")),
+                 "span_m": float(number(thigh, "span_m", minimum=0, exclusive=True))}
+        if not settings["follow"]:
+            raise ToolError("thigh は follow と一緒に使ってください（骨と高さの並びに、下ほど太ももの動きを混ぜる）")
+    fitted = parameters.get("fitted", [])
+    if not isinstance(fitted, list):
+        raise ToolError(f"fitted は配列にしてください: {fitted!r}")
+    checked = []
+    for spec in fitted:
+        ok = (isinstance(spec, dict) and {"bones", "slices"} <= set(spec) <= {"bones", "slices", "objects", "extend_first"}
+              and isinstance(spec["bones"], list) and len(spec["bones"]) >= 2 and all(isinstance(b, str) and b for b in spec["bones"])
+              and isinstance(spec["slices"], list) and len(spec["slices"]) == len(spec["bones"]) - 1
+              and all(isinstance(ts, list) and ts and all(isinstance(t, (int, float)) and not isinstance(t, bool) and 0 <= t <= 1
+                                                          for t in ts) for ts in spec["slices"])
+              and (spec.get("objects") is None or (isinstance(spec["objects"], list) and spec["objects"]
+                                                  and all(isinstance(o, str) and o for o in spec["objects"])))
+              and isinstance(spec.get("extend_first", True), bool))
+        if not ok:
+            raise ToolError("fitted の各項目は {bones: 骨の並び（2 本以上）, slices: 骨ごとの輪切りの位置（0〜1）の並び"
+                            f"（骨の数 - 1 個）, objects: メッシュの名前（任意）, extend_first: 真偽（任意）}} にしてください: {spec!r}")
+        checked.append({k: spec[k] for k in ("bones", "slices", "objects", "extend_first") if k in spec})
+    hips = parameters.get("hips", "mixamorig:Hips")
+    if not isinstance(hips, str) or not hips:
+        raise ToolError(f"hips は腰の骨の名前にしてください: {hips!r}")
+    interp = parameters.get("interp", True)
+    if not isinstance(interp, bool):
+        raise ToolError(f"interp は true か false: {interp!r}")
+    return {**settings, "model": "ribbon", "thigh": thigh, "fitted": checked,
+            "fit_margin_mm": float(number(parameters, "fit_margin_mm", 22, minimum=0)), "hips": hips,
+            "gravity": float(number(parameters, "gravity", 1.0, minimum=0)), "lane": _fraction(parameters, "lane", 0.8),
+            "over": float(number(parameters, "over", 0.5, minimum=0)),
+            "root_move_mm": float(number(parameters, "root_move_mm", 25, minimum=0)),
+            "inelastic": _fraction(parameters, "inelastic", 1.0), "interp": interp}
+
+
+def _run_chain_bones(operation, allowed, make_settings, inputs, parameters, outputs, context):
+    """鎖の骨の工程（髪・帯）を Blender で動かし、焼き付けの確かめを許容と比べて、報告と起動の記録を返す"""
     from ..blender_adapter import launcher
     from ..io import read_json
-    require(inputs, ("blend",), "motion.spring_bones")
-    unknown = set(parameters) - SPRING_PARAMETERS
+    require(inputs, ("blend",), operation)
+    unknown = set(parameters) - allowed
     if unknown:
-        raise ToolError(f"motion.spring_bones の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(SPRING_PARAMETERS)}）")
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
     missing = [name for name in ("blend", "report") if name not in outputs]
     if missing:
-        raise ToolError(f"motion.spring_bones には outputs の {', '.join(missing)} が要ります")
-    blender = _blender(parameters, context, "motion.spring_bones")
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, operation)
     settings_path = Path(context.step_dir) / "spring_settings.json"
-    atomic_json(settings_path, _spring_settings(parameters))
+    atomic_json(settings_path, make_settings(parameters))
     args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
             "--settings", str(settings_path)]
     record = launcher.run_blender(blender, SPRING_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
@@ -475,15 +527,46 @@ def spring_bones(inputs, parameters, outputs, context):
     over = {name: check.get(name) for name, limit in SPRING_TOLERANCE.items()
             if isinstance(check.get(name), bool) or not isinstance(check.get(name), (int, float)) or not check[name] <= limit}
     if over:
-        raise ToolError(f"motion.spring_bones で、焼き付けた骨がばねの節と合いません: {over}（許容 {SPRING_TOLERANCE}）。"
+        raise ToolError(f"{operation} で、焼き付けた骨がばねの節と合いません: {over}（許容 {SPRING_TOLERANCE}）。"
                         "鎖や親の骨の拡大が 1 でない・拘束が掛かっているリグは扱えません")
-    observation = {"kind": "spring_bones", "exit_code": record["exit_code"], "seconds": record["seconds"],
-                   "blender_version": record["blender_version"], "frames": report.get("frames"),
-                   "chains": len(report.get("chains") or []), "bones_per_chain": (report.get("chains") or [{}])[0].get("bones"),
-                   "collision_pushes": report.get("collision_pushes"), "motion": report.get("motion"),
-                   "spring_stretch_mm": report.get("spring_stretch_mm"), "bones_vs_springs_mm": report.get("bones_vs_springs_mm"),
-                   "bake_check": {name: round(float(value), 5) for name, value in check.items()}}
-    return StepResult(observations=[observation])
+    common = {"exit_code": record["exit_code"], "seconds": record["seconds"], "blender_version": record["blender_version"],
+              "frames": report.get("frames"), "chains": len(report.get("chains") or []),
+              "spring_stretch_mm": report.get("spring_stretch_mm"), "bones_vs_springs_mm": report.get("bones_vs_springs_mm"),
+              "bake_check": {name: round(float(value), 5) for name, value in check.items()}}
+    return report, common
+
+
+@register("motion.spring_bones", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="骨へ移した動き（blend）で、鎖の骨（髪など。chains に根元の骨）を、ばねで体の動きに遅れて揺らし、回転のキーに"
+                  "焼き付ける（Blender の中で）。狙いは、親に固く付いた形（rest。follow で骨と高さの並びに沿わせる）か、鎖にある動き"
+                  "（animation）。根元ほどばねが強く毛先ほど弱い。節の間の長さを保ち、隣の鎖（links）と離れすぎず、"
+                  "当たりのカプセル（colliders）の外へ押し出す。焼き付けた後に骨を測り直し、骨の向きと根元がばねの節と合わなければ止まる。"
+                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def spring_bones(inputs, parameters, outputs, context):
+    report, common = _run_chain_bones("motion.spring_bones", SPRING_PARAMETERS, _spring_settings, inputs, parameters, outputs,
+                                      context)
+    return StepResult(observations=[{"kind": "spring_bones", **common,
+                                     "bones_per_chain": (report.get("chains") or [{}])[0].get("bones"),
+                                     "collision_pushes": report.get("collision_pushes"), "motion": report.get("motion")}])
+
+
+RIBBON_PARAMETERS = {"blender", "chains", "colliders", "target", "follow", "thigh", "fitted", "fit_margin_mm", "hips", "f_root_hz",
+                     "f_tip_hz", "damping", "gravity", "lane", "over", "root_move_mm", "inelastic", "interp", "substeps", "settle_s",
+                     "timeout"}
+
+
+@register("motion.ribbon_bones", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="骨へ移した動き（blend）で、帯の垂れの鎖の骨（chains に根元の骨。長さは鎖ごとに違ってよい）を、重力で垂れて"
+                  "太ももの上を前へ乗り越えるように揺らし、回転のキーに焼き付ける（Blender の中で）。各節は、ひとつ上の節から狙いの形の"
+                  "向きへ元の長さだけ下へばねで引かれる。狙いは follow（骨と高さの並び）に thigh（下ほど太ももの動き）を混ぜられる。"
+                  "当たりは colliders のカプセルと、fitted（骨に沿ってメッシュを輪切りにして測る、太さの変わるカプセル）。押す向きは"
+                  "腰（hips）の左右を減らし、前と上へ寄せる。焼き付けた後に骨を測り直し、合わなければ止まる。Blender は外部の"
+                  "実行ファイルなので再利用しない（毎回実行）")
+def ribbon_bones(inputs, parameters, outputs, context):
+    report, common = _run_chain_bones("motion.ribbon_bones", RIBBON_PARAMETERS, _ribbon_settings, inputs, parameters, outputs,
+                                      context)
+    return StepResult(observations=[{"kind": "ribbon_bones", **common, "colliders": report.get("colliders"),
+                                     "ribbons": report.get("ribbons")}])
 
 
 SLEEVE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "sleeve_bones.py"
