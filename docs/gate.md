@@ -81,6 +81,23 @@ uv run mv gate check gate.json [--out DIR]
 
 - 2026-11-08（GATE-3）: 拍の検査の照合先を「小節頭があれば小節頭」から「既定は拍（`align: "downbeat"` のものだけ小節頭）」に変えた。小節頭の配列を持つ timeline で、拍に置いたフラッシュ・切れ目が不合格だったものは合格になる。小節頭に合わせたい出来事は `align: "downbeat"` を書く（書かないと拍と照合するので、小節頭からのずれは見つからない）。Remotion で描いたテロップのデモを `mv gate check` に掛けたとき、拍のフラッシュ 5 件が「小節頭と照合、ずれ 4」で止まったことから。
 
+## 連番から timeline を起こす（`mv gate timeline`）
+
+Remotion などで描いた透過の連番（PNG。straight α）から、字が**実際に見えているコマと範囲**を α で実測し、`mv gate check` が読む dance-timeline/0.1 を書く。宣言（props の時刻）と実測の差を行ごとに出す。
+
+```sh
+uv run mv export remotion-props projects/song-a --out props.json --beats-per-bar 4
+uv run mv gate timeline --frames out/line1:lyric-001 --frames out/line2:lyric-002 --lyrics props.json --layer band --out timeline.json
+uv run mv gate timeline --frames out/all --hints hints.json --lyrics props.json --layer band --out timeline.json   # 1 つの連番に全行
+uv run mv gate check gate.json      # {"timeline": "timeline.json", "beats": …} 
+```
+
+- 行の切り分けは、行ごとに別の連番（`--frames DIR:行の id`）か、1 つの連番と行ごとの領域の手がかり（`--hints` = `{行の id: 正規化した箱}`。箱の中の不透明な画素をその行と見なす）。props の行が 1 つだけなら手がかりは要らない。
+- 「見えている」は α > `--alpha-threshold`（既定 64）の画素があること。行の最初と最後に見えるコマ（end は最後のコマ + 1）と、見えている全コマの不透明な画素を覆う箱（正規化）を測る。
+- 宣言と実測の差（例「開始が 1 コマ遅い」「途中で見えないコマ 2」）は `<out の stem>_measured.json` と stdout の要約に出す。どちらが正しいかは決めない。
+- 拍・小節頭は props からそのまま秒に直して写し、フラッシュは props の `flash_frames`（あれば）。書く timeline は実測なので `fade_in_s` / `fade_out_s` は 0、`lyric_fade` は inside、`exclusive` は true。連番の各コマと props の sha256 は timeline の `measured.sources` に残る。
+- 確かめたのは合成の連番（numpy で描いた箱）だけ。実際の Remotion の連番では未確認。
+
 ## 限界
 
 - 揺れの位置の列・骨格は別途用意する（推定の道具は持っていない）。無ければその検査は未実施になる。顔は `"faces": "auto"` で粗く推定できるが、正面を向いた 1 人の全身を前提にした頭の帯で、顔の検出ではない。

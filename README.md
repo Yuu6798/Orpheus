@@ -26,7 +26,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
 | `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
-| `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）と、歌詞の行・秒の確認表 | 実験的 | [gate](docs/gate.md) |
+| `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）、歌詞の行・秒の確認表、透過連番から起こす timeline | 実験的 | [gate](docs/gate.md) |
 | `mv inspect` | 生成動画の異常候補をコマと秒で見つけ、分類し、設定画と照合して修正計画を書く | 実験的 | [inspect](docs/inspect.md) |
 | `model3d` | 設定画や既存モデルから、部位と骨の対応・加工レシピ・検査・書き出し・動きの移し替え・舞台描画を記録つきで進める | 実験的・外部ツール | [model3d](docs/model3d.md) |
 

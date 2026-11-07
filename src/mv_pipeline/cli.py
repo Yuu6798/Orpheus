@@ -152,6 +152,14 @@ def _gate_parser(commands):
     lines.add_argument("--vocals", type=Path, help="vocal stem; measures each line start near the estimate")
     lines.add_argument("--window", type=float, default=0.8)
     lines.add_argument("--offset", type=float, default=0.0, help="seconds added to every estimate")
+    tl = sub.add_parser("timeline", help="measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check")
+    tl.add_argument("--frames", action="append", default=[], required=True,
+                    help="PNG sequence folder; 'DIR:lyric-001' binds the folder to one line. Repeatable")
+    tl.add_argument("--lyrics", type=Path, required=True, help="props.json from mv export remotion-props (remotion-props/0.1)")
+    tl.add_argument("--layer", required=True, help="layer name written into the timeline (e.g. band)")
+    tl.add_argument("--hints", type=Path, help="JSON {line id: normalized box} when one sequence holds several lines")
+    tl.add_argument("--alpha-threshold", type=int, default=64, help="a pixel is visible when alpha is above this (0-254)")
+    tl.add_argument("--out", type=Path, required=True, help="timeline.json to write (plus <stem>_measured.json)")
 
 
 def _inspect_parser(commands):
@@ -296,6 +304,9 @@ def gate_command(args):
     if args.gate_command == "lines":
         from .gate import lines
         return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
+    if args.gate_command == "timeline":
+        from .gate import frames_timeline
+        return frames_timeline.write(args.frames, args.lyrics, args.layer, args.out, args.hints, args.alpha_threshold)
     from .gate import checks
     report, out = checks.run(args.config, args.out)
     args.failed = 1 if report["overall"] == "fail" else 0
