@@ -6,7 +6,7 @@
 
 骨へ移した動きでは、足首の高さで床に合わせても、靴の底やかかとの厚みのぶんだけ足が床に沈む・浮くことがある。
 - 足の点: --foot-object で選んだメッシュの全頂点。無ければ、足の骨（Foot・ToeBase・Toe_End）の重みがいちばん大きい頂点と、
-  足の骨に親子付けしたメッシュの全頂点（レンダーに出すメッシュだけ）。
+  足の骨に親子付けしたメッシュの全頂点（レンダーに出すメッシュだけ。物体とコレクションの hide_render、ビューレイヤーでの除外を見る）。
 - 接地のコマ（points の stance でどちらかの足が 0.5 より大きいコマ）では、足の一番低い点を床へ合わせる高さを求める。
   接地の無いコマ（跳んでいる所）は、前後の接地のコマからつなぐ。
 - 急に上下しないように、±2.5σ で打ち切ったガウスでならす。ならした後も allow_sink_mm より深く沈むコマは、
@@ -94,6 +94,20 @@ def stats(lowest, frames):
             "over_60mm_frames": int((lowest > 0.060).sum())}
 
 
+def rendered(ob, view_layers):
+    """ob がレンダーに出るか。物体の hide_render と、ob の入ったコレクションまでたどる道（どれか 1 つ）の、コレクションの
+    hide_render とビューレイヤーでの除外を見る。使うビューレイヤーのどれかで出れば出る"""
+    if ob.hide_render:
+        return False
+
+    def walk(layer):
+        if layer.exclude or layer.collection.hide_render:
+            return False
+        return ob.name in layer.collection.objects or any(walk(child) for child in layer.children)
+
+    return any(walk(vl.layer_collection) for vl in view_layers if vl.use)
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
@@ -136,7 +150,7 @@ def main(argv=None):
     else:
         feet, bones = {a.bone_prefix + n for n in FEET}, set(arm.data.bones.keys())
         for o in bpy.data.objects:
-            if o.type != "MESH" or o.hide_render:       # レンダーに出さないメッシュ（当たりの写しなど）は選ばない
+            if o.type != "MESH" or not rendered(o, sc.view_layers):   # レンダーに出さないメッシュ（当たりの写し、コレクションで隠した衣装など）は選ばない
                 continue
             if o.parent == arm and o.parent_type == "BONE" and o.parent_bone in feet:
                 picks[o.name] = None
