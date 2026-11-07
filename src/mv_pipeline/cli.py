@@ -153,6 +153,18 @@ def _gate_parser(commands):
     lines.add_argument("--vocals", type=Path, help="vocal stem; measures each line start near the estimate")
     lines.add_argument("--window", type=float, default=0.8)
     lines.add_argument("--offset", type=float, default=0.0, help="seconds added to every estimate")
+    demo = sub.add_parser("demo", help="write synthetic test material with known answers (vocals stand-in, lyrics, timeline, beats, expected.json)")
+    demo.add_argument("dir", type=Path)
+    demo.add_argument("--duration", type=float, default=10.0)
+    demo.add_argument("--fps", type=int, default=30)
+    demo.add_argument("--bpm", type=float, default=120.0)
+    demo.add_argument("--beats-per-bar", type=int, default=4)
+    demo.add_argument("--no-downbeats", action="store_true", help="omit the downbeat grid")
+    demo.add_argument("--shifts", help="comma-separated seconds added to each declared line time (default 0,-0.333,0,0.15)")
+    demo.add_argument("--flashes", help="comma-separated flash times in seconds (default 5.5,6,6.5,7,7.5)")
+    demo.add_argument("--flash-align", choices=["beat", "downbeat"], default="beat", help="what the flashes should be compared with")
+    demo.add_argument("--attack-ms", type=float, default=30.0, help="rise time of each line's tone")
+    demo.add_argument("--floor-db", type=float, default=-40.0, help="background noise relative to the tone")
 
 
 def _inspect_parser(commands):
@@ -297,6 +309,10 @@ def gate_command(args):
     if args.gate_command == "lines":
         from .gate import lines
         return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
+    if args.gate_command == "demo":
+        from .gate import demo
+        return demo.create(args.dir, args.duration, args.fps, args.bpm, args.beats_per_bar, not args.no_downbeats, args.shifts,
+                           args.flashes, args.flash_align, args.attack_ms, args.floor_db)
     from .gate import checks
     report, out = checks.run(args.config, args.out)
     args.failed = 1 if report["overall"] == "fail" else 0

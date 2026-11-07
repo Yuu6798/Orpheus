@@ -77,6 +77,18 @@ uv run mv gate check gate.json [--out DIR]
 
 出力先は既定で `gate.json` の隣の `gate_report/`: `gate_report.md`・`gate_report.json`・問題のコマの静止画（検査ごとに最大 12 枚）。stdout は短い JSON。
 
+## 3. 正解の分かっている試験素材（`mv gate demo`）
+
+```sh
+uv run mv gate demo projects/gatedemo                 # 既定: 4 行（2 行目は 0.333 秒早く、4 行目は正解の 0.05 秒後）、拍に置いたフラッシュ 5 件
+uv run mv gate lines projects/gatedemo/lyrics.lrc projects/gatedemo/lines --vocals projects/gatedemo/vocals.wav
+uv run mv gate check projects/gatedemo/gate.json      # expected.json の checks と比べる。既定では歌詞の時刻が fail（終了コード 1）、拍が pass
+```
+
+書くもの: `vocals.wav`（声の代役。行ごとに正解の歌い出しから持続する倍音の音。立ち上がり `--attack-ms`、背景の雑音 `--floor-db`）、`lyrics.lrc`（宣言した行の時刻 = 正解の 0.1 秒前 + `--shifts`）、`timeline.json`（手書きの dance-timeline/0.1。層 band の行・フラッシュ・拍の格子）、`beats.json`（`--bpm`・`--beats-per-bar`。`--no-downbeats` で小節頭を省く）、`gate.json`、`expected.json`（行ごとの正解の歌い出し・宣言・期待する lead と合否、フラッシュごとの照合先からのずれと合否、検査ごとの期待する結果）。`--flashes` と `--flash-align beat|downbeat` でフラッシュの位置と照合先を変えられる。
+
+正解はすべて素材の設計値で、推定ではない。音は倍音だけで子音も残響も無いので、実曲の歌い出しの推定精度の確かめにはならない（工程の接続と検査の論理を確かめる素材）。CI はこの素材で demo → lines → check → expected の照合を回す。`--vocals` の WAV は soundfile が無くても読める（他の形式は analysis extra）。
+
 ## 既定の合否が変わった変更
 
 - 2026-11-08（字の重なり）: `lyric_fade` の無い timeline（手書き）は、見えている区間をフェードアウト込み `[start, end + fade_out_s]` で数える。前の行が `end` で消えたことにして「超過 0」だった、フェードアウト中に次の行が出る timeline は、重なりが 0.1 秒を超えれば不合格になる（例: `end=3.0`・`fade_out_s=0.3` の次に `start=3.0` の行 → 0.300 秒）。`mv dance` は行を `end` の前でフェードアウトし終えるので、この変更から timeline に `lyric_fade: "inside"` を書き、重なりは `[start, end]` で数える（**この変更より前に描いた dance の run は `lyric_fade` が無く after として読むので、フェードの分だけ重なりが増えて不合格になりうる。描き直すか timeline に `"lyric_fade": "inside"` を足す**）。別の列に置いた 2 行を重なりと数えたくないときは `thresholds.overlap_mode: "time_and_box"`。Remotion で描いたテロップのデモで見つかった。
@@ -84,5 +96,16 @@ uv run mv gate check gate.json [--out DIR]
 
 ## 限界
 
+- **歌い出しの推定は正解より約 20 ms 早い**（2026-11-08 に `mv gate demo` の素材で測定。補正は入れていない。入れるかはユウの判断）。音量の包絡は 30 ms の窓を 10 ms 刻みで前向きに取るので、窓が歌い出しに掛かり始める 2 刻み前から上がり始め、谷から上がり始めた最初の点へ戻す式がそこを選ぶ。立ち上がりの長さにはほぼよらず、背景の床が高いときだけ上がり幅のしきい値を越える点が遅れて偏りが小さくなる。実曲（子音・残響つき）では未測定。
+
+  | 立ち上がり | 背景の床（音の山に対して） | 行ごとの差（推定 − 正解, ms。4 行） | 平均 |
+  |---|---|---|---|
+  | 5 ms | −60 / −40 / −25 dB | −20, −20, −20, −20（どの床でも同じ） | −20 |
+  | 30 ms | −60 / −40 dB | −20, −20, −20, −20 | −20 |
+  | 30 ms | −25 dB | −10, −10, −10, −10 | −10 |
+  | 80 ms | −60 / −40 dB | −20, −20, −20, −20 | −20 |
+  | 80 ms | −25 dB | 0, 0, 0, 0 | 0 |
+
+  4 行とも `vocals_onset` で見つかり、行ごとのばらつきは無い（素材が同じ形の音だから）。gate の許容は 0〜0.2 秒なので、宣言した時刻が正解のちょうど 0 秒前の行は、この偏りで不合格側に出る。
 - 揺れの位置の列・骨格は別途用意する（推定の道具は持っていない）。無ければその検査は未実施になる。顔は `"faces": "auto"` で粗く推定できるが、正面を向いた 1 人の全身を前提にした頭の帯で、顔の検出ではない。
 - 入力の `timeline.json` は `mv dance render` の出力か、同じ形式で書いたもの。
