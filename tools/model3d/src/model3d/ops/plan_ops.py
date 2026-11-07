@@ -1,4 +1,5 @@
-"""段取り: 段取り表と光のキーと骨の通り道から、render.stage が描くトラックを作る（計算だけ。Blender は使わない）。"""
+"""段取り: 曲の音から光のキーを作り（plan.light_keys）、段取り表と光のキーと骨の通り道から、render.stage が描くトラックを
+作る（plan.stage）。どちらも計算だけ（Blender は使わない）。"""
 from ..io import ToolError, atomic_json
 from . import StepResult, register, require
 
@@ -32,4 +33,28 @@ def stage_plan(inputs, parameters, outputs, context):
     observation = {"kind": "stage_plan", "frames": report["frames"], "T": report["T"], "seconds": report["seconds"],
                    "shots": sum(1 for s in report["shots"] if s["frames"]), "bones": report["bones"],
                    "beyond_keys": report["keys"]["beyond"]}
+    return StepResult(observations=[observation])
+
+
+@register("plan.light_keys", inputs=("audio",), outputs=("keys",),
+          summary="曲の音（audio。WAV など）から、plan.stage が光に使う光のキー（keys。model3d-light-keys/0.1）を作る。窓"
+                  "（start 秒から frames コマ。省けば音の終わりまで）のコマごとに、低・中・高の帯の強さ（0〜1。立ち上がりは"
+                  "即座、下がりはゆっくり）と、拍の格子 grid（period と k0_time。秒、窓の頭が 0）に入る拍。帯・減り方・伸ばし方"
+                  "の既定は試作と同じで、numpy だけで計算する（librosa.stft と同じ値）")
+def light_keys(inputs, parameters, outputs, context):
+    from .. import contracts
+    from .. import light_keys as lk
+    require(inputs, ("audio",), "plan.light_keys")
+    if "keys" not in outputs:
+        raise ToolError("plan.light_keys には outputs の keys が要ります")
+    s = lk.settings(parameters)
+    samples, rate, frames, length = lk.read_window(inputs["audio"], s["start"], s["frames"], s["fps"], s["n_fft"])
+    keys, shown = lk.light_keys(samples, rate, frames, s["fps"], s["grid"], song_start=s["song_start"], bands=s["bands"],
+                                release=s["release"], percentiles=s["percentiles"], kick_gain=s["kick_gain"],
+                                low_floor=s["low_floor"], n_fft=s["n_fft"])
+    atomic_json(outputs["keys"], contracts.validate("light-keys", keys))
+    observation = {"kind": "light_keys", "frames": frames, "fps": s["fps"], "seconds": round(frames / s["fps"], 6),
+                   "rate": rate, "channels": int(samples.shape[1]), "audio_seconds": round(length, 6),
+                   "silent_frames": frames - shown, "beats": len(keys["beats"]),
+                   "mean": {name: round(sum(keys[name]) / frames, 3) for name in ("low", "mid", "high")}}
     return StepResult(observations=[observation])
