@@ -166,12 +166,13 @@ uv run mv inspect check inspect.json --vlm-packet                     # 依頼�
 uv run mv inspect check inspect.json --vlm vlm.json                   # 手元で動く VLM（sends_data: false）
 uv run mv inspect check inspect.json --vlm vlm_claude.json --allow-send   # 素材を外へ送る VLM（sends_data: true）
 uv run mv inspect check inspect.json --vlm-response response.json     # 手で書いた／別の所で作った返答を取り込む
+uv run mv inspect check inspect.json --vlm-response old.json --vlm-legacy-response   # request_sha256 の無い古い形の返答（互換の扱い）
 ```
 
 - `--vlm-packet` は束を書くだけの指定で、`--vlm` とは同時に使えない（送らないつもりの指定で送信が起きないように）。`--vlm` と `--vlm-response` も同時に使えない。
 - **見せるコマ**: 出来事の山のコマを先に、残りは `vlm.every_s`（1 秒）ごとの見本。合わせて `vlm.max_frames`（24）まで。長い辺 `vlm.max_side`（768）の JPEG。設定画も同じ大きさの PNG で入れる（`reference[].box` があれば、数値の照合と同じく切り出してから）。
 - **依頼の束**（`vlm/request.json`、`inspect-vlm-request/0.1`）: `instructions`（`vlm.language` が `ja` か `en`）、`categories`（分類の定義。数値の検査の `checks` によらず 4 つと `other`）、`reference`、`frames`（`id` = `クリップ@コマ`・クリップ・コマ・秒・`why`・`file`）、`response_schema`。画像ごとの `sha256` も入れるので、素材を同じ名前で差し替えると依頼の sha256 も変わり、古い返答は取り込まない。
-- **返答**（`inspect-vlm-response/0.1`）: `tool`（`name`・`version`・`model`）、`request_sha256`（依頼の束の sha256。違えば止める。無ければ警告）、`findings`（`frame_id`・`category`（4 つか `other`）・`description`・`box`（正規化。任意））。依頼に無いコマの id は止める。拒否・打ち切り・失敗で見られなかったコマは `x_unreviewed`（`[{frame_id, reason}]`）に書くと、警告として報告に残る（指摘が無いこととは違う）。
+- **返答**（`inspect-vlm-response/0.1`）: `tool`（`name`・`version`・`model`）、`request_sha256`（今回の依頼の束 `vlm/request.json` の sha256。**必須**で、違えば止める。同じコマの id（`クリップ@コマ`）の、別の依頼・別の素材への返答を取り込まないため。無い古い形の返答は、`--vlm-legacy-response` を付けたときだけ互換の扱いで取り込み、報告の VLM の欄に `legacy_response: true` と注意を残す）、`findings`（`frame_id`・`category`（4 つか `other`）・`description`・`box`（正規化。任意））。依頼に無いコマの id は止める。拒否・打ち切り・失敗で見られなかったコマは `x_unreviewed`（`[{frame_id, reason}]`）に書くと、警告として報告に残る（指摘が無いこととは違う）。
 - **取り込み**: 同じクリップの近いコマ（区間か前後 1 コマ）に、添えてよい数値の出来事（3 コマ以下か分類が同じもの。重複コマの周期は除く）があればそれに添え（`evidence: measured+estimated`。主な分類は数値の規則のまま、VLM の分類は `categories` に足す。隣のコマの指摘なら出来事の区間をそのコマまで広げ、秒・直す場所・手当ての候補を作り直す）、無ければ VLM だけの出来事（`estimated`）を作る。どちらも直す場所と修正計画に入り、VLM が衣装と言った出来事には衣装の手当ての候補も付く。合否には使わない。
 - **設定**（`--vlm` の JSON。`docs/adapters.md` と同じ約束）: `tool`・`version`・`argv`（`argv[0]` は存在する絶対パス。シェルは使わない。`{request}`・`{output}`・`{packet}` を置き換える）・**`sends_data`（必須）**・`timeout_s`（既定 900）。**argv はローカルで実行するプログラム**なので、中身を確かめた設定だけを使う。`sends_data: true` の設定は `--allow-send` が無いと、重い処理の前に止まる。
 - **代役**（`scripts/vlm_standin.py`）: 画像を読まず、ネットワークにも出ない。`--flag 'id:分類:説明'`・`--echo-events 分類`・`--unreviewed id` で返答の形を確かめる（テストと CI 用）。
@@ -184,20 +185,32 @@ uv run mv inspect check inspect.json --vlm-response response.json     # 手で�
 
 ## 出力
 
-既定は設定の隣の `inspect_report/`（`--out` で変える）。出力先には印の `inspect_output.txt` を置き、印のある出力先だけ、前の実行の `stills/`・`anchors/`・`metrics/`・`references/`・`vlm/` を消してから書く。印が無いのにそれらがある出力先には書かない（ほかの作業を消さない）。
+既定は設定の隣の `inspect_report/`（`--out` で変える）。出力先には印の `inspect_output.txt` を置き、印のある出力先だけ、前の実行の `stills/`・`anchors/`・`metrics/`・`references/`・`vlm/` と報告を入れ替える。印が無いのにそれらがある出力先には書かない（ほかの作業を消さない）。
+
+**実行ごとの書き方**（途中で失敗・強制終了しても、前の成功した結果を壊さない）:
+- 1 回の実行は、出力先の中の作業用フォルダー `.staging-<run_id>/` に全部を書く。最後まで済んだときだけ、前の結果と入れ替える。
+  - 入れ替えでは、前の結果をいったん `.previous-<run_id>/` へ動かし、新しい結果を入れてから消す。報告の JSON は先に外して最後に置くので、報告が見える間は、その報告の静止画などがそろっている。
+  - 入れ替えの途中で失敗したとき（ファイルがほかのアプリに開かれていて動かせない・Ctrl+C など）は、その場で前の結果へ戻し、途中まで入れた新しい結果を消してから、元のエラーで止まる。
+  - 強制終了などで戻せなかったときのために、前からあったものの一覧を `.publish.json` に書いておく。次の実行の初めに、前の結果へ戻す（報告の「注意」に書く）。その場で戻す処理も失敗したときは、`.publish.json` と `.previous-<run_id>/` を残して同じく次の実行で戻し、そのことを実行の記録のエラーの文に書く。
+- 同じ出力先では 1 つの実行だけが動く（出力先の `.lock` を OS のロックで持つ。fx・dance と同じロックで、強制終了でも外れる）。ほかの実行が使っている間に始めた実行は、何も触らずに止まる（動いている実行の作業用フォルダーを、止まった実行の跡と取り違えて消さないため）。
+- 測る途中・VLM の途中で失敗したときは、作業用フォルダーを消し、前の結果をそのまま残す。VLM のプログラムのログと返答だけは `failed/<run_id>/` に残し（新しい 5 回分）、エラーの文もそこを指す。
+- `inspect_runs.json`（`inspect-runs/0.1`）に、実行ごとの `run_id`・状態（`running` / `succeeded` / `failed`）・開始と終了の時刻・設定の sha256・エラーの文・入力の sha256 を残す（新しい 50 回分）。強制終了した実行は `running` のまま残るので、次の実行がそれを `failed`（`interrupted: true`）にして、残った作業用フォルダーを消す。
+- 報告の `run`（`id`・`started_at`・`finished_at`・`inputs`）に、この実行の入力（設定・動画・設定画・dance の spec・VLM の設定・依頼・返答）の sha256 を書く。
 
 | ファイル | 中身 |
 |---|---|
 | `inspect_report.md` | 一覧（クリップ × 分類の数・設定画との重なり・見ていない検査）、クリップごとの出来事の表（ID・コマ・秒・分類・内容（同じ検査のほかの色、数値の出来事に添えた VLM の指摘の文も）・根拠・直す場所・静止画）、修正計画、見ていない検査、注意（緑抜きで肌や髪まで抜ける設定など）、VLM（道具・モデル・トークン数）、設定画（名前・人物として使った画素の割合・切り抜きの画像・主な色） |
-| `inspect_report.json` | `inspect-report/0.1`。`overall`・設定の sha256・エンジンの版と指紋・ライブラリの版・しきい値・設定画の要約・クリップ（復号の結果・見た範囲・切り抜き・人物のいたコマの数・設定画との重なりの中央値と最小）・`events`・`unused`・`skipped`・`notes`・`vlm` |
+| `inspect_report.json` | `inspect-report/0.1`。`overall`・設定の sha256・エンジンの版と指紋・ライブラリの版・しきい値・設定画の要約・クリップ（復号の結果・見た範囲・切り抜き・人物のいたコマの数・設定画との重なりの中央値と最小）・`events`・`unused`・`skipped`・`notes`・`vlm`・`run`（`id`・時刻・入力の sha256） |
 | `fix_plan.json` | 修正計画（上） |
 | `stills/<出来事>.jpg` | コマの順に前のコマ・山のコマ（赤い箱 = 数値の場所）・VLM の指摘のコマ（黄色の箱。指摘したコマにだけ描く。最大 4 枚）・後のコマ。設定画の信号があれば、比べた設定画も並べる（`REF <view>`。view が ASCII でなければ番号。字は ASCII だけ） |
 | `anchors/<クリップ>_f<コマ>.png` | 修正計画の前後のコマ（元の大きさ） |
 | `metrics/<クリップ>.csv` | コマごとの数値（明るさ・差・構造の差・人物の面積と重心と高さ・塊の数・輪郭と面積と重心と配色の変化・動きの p95・設定画との重なり・そのコマをいちばんよく説明する設定画で欠けた主な色の数（`reference_missing`）と設定画に無い色の割合（`reference_extra`））。しきい値を自作に合わせて直す材料 |
 | `references/NN.png` | 設定画ごとに、左が切り出した設定画、右が色を取った画素（市松模様 = 背景として除いた所）。`border` の推定の切り抜きはここで確かめる |
 | `vlm/` | 依頼の束（`request.json`・`frames/`・`reference/`）、返答（`response.json`）、`adapter.log` |
+| `inspect_runs.json` | 実行ごとの記録（`inspect-runs/0.1`。上の「実行ごとの書き方」） |
+| `failed/<run_id>/` | 失敗した実行の VLM のプログラムのログと返答（あるときだけ） |
 
-`overall` は `review`（要確認の出来事か復号のエラーがある）／`clean_with_skips`（見つけた所は無いが、見ていない検査がある）／`clean`。どれも合否ではない。終了コードは設定や入力の誤りのときだけ 1。stdout は短い JSON（`overall`・出来事の数・分類ごとの数・見ていない検査・報告と修正計画のパス）。
+`overall` は `review`（要確認の出来事か復号のエラーがある）／`clean_with_skips`（見つけた所は無いが、見ていない検査がある）／`clean`。どれも合否ではない。終了コードは設定や入力の誤りのときだけ 1。stdout は短い JSON（`overall`・`run_id`・出来事の数・分類ごとの数・見ていない検査・報告と修正計画のパス）。
 
 ## 限界
 

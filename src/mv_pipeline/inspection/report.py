@@ -212,6 +212,8 @@ def _cell(text):
 def markdown(report, plan):
     lines = [f"# 生成動画の検品: {OVERALL[report['overall']]}（要確認 {report['summary']['events']} 件）", "",
              f"- 設定: `{report['config']}`（sha256 {report['config_sha256'][:12]}…）",
+             *([f"- 実行: `{report['run']['id']}`（{report['run']['started_at']} 〜 {report['run']['finished_at']}。入力の sha256 は "
+                "`inspect_report.json` の `run.inputs`、実行ごとの記録は `inspect_runs.json`）"] if report.get("run") else []),
              "- **検出が無いことは合格ではありません。** 異常かどうか・採否は人が見て決めます（数値は動画から測った値、VLM の指摘は推定）。",
              "- しきい値はどれも仮の値です（`docs/inspect.md`）。コマ番号は 0 始まりで、表の範囲は終わりのコマを含みます。", "",
              "| クリップ | 見た範囲 | 連続性 | 動作 | 形状 | 衣装 | その他 | 設定画との重なり（中央値・最小） | 見ていない検査 |",

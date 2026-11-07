@@ -200,8 +200,10 @@ def run_adapter(adapter, request_path, output_path, log_path, allow_send):
         raise PipelineError(f"VLM のプログラムが返答 {output_path} を書きませんでした（ログ: {log_path}）")
 
 
-def read_response(path, request, request_sha):
-    """返答を読んで確かめる。→ (返答, [警告])。依頼に無いコマの id は止める。"""
+def read_response(path, request, request_sha, legacy=False):
+    """返答を読んで確かめる。→ (返答, [警告])。依頼に無いコマの id は止める。
+    request_sha256（今回の依頼の束の sha256）は必須で、違えば止める（同じコマの id の、別の依頼・別の素材への返答を取り込まない）。
+    legacy（--vlm-legacy-response）のときだけ、request_sha256 の無い古い形の返答を警告つきで取り込む（報告に残る）。"""
     response = read_json(path)
     errors = sorted(jsonschema.Draft202012Validator(RESPONSE_JSON_SCHEMA).iter_errors(response), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
@@ -213,7 +215,10 @@ def read_response(path, request, request_sha):
         raise PipelineError(f"VLM の返答に、依頼に無いコマの id があります: {unknown[:5]}")
     warnings = []
     if "request_sha256" not in response:
-        warnings.append("返答に request_sha256 が無く、どの依頼への返答かを確かめていません")
+        if not legacy:
+            raise PipelineError("VLM の返答に request_sha256（今回の依頼 vlm/request.json の sha256）がありません。どの依頼への返答かを"
+                                "確かめられないので取り込みません。古い形の返答を承知で取り込むときだけ --vlm-legacy-response を付けてください")
+        warnings.append("互換の扱い（--vlm-legacy-response）: 返答に request_sha256 が無く、どの依頼への返答かを確かめずに取り込みました")
     elif response["request_sha256"] != request_sha:
         raise PipelineError("VLM の返答の request_sha256 が、今回の依頼（vlm/request.json）と違います。古い依頼への返答の可能性があります")
     for finding in response["findings"]:
