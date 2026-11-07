@@ -207,6 +207,23 @@ def test_a_freeze_keeps_the_catch_up_jump_frame_it_absorbs():
     assert [(s["check"], s["frames"]) for s in found] == [("freeze", [4, 9])] and jumps == []     # 追い付きは止まりの信号に入れる
 
 
+def test_the_jitter_peak_stays_inside_its_interval_when_the_shake_grows():
+    """8 fps・20 コマ・体の高さ一定で、左右の揺れが少しずつ大きくなる。いちばん強いのは最後の方でも、山は区間の中。"""
+    class Shaking:
+        first, count, size = 0, 20, (100, 100)
+        centroid = np.stack([[0.5 + 0.002 * (i + 1) * (1 if i % 2 else -1) for i in range(20)], [0.5] * 20], axis=1)
+        present, body = np.ones(20, bool), np.full(20, 0.5)
+        bbox = np.tile([0.4, 0.2, 0.6, 0.8], (20, 1))
+
+        def frame(self, i):
+            return int(i)
+
+    found = detect._jitter(Shaking(), inspect_config.THRESHOLDS, 8)
+    assert len(found) == 1
+    a, b = found[0]["frames"]
+    assert a <= found[0]["peak"] < b, found[0]
+
+
 def test_a_clip_wide_duplicate_cadence_does_not_swallow_a_glitch_inside_it():
     events = detect.events([_signal("duplicate_cadence", "continuity", (3, 95), kind="segment", value=18, threshold=3),
                             _signal("glitch", "continuity", (30, 31))], "c", 24)

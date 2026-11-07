@@ -306,11 +306,13 @@ def _jitter(features, th, fps):
                     and len(turns) >= half and float(np.mean(turns)) >= th["jitter_reversals"])
     out = []
     for a, b in runs(flags, minimum=max(2, half), gap=1):
-        peak = a + int(np.nanargmax(values[a:b]))
-        a, b = max(0, a - 1), max(1, b - 1)          # 2 階差 a[i] はコマ i−2〜i から決まるので、中央のコマ i−1 にそろえる
-        out.append(make_signal("jitter", "motion", features, a, b, "segment", peak, float(values[peak]), None, th["jitter_min"],
+        strongest = a + int(np.nanargmax(values[a:b]))   # 値を読む番号（2 階差の並び）
+        # 2 階差 a[i] はコマ i−2〜i から決まるので、区間も山も中央のコマ i−1 にそろえる（山を区間の外に出さない）
+        a, b = max(0, a - 1), max(1, b - 1)
+        peak = min(b - 1, max(a, strongest - 1))
+        out.append(make_signal("jitter", "motion", features, a, b, "segment", peak, float(values[strongest]), None, th["jitter_min"],
                                "体の高さ/コマ²", features.bbox[peak].round(4).tolist() if features.present[peak] else None,
-                               f"人物が小刻みに揺れています（重心の 2 階差の中央値 {values[peak]:.4f} 体の高さ。向きが毎コマのように入れ替わる）"))
+                               f"人物が小刻みに揺れています（重心の 2 階差の中央値 {values[strongest]:.4f} 体の高さ。向きが毎コマのように入れ替わる）"))
     return out
 
 
