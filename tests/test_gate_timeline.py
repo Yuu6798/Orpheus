@@ -115,6 +115,18 @@ def test_alpha_threshold_gaps_and_mismatches(tmp_path):
         frames_timeline.build([str(tmp_path / "faint")], tmp_path / "bad.json", "band")
 
 
+def test_a_single_line_still_honours_a_supplied_hint(tmp_path):
+    """1 行だけの props でも hints があればその箱の中だけを見る（字以外の不透明な要素が混ざった連番）。"""
+    _props(tmp_path / "props.json", lines=(LINE_A,))
+    _sequence(tmp_path / "all", [(6, 18, BOX_A), (0, N, (0, 80, 64, 96))])      # 下に常時出ている飾り
+    atomic_json(tmp_path / "hints.json", {"lyric-001": [0, 0, 1, 0.5]})
+    _, measured = frames_timeline.build([str(tmp_path / "all")], tmp_path / "props.json", "band")
+    assert measured["lines"][0]["measured"] == [0, N]                                            # hints 無しでは飾りも数える
+    timeline, measured = frames_timeline.build([str(tmp_path / "all")], tmp_path / "props.json", "band", hints_path=tmp_path / "hints.json")
+    assert measured["lines"][0]["measured"] == [6, 18] and measured["lines"][0]["box_px"] == list(BOX_A)
+    assert timeline["measured"]["sources"]["hints"] is not None
+
+
 def test_frames_argument_parsing_uses_the_known_line_ids():
     ids = {"lyric-001", "lyric-002"}
     assert frames_timeline.parse_frames_arg("out/frames:lyric-001", ids) == (frames_timeline.Path("out/frames"), "lyric-001")

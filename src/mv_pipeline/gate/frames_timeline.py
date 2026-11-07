@@ -8,7 +8,7 @@
 - 行の切り分けは 2 通り:
     (a) 行ごとに別の連番: `--frames DIR:lyric-001` のように連番のフォルダに props の行の id を付ける（その連番の不透明な画素は全部その行）。
     (b) 1 つの連番に全行: `--hints hints.json`（{行の id: 正規化した箱 [x0, y0, x1, y1]}）で、箱の中の不透明な画素をその行と見なす。
-        props の行が 1 つだけなら hints は要らない。
+        props の行が 1 つだけなら hints は要らない（あればその箱の中だけを見る）。
 - 「見えている」は α > alpha_threshold（既定 64）の画素があること。行の最初と最後に見えるコマ（end は最後のコマ + 1）と、
   見えている全コマの不透明な画素を覆う箱（正規化）を実測する。アルファの無い連番はエラー。連番の並びは数字の大小（frame2 < frame10）。
 - 宣言（props の start_frame / end_frame）と実測の差を、行ごとに `<out の stem>_measured.json` と要約に出す（例: 開始が 1 コマ早い）。
@@ -147,7 +147,13 @@ def build(frames_args, props_path, layer, hints_path=None, threshold=DEFAULT_ALP
         if line_id is not None:
             regions = {line_id: None}
         elif len(lines) == 1:
-            regions = {next(iter(lines)): None}
+            only = next(iter(lines))
+            if isinstance(hints, dict) and only in hints:      # 1 行でも hints があればその箱の中だけを見る（字以外の不透明な要素を避ける）
+                hint_boxes = {only: _pixel_box(hints[only], size)}
+                regions = dict(hint_boxes)
+                hints_used = True
+            else:
+                regions = {only: None}
         else:
             if not isinstance(hints, dict):
                 raise PipelineError("1 つの連番に複数の行があるときは --hints（{行の id: 正規化した箱}）が要ります（または --frames DIR:行の id で行ごとに分ける）")
