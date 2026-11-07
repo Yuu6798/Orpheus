@@ -4,7 +4,8 @@
         --report report.json --settings settings.json
 
 settings.json（look.toon が書く）:
-- meshes: セル調にするメッシュの名前（既定: アーマチュアで動く、レンダーに出すメッシュ全部。faces に入れたものは除く）。
+- meshes: セル調にするメッシュの名前（既定: アーマチュアで動く、レンダーに出すメッシュ全部。物体とコレクションの hide_render と
+  ビューレイヤーでの除外を見る。faces に入れたものは除く）。
 - faces: 顔の塗り（光を少し受け、絵の色を直接出す）にするメッシュの名前（既定なし）。
 - toon: セル調の数。light（光の向き。面の向きとの内積で影を決める）、threshold・soft（影の境と、そのぼかし）、shade（影の色。
   元の色に掛ける）、skin_shade（肌の影の色。省くと shade と同じ）、tint（影の色に舞台の色を混ぜる割合）、lit（光の当たる側の
@@ -35,7 +36,7 @@ dark 倍した暗い色を Emission で出す線の材質にし、裏の面は�
 モディファイアも元と同じ向きで働く）、法線の向きへ width_mm だけ太らせる Displace を足す（名前は model3d_outline_modifier の
 印に残す。ふつうは out）。Displace は物体の中の単位で押すので、
 物体の拡大とシーンの単位（scale_length）で直した強さにし、その換算（中の単位 1 が何 m か）を model3d_outline_m_per_local の
-印に残す。写しは model3d_outline の印を持ち、影を落とさない。元の頂点の並びに結び付いたモディファイア（BOUND）のあるメッシュと、
+印に残す。写しは model3d_outline の印を持ち、影を落とさず、元と同じコレクションに入る。元の頂点の並びに結び付いたモディファイア（BOUND）のあるメッシュと、
 形状キーのあるメッシュの面を減らすことは止める（写しでは働かないため）。
 共有のノードグループ model3d_stage_tone（a・b・gain）は、描く工程がコマごとに書き換える。
 **検証**: 本物の Blender 4.5.15 で、リポジトリ外の試作と同じキャラから、同じ輪郭線の写しと同じ描画になることを確かめた
@@ -441,7 +442,7 @@ def outline_hull(bpy, ob, o):
     new = ob.copy()                                      # 親子付け・変換・モディファイアの並び（骨の変形の設定も）はそのまま写す
     new.data = ob.data.copy()
     new.name = "hull_" + ob.name
-    sc.collection.objects.link(new)
+    sc.collection.objects.link(new)                      # 作る間は場面の根に置く（モディファイアを当てる操作は、ビューレイヤーにある物体が要る）
     me = new.data
     if "custom_normal" in me.attributes:
         me.attributes.remove(me.attributes["custom_normal"])
@@ -483,7 +484,27 @@ def outline_hull(bpy, ob, o):
         m2.vertex_group = g.name
     new.visible_shadow = False
     new["model3d_outline"] = ob.name
+    homes = [c for c in ob.users_collection if c.library is None] or [sc.collection]
+    for c in homes:                                      # 元と同じコレクションに入れる（コレクションでレンダーから隠した
+        if new.name not in c.objects:                    # メッシュの写しも隠れ、除外も元と同じになる）
+            c.objects.link(new)
+    if sc.collection not in homes:
+        sc.collection.objects.unlink(new)
     return new
+
+
+def rendered(ob, view_layers):
+    """ob がレンダーに出るか。物体の hide_render と、ob の入ったコレクションまでたどる道（どれか 1 つ）の、コレクションの
+    hide_render とビューレイヤーでの除外を見る。使うビューレイヤーのどれかで出れば出る"""
+    if ob.hide_render:
+        return False
+
+    def walk(layer):
+        if layer.exclude or layer.collection.hide_render:
+            return False
+        return ob.name in layer.collection.objects or any(walk(child) for child in layer.children)
+
+    return any(walk(vl.layer_collection) for vl in view_layers if vl.use)
 
 
 def main(argv=None):
@@ -507,7 +528,8 @@ def main(argv=None):
 
     faces = list(settings["faces"])
     if settings["meshes"] is None:
-        meshes = [o.name for o in bpy.data.objects if deformed(o) and not o.hide_render and o.name not in faces]
+        layers = bpy.context.scene.view_layers           # コレクションでレンダーから隠したメッシュ（着替えの衣装など）は選ばない
+        meshes = [o.name for o in bpy.data.objects if deformed(o) and rendered(o, layers) and o.name not in faces]
     else:
         meshes = list(settings["meshes"])
     for name in meshes + faces:

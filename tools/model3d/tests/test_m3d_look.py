@@ -71,6 +71,22 @@ def test_hull_source_uses_the_base_color_image_or_value():
     assert toon_look.hull_source(None) == (None, (0.5, 0.5, 0.5, 1.0))
 
 
+def test_rendered_follows_collection_hiding_and_view_layer_exclusion():
+    from types import SimpleNamespace as M
+
+    def layer(names, children=(), hide=False, exclude=False):
+        return M(exclude=exclude, collection=M(hide_render=hide, objects=set(names)), children=list(children))
+
+    root = layer([], [layer(["body", "both"]), layer(["alt", "both"], hide=True), layer(["excl"], exclude=True),
+                      layer([], [layer(["nested"])], hide=True)])     # 隠したコレクションの子のコレクションも隠れる
+    view = M(use=True, layer_collection=root)
+    unused = M(use=False, layer_collection=layer(["alt"]))             # 使わないビューレイヤーは見ない
+    picked = [n for n in ("body", "both", "alt", "excl", "nested", "loose")
+              if toon_look.rendered(M(name=n, hide_render=False), [view, unused])]
+    assert picked == ["body", "both"]                                   # 隠した所と見える所の両方にあれば出る
+    assert not toon_look.rendered(M(name="body", hide_render=True), [view])
+
+
 def test_parse_args():
     args = toon_look.parse_args(["--blend", "i.blend", "--out-blend", "o.blend", "--report", "r.json", "--settings", "s.json"])
     assert args.settings == "s.json"
