@@ -5,7 +5,8 @@
 - `beats`: 拍の格子 {"period", "k0_time"}（拍 k は k0_time + period × k 秒）か、拍の秒の並び。
 - `track`: model3d の `render.stage` のトラック（model3d-stage-track/0.1。1 つか並び。並びはつないでから読むので、クリップの
   境目のカットも見る）。コマ T と T+1 の間でカメラが飛んだ所をカット、速く動くコマを動きの区間、光（壁・輪郭光・光の柱・塗りの
-  縁の強さ）が相対で LIGHT_REL 以上跳ねた所と、色・模様が切り替わった所を照明の演出にする。
+  縁の強さ）が相対で LIGHT_REL 以上跳ねた所と、色・模様が切り替わった所を照明の演出にする。camera を省いたコマ（描く側の
+  既定のカメラ）を含む組は、カットと動きを見ない（照明は見る）。
   `light_keys`: model3d の光のキー（model3d-light-keys/0.1）の拍の格子。
 - `tolerance_s`（既定 0.05 秒）: カット・区間との時刻の許し。`beat_tolerance`（既定 0.1 拍）: 拍との許し。
 
@@ -61,16 +62,25 @@ def _light_levels(frame):
     return levels, look
 
 
+def _camera(frame):
+    """トラックの 1 コマのカメラの位置・向き（単位ベクトル）・レンズ。camera を省いたコマ（描く側の、腰を追う既定のカメラ）は
+    None。lens を省けば、レンズは None（描く側の既定のレンズ）。"""
+    camera = frame.get("camera")
+    if not camera:
+        return None
+    loc = np.asarray(camera["location"], float)
+    look = np.asarray(camera["target"], float) - loc
+    return loc, look / max(float(np.linalg.norm(look)), 1e-12), camera.get("lens")
+
+
 def from_track(frames, fps):
     """model3d のトラックのコマ（T・camera・光）から、カットの秒・速い動きの区間・照明の演出の秒。→ (cuts, moves, lights)。
-    コマ T と T + 1 の間の変化は、動画のコマ T（0 から）= T / fps 秒に見える（T は 1 から、動画のコマ T - 1 が (T - 1) / fps 秒）。"""
+    コマ T と T + 1 の間の変化は、動画のコマ T（0 から）= T / fps 秒に見える（T は 1 から、動画のコマ T - 1 が (T - 1) / fps 秒）。
+    camera はトラックで省ける。省いたコマ（描く側の既定のカメラで、位置はトラックから分からない）を含む組は、カットとカメラの
+    動きを見ない（照明は見る）。レンズは両方のコマに書いてあるときだけ比べる（両方省けば同じ既定のレンズ）。"""
     frames = sorted(frames, key=lambda f: f["T"])
     T = np.array([f["T"] for f in frames])
-    loc = np.array([f["camera"]["location"] for f in frames], float)
-    target = np.array([f["camera"]["target"] for f in frames], float)
-    lens = np.array([f["camera"]["lens"] for f in frames], float)
-    look = target - loc
-    look /= np.maximum(np.linalg.norm(look, axis=1, keepdims=True), 1e-12)
+    cameras = [_camera(f) for f in frames]
     cuts, moving, lights = [], [], []
     for k in range(len(frames) - 1):
         if T[k + 1] != T[k] + 1:                       # 並びにとびがあれば、その間は見ない
@@ -79,9 +89,13 @@ def from_track(frames, fps):
         jumps = [abs(b - a) / max(abs(a), abs(b), 1e-6) for a, b in zip(before, after) if a is not None and b is not None]
         if look_a != look_b or (jumps and max(jumps) >= LIGHT_REL):
             lights.append(round(T[k] / fps, 4))
-        step = float(np.linalg.norm(loc[k + 1] - loc[k]))
-        turn = float(np.degrees(np.arccos(np.clip(look[k] @ look[k + 1], -1, 1))))
-        if step > CUT_M or turn > CUT_DEG or abs(lens[k + 1] - lens[k]) > CUT_LENS_MM:
+        a, b = cameras[k], cameras[k + 1]
+        if a is None or b is None:                     # 既定のカメラのコマ: カットと動きは見ない
+            continue
+        step = float(np.linalg.norm(b[0] - a[0]))
+        turn = float(np.degrees(np.arccos(np.clip(a[1] @ b[1], -1, 1))))
+        zoom = abs(b[2] - a[2]) if a[2] is not None and b[2] is not None else 0.0
+        if step > CUT_M or turn > CUT_DEG or zoom > CUT_LENS_MM:
             cuts.append(round(T[k] / fps, 4))
         elif step > MOVE_M or turn > MOVE_DEG:
             moving.append(int(T[k]))
@@ -137,7 +151,8 @@ def load(spec, base):
         cues["moves"] += moves
         cues["lights"] += [[t, t] for t in light_times]
         cues["sources"].append({"kind": "track", "paths": [str(rel) for rel in tracks], "cuts": len(cuts), "moves": len(moves),
-                                "lights": len(light_times)})
+                                "lights": len(light_times),
+                                "frames_without_camera": sum(1 for f in frames if not f.get("camera"))})   # カットと動きを見ていないコマ
     if spec.get("light_keys"):
         path = (Path(base) / spec["light_keys"]).resolve()
         if not path.is_file():

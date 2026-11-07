@@ -1177,6 +1177,30 @@ def test_cuts_and_fast_moves_are_read_from_a_model3d_track(tmp_path):
         cues.load({"track": "bad.json"}, tmp_path)
 
 
+def test_a_track_may_leave_out_the_camera_or_its_lens(tmp_path):
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:
+        del frame["camera"]["lens"]                                    # レンズを省いたコマ（描く側の既定のレンズ）
+    assert cues.from_track(frames, 30.0)[:2] == ([round(20 / 30, 4)], [[round(39 / 30, 4), round(45 / 30, 4)]])   # 位置と向きは見る
+    mixed = _track()["frames"]
+    for frame in mixed:                                                # 前半はレンズを省き、後半だけ 50 mm（片方だけ省いた組は比べない）
+        if frame["T"] <= 30:
+            del frame["camera"]["lens"]
+        else:
+            frame["camera"]["lens"] = 50
+    assert cues.from_track(mixed, 30.0)[0] == [round(20 / 30, 4)]
+    bare = _track()["frames"]
+    for frame in bare:
+        if frame["T"] >= 15:
+            del frame["camera"]                                        # カメラを省いたコマ（描く側の、腰を追う既定のカメラ）
+        frame["wall"] = {"strength": 0.6 if frame["T"] == 31 else 0.2}
+    cut_times, moves, lights = cues.from_track(bare, 30.0)
+    assert cut_times == [] and moves == [] and lights == [round(30 / 30, 4), round(31 / 30, 4)]   # カットと動きは見ず、照明は見る
+    (tmp_path / "bare.json").write_text(json.dumps({**_track(), "frames": bare}), encoding="utf-8")
+    assert cues.load({"track": "bare.json"}, tmp_path)["sources"][0]["frames_without_camera"] == 46
+
+
 def _cue_signal(check, frames, peak=None):
     return {"check": check, "frames": list(frames), "peak": frames[0] if peak is None else peak}
 
