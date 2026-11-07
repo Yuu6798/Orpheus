@@ -1042,6 +1042,7 @@ def test_a_publish_that_fails_is_rolled_back_at_once(small_demo, tmp_path, monke
     out = tmp_path / "out"
     run.run(small_demo / "inspect.json", out)
     before = _snapshot(out)
+    monkeypatch.setattr(run.time, "sleep", lambda seconds: None)     # 開かれたままのファイル: _replace が待ってやり直しても動かせない
     monkeypatch.setattr(run.os, "replace", _locked(out, phase, error))
     with pytest.raises(error):
         run.run(small_demo / "inspect.json", out)
@@ -1061,6 +1062,7 @@ def test_a_publish_that_cannot_be_rolled_back_keeps_the_backup_for_the_next_run(
         if (Path(out) / run.JOURNAL).is_file():
             raise PermissionError("戻す所も開かれている")
         return real_rollback(out)
+    monkeypatch.setattr(run.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(run.os, "replace", _locked(out, "new", PermissionError))
     monkeypatch.setattr(run, "_rollback", stuck)
     with pytest.raises(PermissionError) as caught:
@@ -1107,3 +1109,220 @@ def test_a_vlm_response_without_the_request_hash_needs_the_legacy_flag(small_dem
     assert "互換の扱い" in (out / "inspect_report.md").read_text(encoding="utf-8")
     roles = {item["role"]: item for item in result["run"]["inputs"]}
     assert roles["vlm_response"]["sha256"] == hashlib.sha256((tmp_path / "unbound.json").read_bytes()).hexdigest()
+
+
+def _clip(clip_id, frames=100, fps=10.0):
+    return {"id": clip_id, "fps": fps, "inspected": [0, frames]}
+
+
+def test_too_many_vlm_candidates_are_shared_between_clips_and_spread_over_time():
+    """前は出来事の山を先頭から上限まで取り、後ろの出来事と後のクリップを見せなかった。"""
+    events = [{"id": f"a-F{k:02d}", "clip": "a", "peak": 5 * k, "frames": [5 * k, 5 * k + 1]} for k in range(20)]
+    events += [{"id": "b-F01", "clip": "b", "peak": 10, "frames": [10, 11]}, {"id": "b-F02", "clip": "b", "peak": 90, "frames": [90, 91]}]
+    clips = [_clip("a"), _clip("b")]
+    chosen = vlm.select(clips, events, {"every_s": 1.0, "max_frames": 6})
+    assert [(c["clip"], c["frame"]) for c in chosen] == [("a", 0), ("a", 30), ("a", 65), ("a", 95), ("b", 10), ("b", 90)]
+    described = vlm.describe_selection(chosen, events, clips)
+    assert described["events_total"] == 22 and described["events_unsent"] == 16 and described["event_peaks"] == 6
+    assert {item["id"] for item in described["unsent"]} == {e["id"] for e in events} - {"a-F00", "a-F06", "a-F13", "a-F19", "b-F01", "b-F02"}
+    assert [(c["clip"], c["events"], c["events_sent"], c["span_t"]) for c in described["clips"]] == [("a", 20, 4, [0.0, 9.5]), ("b", 2, 2, [1.0, 9.0])]
+
+
+def test_vlm_samples_spread_over_each_clip_instead_of_its_start():
+    chosen = vlm.select([_clip("a"), _clip("b", frames=40)], [], {"every_s": 1.0, "max_frames": 6})
+    assert [(c["clip"], c["frame"], c["why"]) for c in chosen] == [("a", 0, "sample"), ("a", 40, "sample"), ("a", 90, "sample"),
+                                                                  ("b", 0, "sample"), ("b", 20, "sample"), ("b", 30, "sample")]
+    everything = vlm.select([_clip("a", frames=30)], [{"id": "a-F01", "clip": "a", "peak": 12, "frames": [12, 13]}],
+                            {"every_s": 1.0, "max_frames": 24})
+    assert [c["frame"] for c in everything] == [0, 10, 12, 20] and vlm.describe_selection(everything)["events_unsent"] == 0
+
+
+def _track(fps=30.0):
+    """カメラが T 20 → 21 で 2 m 飛び（カット）、T 40〜45 で速く動く、作り物のトラック（model3d-stage-track/0.1）。"""
+    frames, x = [], 0.0
+    for T in range(1, 61):
+        if T == 21:
+            x += 2.0
+        if 41 <= T <= 46:
+            x += 0.1
+        frames.append({"T": T, "f": T, "camera": {"location": [x, -3.0, 1.2], "target": [x, 0.0, 1.0], "lens": 35}})
+    return {"schema_version": "model3d-stage-track/0.1", "fps": fps, "frames": frames}
+
+
+def test_cuts_and_fast_moves_are_read_from_a_model3d_track(tmp_path):
+    from mv_pipeline.inspection import cues
+    cut_times, moves, lights = cues.from_track(_track()["frames"], 30.0)
+    assert cut_times == [round(20 / 30, 4)]                            # 新しいショットの最初のコマ（動画のコマ 20）の時刻
+    assert moves == [[round(39 / 30, 4), round(45 / 30, 4)]] and lights == []
+    flash = _track()["frames"]
+    for frame in flash:
+        frame["wall"] = {"strength": 0.6 if frame["T"] == 31 else 0.2, "color": [1, 0, 0] if frame["T"] >= 50 else [0, 0, 1]}
+    assert cues.from_track(flash, 30.0)[2] == [round(30 / 30, 4), round(31 / 30, 4), round(49 / 30, 4)]   # 跳ね上がり・戻り・色の切り替え
+    first, second = _track()["frames"][:20], _track()["frames"][20:]     # 2 つのトラックの境目のカットも見る
+    (tmp_path / "a.json").write_text(json.dumps({**_track(), "frames": first}), encoding="utf-8")
+    (tmp_path / "b.json").write_text(json.dumps({**_track(), "frames": second}), encoding="utf-8")
+    assert cues.load({"track": ["a.json", "b.json"]}, tmp_path)["cuts"] == [round(20 / 30, 4)]
+    (tmp_path / "track.json").write_text(json.dumps(_track()), encoding="utf-8")
+    (tmp_path / "keys.json").write_text(json.dumps({"schema_version": "model3d-light-keys/0.1", "fps": 30, "frames": 60,
+                                                    "grid": {"period": 0.5, "k0_time": 0.25}, "low": [0], "mid": [0], "high": [0]}),
+                                        encoding="utf-8")
+    loaded = cues.load({"track": "track.json", "light_keys": "keys.json", "cuts": [1.9], "offset_s": 0.1}, tmp_path)
+    assert loaded["cuts"] == pytest.approx([round(20 / 30, 4) - 0.1, 1.8]) and loaded["grid"] == {"period": 0.5, "k0_time": 0.15}
+    assert [s["kind"] for s in loaded["sources"]] == ["track", "light_keys"] and loaded["sources"][0]["cuts"] == 1
+    (tmp_path / "other.json").write_text(json.dumps({**_track(fps=24.0), "frames": second}), encoding="utf-8")
+    with pytest.raises(PipelineError, match="fps"):
+        cues.load({"track": ["a.json", "other.json"]}, tmp_path)
+    (tmp_path / "bad.json").write_text(json.dumps({"schema_version": "something"}), encoding="utf-8")
+    with pytest.raises(PipelineError, match="model3d-stage-track"):
+        cues.load({"track": "bad.json"}, tmp_path)
+
+
+def test_a_color_only_change_in_any_rendered_light_is_a_light_cue():
+    from mv_pipeline.inspection import cues
+    red, green, blue = [1, 0, 0], [0, 1, 0], [0, 0, 1]
+    for key, before, after in (("tone", {"a": red, "b": blue, "gain": 0.5}, {"a": green, "b": blue, "gain": 0.5}),
+                               ("wall", {"strength": 0.2, "color": red, "dark": [0.1, 0, 0]},
+                                {"strength": 0.2, "color": red, "dark": [0, 0, 0.1]}),
+                               ("beams", {"gain": 1.0, "colors": [red] * 8}, {"gain": 1.0, "colors": [red] * 7 + [green]})):
+        frames = _track()["frames"]
+        for frame in frames:                                           # 明るさはそのままで、色だけが T 41 で切り替わる
+            frame[key] = after if frame["T"] >= 41 else before
+        assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)], key
+    turning = _track()["frames"]
+    for frame in turning:                                              # 壁の模様のずれは毎コマ動くが、切り替えではない
+        frame["wall"] = {"strength": 0.2, "color": red, "scroll": 0.01 * frame["T"]}
+    assert cues.from_track(turning, 30.0)[2] == []
+
+
+def test_omitted_light_values_are_the_renderers_defaults():
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:                                               # 省いた壁の強さは既定の 1（描く側と同じ）。T 41 から 0
+        frame["wall"] = {"color": [1, 0, 0], **({"strength": 0} if frame["T"] >= 41 else {})}
+    assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)]
+    same = _track()["frames"]
+    for frame in same:                                                 # 既定と同じ値を書いたコマ（模様の led・輪郭光の 1500）は変わらない
+        if frame["T"] >= 41:
+            frame.update(stage="led", rims=[{"energy": 1500.0}, {}])
+    assert cues.from_track(same, 30.0)[2] == []
+    toned = _track()["frames"]
+    for frame in toned:                                                # 塗りの縁の強さの既定は .blend で決まる: 片方だけ書いた組は比べない
+        if frame["T"] >= 41:
+            frame["tone"] = {"gain": 0.2}
+    assert cues.from_track(toned, 30.0)[2] == []
+
+
+def test_each_rim_light_is_compared_on_its_own():
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:                                               # 左右の輪郭光が入れ替わる（和は同じ 3000 のまま）
+        frame["rims"] = [{"energy": 3000.0}, {"energy": 0.0}] if frame["T"] <= 40 else [{"energy": 0.0}, {"energy": 3000.0}]
+    assert cues.from_track(frames, 30.0)[2] == [round(40 / 30, 4)]
+
+
+def test_the_light_defaults_are_the_renderers():
+    stage_render = pytest.importorskip("model3d.blender_adapter.stage_render")   # model3d の extra のある環境（CI も）で確かめる
+    from mv_pipeline.inspection import cues
+    static = stage_render.static_values(((0.1, 0.2, 0.3), (0.4, 0.5, 0.6)), 0.02)
+    assert cues.STAGE_DEFAULTS == {"stage": static["stage"], "wall_strength": static["wall"]["strength"],
+                                   "rim_energy": static["rims"][0]["energy"], "beam_gain": static["beams"]["gain"]}
+    assert static["rims"][1]["energy"] == static["rims"][0]["energy"]
+
+
+def test_a_track_may_leave_out_the_camera_or_its_lens(tmp_path):
+    from mv_pipeline.inspection import cues
+    frames = _track()["frames"]
+    for frame in frames:
+        del frame["camera"]["lens"]                                    # レンズを省いたコマ（描く側の既定のレンズ）
+    assert cues.from_track(frames, 30.0)[:2] == ([round(20 / 30, 4)], [[round(39 / 30, 4), round(45 / 30, 4)]])   # 位置と向きは見る
+    mixed = _track()["frames"]
+    for frame in mixed:                                                # 前半はレンズを省き、後半だけ 50 mm（片方だけ省いた組は比べない）
+        if frame["T"] <= 30:
+            del frame["camera"]["lens"]
+        else:
+            frame["camera"]["lens"] = 50
+    assert cues.from_track(mixed, 30.0)[0] == [round(20 / 30, 4)]
+    bare = _track()["frames"]
+    for frame in bare:
+        if frame["T"] >= 15:
+            del frame["camera"]                                        # カメラを省いたコマ（描く側の、腰を追う既定のカメラ）
+        frame["wall"] = {"strength": 0.6 if frame["T"] == 31 else 0.2}
+    cut_times, moves, lights = cues.from_track(bare, 30.0)
+    assert cut_times == [] and moves == [] and lights == [round(30 / 30, 4), round(31 / 30, 4)]   # カットと動きは見ず、照明は見る
+    (tmp_path / "bare.json").write_text(json.dumps({**_track(), "frames": bare}), encoding="utf-8")
+    assert cues.load({"track": "bare.json"}, tmp_path)["sources"][0]["frames_without_camera"] == 46
+
+
+def _cue_signal(check, frames, peak=None):
+    return {"check": check, "frames": list(frames), "peak": frames[0] if peak is None else peak}
+
+
+def test_cues_are_noted_only_for_the_signals_they_can_explain():
+    from mv_pipeline.inspection import cues
+    loaded = cues.load({"cuts": [1.0], "moves": [[2.0, 2.5]], "beats": {"period": 0.5, "k0_time": 0.0}}, Path("."))
+    at_cut = {"signals": [_cue_signal("jump", [30, 31]), _cue_signal("silhouette_pop", [30, 32])]}
+    assert [(m["kind"], m["t"], m["checks"]) for m in cues.match(at_cut, loaded, 30.0)] == [("cut", 1.0, ["jump", "silhouette_pop"])]
+    flash = {"signals": [_cue_signal("flicker", [46, 47])]}                 # 1.533 秒: 拍 1.5 から 0.067 拍
+    assert [(m["kind"], m["t"]) for m in cues.match(flash, loaded, 30.0)] == [("beat", 1.5)]
+    broken = {"signals": [_cue_signal("fragment", [45, 47])]}               # 拍の上でも、形の信号には拍を重ねない
+    assert cues.match(broken, loaded, 30.0) == []
+    swing = {"signals": [_cue_signal("motion_spike", [66, 67])]}
+    assert [(m["kind"], m["t"]) for m in cues.match(swing, loaded, 30.0)] == [("move", [2.0, 2.5])]
+    late = {"signals": [_cue_signal("flicker", [52, 53])]}                  # 1.733 秒: 拍から 0.47 拍
+    assert cues.match(late, loaded, 30.0) == []
+
+
+def test_events_at_cues_stay_as_candidates_and_say_which_cue(small_demo, tmp_path):
+    config = read_json(small_demo / "inspect.json")
+    config["clips"][0]["path"] = str(small_demo / config["clips"][0]["path"])
+    config["reference"][0]["path"] = str(small_demo / config["reference"][0]["path"])
+    plain, _ = run.run(_write(tmp_path / "plain.json", config), tmp_path / "plain")
+    config["cues"] = {"cuts": [30 / 24], "beats": {"period": 50 / 24, "k0_time": 0.0}}
+    result, out = run.run(_write(tmp_path / "cued.json", config), tmp_path / "cued")
+    assert [e["frames"] for e in result["events"]] == [e["frames"] for e in plain["events"]]   # 演出と重なっても消さない
+    by_frames = {tuple(e["frames"]): e for e in result["events"]}
+    glitch, fragment = by_frames[(30, 31)], by_frames[(50, 53)]
+    assert [m["kind"] for m in glitch["cues"]] == ["cut"] and glitch["status"] == "review"
+    assert fragment["cues"] == []                                     # 拍の上の形の崩れは、演出として書かない
+    assert result["summary"]["cues"] == {"events_with_cue": 1, "events_without_cue": len(result["events"]) - 1, "events_unchecked": 0}
+    assert result["clips"][0]["cues"]["cuts"] == 1
+    text = (out / "inspect_report.md").read_text(encoding="utf-8")
+    assert "演出の時刻と重なる: カット 1.25 秒" in text and "重ならない出来事から見てください" in text
+    for md in (tmp_path / "plain" / "inspect_report.md", out / "inspect_report.md"):   # 冒頭の箇条書きと一覧の表の間は空行（md の表として読まれる）
+        lines = md.read_text(encoding="utf-8").splitlines()
+        header = next(i for i, line in enumerate(lines) if line.startswith("| クリップ |"))
+        assert lines[header - 1] == ""
+
+
+def _write(path, data):
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_the_cue_files_are_in_the_run_inputs(small_demo, tmp_path):
+    config = read_json(small_demo / "inspect.json")
+    config["clips"][0]["path"] = str(small_demo / config["clips"][0]["path"])
+    config["reference"][0]["path"] = str(small_demo / config["reference"][0]["path"])
+    track = _write(tmp_path / "track.json", _track(fps=24.0))
+    keys = _write(tmp_path / "keys.json", {"schema_version": "model3d-light-keys/0.1", "fps": 24, "frames": 96,
+                                           "grid": {"period": 0.5, "k0_time": 0.0}, "low": [0], "mid": [0], "high": [0]})
+    config["cues"] = {"track": "track.json", "light_keys": "keys.json"}       # 全体の cues
+    result, _ = run.run(_write(tmp_path / "cues.json", config), tmp_path / "global")
+    roles = {item["role"]: item for item in result["run"]["inputs"]}
+    assert roles["cues_track"] == {"role": "cues_track", "path": "track.json", "sha256": hashlib.sha256(track.read_bytes()).hexdigest()}
+    assert roles["cues_light_keys"]["sha256"] == hashlib.sha256(keys.read_bytes()).hexdigest()
+    edited = _track(fps=24.0)
+    edited["frames"][30]["camera"]["location"][0] += 3.0                      # その場で書き換えたトラック
+    _write(track, edited)
+    del config["cues"]
+    config["clips"][0]["cues"] = {"track": "track.json"}                     # クリップごとの cues
+    again, _ = run.run(_write(tmp_path / "cues.json", config), tmp_path / "clip")
+    after = [item for item in again["run"]["inputs"] if item["role"] == "cues_track"]
+    assert after == [{"role": "cues_track", "path": "track.json", "sha256": hashlib.sha256(track.read_bytes()).hexdigest()}]
+    assert after[0]["sha256"] != roles["cues_track"]["sha256"]                # 書き換えたトラックは、記録の sha256 で見分けられる
+
+
+def test_cues_are_refused_with_a_dance_spec(dance_root, tmp_path):
+    config = {"schema_version": "inspect/0.1", "dance_spec": str(dance_root / "spec.json"), "cues": {"cuts": [1.0]}}
+    with pytest.raises(PipelineError, match="cues は clips"):
+        inspect_config.load(_write(tmp_path / "inspect.json", config))

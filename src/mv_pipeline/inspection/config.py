@@ -73,6 +73,7 @@ class Config:
     origins: dict = field(default_factory=dict)
     foreground: object = None                       # 全体の既定（None = 書いていない）
     vlm: dict = field(default_factory=dict)
+    cues: dict | None = None                        # 全体の演出の時刻（cues.load の形。None = 書いていない）
     notes: list = field(default_factory=list)       # 実行中に気づいた注意（報告に残す）
 
     def resolve(self, value):
@@ -133,12 +134,14 @@ def load(path):
         raise PipelineError("しきい値 freeze_frames は 2 以上にしてください（同じ絵が 2 コマ = 1 コマ止まる）")
     if thresholds["jitter_reversals"] > 1:
         raise PipelineError("しきい値 jitter_reversals は 0 より大きく 1 以下にしてください")
+    from . import cues as cue_times
     resolved = path.resolve()
     config = Config(path=resolved, base=resolved.parent, sha256=sha256(resolved), raw=raw, thresholds=thresholds,
                     checks=tuple(raw["checks"]) if "checks" in raw else ("continuity", "motion", "shape", "costume"),
                     analysis_width=int(raw.get("analysis_width", ANALYSIS_WIDTH)),
                     origins=dict(raw.get("origins", {})), foreground=normalize_foreground(raw.get("foreground")),
-                    vlm={**VLM_DEFAULTS, **{k: v for k, v in raw.get("vlm", {}).items() if not k.startswith("x_")}})
+                    vlm={**VLM_DEFAULTS, **{k: v for k, v in raw.get("vlm", {}).items() if not k.startswith("x_")}},
+                    cues=cue_times.load(raw.get("cues"), resolved.parent))
     for box_owner in [config.foreground] + [normalize_foreground(c.get("foreground")) for c in raw.get("clips", [])]:
         if box_owner and box_owner["kind"] == "box" and not _box_ok(box_owner["box"]):
             raise PipelineError(f"foreground の box は [x0, y0, x1, y1] で x0 < x1・y0 < y1 にしてください: {box_owner['box']}")
@@ -155,6 +158,8 @@ def load(path):
         config.dance_spec = config.resolve(raw["dance_spec"])
         if not config.dance_spec.is_file():
             raise PipelineError(f"dance の spec が見つかりません: {raw['dance_spec']}")
+        if config.cues is not None:
+            raise PipelineError("cues は clips の書き方で使います（dance_spec で見る素材のコマの時刻は、出力の時刻と違うため）")
         return config
     if config.origins:
         raise PipelineError("origins は dance_spec と使います（clips では clips[].origin に書いてください）")
@@ -171,5 +176,6 @@ def load(path):
         if frames is not None and not frames[0] < frames[1]:
             raise PipelineError(f"clips[].frames は [開始, 終了) で開始 < 終了にしてください: {frames}")
         config.clips.append({"id": clip_id, "path": file, "rel": item["path"], "frames": frames, "origin": item.get("origin"),
-                             "foreground": normalize_foreground(item.get("foreground"))})
+                             "foreground": normalize_foreground(item.get("foreground")),
+                             "cues": cue_times.load(item["cues"], config.base) if "cues" in item else config.cues})
     return config
