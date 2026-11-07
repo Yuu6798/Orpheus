@@ -502,8 +502,8 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "beats": None if data["beats"] is None else {"beats": data["beats"]["beats"], "downbeats": data["beats"]["downbeats"]},
         "clips": [{"path": c["path"], "start": c["start"], "end": c["end"], "kind": c["kind"], "transition_in": c["transition_in"],
                    "beat_exempt": c["beat_exempt"]} for c in clips],
-        "seam_info": [{"t": t, "from": left, "to": right, "kind": clips[right]["transition_in"]["type"], "beat_exempt": clips[right]["beat_exempt"]}
-                      for t, left, right in ctx.clips.seam_list()],
+        "seam_info": [{"t": t, "from": left, "to": right, "kind": clips[right]["transition_in"]["type"], "beat_exempt": clips[right]["beat_exempt"],
+                       "align": clips[right]["align"]} for t, left, right in ctx.clips.seam_list()],
         "frames_fields": FRAME_FIELDS + (PLACEMENT_FIELDS if fitted else []),
         "frames": [_frame_row(ctx, timeline.frame_time(i, ctx.fps, start), fitted) for i in range(count)],
         "analysis": ctx.analysis,
@@ -511,7 +511,7 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "camera_seams": [{k: seam[k] for k in ("t", "span_s", "pre_s", "post_s", "zoom", "rotate_deg", "rotate_post_deg", "pivot", "blur")}
                          for seam in data["camera"]["seams"]],
         "accents": data["camera"]["accents"],
-        "flash_info": [{k: f[k] for k in ("t", "strength", "decay_s", "mode", "beat_exempt")} for f in data["flashes"]],
+        "flash_info": [{k: f[k] for k in ("t", "strength", "decay_s", "mode", "beat_exempt", "align")} for f in data["flashes"]],
         "audio": None if audio is None else {"fit": audio["fit"], "end_s": audio["end_s"]},
         "finished": finished,
     })

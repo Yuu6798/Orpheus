@@ -318,34 +318,58 @@ def check_hook_overlap(timeline, th):
     return result(name, "fail" if problems else "pass", f"入れ替わり {changes} 回、超過 {len(problems)}", problems)
 
 
+ALIGNS = ("beat", "downbeat")
+ALIGN_NAMES = {"beat": "拍", "downbeat": "小節頭"}
+
+
 def _beat_events(timeline):
-    """[(種類, 時刻, 対象外か)]。0.1 の timeline は数値の配列だけを持つ。blend の切れ目の時刻は blend の開始時刻。"""
-    flashes = [("フラッシュ", f["t"], f["beat_exempt"]) for f in timeline["flash_info"]] if "flash_info" in timeline \
-        else [("フラッシュ", t, False) for t in timeline.get("flashes", [])]
-    seams = [("切れ目", item["t"], item["beat_exempt"]) for item in timeline["seam_info"]] if "seam_info" in timeline \
-        else [("切れ目", t, False) for t in timeline.get("seams", [])]
+    """[(種類, 時刻, 対象外か, 照合先)]。照合先は flash_info / seam_info の align（無ければ beat）。0.1 の timeline は数値の配列だけを持つ。
+    blend の切れ目の時刻は blend の開始時刻。"""
+    def align_of(item):
+        align = item.get("align", "beat")
+        if align not in ALIGNS:
+            raise PipelineError(f"align は {' か '.join(ALIGNS)} にしてください: {align!r}（t={item['t']}）")
+        return align
+
+    flashes = [("フラッシュ", f["t"], f["beat_exempt"], align_of(f)) for f in timeline["flash_info"]] if "flash_info" in timeline \
+        else [("フラッシュ", t, False, "beat") for t in timeline.get("flashes", [])]
+    seams = [("切れ目", item["t"], item["beat_exempt"], align_of(item)) for item in timeline["seam_info"]] if "seam_info" in timeline \
+        else [("切れ目", t, False, "beat") for t in timeline.get("seams", [])]
     return flashes + seams
 
 
+def _grids(analysis):
+    """{"beat": 拍の時刻, "downbeat": 小節頭の時刻}。無い方は、ある方で代用する（拍が無ければ小節頭、小節頭が無ければ拍）。"""
+    beats = analysis.get("beats") or analysis.get("beats_s") or []
+    downbeats = analysis.get("downbeats") or []
+    return {"beat": beats or downbeats, "downbeat": downbeats or beats}
+
+
 def check_beats(timeline, analysis, th):
+    """フラッシュと切れ目が、拍（align が downbeat のものは小節頭）から 1 コマ以内か。"""
     name = "拍"
     analysis = analysis if analysis is not None else timeline.get("beats")
     if analysis is None:
         return skip(name, "beats")
-    grid = analysis.get("downbeats") or analysis.get("beats") or analysis.get("beats_s")
-    if not grid:
+    grids = _grids(analysis)
+    if not grids["beat"]:
         return skip(name, "beats の downbeats / beats / beats_s 配列")
-    events = _beat_events(timeline)
+    # 代用したときは、照合した方の名前で報告する（beats が無ければ「拍」の照合先も小節頭）
+    kinds = {"beat": "beat" if analysis.get("beats") or analysis.get("beats_s") else "downbeat",
+             "downbeat": "downbeat" if analysis.get("downbeats") else "beat"}
     limit = th["beat_frames"] / timeline["fps"]
-    problems, exempt = [], 0
-    for label, t, excused in events:
-        off = min(abs(t - g) for g in grid)
+    problems, exempt, counted = [], 0, {"beat": 0, "downbeat": 0}
+    for label, t, excused, align in _beat_events(timeline):
+        kind = kinds[align]
+        off = min(abs(t - g) for g in grids[align])
         if excused:
             exempt += 1
-        elif off > limit + EPS:
-            problems.append({"t": t, "text": label, "detail": f"拍から {off:.3f} 秒ずれています（許容 {limit:.3f} 秒）"})
-    kind = "小節頭" if analysis.get("downbeats") else "拍"
-    summary = f"{len(events) - exempt} 件を{kind}と照合、ずれ {len(problems)}"
+            continue
+        counted[kind] += 1
+        if off > limit + EPS:
+            problems.append({"t": t, "text": label, "detail": f"{ALIGN_NAMES[kind]}から {off:.3f} 秒ずれています（許容 {limit:.3f} 秒）"})
+    parts = [f"{counted[kind]} 件を{ALIGN_NAMES[kind]}と照合" for kind in ("beat", "downbeat") if counted[kind]]
+    summary = "、".join(parts or ["0 件を拍と照合"]) + f"、ずれ {len(problems)}"
     if exempt:
         summary += f"（対象外（意図）{exempt} 件）"
     return result(name, "fail" if problems else "pass", summary, problems)

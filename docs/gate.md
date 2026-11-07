@@ -64,7 +64,7 @@ uv run mv gate check gate.json [--out DIR]
 | 揺れ | `tracks`（`{"名前": [[t, x, y], …]}`。画素） | 2 階差分の RMS 3 画素以下。3 点未満の要素は見ず、一部なら要確認、全部なら未実施 |
 | つなぎ目 | `poses`（`[{"t", "points": [[x, y], …]}]`。正規化座標） | 切れ目の前後 2 コマ以内の骨格で姿勢の差 0.05 以下。超えたら要確認（切るコマの変更か `camera.seams` の提案）。時刻はコマに丸めてから前後を決める。1 コマ以内に `camera.seams` があれば、その設定を文言に添える。骨格が前後に無ければ要確認 |
 | 字の重なり | timeline だけ | `exclusive` な層ごとに同時表示 0.1 秒以下（`exclusive` の無い 0.1 の timeline は back だけ） |
-| 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列）。無ければ timeline の `beats` | フラッシュと切れ目が小節頭（無ければ拍）から 1 コマ以内。`beat_exempt` の切れ目・フラッシュは「対象外（意図）」として数えるが、不合格にしない。blend の切れ目は blend の開始時刻を見る |
+| 拍 | `beats`（`downbeats`・`beats`・`beats_s`（`mv analyze` の出力）のどれかの配列）。無ければ timeline の `beats` | フラッシュと切れ目が**拍**（`beats` / `beats_s`。無ければ小節頭で代用）から 1 コマ以内。小節頭に合わせたいものは `flash_info` / `seam_info` の `align: "downbeat"`（dance の spec では `flashes[].align` / `clips[].align`。無ければ `"beat"`）で小節頭（無ければ拍で代用）と照合する。文面と集計は照合先ごと（「拍から」「小節頭から」、「N 件を拍と照合、M 件を小節頭と照合」）。`beat_exempt` の切れ目・フラッシュは「対象外（意図）」として数えるが、不合格にしない。blend の切れ目は blend の開始時刻を見る |
 | 書き出し | `video`・`master`（任意で `expected_sha256`） | 全部のコマを復号できる、コマ数・尺が描いた区間（timeline の `interval`）と揃う、SHA-256 が控えと同じ、SSIM 0.98 以上 |
 
 一部の区間だけ描いた run（`mv dance render --start/--duration`）は、timeline の `interval` の中に出るものだけを見る。確認済みの時刻だけは曲全体で見る。
@@ -76,6 +76,10 @@ uv run mv gate check gate.json [--out DIR]
 結果は 合格 / 不合格 / 要確認 / 未実施。**未実施は「材料が無くて見ていない」で、合格ではない。** 全体（`overall`）は、不合格が 1 つでもあれば `fail`（終了コード 1）、未実施があれば `pass_with_skips`、要確認があれば `pass_with_warnings`、なければ `pass`。
 
 出力先は既定で `gate.json` の隣の `gate_report/`: `gate_report.md`・`gate_report.json`・問題のコマの静止画（検査ごとに最大 12 枚）。stdout は短い JSON。
+
+## 既定の合否が変わった変更
+
+- 2026-11-08（GATE-3）: 拍の検査の照合先を「小節頭があれば小節頭」から「既定は拍（`align: "downbeat"` のものだけ小節頭）」に変えた。小節頭の配列を持つ timeline で、拍に置いたフラッシュ・切れ目が不合格だったものは合格になる。小節頭に合わせたい出来事は `align: "downbeat"` を書く（書かないと拍と照合するので、小節頭からのずれは見つからない）。Remotion で描いたテロップのデモを `mv gate check` に掛けたとき、拍のフラッシュ 5 件が「小節頭と照合、ずれ 4」で止まったことから。
 
 ## 限界
 

@@ -133,7 +133,7 @@ def _normalize_clip(clip, time, legacy):
             "source_start": float(clip.get("source_start", 0)), "speed": float(clip.get("speed", 1.0)),
             "placement": {"offset": _vec(place.get("offset", [0, 0])), "scale": float(place.get("scale", 1.0)),
                           "flip_x": bool(place.get("flip_x", False)), **_ext(place)},
-            "fit": clip.get("fit", True), "beat_exempt": bool(clip.get("beat_exempt", False)),
+            "fit": clip.get("fit", True), "beat_exempt": bool(clip.get("beat_exempt", False)), "align": clip.get("align", "beat"),
             "transition_in": {"type": transition["type"], "frames": int(transition.get("frames", 0))}, **_ext(clip)}
 
 
@@ -302,7 +302,7 @@ def _normalize(raw, base_dir):
         "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"]),
         "flashes": [{"t": time(f["t"], "flashes の t"), "strength": float(f.get("strength", 0.6)), "decay_s": float(f.get("decay_s", 0.2)),
                      "color": _vec(f.get("color", [255, 255, 255])), "mode": f.get("mode", "lerp_linear"),
-                     "beat_exempt": bool(f.get("beat_exempt", False)), **_ext(f)} for f in raw.get("flashes", [])],
+                     "beat_exempt": bool(f.get("beat_exempt", False)), "align": f.get("align", "beat"), **_ext(f)} for f in raw.get("flashes", [])],
         "lyrics": {
             "font": font, "fonts": fonts,
             "ui_regions": [{"name": r["name"], "box": _vec(r["box"])} for r in lyrics["ui_regions"]] if "ui_regions" in lyrics
