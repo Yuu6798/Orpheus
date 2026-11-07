@@ -209,6 +209,17 @@ def spread_push(need, edges, iterations):
     return d, mag
 
 
+def vertex_count_problem(name, base, evaluated, modifiers, frame=None):
+    """押し出しは、元のメッシュの頂点の番号で、評価した（モディファイアをかけた）形の頂点を読む。頂点の数が変わると
+    番号がずれるので、そのときの説明（変わらなければ None）。modifiers はビューポートで効いているモディファイアの名前。"""
+    if base == evaluated:
+        return None
+    when = f"コマ {frame} で、" if frame is not None else ""
+    return (f"push: {when}{name} のモディファイア（{', '.join(modifiers) or 'なし'}）で頂点の数が変わります（{base} → {evaluated}）。"
+            "押し出しは頂点の並びが変わらないメッシュにだけ使えます。Mask・Decimate・Subdivision などは、先に適用するか、"
+            "ビューポートで切ってください（測るのはビューポートの形）")
+
+
 def blend_bone_rotations(weights, bone_rots):
     """頂点ごとの骨の重み（行の和が 1。骨の重みの無い頂点は 0 の行）と、骨ごとの 3×3 の動きから、頂点ごとの 3×3（重みで
     混ぜた線形の骨の動き）。骨の重みの無い頂点と、骨の無いときは、骨で動かないので単位行列にする。"""
@@ -474,6 +485,11 @@ def hip_path(bpy, arm, hips, frames, sigma):
     return {f: p for f, p in zip(frames, gauss_smooth(points, sigma))}
 
 
+def viewport_modifiers(ob):
+    """ビューポートで効いているモディファイアの「名前（種類）」。"""
+    return [f"{m.name}（{m.type}）" for m in ob.modifiers if m.show_viewport]
+
+
 def evaluated_points(bpy, ob):
     """評価した（モディファイアをかけた）メッシュの頂点の世界の座標と、面の頂点の並び。"""
     ev = ob.evaluated_get(bpy.context.evaluated_depsgraph_get())
@@ -590,6 +606,10 @@ class Push:
         stats = {}
         for t in self.targets:
             co, _ = evaluated_points(bpy, t.ob)
+            problem = vertex_count_problem(t.ob.name, len(t.basis), len(co), viewport_modifiers(t.ob),
+                                           bpy.context.scene.frame_current)
+            if problem:                                   # 頂点の番号がずれたまま測らない（コマごとに変わることもある）
+                raise SystemExit(problem)
             p = co[t.idx]
             need = np.zeros_like(p)
             for tree, lo, hi in trees:
@@ -655,6 +675,10 @@ def make_pushes(bpy, specs, unit):
             if spec.get("outlines", True):
                 objects += [(o, False) for o in bpy.data.objects if o.type == "MESH" and o.get("model3d_outline") == name]
             for o, named in objects:
+                problem = vertex_count_problem(o.name, len(o.data.vertices), len(evaluated_points(bpy, o)[0]),
+                                               viewport_modifiers(o))
+                if problem:                               # 描き始める前に止める
+                    raise SystemExit(problem)
                 modifier = next((m for m in o.modifiers if m.type == "ARMATURE" and m.object is not None
                                  and m.show_viewport and m.show_render), None)
                 target = PushTarget(o, modifier.object if modifier else None, groups, PUSH_KEY)

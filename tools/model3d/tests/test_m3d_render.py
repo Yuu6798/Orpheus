@@ -389,3 +389,10 @@ def test_every_push_is_reset_before_any_push_measures():
     assert moved == {"first": (1, 2.0), "second": (1, 2.0)}
     # 前のコマの直し（値 1）は、最初の押し出しが測る前に、後の押し出しの分も 0 に戻っている
     assert log == ["update", ("first", False, [0.0, 0.0, 0.0]), ("second", False, [1.0, 0.0, 0.0])]
+
+
+def test_a_modifier_that_changes_the_vertex_count_stops_the_push():
+    assert stage_render.vertex_count_problem("cloth", 100, 100, ["Armature（ARMATURE）"]) is None
+    message = stage_render.vertex_count_problem("cloth", 100, 52, ["Armature（ARMATURE）", "Decimate（DECIMATE）"], frame=17)
+    assert "コマ 17 で、cloth" in message and "100 → 52" in message and "Decimate（DECIMATE）" in message
+    assert "（なし）" in stage_render.vertex_count_problem("cloth", 100, 99, [])
