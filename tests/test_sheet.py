@@ -103,6 +103,12 @@ def test_unpadded_names_palette_without_transparency_and_uneven_sizes(tmp_path):
     Image.new("RGBA", (W, H + 8)).save(uneven / "f1.png")
     with pytest.raises(PipelineError, match="寸法がそろっていません"):
         sheet.build(uneven, tmp_path / "u.png", at=[0.0, 1 / FPS], fps=FPS, cell_width=64)
+    mixed = tmp_path / "mixed"
+    mixed.mkdir()
+    Image.new("RGB", (W, H)).save(mixed / "f0.png")
+    Image.new("RGBA", (W, H)).save(mixed / "f1.png")
+    with pytest.raises(PipelineError, match="透過の有無がそろっていません"):
+        sheet.build(mixed, tmp_path / "m.png", at=[0.0, 1 / FPS], fps=FPS, cell_width=64)
 
 
 def test_labels_fall_back_to_ascii_without_a_cjk_font(tmp_path, monkeypatch):

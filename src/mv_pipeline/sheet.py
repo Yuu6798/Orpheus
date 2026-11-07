@@ -105,6 +105,9 @@ def _load_frames(source, indices):
             with Image.open(source["files"][index]) as image:
                 if image.size != (width, height):
                     raise PipelineError(f"連番の寸法がそろっていません: {source['files'][index].name} は {image.size[0]}x{image.size[1]}（最初のコマは {width}x{height}）")
+                if _has_alpha(image) != source["transparent"]:   # 透過の有無が途中で変わる連番は、黙ってどちらかに寄せない
+                    raise PipelineError(f"連番の透過の有無がそろっていません: {source['files'][index].name} は {image.mode}"
+                                        f"（最初のコマは{'透過あり' if source['transparent'] else '透過なし'}）")
                 out[index] = (np.asarray(image.convert("RGBA" if source["transparent"] else "RGB")), hashlib.sha256(data).hexdigest())
         return out
     for index, image in video.grab(source["path"], wanted, source["info"], total=source["frames"]).items():
