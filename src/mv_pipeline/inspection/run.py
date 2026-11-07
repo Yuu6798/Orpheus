@@ -25,7 +25,7 @@ from pathlib import Path
 
 from ..fx import probe
 from ..io import PipelineError, atomic_json, read_json, sha256
-from . import CATEGORIES, REPORT_SCHEMA, VERSION, config, detect, features, fingerprint, reference, report, targets, video, vlm
+from . import CATEGORIES, REPORT_SCHEMA, VERSION, config, cues, detect, features, fingerprint, reference, report, targets, video, vlm
 
 
 MARKER = "inspect_output.txt"     # この印のある出力先だけ、前の実行の stills/ などを入れ替える
@@ -74,7 +74,7 @@ def _clips_from_config(cfg):
             raise PipelineError(f"{item['id']}: 見るコマがありません（frames {item['frames']}・動画 {total} コマ）")
         out.append({"id": item["id"], "path": item["path"], "rel": item["rel"], "sha256": sha256(item["path"]), "info": info,
                     "decode": decoded, "fps": info["fps"], "frames_total": total, "inspected": [first, last],
-                    "foreground": item["foreground"] or cfg.foreground, "origin": item["origin"], "notes": notes})
+                    "foreground": item["foreground"] or cfg.foreground, "origin": item["origin"], "notes": notes, "cues": item.get("cues")})
     return out
 
 
@@ -170,6 +170,8 @@ def _clip_report(clip, events, unused):
         counts[event["category"]] = counts.get(event["category"], 0) + 1
     keys = ("id", "rel", "sha256", "fps", "frames_total", "inspected", "decode", "analysis_size", "present_frames", "reference", "origin", "notes")
     out = {key: clip.get(key) for key in keys}
+    if clip.get("cues"):
+        out["cues"] = cues.describe(clip["cues"])
     out["path"] = out.pop("rel")
     out.update(kind="image" if video.is_image(clip["path"]) else "video", size=[clip["info"]["width"], clip["info"]["height"]],
                foreground=(clip["foreground"] or {"kind": "none"})["kind"], events=len(events), unused_events=len(unused),
@@ -201,6 +203,19 @@ def _record_run(out, entry):
     atomic_json(Path(out) / RUNS, {"schema_version": RUNS_SCHEMA, "runs": entries[-RUNS_KEPT:]})
 
 
+def _replace(source, target, tries=8):
+    """os.replace を、Windows の一時的な共有違反（書いたばかりのファイルをウイルス対策などが一瞬開いている）のときだけ、
+    少し待ってやり直す。"""
+    for attempt in range(tries):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(0.05 * 2 ** attempt)
+
+
 def publish(out, staging, run_id):
     """作業用フォルダーの結果を出力先へ入れ替える。前の結果はいったん BACKUP へ動かし、全部そろってから消す。
     報告の JSON を先に外して最後に置くので、報告が見える間は、その報告の静止画などがそろっている。
@@ -212,10 +227,10 @@ def publish(out, staging, run_id):
     backup.mkdir()
     for name in reversed(OUTPUTS):                   # 報告の JSON から外す
         if (out / name).exists():
-            os.replace(out / name, backup / name)
+            _replace(out / name, backup / name)
     for name in OUTPUTS:                             # 報告の JSON を最後に置く
         if (staging / name).exists():
-            os.replace(staging / name, out / name)
+            _replace(staging / name, out / name)
     (out / JOURNAL).unlink()
     shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging, ignore_errors=True)
@@ -229,7 +244,7 @@ def _keep_failure_logs(out, staging, run_id):
         if source.is_file():
             target = Path(out) / FAILED / run_id / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, target)
+            _replace(source, target)
             kept[str(source)] = str(target)
     folders = sorted((p for p in (Path(out) / FAILED).glob("*") if p.is_dir()), key=lambda p: p.name) if (Path(out) / FAILED).is_dir() else []
     for old in folders[:-FAILED_KEPT]:
@@ -260,7 +275,7 @@ def recover(out):
                         shutil.rmtree(target)
                     elif target.exists():
                         target.unlink()
-                    os.replace(backup / name, target)
+                    _replace(backup / name, target)
                 elif name not in old and (out / name).exists():    # 前には無く、途中まで入れた新しい結果
                     target = out / name
                     shutil.rmtree(target) if target.is_dir() else target.unlink()
@@ -383,7 +398,8 @@ def _inspect(cfg, out, adapter, allow_send, vlm_packet, vlm_response, response_b
                    for clip in clips if clip["id"] in wanted}
         request_path, request = vlm.write_packet(out, selection, grabbed, cfg.references, cfg.vlm)
         request_sha = sha256(request_path)
-        vlm_state = {"status": "packet", "request": "vlm/request.json", "request_sha256": request_sha, "frames": vlm.describe_selection(selection)}
+        vlm_state = {"status": "packet", "request": "vlm/request.json", "request_sha256": request_sha,
+                     "frames": vlm.describe_selection(selection, events, clips)}
         response_path = None
         if adapter:
             response_path = out / "vlm" / "response.json"
@@ -418,6 +434,16 @@ def _inspect(cfg, out, adapter, allow_send, vlm_packet, vlm_response, response_b
         for event in events:
             _finish_event(event, by_id[event["clip"]], cfg)
     events.sort(key=lambda e: ([c["id"] for c in clips].index(e["clip"]), e["frames"][0], e["frames"][1]))
+    by_id = {clip["id"]: clip for clip in clips}
+    cue_counts = None
+    for event in events + unused:                   # 演出の時刻と重なるかを書き添える（出来事は消さない）
+        clip = by_id[event["clip"]]
+        if clip.get("cues"):
+            event["cues"] = cues.match(event, clip["cues"], clip["fps"])
+    if any(clip.get("cues") for clip in clips):
+        cued = [e for e in events if by_id[e["clip"]].get("cues")]
+        cue_counts = {"events_with_cue": sum(1 for e in cued if e["cues"]), "events_without_cue": sum(1 for e in cued if not e["cues"]),
+                      "events_unchecked": len(events) - len(cued)}
     plan = targets.plan(clips, events, cfg.thresholds)
     wanted = report.still_frames(events)            # 静止画は STILL_WIDTH の幅で足りる（元の大きさのコマを出来事の数だけ抱えない）
     small = {clip["id"]: video.grab(clip["path"], wanted.get(clip["id"], ()), clip["info"], total=clip["frames_total"],
@@ -440,7 +466,7 @@ def _inspect(cfg, out, adapter, allow_send, vlm_packet, vlm_response, response_b
         "thresholds": cfg.thresholds, "checks": list(cfg.checks),
         "references": [reference.describe(p, cutout) for p, cutout in zip(palettes, cutouts)],
         "clips": [_clip_report(c, [e for e in events if e["clip"] == c["id"]], [e for e in unused if e["clip"] == c["id"]]) for c in clips],
-        "summary": {"events": len(events), "by_category": by_category, "unused": len(unused)},
+        "summary": {"events": len(events), "by_category": by_category, "unused": len(unused), **({"cues": cue_counts} if cue_counts else {})},
         "events": events, "unused": unused, "skipped": skipped, "notes": cfg.notes, "vlm": vlm_state, "fix_plan": "fix_plan.json",
     }
     return result, plan

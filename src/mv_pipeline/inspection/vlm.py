@@ -67,36 +67,59 @@ def frame_id(clip, frame):
     return f"{clip}@{frame}"
 
 
+def spread(items, count):
+    """items（時刻の順）から、count 個を時間に散らして選ぶ（端と真ん中を含むよう、等間隔の位置に近いもの）。"""
+    if count >= len(items):
+        return list(items)
+    if count <= 0:
+        return []
+    if count == 1:
+        return [items[len(items) // 2]]
+    picks = sorted({int(round(i * (len(items) - 1) / (count - 1))) for i in range(count)})
+    return [items[i] for i in picks]
+
+
+def _quotas(sizes, budget):
+    """クリップごとの数の上限 sizes の中で、budget を順に 1 つずつ配る（多いクリップに偏らない）。→ クリップごとの数。"""
+    quota = [0] * len(sizes)
+    while budget > 0 and any(q < n for q, n in zip(quota, sizes)):
+        for index, size in enumerate(sizes):
+            if budget > 0 and quota[index] < size:
+                quota[index] += 1
+                budget -= 1
+    return quota
+
+
 def select(clips, events, settings):
-    """VLM に見せるコマ [{"id", "clip", "frame", "t", "why"}]。出来事の山のコマを先に、残りは every_s ごとの見本。max_frames まで。"""
-    chosen, seen = [], set()
+    """VLM に見せるコマ [{"id", "clip", "frame", "t", "why"}]（クリップとコマの順）。max_frames まで。
+    出来事の山のコマを先に選ぶ。多すぎれば、クリップに順に配り、クリップの中では時間に散らす（前は先頭から上限まで取り、
+    後ろの出来事やクリップを見せなかった）。残りの枠は every_s ごとの見本で、これもクリップに順に配り、時間に散らす。"""
+    budget = settings["max_frames"]
+    peaks = {}
+    for event in events:                           # 同じコマの山は 1 つ（id は最初の出来事）
+        peaks.setdefault(event["clip"], {}).setdefault(event["peak"], event["id"])
+    queues = [sorted(peaks.get(clip["id"], {}).items()) for clip in clips]
+    quota = _quotas([len(q) for q in queues], budget)
+    chosen = []
 
     def add(clip, frame, why):
-        key = (clip["id"], frame)
-        if key in seen:
-            return
-        seen.add(key)
         fps = clip["fps"]
         chosen.append({"id": frame_id(clip["id"], frame), "clip": clip["id"], "frame": frame,
                        "t": round(frame / fps, 4) if fps else None, "why": why})
 
-    by_id = {clip["id"]: clip for clip in clips}
-    for event in events:
-        add(by_id[event["clip"]], event["peak"], f"event:{event['id']}")
+    for clip, queue, count in zip(clips, queues, quota):
+        for frame, event_id in spread(queue, count):
+            add(clip, frame, f"event:{event_id}")
+    taken = {(item["clip"], item["frame"]) for item in chosen}
     samples = []
     for clip in clips:
         first, last = clip["inspected"]
         step = max(1, int(round(settings["every_s"] * clip["fps"]))) if clip["fps"] else 1
-        samples.append([(clip, frame) for frame in range(first, last, step)])
-    budget = settings["max_frames"]
-    if len(chosen) > budget:
-        return chosen[:budget]
-    while len(chosen) < budget and any(samples):    # クリップを順に 1 つずつ（多いクリップに偏らない）
-        for queue in samples:
-            if queue and len(chosen) < budget:
-                clip, frame = queue.pop(0)
-                add(clip, frame, "sample")
-    return sorted(chosen, key=lambda item: (item["clip"], item["frame"]))
+        samples.append([frame for frame in range(first, last, step) if (clip["id"], frame) not in taken])
+    for clip, frames, count in zip(clips, samples, _quotas([len(f) for f in samples], budget - len(chosen))):
+        for frame in spread(frames, count):
+            add(clip, frame, "sample")
+    return sorted(chosen, key=lambda item: ([c["id"] for c in clips].index(item["clip"]), item["frame"]))
 
 
 def _save_jpeg(image, path, max_side):
@@ -276,7 +299,20 @@ def attach(events, response, request, clips):
     return added
 
 
-def describe_selection(selection):
-    """報告用: コマの数と、出来事の山・見本の内訳。"""
-    events = sum(1 for item in selection if item["why"].startswith("event:"))
-    return {"frames": len(selection), "event_peaks": events, "samples": len(selection) - events}
+def describe_selection(selection, events=(), clips=()):
+    """報告用: コマの数と、出来事の山・見本の内訳と、VLM に見せなかった出来事（見ていないことは異常が無いことではない）と、
+    クリップごとの見せたコマの数と時刻の幅。"""
+    sent = {(item["clip"], item["frame"]) for item in selection}
+    peaks = sum(1 for item in selection if item["why"].startswith("event:"))
+    unsent = [{"id": e["id"], "clip": e["clip"], "frames": e["frames"], "t": e.get("t")} for e in events
+              if (e["clip"], e["peak"]) not in sent]
+    per_clip = []
+    for clip in clips:
+        frames = sorted(item["frame"] for item in selection if item["clip"] == clip["id"])
+        fps = clip["fps"]
+        per_clip.append({"clip": clip["id"], "frames": len(frames),
+                         "events": sum(1 for e in events if e["clip"] == clip["id"]),
+                         "events_sent": sum(1 for e in events if e["clip"] == clip["id"] and (e["clip"], e["peak"]) in sent),
+                         "span_t": [round(frames[0] / fps, 3), round(frames[-1] / fps, 3)] if frames and fps else None})
+    return {"frames": len(selection), "event_peaks": peaks, "samples": len(selection) - peaks,
+            "events_total": len(events), "events_unsent": len(unsent), "unsent": unsent, "clips": per_clip}

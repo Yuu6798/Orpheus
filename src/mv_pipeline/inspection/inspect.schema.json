@@ -14,6 +14,7 @@
     "checks": {"type": "array", "items": {"enum": ["continuity", "motion", "shape", "costume"]}, "uniqueItems": true},
     "analysis_width": {"type": "integer", "minimum": 64, "maximum": 1920},
     "thresholds": {"type": "object", "additionalProperties": {"type": "number"}},
+    "cues": {"$ref": "#/$defs/cues"},
     "vlm": {
       "type": "object",
       "properties": {
@@ -59,7 +60,30 @@
         "path": {"type": "string", "minLength": 1},
         "frames": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2},
         "origin": {"$ref": "#/$defs/origin"},
-        "foreground": {"$ref": "#/$defs/foreground"}
+        "foreground": {"$ref": "#/$defs/foreground"},
+        "cues": {"$ref": "#/$defs/cues"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "seconds": {"type": "array", "items": {"type": "number"}},
+    "spans": {"type": "array", "items": {"oneOf": [{"type": "number"}, {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}]}},
+    "cues": {
+      "type": "object",
+      "description": "演出の時刻（docs/inspect.md の「演出の時刻」）。時刻はそのクリップの頭が 0 秒。重なっても出来事は消さず、重なった演出を書き添えるだけ。",
+      "properties": {
+        "cuts": {"$ref": "#/$defs/seconds"},
+        "moves": {"$ref": "#/$defs/spans"},
+        "lights": {"$ref": "#/$defs/spans"},
+        "beats": {"oneOf": [{"$ref": "#/$defs/seconds"},
+                            {"type": "object", "required": ["period", "k0_time"],
+                             "properties": {"period": {"type": "number", "exclusiveMinimum": 0}, "k0_time": {"type": "number"}},
+                             "patternProperties": {"^x_": {}}, "additionalProperties": false}]},
+        "track": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}]},
+        "light_keys": {"type": "string", "minLength": 1},
+        "offset_s": {"type": "number"},
+        "tolerance_s": {"type": "number", "minimum": 0},
+        "beat_tolerance": {"type": "number", "minimum": 0, "maximum": 0.5}
       },
       "patternProperties": {"^x_": {}},
       "additionalProperties": false

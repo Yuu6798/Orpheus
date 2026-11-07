@@ -1035,3 +1035,117 @@ def test_a_vlm_response_without_the_request_hash_needs_the_legacy_flag(small_dem
     assert "互換の扱い" in (out / "inspect_report.md").read_text(encoding="utf-8")
     roles = {item["role"]: item for item in result["run"]["inputs"]}
     assert roles["vlm_response"]["sha256"] == hashlib.sha256((tmp_path / "unbound.json").read_bytes()).hexdigest()
+
+
+def _clip(clip_id, frames=100, fps=10.0):
+    return {"id": clip_id, "fps": fps, "inspected": [0, frames]}
+
+
+def test_too_many_vlm_candidates_are_shared_between_clips_and_spread_over_time():
+    """前は出来事の山を先頭から上限まで取り、後ろの出来事と後のクリップを見せなかった。"""
+    events = [{"id": f"a-F{k:02d}", "clip": "a", "peak": 5 * k, "frames": [5 * k, 5 * k + 1]} for k in range(20)]
+    events += [{"id": "b-F01", "clip": "b", "peak": 10, "frames": [10, 11]}, {"id": "b-F02", "clip": "b", "peak": 90, "frames": [90, 91]}]
+    clips = [_clip("a"), _clip("b")]
+    chosen = vlm.select(clips, events, {"every_s": 1.0, "max_frames": 6})
+    assert [(c["clip"], c["frame"]) for c in chosen] == [("a", 0), ("a", 30), ("a", 65), ("a", 95), ("b", 10), ("b", 90)]
+    described = vlm.describe_selection(chosen, events, clips)
+    assert described["events_total"] == 22 and described["events_unsent"] == 16 and described["event_peaks"] == 6
+    assert {item["id"] for item in described["unsent"]} == {e["id"] for e in events} - {"a-F00", "a-F06", "a-F13", "a-F19", "b-F01", "b-F02"}
+    assert [(c["clip"], c["events"], c["events_sent"], c["span_t"]) for c in described["clips"]] == [("a", 20, 4, [0.0, 9.5]), ("b", 2, 2, [1.0, 9.0])]
+
+
+def test_vlm_samples_spread_over_each_clip_instead_of_its_start():
+    chosen = vlm.select([_clip("a"), _clip("b", frames=40)], [], {"every_s": 1.0, "max_frames": 6})
+    assert [(c["clip"], c["frame"], c["why"]) for c in chosen] == [("a", 0, "sample"), ("a", 40, "sample"), ("a", 90, "sample"),
+                                                                  ("b", 0, "sample"), ("b", 20, "sample"), ("b", 30, "sample")]
+    everything = vlm.select([_clip("a", frames=30)], [{"id": "a-F01", "clip": "a", "peak": 12, "frames": [12, 13]}],
+                            {"every_s": 1.0, "max_frames": 24})
+    assert [c["frame"] for c in everything] == [0, 10, 12, 20] and vlm.describe_selection(everything)["events_unsent"] == 0
+
+
+def _track(fps=30.0):
+    """カメラが T 20 → 21 で 2 m 飛び（カット）、T 40〜45 で速く動く、作り物のトラック（model3d-stage-track/0.1）。"""
+    frames, x = [], 0.0
+    for T in range(1, 61):
+        if T == 21:
+            x += 2.0
+        if 41 <= T <= 46:
+            x += 0.1
+        frames.append({"T": T, "f": T, "camera": {"location": [x, -3.0, 1.2], "target": [x, 0.0, 1.0], "lens": 35}})
+    return {"schema_version": "model3d-stage-track/0.1", "fps": fps, "frames": frames}
+
+
+def test_cuts_and_fast_moves_are_read_from_a_model3d_track(tmp_path):
+    from mv_pipeline.inspection import cues
+    cut_times, moves, lights = cues.from_track(_track()["frames"], 30.0)
+    assert cut_times == [round(20 / 30, 4)]                            # 新しいショットの最初のコマ（動画のコマ 20）の時刻
+    assert moves == [[round(39 / 30, 4), round(45 / 30, 4)]] and lights == []
+    flash = _track()["frames"]
+    for frame in flash:
+        frame["wall"] = {"strength": 0.6 if frame["T"] == 31 else 0.2, "color": [1, 0, 0] if frame["T"] >= 50 else [0, 0, 1]}
+    assert cues.from_track(flash, 30.0)[2] == [round(30 / 30, 4), round(31 / 30, 4), round(49 / 30, 4)]   # 跳ね上がり・戻り・色の切り替え
+    first, second = _track()["frames"][:20], _track()["frames"][20:]     # 2 つのトラックの境目のカットも見る
+    (tmp_path / "a.json").write_text(json.dumps({**_track(), "frames": first}), encoding="utf-8")
+    (tmp_path / "b.json").write_text(json.dumps({**_track(), "frames": second}), encoding="utf-8")
+    assert cues.load({"track": ["a.json", "b.json"]}, tmp_path)["cuts"] == [round(20 / 30, 4)]
+    (tmp_path / "track.json").write_text(json.dumps(_track()), encoding="utf-8")
+    (tmp_path / "keys.json").write_text(json.dumps({"schema_version": "model3d-light-keys/0.1", "fps": 30, "frames": 60,
+                                                    "grid": {"period": 0.5, "k0_time": 0.25}, "low": [0], "mid": [0], "high": [0]}),
+                                        encoding="utf-8")
+    loaded = cues.load({"track": "track.json", "light_keys": "keys.json", "cuts": [1.9], "offset_s": 0.1}, tmp_path)
+    assert loaded["cuts"] == pytest.approx([round(20 / 30, 4) - 0.1, 1.8]) and loaded["grid"] == {"period": 0.5, "k0_time": 0.15}
+    assert [s["kind"] for s in loaded["sources"]] == ["track", "light_keys"] and loaded["sources"][0]["cuts"] == 1
+    (tmp_path / "other.json").write_text(json.dumps({**_track(fps=24.0), "frames": second}), encoding="utf-8")
+    with pytest.raises(PipelineError, match="fps"):
+        cues.load({"track": ["a.json", "other.json"]}, tmp_path)
+    (tmp_path / "bad.json").write_text(json.dumps({"schema_version": "something"}), encoding="utf-8")
+    with pytest.raises(PipelineError, match="model3d-stage-track"):
+        cues.load({"track": "bad.json"}, tmp_path)
+
+
+def _cue_signal(check, frames, peak=None):
+    return {"check": check, "frames": list(frames), "peak": frames[0] if peak is None else peak}
+
+
+def test_cues_are_noted_only_for_the_signals_they_can_explain():
+    from mv_pipeline.inspection import cues
+    loaded = cues.load({"cuts": [1.0], "moves": [[2.0, 2.5]], "beats": {"period": 0.5, "k0_time": 0.0}}, Path("."))
+    at_cut = {"signals": [_cue_signal("jump", [30, 31]), _cue_signal("silhouette_pop", [30, 32])]}
+    assert [(m["kind"], m["t"], m["checks"]) for m in cues.match(at_cut, loaded, 30.0)] == [("cut", 1.0, ["jump", "silhouette_pop"])]
+    flash = {"signals": [_cue_signal("flicker", [46, 47])]}                 # 1.533 秒: 拍 1.5 から 0.067 拍
+    assert [(m["kind"], m["t"]) for m in cues.match(flash, loaded, 30.0)] == [("beat", 1.5)]
+    broken = {"signals": [_cue_signal("fragment", [45, 47])]}               # 拍の上でも、形の信号には拍を重ねない
+    assert cues.match(broken, loaded, 30.0) == []
+    swing = {"signals": [_cue_signal("motion_spike", [66, 67])]}
+    assert [(m["kind"], m["t"]) for m in cues.match(swing, loaded, 30.0)] == [("move", [2.0, 2.5])]
+    late = {"signals": [_cue_signal("flicker", [52, 53])]}                  # 1.733 秒: 拍から 0.47 拍
+    assert cues.match(late, loaded, 30.0) == []
+
+
+def test_events_at_cues_stay_as_candidates_and_say_which_cue(small_demo, tmp_path):
+    config = read_json(small_demo / "inspect.json")
+    config["clips"][0]["path"] = str(small_demo / config["clips"][0]["path"])
+    config["reference"][0]["path"] = str(small_demo / config["reference"][0]["path"])
+    plain, _ = run.run(_write(tmp_path / "plain.json", config), tmp_path / "plain")
+    config["cues"] = {"cuts": [30 / 24], "beats": {"period": 50 / 24, "k0_time": 0.0}}
+    result, out = run.run(_write(tmp_path / "cued.json", config), tmp_path / "cued")
+    assert [e["frames"] for e in result["events"]] == [e["frames"] for e in plain["events"]]   # 演出と重なっても消さない
+    by_frames = {tuple(e["frames"]): e for e in result["events"]}
+    glitch, fragment = by_frames[(30, 31)], by_frames[(50, 53)]
+    assert [m["kind"] for m in glitch["cues"]] == ["cut"] and glitch["status"] == "review"
+    assert fragment["cues"] == []                                     # 拍の上の形の崩れは、演出として書かない
+    assert result["summary"]["cues"] == {"events_with_cue": 1, "events_without_cue": len(result["events"]) - 1, "events_unchecked": 0}
+    assert result["clips"][0]["cues"]["cuts"] == 1
+    text = (out / "inspect_report.md").read_text(encoding="utf-8")
+    assert "演出の時刻と重なる: カット 1.25 秒" in text and "重ならない出来事から見てください" in text
+
+
+def _write(path, data):
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_cues_are_refused_with_a_dance_spec(dance_root, tmp_path):
+    config = {"schema_version": "inspect/0.1", "dance_spec": str(dance_root / "spec.json"), "cues": {"cuts": [1.0]}}
+    with pytest.raises(PipelineError, match="cues は clips"):
+        inspect_config.load(_write(tmp_path / "inspect.json", config))

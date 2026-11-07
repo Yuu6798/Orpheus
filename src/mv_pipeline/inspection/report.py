@@ -215,7 +215,14 @@ def markdown(report, plan):
              *([f"- 実行: `{report['run']['id']}`（{report['run']['started_at']} 〜 {report['run']['finished_at']}。入力の sha256 は "
                 "`inspect_report.json` の `run.inputs`、実行ごとの記録は `inspect_runs.json`）"] if report.get("run") else []),
              "- **検出が無いことは合格ではありません。** 異常かどうか・採否は人が見て決めます（数値は動画から測った値、VLM の指摘は推定）。",
-             "- しきい値はどれも仮の値です（`docs/inspect.md`）。コマ番号は 0 始まりで、表の範囲は終わりのコマを含みます。", "",
+             "- しきい値はどれも仮の値です（`docs/inspect.md`）。コマ番号は 0 始まりで、表の範囲は終わりのコマを含みます。",
+             *([f"- **演出の時刻**（`cues`）と重なる出来事 {report['summary']['cues']['events_with_cue']} 件・重ならない出来事 "
+                f"{report['summary']['cues']['events_without_cue']} 件"
+                + (f"・演出の時刻を渡していないクリップの出来事 {report['summary']['cues']['events_unchecked']} 件"
+                   if report['summary']['cues']['events_unchecked'] else "")
+                + "。重なっても異常の可能性は残ります（演出と同じ時に崩れることもあるので、出来事は消していません）。重ならない出来事から見てください。"]
+               if report["summary"].get("cues") else []),
+             ""
              "| クリップ | 見た範囲 | 連続性 | 動作 | 形状 | 衣装 | その他 | 設定画との重なり（中央値・最小） | 見ていない検査 |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for clip in report["clips"]:
@@ -252,6 +259,9 @@ def markdown(report, plan):
             checks = sorted({s["label"] for s in event["signals"] if not (remarks and s["check"] == "vlm")} - {event["label"]} - set(colored))
             detail = (f"{event['label']}: {event['summary']}" + colors
                       + (f"（ほかの信号: {'・'.join(checks)}）" if checks else "") + "".join(f"（VLM の指摘: {remark}）" for remark in remarks))
+            if event.get("cues"):                  # 演出の時刻と重なる（出来事は消さない。同じ時の崩れもありうる）
+                from .cues import text as cue_text
+                detail += f"（演出の時刻と重なる: {cue_text(event['cues'])}）"
             lines.append(f"| {event['id']} | {_frames_text(event['frames'])} | {_seconds_text(event['t'])} | {kind} | {_cell(detail)} | "
                          f"{EVIDENCE[event['evidence']]} | {_cell(_where(event))} | {event.get('still', '')} |")
     if report["unused"]:
@@ -276,7 +286,15 @@ def markdown(report, plan):
     vlm = report["vlm"]
     lines += ["", "## VLM", "", f"- 状態: {vlm['status']}"]
     if vlm.get("frames"):
-        lines.append(f"- 見せたコマ: {vlm['frames']['frames']}（出来事の山 {vlm['frames']['event_peaks']}・見本 {vlm['frames']['samples']}）")
+        frames = vlm["frames"]
+        lines.append(f"- 見せたコマ: {frames['frames']}（出来事の山 {frames['event_peaks']}・見本 {frames['samples']}）")
+        for clip in frames.get("clips", []):
+            span = f"{clip['span_t'][0]:g}〜{clip['span_t'][1]:g} 秒" if clip.get("span_t") else "なし"
+            lines.append(f"  - {clip['clip']}: {clip['frames']} コマ（{span}）・出来事 {clip['events']} 件のうち山を見せたもの {clip['events_sent']} 件")
+        if frames.get("events_unsent"):
+            shown = "、".join(item["id"] for item in frames["unsent"][:20]) + ("…" if len(frames["unsent"]) > 20 else "")
+            lines.append(f"- **VLM に見せなかった出来事 {frames['events_unsent']} 件**（{shown}）。`vlm.max_frames` の枠を超えたため。"
+                         "VLM が見ていないことは、異常が無いことではありません（数値の出来事としては残っています）")
     if vlm.get("tool"):
         model = f"・モデル {vlm['model']}" if vlm.get("model") else ""
         lines.append(f"- 道具: {vlm['tool']}{model}（外部へ送る設定: {'はい' if vlm.get('sends_data') else 'いいえ'}）・指摘 {vlm.get('findings', 0)} 件")
