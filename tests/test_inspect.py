@@ -382,6 +382,41 @@ def test_a_hanging_vlm_program_is_stopped_and_its_output_is_logged(small_demo, t
     assert log.startswith("timeout after 1") and "b'" not in log
 
 
+def test_the_vlm_request_is_bound_to_the_frame_contents_and_offers_every_category(tmp_path):
+    first = tmp_path / "a"
+    demo.create(first, anomalies=[])
+    config = read_json(first / "inspect.json")
+    config["checks"] = []                                    # VLM だけの検品: 見本のコマ（0・24・48・72）だけを見せる
+    (first / "inspect.json").write_text(json.dumps(config), encoding="utf-8")
+    run.run(first / "inspect.json", first / "out", vlm_packet=True)
+    raw = (first / "out" / "vlm" / "request.json").read_bytes()
+    request = json.loads(raw)
+    assert set(request["categories"]) == {"shape", "motion", "costume", "continuity", "other"}
+    assert all(len(item["sha256"]) == 64 for item in request["frames"] + request["reference"])
+    response = {"schema_version": vlm.RESPONSE_SCHEMA, "tool": {"name": "hand"}, "request_sha256": hashlib.sha256(raw).hexdigest(),
+                "findings": [{"frame_id": "demo@72", "category": "costume", "description": "前の素材への指摘"}]}
+    (tmp_path / "old.json").write_text(json.dumps(response), encoding="utf-8")
+    assert run.run(first / "inspect.json", first / "again", vlm_response=tmp_path / "old.json")[0]["vlm"]["findings"] == 1
+    other = tmp_path / "b"
+    demo.create(other, anomalies=["costume"])                # 同じ長さで、コマ 60〜74 だけ違う素材
+    (first / "clip.mp4").write_bytes((other / "clip.mp4").read_bytes())
+    with pytest.raises(PipelineError, match="request_sha256"):
+        run.run(first / "inspect.json", first / "replaced", vlm_response=tmp_path / "old.json")
+
+
+def test_a_vlm_remark_on_the_frame_after_an_event_widens_what_to_fix(small_demo, tmp_path):
+    config = read_json(small_demo / "inspect.json")
+    config.update(vlm={"every_s": 31 / 24}, clips=[{**config["clips"][0], "path": str(small_demo / "clip.mp4")}],
+                  reference=[{"path": str(small_demo / "sheet.png")}])                      # 見本のコマが 31（乱れの次のコマ）に来る
+    (tmp_path / "inspect.json").write_text(json.dumps(config), encoding="utf-8")
+    result, out = run.run(tmp_path / "inspect.json", tmp_path / "out", vlm_config=_adapter(tmp_path, "--flag", "demo@31:shape:乱れの次のコマの指摘"))
+    glitch = next(e for e in result["events"] if e["frames"][0] == 30)
+    assert glitch["frames"] == [30, 32] and glitch["target"]["source_frames"] == [30, 32] and glitch["t"] == [1.25, 1.3333]
+    assert "shape" in glitch["categories"] and glitch["evidence"] == "measured+estimated"
+    segment = next(s for s in read_json(out / "fix_plan.json")["segments"] if glitch["id"] in s["events"])
+    assert segment["event_frames"] == [30, 32] and segment["source_frames"][1] >= 32
+
+
 def _load_claude_adapter():
     spec = importlib.util.spec_from_file_location("vlm_claude", CLAUDE)
     module = importlib.util.module_from_spec(spec)

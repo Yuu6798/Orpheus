@@ -130,8 +130,12 @@ def _measure(clip, cfg, palettes, skipped, say):
     return found, signals
 
 
-def _finish_event(event, clip, cfg, number):
-    event["id"] = f"{clip['id']}-F{number:02d}"
+def _finish_event(event, clip, cfg, number=None):
+    """番号（number があれば）・秒・直す場所・手当ての候補を付ける。VLM で区間が変わった出来事は number なしで呼び直す。"""
+    if number is not None:
+        event["id"] = f"{clip['id']}-F{number:02d}"
+    if clip["fps"]:
+        event["t"] = [round(event["frames"][0] / clip["fps"], 4), round(event["frames"][1] / clip["fps"], 4)]
     uses = None
     if clip.get("spec"):
         uses = targets.dance_uses(clip["usage"], event["frames"], clip["frames_total"] - 1, clip["shot_fps"])
@@ -203,7 +207,7 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
             wanted.setdefault(item["clip"], set()).add(item["frame"])
         grabbed = {clip["id"]: video.grab(clip["path"], wanted.get(clip["id"], ()), clip["info"], total=clip["frames_total"])
                    for clip in clips if clip["id"] in wanted}
-        request_path, request = vlm.write_packet(out, selection, grabbed, cfg.references, cfg.vlm, tuple(cfg.checks))
+        request_path, request = vlm.write_packet(out, selection, grabbed, cfg.references, cfg.vlm)
         request_sha = sha256(request_path)
         vlm_state = {"status": "packet", "request": "vlm/request.json", "request_sha256": request_sha, "frames": vlm.describe_selection(selection)}
         response_path = None
@@ -229,10 +233,10 @@ def run(config_path, out=None, vlm_config=None, allow_send=False, vlm_packet=Fal
                 clip["next_number"] += 1
                 _finish_event(event, clip, cfg, clip["next_number"])
                 (unused if clip.get("spec") and not event["target"]["uses"] else events).append(event)
-    if vlm_state.get("findings"):        # VLM の指摘で分類が増えた出来事の手当ての候補を作り直す
+    if vlm_state.get("findings"):        # VLM の指摘で区間や分類が変わった出来事の秒・直す場所・手当ての候補を作り直す
         by_id = {clip["id"]: clip for clip in clips}
-        for event in events + unused:
-            event["actions"] = targets.actions(event, by_id[event["clip"]], cfg.thresholds)
+        for event in events:
+            _finish_event(event, by_id[event["clip"]], cfg)
     events.sort(key=lambda e: ([c["id"] for c in clips].index(e["clip"]), e["frames"][0], e["frames"][1]))
     plan = targets.plan(clips, events, cfg.thresholds)
     wanted = report.needed_frames(events, plan["segments"])

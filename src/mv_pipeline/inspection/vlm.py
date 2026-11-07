@@ -106,8 +106,11 @@ def _save_jpeg(image, path, max_side):
     picture.save(path, format="JPEG", quality=90)
 
 
-def write_packet(out, selection, grabbed, references, settings, categories):
-    """<out>/vlm/ に request.json・frames/・reference/ を書く。→ (request のパス, request)。"""
+def write_packet(out, selection, grabbed, references, settings):
+    """<out>/vlm/ に request.json・frames/・reference/ を書く。→ (request のパス, request)。
+
+    分類は数値の検査の checks によらず、いつも 4 つと「その他」を示す（VLM だけの検品でも分けられるように）。
+    画像ごとの sha256 を依頼に入れるので、素材を同じ名前で差し替えると依頼の sha256 も変わる（古い返答を取り込まない）。"""
     packet = Path(out) / "vlm"
     frames = []
     for item in selection:
@@ -116,7 +119,7 @@ def write_packet(out, selection, grabbed, references, settings, categories):
             continue
         name = f"frames/{item['clip']}_f{item['frame']:06d}.jpg"
         _save_jpeg(image, packet / name, settings["max_side"])
-        frames.append({**item, "file": name})
+        frames.append({**item, "file": name, "sha256": sha256(packet / name)})    # 依頼の sha256 を画の中身に結び付ける
     refs = []
     for index, entry in enumerate(references):
         name = f"reference/{index:02d}.png"
@@ -127,11 +130,11 @@ def write_packet(out, selection, grabbed, references, settings, categories):
             picture = picture.resize((max(1, int(round(image.shape[1] * scale))), max(1, int(round(image.shape[0] * scale)))), Image.Resampling.LANCZOS)
         (packet / "reference").mkdir(parents=True, exist_ok=True)
         picture.save(packet / name, format="PNG")
-        refs.append({"file": name, "path": entry["rel"], "view": entry.get("view")})
+        refs.append({"file": name, "path": entry["rel"], "view": entry.get("view"), "sha256": sha256(packet / name)})
     language = settings.get("language", "ja")
     request = {"schema_version": REQUEST_SCHEMA, "language": language,
                "instructions": INSTRUCTIONS.get(language, INSTRUCTIONS["en"]),
-               "categories": {name: CATEGORY_TEXT[name] for name in categories + ("other",)},
+               "categories": {name: CATEGORY_TEXT[name] for name in VLM_CATEGORIES},
                "reference": refs, "frames": frames, "response_schema": RESPONSE_JSON_SCHEMA}
     path = packet / "request.json"
     atomic_json(path, request)
@@ -219,7 +222,9 @@ def read_response(path, request, request_sha):
 
 
 def attach(events, response, request, clips):
-    """返答の指摘を出来事に添える（近い数値の出来事が無ければ VLM だけの出来事を作る）。→ 新しい出来事の列。"""
+    """返答の指摘を出来事に添える（近い数値の出来事が無ければ VLM だけの出来事を作る）。→ 新しい出来事の列。
+
+    添えた出来事の区間は、指摘のコマを含むように広げる（秒・直す場所・手当ての候補は呼んだ側で作り直す）。"""
     frames = {item["id"]: item for item in request["frames"]}
     fps = {clip["id"]: clip["fps"] for clip in clips}
     tool = response["tool"]
@@ -239,6 +244,8 @@ def attach(events, response, request, clips):
                 host["categories"].append(finding["category"])
             if host["evidence"] == "measured":
                 host["evidence"] = "measured+estimated"
+            # 隣のコマの指摘でも直す場所から漏らさない（区間を広げる。直す場所と手当ては run が作り直す）
+            host["frames"] = [min(host["frames"][0], item["frame"]), max(host["frames"][1], item["frame"] + 1)]
             continue
         rate = fps.get(item["clip"])
         added.append({"clip": item["clip"], "frames": list(signal["frames"]), "peak": item["frame"],
