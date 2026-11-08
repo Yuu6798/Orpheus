@@ -26,7 +26,7 @@ from . import fit as dancefit
 from . import key as dancekey
 from . import lyrics as dancelyrics
 from .camera import Camera, camera_matrix, is_identity
-from .clips import KNOWN_MATRICES, Source, Timeline, check_replacements
+from .clips import KNOWN_MATRICES, Source, Timeline, check_replacements, smoothstep
 
 FRAME_FIELDS = ["t", "clip", "source_frame", "blend", "zoom", "cx", "cy", "rotate", "shake_x", "shake_y", "blur"]
 PLACEMENT_FIELDS = ["p_a", "p_b", "p_tx", "p_c", "p_d", "p_ty"]
@@ -166,6 +166,52 @@ def _origin(place, number):
     return x, y
 
 
+def shift_at(clip, t):
+    """clip の shift の時刻 t での (dx, dy, ds)。dx・dy は出力の正規化座標、ds は倍率の差。式は非公開の制作のずらしと同じ。"""
+    dx = dy = ds = 0.0
+    for shift in clip["shift"]:
+        full, ease = shift["t"], shift["ease"]
+        if ease < full:
+            w = 1.0 if t >= full else smoothstep((t - ease) / (full - ease))
+        else:
+            w = 1.0 if t <= full else 1.0 - smoothstep((t - full) / (ease - full))
+        dx += shift["offset"][0] * w
+        dy += shift["offset"][1] * w
+        ds += shift["scale"] * w
+    return dx, dy, ds
+
+
+def shift_matrix(ctx, index, number, t):
+    """clip index の時刻 t の shift を、カメラの前の画面の画素の番号での 3×3 にする。効いていなければ None。
+    足元の点（cx_med と足元の列。画素の番号）を中心に 1 + ds 倍して、offset だけ動かす。"""
+    clip = ctx.clips.clips[index]
+    if not clip["shift"]:
+        return None
+    dx, dy, ds = shift_at(clip, t)
+    if dx == 0 and dy == 0 and ds == 0:
+        return None
+    move = (dx * ctx.size[0], dy * ctx.size[1])
+    if ds == 0:
+        return np.array([[1.0, 0.0, move[0]], [0.0, 1.0, move[1]], [0.0, 0.0, 1.0]])
+    rows = ctx.rows[clip["path"]]
+    n = int(min(max(number, 0), rows["frames"] - 1))
+    place = np.asarray(placement_matrix(ctx.place[index], n), dtype=np.float64)
+    qx, qy = place[:, :2] @ np.array([rows["cx_med"] + 0.5, rows["ground"][n] + 0.5]) + place[:, 2] - 0.5
+    k = 1.0 + ds
+    return np.array([[k, 0.0, qx - k * qx + move[0]], [0.0, k, qy - k * qy + move[1]], [0.0, 0.0, 1.0]])
+
+
+def clip_matrix(ctx, index, number, t):
+    """placement_matrix に時刻 t の shift を掛けたもの（画素の端を基準にした座標。元→カメラの前の画面）。"""
+    place = placement_matrix(ctx.place[index], number)
+    shift = shift_matrix(ctx, index, number, t)
+    if shift is None:
+        return place
+    k = shift[0][0]
+    edge = np.array([[k, 0.0, shift[0][2] + 0.5 * (1.0 - k)], [0.0, k, shift[1][2] + 0.5 * (1.0 - k)], [0.0, 0.0, 1.0]])
+    return (edge @ np.vstack([np.asarray(place, dtype=np.float64), [0.0, 0.0, 1.0]]))[:2].tolist()
+
+
 def placement_matrix(place, number):
     """元動画の画素 → カメラの前の画面の画素の 2×3（左右反転を含む）。"""
     x, y = _origin(place, number)
@@ -232,7 +278,13 @@ def prepare(spec, scale=1.0, out=None, hooks=None, rows=None):
         replace_warnings = check_replacements(clips)
         out_dir = Path(out) if out else spec.base_dir / "dance_runs"
         analysis = _fit_analysis(spec, clips, out_dir)
-        body_rows, rows_warnings = _rows(spec, clips, out_dir) if (hooks is not None if rows is None else rows) else (None, [])
+        scaled = [clip["path"] for clip in spec.data["performer"]["clips"] if any(shift["scale"] != 0 for shift in clip["shift"])]
+        wanted = (hooks is not None if rows is None else rows) or bool(scaled)            # shift の倍率の中心に足元の列が要る
+        body_rows, rows_warnings = _rows(spec, clips, out_dir) if wanted else (None, [])
+        missing = sorted({path for path in scaled if path not in body_rows}) if scaled else []
+        if missing:
+            raise PipelineError(f"dance spec: shift の scale は足元の点を中心に掛けるので足元の列が要りますが、{missing} はどのコマにも"
+                                "人物を測れません（全部を replace_frames で差し替えたか、key が合わない）")
         place = [_placement(spec, clip, clips.sources[clip["path"]], size, analysis[clip["path"]][0] if clip["fit"] and clip["path"] in analysis else None)
                  for clip in clips.clips]
         lines, text_warnings = dancelyrics.prepare(spec.data, spec.resolve, size)
@@ -307,21 +359,24 @@ def _cut(ctx, index, image):
     return color, alpha
 
 
-def _warped(ctx, color, alpha, x, y, matrix):
-    full = np.vstack([matrix, [0.0, 0.0, 1.0]]) @ np.array([[1, 0, x], [0, 1, y], [0, 0, 1]], dtype=np.float64)
+def _warped(ctx, color, alpha, x, y, matrix, shift=None):
+    camera = np.vstack([matrix, [0.0, 0.0, 1.0]])
+    origin = np.array([[1, 0, x], [0, 1, y], [0, 0, 1]], dtype=np.float64)
+    full = camera @ origin if shift is None else camera @ shift @ origin
     warp = full[:2].astype(np.float32)
     color = cv2.warpAffine(color, warp, ctx.size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     alpha = cv2.warpAffine(alpha, warp, ctx.size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     return color, alpha
 
 
-def _placed(ctx, shown, matrices):
-    """1 つの素材を画面に置く。matrices が複数ならブレで、前乗算の色とアルファを平均する。"""
+def _placed(ctx, shown, matrices, t):
+    """1 つの素材を画面に置く。matrices が複数ならブレで、前乗算の色とアルファを平均する。shift はカメラの前に掛ける。"""
     color, alpha = _cut(ctx, shown.index, shown.image)
     x, y = _origin(ctx.place[shown.index], shown.frame)
+    shift = shift_matrix(ctx, shown.index, shown.frame, t)
     if len(matrices) == 1:
-        return _warped(ctx, color, alpha, x, y, matrices[0])
-    placed = [_warped(ctx, color, alpha, x, y, matrix) for matrix in matrices]
+        return _warped(ctx, color, alpha, x, y, matrices[0], shift)
+    placed = [_warped(ctx, color, alpha, x, y, matrix, shift) for matrix in matrices]
     count = np.float32(len(placed))
     return sum(item[0] for item in placed) / count, sum(item[1] for item in placed) / count
 
@@ -333,8 +388,8 @@ def _performer(ctx, t, matrix, samples=()):
         return None
     matrices = [ctx.camera.matrix(item) for item in samples] or [matrix]
     if len(shown) == 1:
-        return _placed(ctx, shown[0], matrices)
-    (old_color, old_alpha), (new_color, new_alpha) = [_placed(ctx, item, matrices) for item in shown]
+        return _placed(ctx, shown[0], matrices, t)
+    (old_color, old_alpha), (new_color, new_alpha) = [_placed(ctx, item, matrices, t) for item in shown]
     weight = np.float32(shown[1].weight)
     return old_color + (new_color - old_color) * weight, old_alpha + (new_alpha - old_alpha) * weight
 
@@ -461,7 +516,7 @@ def _text_layers(ctx, z, t, dt, matrix, samples):
     return [TextLayer(ctx, name, lines, t, dt, matrix, samples) for name, lines in visible if lines]
 
 
-def body_info(ctx, index, number, matrix):
+def body_info(ctx, index, number, matrix, t):
     """clip index の元のコマ number の足元と中心を、出力の画素（カメラの後）で返す。列が無ければ None。
 
     feet: 足元の列（ground）と clip の中心の中央値（cx_med）の点。bottom: このコマの最下の行と x の中央値の点。
@@ -473,7 +528,7 @@ def body_info(ctx, index, number, matrix):
     if rows is None:
         return None
     n = int(min(max(number, 0), rows["frames"] - 1))
-    place = np.asarray(placement_matrix(ctx.place[index], n), dtype=np.float64)
+    place = np.asarray(clip_matrix(ctx, index, n, t), dtype=np.float64)       # shift を含む
     camera = np.asarray(matrix, dtype=np.float64)
     total = camera[:, :2] @ place[:, :2]
 
@@ -498,8 +553,8 @@ def layers(ctx, t):
     info = None
     if mapped:
         index, number, weight = mapped[-1]
-        info = {"clip": index, "source_frame": number, "placement": placement_matrix(ctx.place[index], number), "camera": matrix.tolist(),
-                "blend": weight if len(mapped) == 2 else None, "body": body_info(ctx, index, number, matrix)}
+        info = {"clip": index, "source_frame": number, "placement": clip_matrix(ctx, index, number, t), "camera": matrix.tolist(),
+                "blend": weight if len(mapped) == 2 else None, "body": body_info(ctx, index, number, matrix, t)}
     return FrameLayers(t, int(round(t * ctx.fps)), _stage_view(ctx, t, state, samples), _text_layers(ctx, "behind", t, dt, matrix, samples),
                        _text_layers(ctx, "front", t, dt, matrix, samples), _performer(ctx, t, matrix, samples), info, _active_flashes(ctx, t),
                        {"zoom": view.total_zoom, "center": view.center, "rotate": view.total_rotate, "shake": view.shake,
@@ -551,7 +606,7 @@ def _frame_row(ctx, t, fitted):
            None if len(shown) < 2 else round(last[2], 5), round(view.total_zoom, 6), round(view.center[0], 6), round(view.center[1], 6),
            round(view.total_rotate, 5), round(view.shake[0], 3), round(view.shake[1], 3), len(ctx.camera.blur_states(t))]
     if fitted:
-        matrix = placement_matrix(ctx.place[last[0]], last[1]) if last else None
+        matrix = clip_matrix(ctx, last[0], last[1], t) if last else None
         row += [round(v, 4) for r in matrix for v in r] if matrix else [None] * len(PLACEMENT_FIELDS)
     return row
 

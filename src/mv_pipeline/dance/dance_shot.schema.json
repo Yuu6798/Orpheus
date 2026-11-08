@@ -380,8 +380,61 @@
                         "minimum": 1
                       }
                     }
+                  },
+                  {
+                    "type": "object",
+                    "description": "切れ目（start）を中心に、前後 frames/2 コマずつ線形に重ねる（前のクリップは start の後も続き、このクリップは start の前から始まる）",
+                    "required": [
+                      "type",
+                      "frames"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "const": "dissolve"
+                      },
+                      "frames": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
                   }
                 ]
+              },
+              "shift": {
+                "description": "切れ目の前後で人物をずらす（つなぎの位置合わせ）。t で全部、ease で 0（smoothstep）。ease が t より前なら t までの間に効き始めて t 以降は全部、後なら t までは全部で ease までに消える。offset は出力の正規化座標、scale は足元の点（performer.rows の cx_med と足元の列）を中心にした倍率の差",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "t",
+                    "ease"
+                  ],
+                  "additionalProperties": false,
+                  "patternProperties": {
+                    "^x_": {}
+                  },
+                  "properties": {
+                    "t": {
+                      "$ref": "#/$defs/time"
+                    },
+                    "ease": {
+                      "$ref": "#/$defs/time"
+                    },
+                    "offset": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "scale": {
+                      "type": "number",
+                      "exclusiveMinimum": -1
+                    }
+                  }
+                }
               },
               "beat_exempt": {
                 "type": "boolean"

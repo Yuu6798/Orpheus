@@ -105,6 +105,9 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `placement`: 元動画の点 `pivot`（元動画の幅・高さに対する割合）を画面の点 `anchor` に合わせる。`height` は元動画の高さが画面の高さの何倍か（全身が映る動画なら、人物の身長の割合ではない）。`flip_x` は全体の左右反転（元動画の点 `pivot` は反転しても `anchor` に来る）。
 - `clips[].placement`（`fit` の後に掛ける）: `offset`（[dx, dy]。出力の正規化座標）、`scale`（倍率。`anchor` のまわり）、`flip_x`（全体の `flip_x` と重ねると元に戻る）。
 - `clips[].transition_in`: `{"type": "cut"}`（既定）か `{"type": "blend", "frames": 3}`。blend は clip の start から frames コマの間、前のクリップの再生を続け（素材の終わりを越えたら最後のフレームを保つ）、両方をそれぞれの配置で置いて、前乗算の色とアルファを smoothstep で重ねる。前のクリップと隙間なく接していること。
+- `clips[].transition_in` の `{"type": "dissolve", "frames": 4}`（0.3）: 切れ目（start）を中心に、前後 frames/2 コマずつ線形に重ねる。新しい側の重みは窓の頭で 0 から始まり、`(t − (start − frames/2/fps)) / (frames/fps)` で増える（非公開の制作のディゾルブと同じ式）。前のクリップは start の後も続き、このクリップは start の前から始まる（start より前の元のコマは `source_start + (t − start)·speed`。0 より前は先頭のコマ）。重ね方は blend と同じで、前乗算の色とアルファを重ねる（フレーム全体を重ねるのと同じ値）。前のクリップと隙間なく接し、1 つのクリップに入る窓（頭の後半と次の前半）の和がクリップの長さ以下であること。timeline の `seam_info[].kind` は `dissolve`。
+- `clips[].shift`（0.3）: 切れ目の前後で人物をずらす（つなぎで人物の位置や大きさをそろえる）。`[{"t": 10.05, "ease": 9.25, "offset": [-0.035, 0], "scale": 0}]`。`t` で全部効き、`ease` で 0 になる（smoothstep）。`ease` が `t` より前なら、`ease` から効き始めて `t` 以降は全部（出ていくクリップに使う）。後なら、`t` までは全部で `ease` までに消える（入ってくるクリップに使う）。`offset` は出力の正規化座標、`scale` は倍率の差（0.1 で 1.1 倍）で、足元の点（`performer.rows` の `cx_med` と足元の列）を中心に掛けるので足は床に残る（`scale` を使うと、hooks が無くても足元の列を作る）。同じクリップの shift は足し合わせる。カメラの前に掛け、`performer_info` の `placement`・`body` と timeline の配置の列にも入る。式は非公開の制作のずらしと同じ（制作の値の `dx` は元動画の画素なので、`offset` は `dx / 元動画の幅`）。
+  - 確かめ（2026-11-09）: 非公開の制作の 32 秒のずらし 3 つを `shift` に写すと、960 コマ × 5 クリップで、画面で動かす量が制作と 7e-15 画素以内（浮動小数の丸めだけ）で同じだった。ディゾルブは制作の 2 つの設定ではどの切れ目も使っていないので、同じ切れ目に窓の幅 4 コマと 6 コマを入れて比べ、960 コマすべてで（クリップ, 重み）が制作の式と同じだった。
 - `clips[].beat_exempt`: この切れ目は意図して拍から外している（`mv gate check` が対象外として数える）。
 - `clips[].align`: この切れ目を `mv gate check` が照合する相手。`"beat"`（既定。拍）か `"downbeat"`（小節頭）。timeline の `seam_info[].align` に写す。
 - `stage`: 画像（png/jpg/webp）か動画。出力の縦横比に cover で中央に合わせる（余る側を切る。縮尺の計算は 1 回だけ）。動画は `source_start`（秒）から再生し、`loop`（既定 true）で折り返す。false なら最後のフレームを保つ。読み出しは人物と同じく前方向だけ。`parallax`（既定 1.0）はステージだけの視差（下の「カメラ」）。
@@ -335,7 +338,7 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 - `lyrics[]`: `sung`・`reveal`・`exclusive`・`words`（`[{text, t, row, box}]`）。`fade_in_s`・`fade_out_s` は enter・exit を含めた出入りの長さ。
 - `lyric_fade`: `"inside"`。行は `end` の直前まで見え、`fade_out_s` は `end` の前で終わる（`mv gate check` の字の重なりはこれを読んで `[start, end]` で数える。無い timeline は `after` = `[start, end + fade_out_s]`）。
 - `clips[]`: `kind`（video/image）・`transition_in`・`beat_exempt`。
-- `seam_info`: `[{t, from, to, kind: cut|blend, beat_exempt, align}]`（from・to は clip の番号。align は次の clip の `align`）。
+- `seam_info`: `[{t, from, to, kind: cut|blend|dissolve, beat_exempt, align}]`（from・to は clip の番号。align は次の clip の `align`）。
 - `frames`: 描画区間の毎フレームの記録。`frames_fields` で列名を宣言した配列の配列。列は t・clip・source_frame・blend・zoom・cx・cy・rotate・shake_x・shake_y・blur で、fit を使うときは配置行列（元→画面、カメラの前の 2×3）p_a・p_b・p_tx・p_c・p_d・p_ty も。
 - `analysis`: クリップごとの `{path, sha256, p90_height, median_cx, ground, file}`。
 - `camera_seams`: seams の設定（pre_s・post_s・zoom・rotate・pivot・blur）。`accents`: 解決した時刻と設定。
