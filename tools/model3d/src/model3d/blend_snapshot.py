@@ -1,0 +1,145 @@
+"""2 つの .blend の書き出し（blender_adapter/snapshot_blend.py の npz と JSON）を、numpy で比べる（Blender は要らない）。
+
+リポジトリ外の試作（作り直したキャラと採用版の比べ）と同じ項目: 物体の有無・シーン・メッシュごとの頂点（物体の中の座標）・面のつなぎ・
+面の角の数・uv・属性・置き場所の行列、骨の名前・静止の行列・姿勢の行列、変形した世界の形（sha256 と等間隔の頂点）。
+全部が同じかを exact に、違いの大きさを max_* に出す。tolerance を渡すと、座標と行列の違いがその中かで合否を出す。"""
+import json
+from pathlib import Path
+
+import numpy as np
+
+from .io import ToolError
+
+TOLERANCE_KEYS = ("coordinate", "matrix", "value")
+
+
+def load(npz, meta):
+    """書き出しを読む: (JSON の辞書, npz の配列の辞書)。pickle は読まない。"""
+    with open(meta, encoding="utf-8") as stream:
+        info = json.load(stream)
+    if info.get("schema_version") != "model3d-blend-snapshot/0.1":
+        raise ToolError(f".blend の書き出しの形式が違います: {meta}")
+    with np.load(npz, allow_pickle=False) as data:
+        arrays = {key: data[key] for key in data.files}
+    return info, arrays
+
+
+def _max_error(a, b):
+    if a.shape != b.shape:
+        return None
+    if not a.size:
+        return 0.0
+    return float(np.abs(a.astype(np.float64) - b.astype(np.float64)).max())
+
+
+def _same(a, b):
+    return a is not None and b is not None and a.shape == b.shape and a.dtype == b.dtype and bool(np.array_equal(a, b))
+
+
+def compare(left, right, tolerance=None):
+    """2 つの書き出し（load の戻り）を比べた報告。tolerance（{"coordinate", "matrix", "value"}）を渡せば、その中で合否を出す。
+    渡さなければ、全部が同じ（exact）かで合否を出す。"""
+    (lmeta, larr), (rmeta, rarr) = left, right
+    lobjects = {o["name"]: o for o in lmeta["objects"]}
+    robjects = {o["name"]: o for o in rmeta["objects"]}
+    report = {"check": "blend_match", "missing_objects": sorted(set(lobjects) - set(robjects)),
+              "additional_objects": sorted(set(robjects) - set(lobjects)),
+              "scene_identical": lmeta["scene"] == rmeta["scene"], "scene": {"left": lmeta["scene"], "right": rmeta["scene"]},
+              "objects": []}
+    for name in sorted(set(lobjects) & set(robjects)):
+        lo, ro = lobjects[name], robjects[name]
+        lk, rk = lo["key"], ro["key"]
+        co_l, co_r = larr[f"{lk}_co"], rarr[f"{rk}_co"]
+        uv_l, uv_r = larr.get(f"{lk}_uv"), rarr.get(f"{rk}_uv")
+        attributes = {}
+        for attr in sorted(set(lo["attributes"]) | set(ro["attributes"])):
+            if attr not in lo["attributes"] or attr not in ro["attributes"]:
+                attributes[attr] = {"identical": False, "missing": "left" if attr not in lo["attributes"] else "right", "max_error": None}
+                continue
+            a, b = larr[lo["attributes"][attr]["key"]], rarr[ro["attributes"][attr]["key"]]
+            attributes[attr] = {"identical": _same(a, b), "missing": None, "max_error": _max_error(a, b)}
+        matrix_error = _max_error(larr[f"{lk}_matrix"], rarr[f"{rk}_matrix"])
+        row = {"name": name, "left_vertices": int(len(co_l)), "right_vertices": int(len(co_r)), "vertices_exact": _same(co_l, co_r),
+               "max_coordinate_error": _max_error(co_l, co_r),
+               "polygon_count_identical": lo["polygons"] == ro["polygons"],
+               "loop_vertices_identical": _same(larr[f"{lk}_loops"], rarr[f"{rk}_loops"]),
+               "polygon_sizes_identical": _same(larr[f"{lk}_sizes"], rarr[f"{rk}_sizes"]),
+               "uv_identical": (uv_l is None and uv_r is None) or _same(uv_l, uv_r),
+               "uv_max_error": _max_error(uv_l, uv_r) if uv_l is not None and uv_r is not None else None,
+               "attributes": attributes, "attributes_identical": all(v["identical"] for v in attributes.values()),
+               "matrix_world_identical": matrix_error == 0.0, "matrix_world_max_error": matrix_error}
+        report["objects"].append(row)
+    report["bone_names_identical"] = lmeta["bones"] == rmeta["bones"]
+    report["bones"] = len(rmeta["bones"])
+    report["pose_frames_identical"] = lmeta["pose_frames"] == rmeta["pose_frames"]
+    report["pose_frames"] = rmeta["pose_frames"]
+    if report["bone_names_identical"] and lmeta["bones"]:
+        report["rest_matrix_max_abs_error"] = _max_error(larr["rest"], rarr["rest"])
+        report["pose_matrix_max_abs_error"] = (_max_error(larr["poses"], rarr["poses"]) if report["pose_frames_identical"] else None)
+    else:
+        report["rest_matrix_max_abs_error"] = report["pose_matrix_max_abs_error"] = None
+    evaluations = []
+    for frame in sorted(set(lmeta["evaluated"]) & set(rmeta["evaluated"]), key=int):
+        le, re_ = lmeta["evaluated"][frame], rmeta["evaluated"][frame]
+        for name in sorted(set(le) & set(re_)):
+            a, b = larr[le[name]["key"]], rarr[re_[name]["key"]]
+            evaluations.append({"frame": int(frame), "object": name, "vertex_count_identical": le[name]["vertices"] == re_[name]["vertices"],
+                                "all_evaluated_vertices_exact": le[name]["sha256"] == re_[name]["sha256"],
+                                "sampled_max_coordinate_error": _max_error(a, b)})
+    report["evaluated_meshes"] = evaluations
+    structure = (not report["missing_objects"] and not report["additional_objects"] and report["scene_identical"]
+                 and report["bone_names_identical"] and report["pose_frames_identical"]
+                 and all(o["left_vertices"] == o["right_vertices"] and o["polygon_count_identical"] and o["loop_vertices_identical"]
+                         and o["polygon_sizes_identical"] for o in report["objects"])
+                 and all(e["vertex_count_identical"] for e in evaluations))
+    geometry = all(o["vertices_exact"] and o["uv_identical"] and o["attributes_identical"] and o["matrix_world_identical"]
+                   for o in report["objects"])
+    report["exact"] = bool(structure and geometry and report["rest_matrix_max_abs_error"] in (0.0, None)
+                           and report["pose_matrix_max_abs_error"] in (0.0, None)
+                           and all(e["all_evaluated_vertices_exact"] for e in evaluations))
+    report["tolerance"] = tolerance
+    failures = []
+    if not structure:
+        failures.append("形のつくり（物体・シーン・頂点と面の数とつなぎ・骨の名前・姿勢のコマ）が同じではありません")
+    if tolerance is None:
+        if structure and not report["exact"]:
+            failures.append("全部が同じではありません（違いの大きさは max_* を見る。許す幅は tolerance で渡す）")
+    else:
+        def beyond(value, limit):
+            return value is not None and limit is not None and value > limit
+        coordinate, matrix, value = (tolerance.get(k) for k in TOLERANCE_KEYS)
+        for o in report["objects"]:
+            if beyond(o["max_coordinate_error"], coordinate):
+                failures.append(f"{o['name']}: 頂点の違い {o['max_coordinate_error']:.3g} が coordinate を超えます")
+            if beyond(o["matrix_world_max_error"], matrix):
+                failures.append(f"{o['name']}: 置き場所の行列の違い {o['matrix_world_max_error']:.3g} が matrix を超えます")
+            if not o["uv_identical"] and (value is None or beyond(o["uv_max_error"], value) or o["uv_max_error"] is None):
+                failures.append(f"{o['name']}: uv が違います")
+            for attr, info in o["attributes"].items():
+                if not info["identical"] and (value is None or info["max_error"] is None or beyond(info["max_error"], value)):
+                    failures.append(f"{o['name']}: 属性 {attr} が違います")
+        for key in ("rest_matrix_max_abs_error", "pose_matrix_max_abs_error"):
+            if beyond(report[key], matrix):
+                failures.append(f"骨の {key} {report[key]:.3g} が matrix を超えます")
+        for e in evaluations:
+            if beyond(e["sampled_max_coordinate_error"], coordinate):
+                failures.append(f"コマ {e['frame']} の {e['object']}: 変形した形の違い {e['sampled_max_coordinate_error']:.3g} が coordinate を超えます")
+    report.update({"pass": not failures, "failures": failures})
+    return report
+
+
+def check_tolerance(value):
+    """tolerance の形を確かめる: {"coordinate": 数, "matrix": 数, "value": 数}（どれも任意、0 以上）。"""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not value or set(value) - set(TOLERANCE_KEYS):
+        raise ToolError(f"tolerance は {{{', '.join(TOLERANCE_KEYS)}}} のうちの数にしてください: {value!r}")
+    for key, item in value.items():
+        if isinstance(item, bool) or not isinstance(item, (int, float)) or item < 0:
+            raise ToolError(f"tolerance.{key} は 0 以上の数にしてください: {item!r}")
+    return {key: float(item) for key, item in value.items()}
+
+
+def snapshot_paths(directory, side):
+    directory = Path(directory)
+    return directory / f"{side}_snapshot.npz", directory / f"{side}_snapshot.json"
