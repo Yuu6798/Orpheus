@@ -1058,6 +1058,32 @@ def orient_faces(faces):
     return [list(face[::-1]) if turned else list(face) for face, turned in zip(faces, flip)], flipped
 
 
+def edge_components(faces):
+    """辺を共有する面でつながった面の集まり（連結成分）。頂点だけを共有する集まりは別にする（face_components と違う所。
+    面の向きは辺のつながりでしか決まらないので、向きを直す単位にする）。最小の面番号の順に並べ、各成分の面番号は昇順。"""
+    parent = list(range(len(faces)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first = {}
+    for f, face in enumerate(faces):
+        for i in range(len(face)):
+            a, b = face[i], face[(i + 1) % len(face)]
+            g = first.setdefault((a, b) if a < b else (b, a), f)
+            if g != f:
+                root, other = find(g), find(f)
+                if root != other:
+                    parent[other] = root
+    groups = {}
+    for f in range(len(faces)):
+        groups.setdefault(find(f), []).append(f)
+    return sorted(groups.values(), key=lambda members: members[0])
+
+
 def boundary_loops(mesh):
     """穴の縁の輪（境の辺 = 1 つの面だけが使う辺を、面の向きにたどった頂点の列）と、辺の数の確かめ。
 
@@ -1108,9 +1134,11 @@ def fill_holes(mesh, max_sides=0, cap="polygon", orient=True, part=None):
       "fan": 輪の頂点の平均に頂点を 1 つ足し、三角形の扇でふさぐ（平らでない輪に向く）。
     - ふさぐ面は、隣の面と向きがそろうように、縁を逆にたどる。
     - max_sides: この数より多い辺の輪はふさがない（0 は全部）。残った輪は報告に載せる。
-    - orient: ふさいだ後、つながった面の集まりごとに体積が負（内向き）なら、その集まりの面を裏返して外向きにする。
+    - orient: ふさいだ後、辺でつながった面の集まり（edge_components。頂点だけでつながった殻は別の集まり）ごとに体積が
+      負（内向き）なら、その集まりの面を裏返して外向きにする。
     - part: ふさいだ面を、この名前の parts に入れる（省くと parts は変えない）。
-    - x_normals（頂点の法線）は、ふさいだ形に合わないので外す。uv は、足した頂点に輪の uv の平均を付ける。"""
+    - x_normals（頂点の法線）は、ふさいだ形に合わないので外す。uv と頂点色（x_vertex_colors）は、足した頂点に輪の平均を付ける
+      （入力の頂点色の並びは変えず、新しい並びにする）。"""
     if cap not in FILL_CAPS:
         raise ToolError(f"cap は {' か '.join(FILL_CAPS)} にしてください: {cap!r}")
     if not isinstance(max_sides, int) or isinstance(max_sides, bool) or max_sides < 0:
@@ -1122,6 +1150,9 @@ def fill_holes(mesh, max_sides=0, cap="polygon", orient=True, part=None):
     out.faces, reoriented = orient_faces(out.faces)
     loops, counts = boundary_loops(out)
     vertices, uv = [out.vertices], [] if out.uv is None else [out.uv]
+    palette = out.extra.get("x_vertex_colors")             # 頂点ごとの色（数が頂点と同じときだけ。write_obj と同じ決まり）
+    colors = np.asarray(palette, dtype=np.float64) if isinstance(palette, list) and len(palette) == out.vertex_count else None
+    added_colors = []
     first_new_face, first_new_vertex = out.face_count, out.vertex_count
     rows, filled_edges, left_open = [], 0, 0
     for loop in loops:
@@ -1139,17 +1170,21 @@ def fill_holes(mesh, max_sides=0, cap="polygon", orient=True, part=None):
             vertices.append(out.vertices[loop].mean(axis=0, keepdims=True))
             if uv:
                 uv.append(out.uv[loop].mean(axis=0, keepdims=True))
+            if colors is not None:
+                added_colors.append(colors[loop].mean(axis=0).tolist())
             for a, b in zip(reverse, reverse[1:] + reverse[:1]):
                 out.faces.append([int(a), int(b), int(center)])
     out.vertices = np.concatenate(vertices) if len(vertices) > 1 else out.vertices
     if uv and len(uv) > 1:
         out.uv = np.concatenate(uv)
+    if added_colors:                                      # 新しい並びにする（入力のメッシュと並びを共有しているため）
+        out.extra["x_vertex_colors"] = list(palette) + added_colors
     new_faces = list(range(first_new_face, out.face_count))
     if part is not None and new_faces:
         out.parts.setdefault(str(part), []).extend(new_faces)
     dropped = out.extra.pop("x_normals", None) is not None
-    components, flipped_components = face_components(out), 0
-    if orient and not left_open and out.faces:           # 閉じた面の集まりごとに、体積が負なら裏返す（外向きに）
+    components, flipped_components = edge_components(out.faces), 0
+    if orient and not left_open and out.faces:           # 辺でつながった閉じた面の集まりごとに、体積が負なら裏返す（外向きに）
         triangles, owner = out.triangles()
         label = np.empty(out.face_count, dtype=np.int64)
         for c, members in enumerate(components):
