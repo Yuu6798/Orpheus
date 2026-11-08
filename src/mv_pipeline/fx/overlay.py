@@ -269,15 +269,22 @@ def resolve(base, layers, fps, frames=None):
     if len(set(counts.values())) != 1:
         raise PipelineError("コマ数が合いません: " + ", ".join(f"{name} {count}" for name, count in counts.items()))
     for i, layer in enumerate(layers):
-        if layer["size"] != size:
-            if not layer["options"]["resize"]:
-                raise PipelineError(f"寸法が合いません: base {size[0]}x{size[1]} / layer[{i}] {layer['size'][0]}x{layer['size'][1]}"
-                                    f"（縮尺して重ねるなら --layers で resize: true）")
-            if abs(layer["size"][0] * size[1] - size[0] * layer["size"][1]) > 0.01 * size[0] * layer["size"][1]:
-                raise PipelineError(f"縦横比が合いません: base {size[0]}x{size[1]} / layer[{i}] {layer['size'][0]}x{layer['size'][1]}")
+        _check_fit(layer["size"], size, layer["options"], f"layer[{i}]")
         if layer.get("fps") is not None and abs(layer["fps"] - fps) > 1e-3:
             raise PipelineError(f"fps が合いません: base {fps:g} / layer[{i}] {layer['fps']:g}")
     return size, fps, next(iter(counts.values()))
+
+
+def _check_fit(found, size, options, where):
+    """寸法 found のレイヤー（か連番のコマ）を、土台の寸法 size に重ねられるか。違う寸法は、resize: true で縦横比が 1% 以内の
+    ときだけ縮尺する（それ以外は止める）。resolve はレイヤーの寸法（連番は 1 枚目）で、読み出しは連番の各コマで確かめる。"""
+    if list(found) == list(size):
+        return
+    if not options["resize"]:
+        raise PipelineError(f"寸法が合いません: base {size[0]}x{size[1]} / {where} {found[0]}x{found[1]}"
+                            f"（縮尺して重ねるなら --layers で resize: true）")
+    if abs(found[0] * size[1] - size[0] * found[1]) > 0.01 * size[0] * found[1]:
+        raise PipelineError(f"縦横比が合いません: base {size[0]}x{size[1]} / {where} {found[0]}x{found[1]}")
 
 
 # ---- 読み出し ---------------------------------------------------------------------
@@ -343,8 +350,12 @@ def _fit(rgba, size):
     return cv2.resize(rgba, tuple(size), interpolation=cv2.INTER_AREA if rgba.shape[1] > size[0] else cv2.INTER_LINEAR)
 
 
-def _rgba(path, size):
+def _rgba(path, size, options=None):
+    """画像を uint8 RGBA で読み、土台の大きさへ合わせる。options（連番のレイヤーの設定）を渡すと、縮尺する前にこのコマの寸法を
+    確かめる（resolve は連番の 1 枚目の寸法しか見ないので、途中のコマの寸法の違いを黙って縮尺しない）。"""
     with Image.open(path) as image:
+        if options is not None:
+            _check_fit(image.size, size, options, f"連番のコマ {Path(path).name}")
         return _fit(np.asarray(image.convert("RGBA"), dtype=np.uint8), size)
 
 
@@ -361,11 +372,11 @@ def _layer_frames(layer, n_frames, size=None):
         folder = Path(layer["path"])
         if first is None:
             for item in layer["files"]:
-                yield _rgba(folder / item["name"], size)
+                yield _rgba(folder / item["name"], size, layer["options"])
             return
         names = {item["number"]: item["name"] for item in layer["files"]}
         for number in range(first, first + n_frames):
-            yield _rgba(folder / names[number], size) if number in names else None
+            yield _rgba(folder / names[number], size, layer["options"]) if number in names else None
         return
     available = layer["frames"] if first is None else layer["available"] - first
     reader = _VideoReader(layer["path"], layer["size"], "rgba", layer.get("matrix"), start=first or 0)

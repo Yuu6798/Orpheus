@@ -201,6 +201,20 @@ def test_resize_scales_a_layer_with_the_same_aspect(tmp_path):
     assert result["technical_pass"] and result["frames"] == 3
 
 
+def test_every_frame_of_a_sequence_keeps_the_resize_rules(tmp_path):
+    base_image(tmp_path / "base.png")
+    numbered_sequence(tmp_path / "mixed", range(3))                                          # 1 枚目は土台と同じ寸法
+    Image.fromarray(np.zeros((SIZE[1] * 2, SIZE[0] * 2, 4), np.uint8), "RGBA").save(tmp_path / "mixed" / "00002.png")   # 3 枚目だけ 2 倍
+    with pytest.raises(PipelineError, match="寸法が合いません"):                              # --layer（resize なし）は黙って縮めない
+        overlay.run_overlay(tmp_path / "base.png", [tmp_path / "mixed"], out=tmp_path / "runs", fps=12, quiet=True)
+    allowed = write_layers(tmp_path, [{"path": "mixed", "resize": True}])
+    result = overlay.run_overlay(tmp_path / "base.png", [], out=tmp_path / "runs", fps=12, quiet=True, layers_file=allowed)
+    assert result["technical_pass"] and result["frames"] == 3                                # resize: true で縦横比が同じなら縮める
+    Image.fromarray(np.zeros((SIZE[1] * 2, SIZE[0] * 3, 4), np.uint8), "RGBA").save(tmp_path / "mixed" / "00002.png")   # 縦横比が違う
+    with pytest.raises(PipelineError, match="縦横比が合いません"):
+        overlay.run_overlay(tmp_path / "base.png", [], out=tmp_path / "runs2", fps=12, quiet=True, layers_file=allowed)
+
+
 def test_a_video_layer_can_start_at_a_frame(tmp_path):
     import subprocess
 

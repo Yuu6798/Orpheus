@@ -505,7 +505,7 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 | `first_frame` | なし | 出力の 0 コマ目に当たる、連番のコマ番号（ファイル名の最後の数字）か動画のコマ番号。曲全体の番号で書いた連番から区間を取り出す。無ければ 0.1 と同じ並びの順で、コマ数が出力と同じであること |
 | `missing` | error | `first_frame` のとき、無いコマを止めるか（`error`）、透明として飛ばすか（`transparent`）。飛ばした数は記録の `missing_frames` |
 | `alpha` | straight | `premultiplied` は色にアルファが掛かったもの（読むときに straight に直す） |
-| `resize` | false | 土台と大きさが違うときに縮尺する（縦横比は 1% 以内。縮めるなら INTER_AREA）。無ければ違いはエラー |
+| `resize` | false | 土台と大きさが違うときに縮尺する（縦横比は 1% 以内。縮めるなら INTER_AREA）。無ければ違いはエラー。連番は 1 枚目だけでなく、読む各コマの寸法を同じ規則で確かめる（途中のコマの寸法の違いを黙って縮尺しない） |
 | `opacity` | 1 | 不透明度 |
 | `start_s` / `end_s` / `fade_in_s` / `fade_out_s` | — / — / 0 / 0 | 1 枚の画像を重ねる時刻 `[start_s, end_s)` と、出入りの秒（smoothstep）。出たままにするなら `fade_out_s` 0 |
 | `style.tint` | なし | 本体の色 = tint × 輝度（白い単色の字に色をつける）。無ければレイヤーの色 |
