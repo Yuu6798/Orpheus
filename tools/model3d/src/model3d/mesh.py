@@ -435,6 +435,37 @@ def _npz_arrays(path, what, keys, optional=()):
         raise ToolError(f"{what} を読めません: {path}（{type(error).__name__}: {error}）") from error
 
 
+def _part_names(path):
+    names = _npz_arrays(path, "部品の npz", ["names"])["names"]
+    if names.ndim != 1:
+        raise ToolError(f"names は部品の名前の 1 次元の列にしてください（形 {names.shape}）: {path}")
+    return [n.decode("utf-8") if isinstance(n, bytes) else str(n) for n in names.tolist()]
+
+
+def _check_part_geometry(vertices, faces, i, path):
+    if vertices.ndim != 2 or vertices.shape[1] != 3 or not np.issubdtype(vertices.dtype, np.number):
+        raise ToolError(f"co{i} は頂点 (N,3) の数にしてください（形 {vertices.shape}、{vertices.dtype}）: {path}")
+    if faces.ndim != 2 or faces.shape[1] < 3 or not np.issubdtype(faces.dtype, np.integer):
+        raise ToolError(f"f{i} は面の頂点番号 (F,k) の整数にしてください（形 {faces.shape}、{faces.dtype}）: {path}")
+
+
+def read_all_parts(path):
+    """部品ごとの npz の全部の部品を、並びの順に (名前, 頂点 (N,3) float64, 面 (F,k) int64) で読む（uv は読まない）。
+    頂点が有限でないか、面が無い頂点を指していれば止める。pickle の入った配列は読まない。"""
+    names = _part_names(path)
+    arrays = _npz_arrays(path, "部品の npz", [key for i in range(len(names)) for key in (f"co{i}", f"f{i}")])
+    out = []
+    for i, name in enumerate(names):
+        vertices, faces = arrays[f"co{i}"], arrays[f"f{i}"]
+        _check_part_geometry(vertices, faces, i, path)
+        if not np.isfinite(vertices).all():
+            raise ToolError(f"co{i}（{name}）に非有限の値があります: {path}")
+        if faces.size and (faces.min() < 0 or faces.max() >= len(vertices)):
+            raise ToolError(f"f{i}（{name}）が無い頂点を指しています: {path}")
+        out.append((name, vertices.astype(np.float64), faces.astype(np.int64)))
+    return out
+
+
 def read_parts(path, part, normals=None):
     """部品ごとの配列を持つ npz から、名前で 1 つの部品を読む。
 
@@ -442,19 +473,13 @@ def read_parts(path, part, normals=None):
     uv{i}（頂点の uv (N,2)、任意）。normals（別の npz）があれば、その n{i}（頂点の法線 (N,3)。部品の順で対応させる）を
     x_normals に入れる。メッシュの名前は部品の名前（面領域は名前で部品を区別する）。pickle の入った配列は読まない。
     """
-    names = _npz_arrays(path, "部品の npz", ["names"])["names"]
-    if names.ndim != 1:
-        raise ToolError(f"names は部品の名前の 1 次元の列にしてください（形 {names.shape}）: {path}")
-    names = [n.decode("utf-8") if isinstance(n, bytes) else str(n) for n in names.tolist()]
+    names = _part_names(path)
     if part not in names:
         raise ToolError(f"部品 {part!r} がありません（{', '.join(names)}）: {path}")
     i = names.index(part)
     arrays = _npz_arrays(path, "部品の npz", [f"co{i}", f"f{i}"], optional=[f"uv{i}"])
     vertices, faces, uv = arrays[f"co{i}"], arrays[f"f{i}"], arrays[f"uv{i}"]
-    if vertices.ndim != 2 or vertices.shape[1] != 3 or not np.issubdtype(vertices.dtype, np.number):
-        raise ToolError(f"co{i} は頂点 (N,3) の数にしてください（形 {vertices.shape}、{vertices.dtype}）: {path}")
-    if faces.ndim != 2 or faces.shape[1] < 3 or not np.issubdtype(faces.dtype, np.integer):
-        raise ToolError(f"f{i} は面の頂点番号 (F,k) の整数にしてください（形 {faces.shape}、{faces.dtype}）: {path}")
+    _check_part_geometry(vertices, faces, i, path)
     if uv is not None and (uv.shape != (len(vertices), 2) or not np.issubdtype(uv.dtype, np.number)):
         raise ToolError(f"uv{i} は頂点ごとの uv (N,2) にしてください（形 {uv.shape}）: {path}")
     extra = {}
@@ -911,3 +936,76 @@ def extrude_profile(profile, height, twist_deg=0.0, steps=1, offset=(0.0, 0.0), 
             faces.append([a, d, c2])
             parts["wall"].append(len(faces) - 1)
     return Mesh(vertices, faces, None, name, units, None, parts)
+
+
+# ---- 法線のならし ------------------------------------------------------------------
+
+def grid_weld(points, step):
+    """格子 step に丸めて同じになる点を 1 つにまとめる。戻りは点ごとのまとめた番号（まとめた点の並びは、丸めた座標の辞書順）。
+    距離で結ぶ weld と違い、格子の境をまたぐ近い点は別のままになる（リポジトリ外の試作と同じ。UV の継ぎ目で分かれた頂点は
+    同じ座標なのでまとまる）。"""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if not len(points):
+        return np.zeros(0, dtype=np.int64)
+    _, inverse = np.unique(np.round(points / step).astype(np.int64), axis=0, return_inverse=True)
+    return inverse.ravel().astype(np.int64)
+
+
+def face_edges(faces):
+    """面の縁の辺 (E,2)（面の頂点を順に結ぶ。三角形は (0,1)・(1,2)・(2,0)）。faces は (F,k) の配列か、面の頂点番号のリスト。"""
+    if isinstance(faces, np.ndarray):
+        k = faces.shape[1] if faces.ndim == 2 else 0
+        if not len(faces):
+            return np.zeros((0, 2), dtype=np.int64)
+        return np.concatenate([faces[:, [i, (i + 1) % k]] for i in range(k)]).astype(np.int64)
+    pairs = [(face[i], face[(i + 1) % len(face)]) for face in faces for i in range(len(face))]
+    return np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+
+
+def smooth_normals(vertices, triangles, edges, iterations, step=1e-5):
+    """頂点の法線をならす（リポジトリ外の試作の、部品の法線と同じ計算。セル調の影の境が面の細かな凹凸で荒れないように）。
+
+    1. 格子 step で同じ位置の頂点をまとめる（UV の継ぎ目で分かれた頂点も、同じ法線になる）。
+    2. まとめた頂点で、面積で重みを付けた法線（三角形の外積を頂点ごとに足し、長さ 1 に）。
+    3. iterations 回、辺でつながった隣の法線の和に自分の法線を足し、長さ 1 に戻す。
+    4. まとめた法線を、元の頂点へ配る。
+
+    和は float64 で、試作（scipy の疎行列の積）と同じ順に足す（同じ値になる）。戻りは (法線 (N,3) float64, 報告)。
+    向かい合う 2 枚の面が重なる所や、面の無い頂点の法線は 0 のまま返し、数を報告に載せる。"""
+    if not isinstance(iterations, int) or isinstance(iterations, bool) or iterations < 0:
+        raise ToolError(f"iterations は 0 以上の整数にしてください: {iterations!r}")
+    if not (isinstance(step, (int, float)) and not isinstance(step, bool) and step > 0 and math.isfinite(step)):
+        raise ToolError(f"weld（まとめる格子）は正の数にしてください: {step!r}")
+    c = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+    inv = grid_weld(c, step)
+    n = int(inv.max()) + 1 if len(inv) else 0
+    report = {"vertices": int(len(c)), "welded": n, "iterations": iterations, "weld": float(step)}
+    if not n:
+        return np.zeros((0, 3)), dict(report, mean_turn_deg=0.0, max_turn_deg=0.0, zero_normals=0, isolated=0)
+    welded = np.zeros((n, 3))
+    welded[inv] = c                                     # まとめた頂点の位置（試作と同じく、同じ番号の最後の頂点）
+    g = inv[triangles]
+    face_normal = np.cross(welded[g[:, 1]] - welded[g[:, 0]], welded[g[:, 2]] - welded[g[:, 0]])   # 長さが面積の 2 倍
+    area_weighted = np.zeros((n, 3))
+    for k in range(3):
+        np.add.at(area_weighted, g[:, k], face_normal)
+    area_weighted /= np.maximum(np.linalg.norm(area_weighted, axis=1, keepdims=True), 1e-12)
+    e = inv[edges]
+    key = np.unique(np.concatenate([e, e[:, ::-1]])[:, 0] * n + np.concatenate([e, e[:, ::-1]])[:, 1])
+    rows, cols = key // n, key % n                      # 隣どうし（向きを問わず 1 つずつ。行、列の順に並ぶ = 疎行列と同じ足し順）
+    v = area_weighted.copy()
+    for _ in range(iterations):
+        neighbours = np.zeros_like(v)
+        np.add.at(neighbours, rows, v[cols])
+        v = neighbours + v
+        v /= np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
+    nonzero = (np.linalg.norm(v, axis=1) > 0.5) & (np.linalg.norm(area_weighted, axis=1) > 0.5)
+    turn = np.degrees(np.arccos(np.clip((v[nonzero] * area_weighted[nonzero]).sum(axis=1), -1, 1)))
+    used = np.zeros(n, dtype=bool)
+    used[g.ravel()] = True
+    report.update(mean_turn_deg=round(float(turn.mean()), 3) if len(turn) else 0.0,
+                  max_turn_deg=round(float(turn.max()), 3) if len(turn) else 0.0,
+                  zero_normals=int((np.linalg.norm(v, axis=1) <= 0.5).sum()), isolated=int((~used).sum()))
+    return v[inv], report

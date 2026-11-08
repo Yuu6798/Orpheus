@@ -189,6 +189,8 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `mesh.weld` | mesh [, rig] → mesh [, mapping, rig] | `distance` 以内の頂点を結合（`selection` か工程の `select`・`center: mean|first`）。退化面と包含面を除く（結合に関わった面と隣接面のみ）。uv・頂点色・法線（`x_normals`。長さは 1 に戻す）も同じ規則でまとめる。mapping は旧→新頂点番号、旧→新面番号（`face_old_to_new`。消えた面は -1）、双方の topology と部品の名前（`source_name`・`target_name`）。rig は入出力を対で指定し、同じ mean / first 規則でウェイトを移す |
 | `mesh.transform` | mesh → mesh | `to_units`（m / cm / mm の換算）→ `to_axes`（`{"up", "forward"}` の約束の換算）→ `scale` → `rotate_z_deg` → `translate`。頂点の法線（`x_normals`）も同じ向きへ回す |
 | `mesh.extract_region` | mesh → mesh [, mapping] | 工程の `select` で選んだ役割の面だけのメッシュ（使わない頂点は落とす。uv・頂点色・法線・単位・軸は引き継ぐ）。mapping は新→旧の頂点・面番号と双方の topology。観測に連結成分の数と閉じているか |
+| `mesh.smooth_normals` | mesh → mesh [, report] | 頂点の法線をならし、`x_normals` に書く（[部品の法線をならす](#部品の法線をならす)）。頂点と面は変えない。格子 `weld` で同じ位置の頂点をまとめ（UV の継ぎ目の重複点も同じ法線）、面積の重みの法線を、隣の法線の和で `iterations` 回ならす |
+| `mesh.smooth_part_normals` | parts → normals [, report] | 部品ごとの npz の全部の部品の法線を、`mesh.smooth_normals` と同じ計算でならし、`n{i}`（float32）の npz に書く（`mesh.import_parts` の入力 normals になる）。`iterations` は整数か、部品ごとの回数 |
 | `mesh.export_obj` | mesh → obj | v / vt / f / g。見出しの行に units・軸・名前を書き、`mesh.import` で戻す（名前は面領域が部品を区別するのに使う）。数値は往復で変わらない表記 |
 | `collision.push_out` | mesh, collider → mesh, deltas, report | 閉じた collider の中の頂点（`selection` か工程の `select` の面の頂点だけにできる）を最も近い面の外へ `clearance` だけ離す（`clearance` は mesh の単位。mesh と collider の単位か軸の約束が違えば止まる）。外でも余裕より近い点は離す（`pad_outside`）。`deltas` は頂点ごとの移動量 |
 | `check.structure` | rig [, mesh] → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`）。mesh があれば頂点数・topology も必須照合。使用する未確認の骨対応は needs_review |
@@ -234,6 +236,37 @@ rig のない結合も従来どおり使えるが、メッシュとリグの整�
 内外の判定は、複数方向の光線と面の交わりの回数の奇偶の多数決で決める。最も近い面の向きで決める方法（Shrinkwrap の Outside など）は、
 口の開いた筒やふさいだ口のふちで読み違えた（2026-11-02 の記録）。辺や頂点を共有する三角形を同じ距離で通る交点は 1 回と数える。
 口の開いた衝突相手は拒否する。補正は位置だけを直し、速度には入れない。
+
+## 部品の法線をならす
+
+`mesh.smooth_normals`（メッシュ 1 つ）と `mesh.smooth_part_normals`（部品ごとの npz の全部の部品）は、頂点の法線をならす。セル調の影の境が、面の細かな凹凸で荒れないようにするため。リポジトリ外の試作で、部品の法線（`n{i}`）を作った台本を移した。
+
+**計算**（どちらも同じ）:
+1. 格子 `weld` に丸めて同じになる頂点を、1 つにまとめる。UV の継ぎ目で分かれた頂点は同じ座標なので、同じ法線になる。距離で結ぶ `mesh.weld` と違い、格子の境をまたぐ近い点は別のまま（試作と同じ）。
+2. まとめた頂点で、面積で重みを付けた法線を作る（三角形の外積を頂点ごとに足し、長さ 1 に）。四角形以上の面は、面の平面で三角形に分けて足す。
+3. `iterations` 回、辺でつながった隣の法線の和に自分の法線を足し、長さ 1 に戻す。
+4. まとめた法線を、元の頂点へ配る。
+- 和は float64 で取り、試作（scipy の疎行列の積）と同じ順に足す。model3d は scipy に頼らない（numpy だけ）。
+
+**設定**:
+- `iterations`（必須、0 以上の整数）: ならす回数。0 なら面積の重みの法線のまま。部品ごとの回数（メッシュの細かさで決めた値）は、リポジトリ外の設定に書く。
+  - `mesh.smooth_part_normals` では、全部の部品に同じ整数か、`{部品の名前: 回数}`（npz の全部の部品を書く。足りない・余る名前は止める）。
+- `weld`: まとめる格子の幅。既定は 1e-5 m（`mesh.smooth_normals` はメッシュの単位に換算。部品の npz は m とみなす）。
+
+**出力**:
+- `mesh.smooth_normals`: 同じメッシュに `x_normals`（頂点ごと）を書く。頂点・面・uv・parts は変えない。
+- `mesh.smooth_part_normals`: `n0`, `n1`, …（float32、頂点ごと）の npz。`mesh.import_parts` の入力 `normals` に渡せる。
+- `report`（任意）: `model3d-normals/0.1`。部品ごとの頂点の数・まとめた数・回数・格子、ならしで向きが変わった角度（平均と最大）、法線が 0 のままの頂点の数、面の無い頂点の数。
+- 向かい合う 2 枚の面が重なる所や、面の無い頂点の法線は 0 のまま返し、数を報告に載せる（直さない）。
+
+**確かめたこと**:
+- CI では、次を確かめた。
+  - 格子でのまとめ（辞書順の番号）、面の縁の辺。
+  - 継ぎ目で分けた立方体が、まとめた立方体と同じ法線になること（外向き、長さ 1）。
+  - 回数とともに、でこぼこの面の法線が上へそろうこと。
+  - 試作の書き方（scipy の疎行列の積）と、ビット単位で同じ値になること（継ぎ目と極の重なる球、つぶれた三角形を含む。scipy があるとき）。
+  - 0 の法線と面の無い頂点を数えること、工程の入出力（単位の換算、`mesh.import_parts` で読めること）、悪い設定を止めること。
+- 2026-11-08 に、リポジトリ外の試作の部品（11 部品、約 105 万頂点）を試作と同じ回数でならした。試作の法線（`n{i}`）と、全部の部品で float32 の値がビット単位で同じだった（約 14 秒）。
 
 ## 設定画をテクスチャへ写す
 
