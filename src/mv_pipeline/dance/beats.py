@@ -5,6 +5,7 @@ spec の時刻の欄は秒の数値か、次の参照で書ける（読み込み
     {"beat": 12.5}              拍の番号。小数は前後の拍の間を線形補間し、格子の外は端の間隔で外挿する
     {"bar": 3, "beat": 1.5}     小節頭の番号 + 拍数
     どちらも "offset_s": -0.1 を足せる
+    {"frame": 302}              出力のコマ番号（n / output.fps 秒。0.3）。カットの切れ目をコマで決めるとき
 
 格子は beats の 2 つの書き方のどちらかから作る:
 
@@ -89,10 +90,14 @@ def load_grid(raw, resolve):
     return Grid(beats, beats[int(raw.get("downbeat_phase", 0))::int(raw.get("beats_per_bar", 4))])
 
 
-def resolve_time(value, grid, where):
-    """秒の数値か参照を秒にする。where はエラーの文言に使う欄の名前。"""
+def resolve_time(value, grid, where, fps=None):
+    """秒の数値か参照を秒にする。where はエラーの文言に使う欄の名前。fps は {"frame": n} の参照に使う出力の fps。"""
     if not is_ref(value):
         seconds = float(value)
+    elif "frame" in value:
+        if not fps:
+            raise PipelineError(f"dance spec: {where} のコマ番号の参照には output.fps が必要です")
+        seconds = int(value["frame"]) / float(fps)
     else:
         if grid is None:
             raise PipelineError(f"dance spec: {where} の拍の参照には beats が必要です")

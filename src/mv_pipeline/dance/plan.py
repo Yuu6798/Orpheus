@@ -1,4 +1,5 @@
 """解決した時刻の一覧（`mv dance plan`）。表で出すだけで、判定はしない。cv2 を使わない。"""
+from . import SCHEMA_VERSION
 from . import spec as dancespec
 
 
@@ -29,6 +30,25 @@ def _clips(data):
         [i, _seconds(c["start"]), _seconds(c["end"]), _beat_of(c["start"], data), c["kind"],
          c["transition_in"]["type"] + (f" {c['transition_in']['frames']}f" if c["transition_in"]["frames"] else ""),
          "yes" if c["beat_exempt"] else "", c["path"]] for i, c in enumerate(clips)])
+
+
+def _retime(data):
+    rows = []
+    for i, clip in enumerate(data["performer"]["clips"]):
+        for segment in clip["retime"]:
+            a, b = segment["source"]
+            rows.append([i, _seconds(segment["from"]), _seconds(segment["to"]), _beat_of(segment["from"], data),
+                         f"{a:g}→{b:g} {segment['unit']}" + ("（止め）" if a == b else ""), clip["path"]])
+    return _table("retime", ["#", "from", "to", "beat", "source", "path"], rows)
+
+
+def _replace(data):
+    def target(value):
+        if isinstance(value, dict):
+            return f"画像 {value['image']}"
+        return f"コマ {value}" if isinstance(value, int) else value
+    return _table("replace_frames", ["path", "frames", "with"], [
+        [run["path"], f"[{run['frames'][0]}, {run['frames'][1]})", target(run["with"])] for run in data["performer"]["replace_frames"]])
 
 
 def _seams(data):
@@ -65,9 +85,11 @@ def _lyrics(data):
 
 
 def build(data):
+    current = data["source_schema"] == SCHEMA_VERSION      # 0.3 の欄（丸め・retime・replace_frames）は 0.3 の spec だけに出す
     head = [f"# {data['source_schema']}  {data['output']['width']}x{data['output']['height']} {data['output']['fps']:g}fps "
-            f"{data['duration_s']:g} 秒", ""]
-    return "\n".join(head + _clips(data) + _seams(data) + _accents(data) + _camera(data) + _flashes(data) + _lyrics(data)).rstrip()
+            f"{data['duration_s']:g} 秒" + (f"  元のコマの丸め {data['performer']['frame_rounding']}" if current else ""), ""]
+    frames = _retime(data) + _replace(data) if current else []
+    return "\n".join(head + _clips(data) + frames + _seams(data) + _accents(data) + _camera(data) + _flashes(data) + _lyrics(data)).rstrip()
 
 
 def text(spec_path):

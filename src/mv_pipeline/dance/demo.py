@@ -4,7 +4,9 @@
 
 クリップは腕の振りの位相が違うので、切れ目で姿勢が飛ぶ。そこに camera.seams の動きが入る。
 0.2 のデモのクリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶ（fit の確認用）。
-`--schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
+0.3 のデモ（既定）は 0.2 のデモに、元のコマの丸め nearest・clip_c の最後の半拍の止め（retime。始まりはコマ番号の参照）・
+clip_b の壊れたコマ 1 つ（紫の帯）の差し替え（replace_frames）を足す。差し替えるので、出力に紫の帯は出ない。
+`--schema 0.2` は 0.2 の spec（壊れたコマの無い素材）、`--schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 """
 import json
 import math
@@ -16,7 +18,7 @@ import numpy as np
 from PIL import Image
 
 from ..fx import render as fxrender
-from . import SCHEMA_V01, SCHEMA_VERSION
+from . import SCHEMA_V01, SCHEMA_V02, SCHEMA_VERSION
 
 GREEN = (0, 255, 0)
 BPM = 120.0
@@ -92,10 +94,24 @@ def _figure(width, height, t, phase, shape):
     return image
 
 
-def _write_figure(path, width, height, duration, fps, phase, shape):
+def _broken(image):
+    """壊れたコマ（0.3 のデモの差し替え用）: 胴の高さに紫の帯。キーで抜けない色なので、差し替えないと出力に出る。"""
+    out = image.copy()
+    height = out.shape[0]
+    out[int(height * 0.45):int(height * 0.55)] = (200, 40, 220)
+    return out
+
+
+def _write_figure(path, width, height, duration, fps, phase, shape, broken=()):
     n = int(round(duration * fps))
-    frames = (_figure(width, height, i / fps, phase, shape) for i in range(n))
+    frames = ((_broken if i in broken else lambda image: image)(_figure(width, height, i / fps, phase, shape)) for i in range(n))
     fxrender.write_video(path, frames, (width, height), fps, 12, n)
+
+
+def broken_frame(duration, fps):
+    """0.3 のデモで clip_b の壊れたコマの番号（clip_b の使う長さの 1/3 の所）。"""
+    first, second, _ = (cut * 60 / BPM for cut in _cuts(duration))
+    return max(1, int(round((second - first) * fps / 3)))
 
 
 def _audio(seconds, rate=48000):
@@ -144,12 +160,12 @@ def _cuts(duration):
     return min(round(count / 3), second - 1), second, count - 1
 
 
-def _spec(width, height, duration, fps):
+def _spec(width, height, duration, fps, schema="0.3"):
     first, second, third = _cuts(duration)
     half = {"beat": second}
     count = int(round(duration * BPM / 60))
-    return {
-        "schema_version": SCHEMA_VERSION,
+    spec = {
+        "schema_version": SCHEMA_VERSION if schema == "0.3" else SCHEMA_V02,
         "seed": 0,
         "output": {"width": width, "height": height, "fps": fps, "crf": 18},
         "duration_s": duration,
@@ -198,6 +214,15 @@ def _spec(width, height, duration, fps):
             ],
         },
     }
+    if schema == "0.3":
+        performer = spec["performer"]
+        performer["frame_rounding"] = "nearest"
+        hold = (third - 0.5) * 60 / BPM                           # clip_c の最後の半拍は、その始まりの姿勢で止める
+        performer["clips"][2]["retime"] = [{"from": {"frame": int(round(hold * fps))}, "to": {"beat": third},
+                                            "source": [hold - second * 60 / BPM] * 2, "unit": "s"}]
+        broken = broken_frame(duration, fps)
+        performer["replace_frames"] = [{"path": "clip_b.mp4", "frames": [broken, broken + 1], "with": "nearest"}]
+    return spec
 
 
 def _write_wav(path, samples):
@@ -214,7 +239,7 @@ def _write_spec(directory, spec):
     return path
 
 
-def create(directory, width=540, height=960, duration=6.0, fps=24, schema="0.2"):
+def create(directory, width=540, height=960, duration=6.0, fps=24, schema="0.3"):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     clip_w, clip_h = 2 * (width // 3), 2 * (height // 3)   # 素材は出力より小さい。人物の縮尺を確かめるため
@@ -234,9 +259,10 @@ def create(directory, width=540, height=960, duration=6.0, fps=24, schema="0.2")
               {"scale": 1.15, "x": 0.56, "foot": 0.93, "drift": -0.012, "jump": jump(second - first)},
               {"scale": 1.0, "x": 0.5, "foot": 0.9, "drift": 0.0, "jump": None}]
     lengths = [first, second - first, third - second]
+    broken = {"clip_b": (broken_frame(duration, fps),)} if schema == "0.3" else {}
     for name, shape, length, phase in zip(("clip_a", "clip_b", "clip_c"), shapes, lengths, (0.0, math.pi, math.pi / 2)):
-        _write_figure(directory / f"{name}.mp4", clip_w, clip_h, length + 0.5, fps, phase, shape)
+        _write_figure(directory / f"{name}.mp4", clip_w, clip_h, length + 0.5, fps, phase, shape, broken.get(name, ()))
     Image.fromarray(_figure(clip_w, clip_h, 0.0, 0.0, shapes[2])).save(directory / "end.png")
     _write_wav(directory / "audio.wav", _audio(duration - 0.5))      # 音声は描画より短い。fit: pad で足す
-    spec_path = _write_spec(directory, _spec(width, height, duration, fps))
+    spec_path = _write_spec(directory, _spec(width, height, duration, fps, schema))
     return {"spec": str(spec_path), "size": [width, height], "duration_s": duration, "fps": fps}

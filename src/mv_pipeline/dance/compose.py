@@ -25,7 +25,7 @@ from . import fit as dancefit
 from . import key as dancekey
 from . import lyrics as dancelyrics
 from .camera import Camera, camera_matrix, is_identity
-from .clips import KNOWN_MATRICES, Source, Timeline
+from .clips import KNOWN_MATRICES, Source, Timeline, check_replacements
 
 FRAME_FIELDS = ["t", "clip", "source_frame", "blend", "zoom", "cx", "cy", "rotate", "shake_x", "shake_y", "blur"]
 PLACEMENT_FIELDS = ["p_a", "p_b", "p_tx", "p_c", "p_d", "p_ty"]
@@ -183,7 +183,7 @@ def _fit_analysis(spec, clips, out):
     for clip in performer["clips"]:
         if clip["fit"] and clip["path"] not in found:
             found[clip["path"]] = dancefit.load(clips.sources[clip["path"]], sha256(spec.resolve(clip["path"])),
-                                                performer["key"], fit, out)
+                                                performer["key"], fit, out, clips.replacements.skipped(clip["path"]))
     return found
 
 
@@ -193,6 +193,7 @@ def prepare(spec, scale=1.0, out=None, hooks=None):
     stage = Stage(spec, size)
     clips = Timeline(spec)
     try:
+        replace_warnings = check_replacements(clips)
         analysis = _fit_analysis(spec, clips, Path(out) if out else spec.base_dir / "dance_runs")
         place = [_placement(spec, clip, clips.sources[clip["path"]], size, analysis[clip["path"]][0] if clip["fit"] and clip["path"] in analysis else None)
                  for clip in clips.clips]
@@ -201,7 +202,7 @@ def prepare(spec, scale=1.0, out=None, hooks=None):
         clips.close()
         stage.close()
         raise
-    warnings = list(spec.warnings) + text_warnings
+    warnings = list(spec.warnings) + replace_warnings + text_warnings
     for source in (*clips.sources.values(), stage.source):
         if isinstance(source, Source) and source.matrix not in KNOWN_MATRICES:
             warnings.append(f"{source.path.name}: 色の行列のタグ（{source.matrix or 'なし'}）から行列を決められないので BT.601 として読みます。"

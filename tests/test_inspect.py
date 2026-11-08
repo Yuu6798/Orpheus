@@ -510,6 +510,26 @@ def test_dance_spec_links_each_finding_to_the_clip_entries_and_shot_times(dance_
     assert any(u["pointer"] == "/performer/clips/1" for s in plan["segments"] for u in s["uses"])
 
 
+def test_a_dance_replacement_entry_takes_the_frame_out_of_the_shot(tmp_path, dance_root):
+    """提案の spec_entry をそのまま spec に足すと、そのコマは出力に出なくなり、検品し直すと「spec に出ないコマ」に移る。"""
+    result, _ = run.run(dance_root / "inspect_dance.json", tmp_path / "before")
+    glitch = next(e for e in result["events"] if e["label"] == "数コマだけの乱れ")
+    action = next(a for a in glitch["actions"] if a["kind"] == "replace_frames")
+    entry = action["spec_entry"]
+    assert action["in_orpheus"] is True and entry["pointer"] == "/performer/replace_frames/-"
+    assert entry["value"] == {"path": "clip.mp4", "frames": glitch["frames"], "with": "nearest"}
+    spec = read_json(dance_root / "spec.json")
+    spec["schema_version"] = "dance-shot/0.3"
+    spec["performer"]["replace_frames"] = [entry["value"]]
+    (dance_root / "spec_fixed.json").write_text(json.dumps(spec), encoding="utf-8")
+    config = read_json(dance_root / "inspect_dance.json")
+    config["dance_spec"] = "spec_fixed.json"
+    (dance_root / "inspect_fixed.json").write_text(json.dumps(config), encoding="utf-8")
+    fixed, _ = run.run(dance_root / "inspect_fixed.json", tmp_path / "after")
+    assert not any(e["frames"] == glitch["frames"] for e in fixed["events"])
+    assert any(e["frames"] == glitch["frames"] for e in fixed["unused"])
+
+
 def test_dance_findings_on_frames_the_spec_never_shows_are_kept_apart(tmp_path, dance_root):
     spec = read_json(dance_root / "spec.json")
     spec["performer"]["clips"] = [{"path": "clip.mp4", "start": 0.0, "end": 2.0, "source_start": 1 / 24, "speed": 2.0}]

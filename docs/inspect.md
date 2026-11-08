@@ -158,7 +158,7 @@ dance で、spec の区間で一度も出ない元のコマ（`speed` で飛ば�
 | `kind` | 出す条件 | 中身 |
 |---|---|---|
 | `regenerate_segment` | 重複の周期以外 | 前後のコマ（`anchors`）を始点・終点にして、その区間だけを生成し直す |
-| `replace_frames` | 2 コマ以下の連続性・形状・動作で、絵が元に戻るもの（組 pair か区間 segment の信号がある）か、VLM だけの指摘 | 前後のコマで置き換える（保持か混合。前後の絵が大きく違うと、保つと止まり、混ぜると二重写しになる）。Orpheus にはまだ無い（dance-shot/0.3 の「壊れたコマの差し替え」で予定） |
+| `replace_frames` | 2 コマ以下の連続性・形状・動作で、絵が元に戻るもの（組 pair か区間 segment の信号がある）か、VLM だけの指摘 | 前後のコマで置き換える（保持か混合。前後の絵が大きく違うと、保つと止まり、混ぜると二重写しになる）。dance の人物の素材なら `in_orpheus: true` で、spec の `performer.replace_frames` に足す 1 行を `spec_entry`（`pointer` と `value`）に付ける（dance-shot/0.3。保持だけ。`docs/dance.md` の「元のコマの対応」）。fx の素材は `in_orpheus: false` |
 | `interpolate` | 止まったコマ。2 コマ以下の形状・動作で、絵が戻らない変化（step だけ。速い動きの途中のコマ） | 補間（外部の道具）で作り直すか、生成し直す。実素材では ffmpeg の minterpolate が速い腕の動きを追えず二重写しが残ったので、確実なのは生成し直し（学習型の補間は未確認） |
 | `decimate` | 重複の周期 | `ffmpeg` の `decimate=cycle=N` などで除いてから使う（`speed` を変えるときは先に） |
 | `regenerate_with_reference`・`color_match` | 衣装（主な分類か、設定画の信号・VLM の衣装の指摘がある） | 設定画を参照に入れて（強めて）生成し直す。尺を短く切る。配色の差だけなら仕上げ（dance の hooks の `performer` など）で合わせる |

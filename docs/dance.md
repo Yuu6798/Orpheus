@@ -3,7 +3,7 @@
 緑背景の人物動画をステージの画像に合成し、カメラと歌詞を載せた動画を作る**下書きエンジン**。下書きは構造の決定（時刻・人物の配置とつながり・カメラ・歌詞・切れ目）と、検査できる記録（`timeline.json`）のこと。CLI と設定ファイルだけで動く。縦・横どちらの出力でも動く（UI 枠の既定は縦だけ）。
 
 - 決定論: 同じ spec・素材・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
-- **実験的**: 設定スキーマ `dance-shot/0.2`（`dance-shot/0.1` も読める）は `contracts/` の外（`src/mv_pipeline/dance/`）にある。`contracts/` への昇格はユーザー承認が要る。
+- **実験的**: 設定スキーマ `dance-shot/0.3`（`dance-shot/0.2` と `0.1` も読める）は `contracts/` の外（`src/mv_pipeline/dance/`）にある。`contracts/` への昇格はユーザー承認が要る。
 - **汎用の部品だけ**: 作品固有の値はコードに持たず、spec に書く。作品ごとの spec・素材・出力は Git に入れない。
 - **採点しない**: `technical_pass` は構造検査、`accept` は人間の判定。絵の良し悪しや時刻の合否は `mv dance` では判定しない（書き出し前の機械的な検査は `mv gate check` で行う。run の `timeline.json` を読む。`docs/gate.md`）。
 - 実素材での確認は**生成 AI の縦の緑背景動画 1 本（歌詞なし）**まで。緑抜き・カメラ・hooks・`mv gate` を通し、`technical_pass` と音のずれ（+0.0 ms）を確かめた。絵はコマを抜き出して見た範囲で、通しの再生と試聴はしていない。字の見え方と、他の素材での挙動は未確認なので、素材のある環境で実測すること。
@@ -34,15 +34,17 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 歌詞は back が 3 row の互い違いの縦積み（reveal word・enter・exit・glow）、band が語ごとの色と行の上書き、title が sung false の層。look は vignette と grain。
 
-`mv dance demo --schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
+0.3 のデモ（既定）は、元のコマの丸めを `nearest` にし、clip_c の最後の半拍をその始まりの姿勢で止め（`retime`。始まりはコマ番号の参照）、clip_b にわざと入れた壊れたコマ 1 つ（胴の高さの紫の帯）を `replace_frames` で前後のコマに差し替える。差し替えるので出力に紫の帯は出ない（spec から `replace_frames` を消すと 1 コマだけ出る）。
 
-## spec（dance-shot/0.2）
+`mv dance demo --schema 0.2` は 0.2 の spec（壊れたコマの無い素材）、`--schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
+
+## spec（dance-shot/0.3）
 
 素材パスは **spec ファイルのあるディレクトリ基準の相対パス**（`io.safe_path` で逸脱を拒否）。検証は JSON Schema 2020-12（`src/mv_pipeline/dance/dance_shot.schema.json`）。未知の鍵は拒否し、`x_` で始まる鍵はどの階層でも許す（描画には使われないが、キャッシュ key には入る）。
 
 ```json
 {
-  "schema_version": "dance-shot/0.2",
+  "schema_version": "dance-shot/0.3",
   "seed": 0,
   "output": {"width": 1080, "height": 1920, "fps": 24, "crf": 18},
   "duration_s": 30.0,
@@ -99,7 +101,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - 必須は `schema_version`・`output.width/height`・`duration_s`・`stage`・`performer.clips`。他は任意。出力寸法は偶数。
 - 座標はすべて**出力画面の正規化座標** 0..1。時間は秒で、**ショット時刻**（`--start` で区間を切って描いても同じ時刻は同じ絵）。色は sRGB 0〜255。
 - `seed`（既定 0）: 乱数の種。
-- `performer.clips`: start の昇順で、区間は重ねない。元動画のフレームは `(source_start + (t − start) × speed) × 元動画の fps` の切り捨て。`source_start` は負でもよく、0 より前は先頭のフレームを保つ。動画の末尾を越えたら最後のフレームを保つ。人物のいない区間は warnings に残る。同じ `path` を何度使ってもよい。`path` に静止画（png/jpg/webp）を書くと 1 枚を保つ（`speed` は無視。アルファは見ないので、緑抜きの背景にしておく）。
+- `performer.clips`: start の昇順で、区間は重ねない。元動画のフレームは `(source_start + (t − start) × speed) × 元動画の fps` を `performer.frame_rounding` で丸めた番号（既定は切り捨て。下の「元のコマの対応」）。`source_start` は負でもよく、0 より前は先頭のフレームを保つ。動画の末尾を越えたら最後のフレームを保つ。人物のいない区間は warnings に残る。同じ `path` を何度使ってもよい。`path` に静止画（png/jpg/webp）を書くと 1 枚を保つ（`speed` は無視。アルファは見ないので、緑抜きの背景にしておく）。
 - `placement`: 元動画の点 `pivot`（元動画の幅・高さに対する割合）を画面の点 `anchor` に合わせる。`height` は元動画の高さが画面の高さの何倍か（全身が映る動画なら、人物の身長の割合ではない）。`flip_x` は全体の左右反転（元動画の点 `pivot` は反転しても `anchor` に来る）。
 - `clips[].placement`（`fit` の後に掛ける）: `offset`（[dx, dy]。出力の正規化座標）、`scale`（倍率。`anchor` のまわり）、`flip_x`（全体の `flip_x` と重ねると元に戻る）。
 - `clips[].transition_in`: `{"type": "cut"}`（既定）か `{"type": "blend", "frames": 3}`。blend は clip の start から frames コマの間、前のクリップの再生を続け（素材の終わりを越えたら最後のフレームを保つ）、両方をそれぞれの配置で置いて、前乗算の色とアルファを smoothstep で重ねる。前のクリップと隙間なく接していること。
@@ -120,6 +122,24 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `{"beat": 12.5}`: 拍の番号（0 始まり）。小数は前後の拍の間を線形補間し、格子の外は端の間隔で外挿する。
 - `{"bar": 3, "beat": 1.5}`: 小節頭の番号 + 拍数。
 - どちらも `"offset_s": -0.1` を足せる（字を歌の少し前に出す、など）。解決した時刻が負ならエラー。
+- `{"frame": 302}`（0.3）: 出力のコマ番号。`302 / output.fps` 秒になる。カットの切れ目を出力のコマで決めるとき（`beats` は要らない）。
+
+### 元のコマの対応（0.3）
+
+どれも 0.2 の spec には無い欄で、既定値なら 0.2 と同じ絵になる。解決した値は `mv dance plan` の `retime`・`replace_frames` の表で見られる。
+
+- `performer.frame_rounding`: 元のコマ番号の丸め。`floor`（既定。0.2 と同じ切り捨て）か `nearest`（いちばん近いコマ。半コマは切り上げ）。秒とコマを四捨五入で対応させて作った編集を再現するときは `nearest` にする。
+- `clips[].retime`: `[{"from": 時刻, "to": 時刻, "source": [a, b], "unit": "frame"}]`。区間 [from, to) の間は、元のコマを a から b へ直線で進める（`a + (b − a)·(t − from)/(to − from)` を `frame_rounding` で丸める）。a と b が同じなら止まる。`unit` は source の単位で、`frame`（既定。元のコマ番号）か `s`（元の秒）。区間の外は既定の対応。同じ clip の区間は重ねない。clip の区間と交わらない区間は効かないので warnings に残る。静止画の clip には使えない。
+- `performer.replace_frames`: `[{"path": "b.mp4", "frames": [a, b], "with": "nearest"}]`。動画 `path` の壊れたコマ [a, b)（半開区間。`mv inspect` の提案と同じ）を見せずに、`with` のコマを見せる。
+  - `with`: `nearest`（既定。区間の前 a − 1 と後 b のうち近い方。同じ距離なら前）、`before`、`after`、コマ番号、`{"image": "fix.png"}`（そのコマの代わりの画像。動画と同じ寸法で、動画と同じく緑抜きの背景）。
+  - `path` は `performer.clips` の動画であること。同じ動画の区間は重ねない。接する 2 つの区間（[5, 7) と [7, 9) など）は、前後のコマがもう一方の壊れたコマになるので止める（1 つの区間にまとめる）。0 コマ目からの区間に `before` は使えない。
+  - 描画の前に、差し替えのある動画だけコマを数えて突き合わせる。最後のコマまで届く区間の `after`・`nearest`、動画に無いコマ番号、寸法の違う画像は止める。動画の外の区間は warnings に残る。
+  - 差し替えのある動画では、末尾を越えた元のコマの番号を最後のコマに止めてから差し替えを引く。最後のコマまで届く区間（`before`・コマ番号・画像）は、clip が動画の末尾を越えて最後のコマを保つ間も効く（壊れた最後のコマを見せない）。差し替えの無い動画の番号は 0.2 と同じ。
+  - 差し替えたコマは `fit` の解析で欠け（前後の値で埋める）として扱う（解析の結果に `skipped` が入り、キャッシュも分かれる）。置き場所は見せるコマの値を使う。
+  - timeline の `frames` の `source_frame` は見せるコマの番号（画像で差し替えたコマは元の番号）。
+  - 前後のコマを保つだけで、混ぜたり補間したりはしない。速い動きの途中のコマを差し替えると止まって見える（`mv inspect` はその場合 `interpolate` を提案する）。
+
+非公開の制作の 32 秒（30fps・5 クリップ・カット 4 つ・差し替え 14 区間・付け替え 2 区間）の対応表をこの書き方の spec に写し、960 コマすべてで、制作のスクリプトと同じ（クリップ, 元のコマ）を返すことを確かめた（素材を読まない比較。2026-11-09）。丸めを既定の `floor` のままにすると 678 コマずれる。
 
 ### 人物の合わせ（performer.fit）
 
@@ -293,9 +313,9 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 
 | コマンド | 内容 |
 |---|---|
-| `mv dance demo DIR [--width 540 --height 960 --duration 6 --fps 24] [--schema 0.2\|0.1]` | 合成素材と spec.json を作る |
+| `mv dance demo DIR [--width 540 --height 960 --duration 6 --fps 24] [--schema 0.3\|0.2\|0.1]` | 合成素材と spec.json を作る |
 | `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks FILE]` | dance.mp4 と timeline.json を run として出す。約 5% ごとに stderr へ進み具合（コマ数・経過時間・残りの見込み）を出す（`--quiet` で消す） |
-| `mv dance plan SPEC` | 解決した時刻の一覧（clips・つなぎ・accents・seams・フラッシュ・歌詞）を表で出す。判定はしない |
+| `mv dance plan SPEC` | 解決した時刻の一覧（clips・retime・replace_frames・つなぎ・accents・seams・フラッシュ・歌詞）を表で出す。判定はしない |
 | `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]] [--layers] [--hooks FILE]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線、seams の pivot を重ねる。`--guides all` は全行の箱 |
 | `mv dance accept RUN_DIR --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を追記する |
 

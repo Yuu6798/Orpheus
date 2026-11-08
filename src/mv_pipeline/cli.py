@@ -140,7 +140,7 @@ def _dance_parser(commands):
     demo.add_argument("--height", type=int, default=960)
     demo.add_argument("--duration", type=float, default=6.0)
     demo.add_argument("--fps", type=int, default=24)
-    demo.add_argument("--schema", choices=["0.1", "0.2"], default="0.2", help="spec version of the demo")
+    demo.add_argument("--schema", choices=["0.1", "0.2", "0.3"], default="0.3", help="spec version of the demo")
     render = sub.add_parser("render", help="render dance.mp4 and timeline.json as a run")
     render.add_argument("spec", type=Path)
     render.add_argument("--start", type=float, default=0.0)
