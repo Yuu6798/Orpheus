@@ -145,7 +145,8 @@ def face_projection_images(root, reused, atlas, face):
     """
     from PIL import Image
     from .io import ToolError, safe_path
-    from .ops.texture_ops import mask_from, projection_settings
+    from .ops.texture_ops import color_match_settings, mask_from, projection_settings
+    from .texture import check_boxes
 
     if atlas not in reused:
         raise ValueError("A model3d face config needs the bundle preset's face_atlas: one of its reused files")
@@ -163,9 +164,14 @@ def face_projection_images(root, reused, atlas, face):
         projection_settings(face["projection"])
         if "occlusion_part" in face["projection"]:   # the face steps build no occlusion map, so the step would stop after the rebuild
             raise ToolError("occlusion_part needs an occlusion map from texture.view_parts, which these face steps do not build")
-        if "mask" in face:
+        matching = color_match_settings(face["projection"])   # the model boxes were checked against the view above
+        if "mask" in face or matching is not None:
             with Image.open(reference) as image:
-                mask_from(face["mask"], list(image.size))
+                size = list(image.size)
+            if "mask" in face:
+                mask_from(face["mask"], size)
+            if matching is not None:   # the reference boxes need the sheet's size, which the step only learns after the rebuild
+                check_boxes(matching["reference"], size[0], size[1], "color_match.reference")
     except (ToolError, OSError) as error:
         raise ValueError(f"Face projection config is invalid: {error}") from error
     return {"face_atlas": reused[atlas], "face_reference": reference}

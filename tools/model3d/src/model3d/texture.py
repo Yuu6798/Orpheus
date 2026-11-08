@@ -585,16 +585,20 @@ def lab_8bit(lab):
     return np.stack([lab[..., 0] * 255 / 100, lab[..., 1] + 128, lab[..., 2] + 128], axis=-1)
 
 
-def box_pixels(image, boxes, where):
-    """画像 (H,W,C) の枠 [x0, y0, x1, y1]（右と下は含まない）の画素の色 (N,3) を、全部の枠からつなげて返す。"""
-    height, width = image.shape[:2]
-    pixels = []
+def check_boxes(boxes, width, height, where):
+    """枠 [x0, y0, x1, y1]（右と下は含まない）が、幅 width・高さ height の画像の中にあり、空でないかを確かめる
+    （描く前・長い再構築の前にも確かめられるように、画像を持たずに大きさだけで見る）。"""
     for box in boxes:
         x0, y0, x1, y1 = box
         if x0 < 0 or y0 < 0 or x1 > width or y1 > height or x1 <= x0 or y1 <= y0:
             raise ToolError(f"{where} の枠 {list(box)} が画像（{width}x{height}）の外か、空です")
-        pixels.append(np.asarray(image[y0:y1, x0:x1, :3], dtype=np.float64).reshape(-1, 3))
-    return np.vstack(pixels)
+
+
+def box_pixels(image, boxes, where):
+    """画像 (H,W,C) の枠 [x0, y0, x1, y1]（右と下は含まない）の画素の色 (N,3) を、全部の枠からつなげて返す。"""
+    height, width = image.shape[:2]
+    check_boxes(boxes, width, height, where)
+    return np.vstack([np.asarray(image[y0:y1, x0:x1, :3], dtype=np.float64).reshape(-1, 3) for x0, y0, x1, y1 in boxes])
 
 
 def color_match(reference, model_image, model_boxes, reference_boxes, keep=None):

@@ -49,13 +49,15 @@ def projection_settings(parameters):
     note = parameters.get("review_note")
     if note is not None and (not isinstance(note, str) or not note.strip()):
         raise ToolError("texture.project_reference の review_note は空でない文字列にしてください")
-    color_match_settings(parameters)
+    color_match_settings(parameters, view["size"])
     return view, fitted, options, note
 
 
-def color_match_settings(parameters):
+def color_match_settings(parameters, size=None):
     """texture.project_reference の color_match（{"model": [[x0, y0, x1, y1], …], "reference": […]}）を確かめて返す（無ければ None）。
-    model の枠はモデルの描画（視点の画素）、reference の枠は参照画像の画素。右と下は含まない。"""
+    model の枠はモデルの描画（視点の画素）、reference の枠は参照画像の画素。右と下は含まない。size（視点の [幅, 高さ]）を
+    渡せば、model の枠がその中かも確かめる（dance-recipe が長い再構築の前に止められるように。reference の枠は参照画像の大きさで
+    確かめる。工程では描いた絵と読んだ参照画像で、dance-recipe では参照画像を開いて）。"""
     value = parameters.get("color_match")
     if value is None:
         return None
@@ -69,6 +71,8 @@ def color_match_settings(parameters):
                            and b[2] > b[0] and b[3] > b[1] for b in items)):
             raise ToolError(f"color_match.{key} は枠 [x0, y0, x1, y1]（整数、x1 > x0、y1 > y0）の並びにしてください: {items!r}")
         boxes[key] = [list(b) for b in items]
+    if size is not None:
+        texture.check_boxes(boxes["model"], size[0], size[1], "color_match.model")
     return boxes
 
 

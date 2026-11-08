@@ -501,6 +501,10 @@ BAD_FACE_CONFIGS = {
     "one landmark": lambda c: {**c, "projection": {**c["projection"], "alignment": {"model": [[0, 0]], "reference": [[0, 0]]}}},
     "misspelled parameter": lambda c: {**c, "projection": {**c["projection"], "min_facng": 0.5}},
     "occlusion part without a map": lambda c: {**c, "projection": {**c["projection"], "occlusion_part": "head"}},
+    "colour box outside the view": lambda c: {**c, "projection": {**c["projection"],                      # 視点は 64x64
+                                                                   "color_match": {"model": [[60, 60, 70, 70]], "reference": [[0, 0, 8, 8]]}}},
+    "colour box outside the sheet": lambda c: {**c, "projection": {**c["projection"],                     # 参照画像は 128x128
+                                                                    "color_match": {"model": [[0, 0, 8, 8]], "reference": [[120, 120, 140, 140]]}}},
     "misspelled mask key": lambda c: {**c, "mask": {**c["mask"], "feathr": 3.0}},
     "no shapes": lambda c: {**c, "mask": {"shapes": []}},
     "outside the bundle": lambda c: {**c, "reference": "../outside.png"},
@@ -521,6 +525,17 @@ def test_model3d_face_config_is_checked_before_building(tmp_path, monkeypatch, c
     with pytest.raises(ValueError):
         dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
     assert not (tmp_path / "recipe").exists()
+
+
+def test_model3d_face_config_takes_a_colour_match_inside_the_view_and_the_sheet(tmp_path, monkeypatch):
+    root, preset, _, python, blender = fake_bundle(tmp_path, monkeypatch)
+    face = native_face(root)
+    config = dance.read(face)
+    config["projection"]["color_match"] = {"model": [[0, 0, 64, 64]], "reference": [[64, 0, 128, 128]]}   # ちょうど端まで
+    dump(face, config)
+    result = dance.build(tmp_path / "recipe", root, preset, face, python, blender, "1:9:3")
+    step = next(s for s in dance.read(result["recipe"])["steps"] if s["id"] == "face_projection")
+    assert step["parameters"]["color_match"] == config["projection"]["color_match"]
 
 
 def test_legacy_face_config_without_inputs_is_named(tmp_path, monkeypatch):

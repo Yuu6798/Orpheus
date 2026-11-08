@@ -115,6 +115,8 @@ def test_the_projection_step_matches_colours_before_painting(tmp_path):
     ({"model": [], "reference": [[0, 0, 1, 1]]}, "color_match.model"),
     ({"model": [[0, 0, 1, 1]], "reference": [[5, 5, 5, 9]]}, "color_match.reference"),
     ({"model": [[0, 0, 1.5, 1]], "reference": [[0, 0, 1, 1]]}, "color_match.model"),
+    ({"model": [[60, 60, 70, 70]], "reference": [[0, 0, 1, 1]]}, "color_match.model"),   # 視点（64x64）の外。描く前に止める
+    ({"model": [[-1, 0, 1, 1]], "reference": [[0, 0, 1, 1]]}, "color_match.model"),
     ("boxes", "color_match"),
 ])
 def test_bad_colour_match_settings_are_refused(value, message):

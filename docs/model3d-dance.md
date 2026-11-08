@@ -94,7 +94,7 @@ model3d の操作で設定画の顔を写す。再構築・質感の適用・描
 ```
 
 `projection` と `mask` は工程と同じ確かめ方（`texture.project_reference`・`texture.draw_mask` の規則）で、recipe を作る前に確かめる。
-知らないキー（入れ子の綴りの誤りも）、視点・目印・マスクの誤り、worker 一式の外やフォルダーの `reference` は、長い再構築の前に止まる。
+知らないキー（入れ子の綴りの誤りも）、視点・目印・マスク・色合わせの枠（`projection.color_match`。`model` の枠は視点の、`reference` の枠は参照画像の大きさの中か）の誤り、worker 一式の外やフォルダーの `reference` は、長い再構築の前に止まる。
 写った画素があれば run は `succeeded` になる（1 画素も写らなければ `needs_review`）。目印を自動検出の値のまま使うときなど、
 人の確認が要ることを残すには `projection.review_note`（空でない文字列）を書く。その工程と run は `needs_review` になり、後ろの工程は続く。
 採否は `overlay` と描画を見て人が決める。見え隠れは `part_name` の部品だけで決める（目元投影の worker は全部品で決めていた）。
