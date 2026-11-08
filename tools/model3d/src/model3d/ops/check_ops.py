@@ -196,3 +196,73 @@ def check_frames(inputs, parameters, outputs, context):
         atomic_json(outputs["report"], report)
     summary = {k: v for k, v in report.items() if k != "rows"}
     return _finish(summary, {k: v for k, v in outputs.items() if k != "report"}, parameters, "コマの比べ")
+
+
+BLEND_MATCH_PARAMETERS = {"frames", "pose_frames", "evaluate", "attributes", "samples", "objects", "armature", "tolerance",
+                          "blender", "timeout", "strict", "report_only"}
+SNAPSHOT_SCRIPT = __import__("pathlib").Path(__file__).resolve().parents[1] / "blender_adapter" / "snapshot_blend.py"
+
+
+def _int_list(value, key):
+    if not isinstance(value, list) or not all(isinstance(v, int) and not isinstance(v, bool) for v in value):
+        raise ToolError(f"{key} はコマの番号（整数）の並びにしてください: {value!r}")
+    return value
+
+
+@register("check.blend_match", inputs=("left", "right"), outputs=("report",), cacheable=False,
+          summary="2 つの .blend を比べる: 物体の有無・シーン・メッシュごとの頂点（物体の中の座標）・面のつなぎ・uv・属性・置き場所、"
+                  "骨の名前・静止・姿勢（pose_frames。all は全部のコマ）、evaluate なら frames の変形した世界の形（sha256 と等間隔の頂点）。"
+                  "Blender で中身を書き出し、numpy で比べる。全部が同じかを exact に、違いの大きさを max_* に出す。tolerance（coordinate・"
+                  "matrix・value）を渡せばその中かで、渡さなければ全部が同じかで合否を出す。Blender は外部の実行ファイルなので再利用しない")
+def check_blend_match(inputs, parameters, outputs, context):
+    from pathlib import Path
+    from .. import blend_snapshot
+    from ..blender_adapter import launcher
+    from . import number
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("left", "right"), "check.blend_match")
+    unknown = set(parameters) - BLEND_MATCH_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.blend_match の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(BLEND_MATCH_PARAMETERS)}）")
+    frames = _int_list(parameters.get("frames", []), "frames")
+    pose_frames = parameters.get("pose_frames")
+    if pose_frames is not None and pose_frames != "all":
+        pose_frames = _int_list(pose_frames, "pose_frames")
+    evaluate = parameters.get("evaluate", False)
+    if not isinstance(evaluate, bool):
+        raise ToolError(f"evaluate は true か false にしてください: {evaluate!r}")
+    if evaluate and not frames:
+        raise ToolError("evaluate には、変形した形を測るコマ frames が要ります")
+    attributes = parameters.get("attributes", "all")
+    if attributes != "all" and (not isinstance(attributes, list) or not all(isinstance(a, str) for a in attributes)):
+        raise ToolError(f"attributes は属性の名前の並びか \"all\" にしてください: {attributes!r}")
+    objects = parameters.get("objects")
+    if objects is not None and (not isinstance(objects, list) or not all(isinstance(o, str) for o in objects)):
+        raise ToolError(f"objects はメッシュの名前の並びにしてください: {objects!r}")
+    armature = parameters.get("armature")
+    if armature is not None and (not isinstance(armature, str) or not armature):
+        raise ToolError(f"armature はアーマチュアの名前にしてください: {armature!r}")
+    tolerance = blend_snapshot.check_tolerance(parameters.get("tolerance"))
+    samples = number(parameters, "samples", 512, minimum=1, integer=True)
+    blender = _blender(parameters, context, "check.blend_match")
+    settings = {"frames": frames, "pose_frames": pose_frames, "evaluate": evaluate, "attributes": attributes, "samples": samples,
+                "objects": objects, "armature": armature}
+    settings_path = Path(context.step_dir) / "snapshot_settings.json"
+    atomic_json(settings_path, settings)
+    snapshots, records = {}, {}
+    for side in ("left", "right"):
+        npz, meta = blend_snapshot.snapshot_paths(context.step_dir, side)
+        records[side] = launcher.run_blender(blender, SNAPSHOT_SCRIPT, None,
+                                             ["--blend", inputs[side], "--out", str(npz), "--meta", str(meta), "--settings", str(settings_path)],
+                                             log=Path(context.step_dir) / f"blender_{side}.log", timeout=_timeout(parameters))
+        snapshots[side] = blend_snapshot.load(npz, meta)
+    report = blend_snapshot.compare(snapshots["left"], snapshots["right"], tolerance, requested=objects,
+                                    requested_attributes=attributes if isinstance(attributes, list) else None)
+    report.update(left=str(inputs["left"]), right=str(inputs["right"]), frames=frames, settings=settings,
+                  blender_version=records["left"]["blender_version"])
+    summary = {k: v for k, v in report.items() if k not in ("objects", "evaluated_meshes", "pose_frames")}
+    summary["objects"] = len(report["objects"])
+    summary["evaluated_meshes"] = len(report["evaluated_meshes"])
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    return _finish(summary, {k: v for k, v in outputs.items() if k != "report"}, parameters, ".blend の比べ")
