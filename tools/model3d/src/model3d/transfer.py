@@ -35,6 +35,9 @@ def read_source(path):
     戻り: (部品の名前, 面の重心 (S,3), 面の部品の番号 (S,), 単位か None, メッシュか None)。"""
     if _is_npz(path):
         names = _part_names(path)
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if repeated:                                       # 名前で部品の parts を書くので、重なると片方の面が消える
+            raise ToolError(f"移し元の部品の名前が重なっています: {repeated}（名前は部品ごとに 1 つにしてください）: {path}")
         arrays = _npz_arrays(path, "部品の npz", [key for i in range(len(names)) for key in (f"co{i}", f"f{i}")])
         centroids, labels = [], []
         for i, name in enumerate(names):

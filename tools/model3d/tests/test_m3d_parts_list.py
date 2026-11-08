@@ -47,6 +47,24 @@ def test_broken_parts_are_listed_with_what_is_wrong(tmp_path):
     assert any("非有限" in p for p in report["problems"]) and any("無い頂点" in p for p in report["problems"])
 
 
+def test_non_finite_uv_and_normals_are_problems_and_the_report_stays_writable(tmp_path):
+    from model3d.ops import get
+    with np.load(_parts(tmp_path / "parts.npz")) as data:
+        arrays = {key: data[key] for key in data.files}
+    arrays["uv0"] = np.array([[0, 0], [np.nan, 0], [0, np.inf]], np.float32)               # 形は合うが、非有限の uv
+    np.savez(tmp_path / "parts.npz", **arrays)
+    np.savez(tmp_path / "normals.npz", n0=np.full((3, 3), np.nan, np.float32), n1=np.zeros((4, 3), np.float32))
+    report = m3.list_parts(tmp_path / "parts.npz", tmp_path / "normals.npz")
+    tri = report["parts"][0]
+    assert tri["uv"] == {"shape_ok": True, "finite": False} and tri["normals"]["finite"] is False   # 非有限の範囲は書かない
+    assert any("uv0 に非有限" in p for p in report["problems"]) and any("n0 に非有限" in p for p in report["problems"])
+    result = get("mesh.list_parts").function({"parts": tmp_path / "parts.npz", "normals": tmp_path / "normals.npz"}, {},
+                                             {"report": tmp_path / "r.json"}, Context(tmp_path))
+    assert result.review and json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["problems"] == report["problems"]
+    code, _, _ = run_cli("mesh", "parts", tmp_path / "parts.npz", "--normals", tmp_path / "normals.npz")
+    assert code == 1                                                                         # 法線の非有限も、見つけたこととして数える
+
+
 def _recipe(tmp_path, steps, inputs):
     atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "parts", "inputs": inputs, "steps": steps})
     return tmp_path / "recipe.json"
@@ -107,6 +125,13 @@ def test_uv_stretch_measures_how_far_uv_triangles_are_stretched():
     assert loose["pass"] is True
     flat = m3.Mesh(_sheet().vertices, _sheet().faces)
     assert checks.uv_stretch(flat, 64, 64)["status"] == "skipped"
+
+
+def test_a_mesh_whose_triangles_are_all_collapsed_counts_every_one():
+    dot = m3.Mesh(np.zeros((3, 3)), [[0, 1, 2]], [[0, 0], [1, 0], [0, 1]], name="dot")       # 3 つの頂点が同じ位置の三角形だけ
+    report = checks.uv_stretch(dot, 64, 64, thresholds={"max_degenerate": 0})
+    assert report["degenerate"] == 1 and report["ratio_percentiles"] is None and report["over"] == 0
+    assert report["pass"] is False and "潰れた" in report["failures"][0]                   # 比の正規化（全部 0）に惑わされない
 
 
 class Context:

@@ -113,8 +113,9 @@ def mesh_smooth_part_normals(inputs, parameters, outputs, context):
 
 @register("mesh.fill_holes", inputs=("mesh",), outputs=("mesh", "report"),
           summary="穴（1 つの面だけが使う辺の輪）を面でふさぎ、閉じたメッシュにする（collision.push_out の当たりなど）。今の面と頂点の番号は"
-                  "変えず、ふさぐ面を後ろに足す。cap: polygon（輪ごとに 1 つの多角形）か fan（輪の平均に頂点を足して三角形の扇）。"
-                  "orient で、体積が負なら全部の面を裏返して外向きに。max_sides より多い辺の輪は残す（要確認）。多様体でない辺・"
+                  "変えず、ふさぐ面を後ろに足す。cap: polygon（輪ごとに 1 つの多角形）か fan（輪の平均に頂点を足して三角形の扇。"
+                  "足した頂点には輪の uv と頂点色の平均）。orient で、辺でつながった面の集まりごとに、体積が負なら裏返して外向きに。"
+                  "max_sides より多い辺の輪は残す（要確認）。多様体でない辺・"
                   "向きのそろわない面・2 つの輪が通る頂点・つぶれた辺は止める。x_normals は外す")
 def mesh_fill_holes(inputs, parameters, outputs, context):
     require(inputs, ("mesh",), "mesh.fill_holes")
@@ -177,14 +178,26 @@ def mesh_transfer_parts(inputs, parameters, outputs, context):
     cell = None if parameters.get("cell") is None else float(number(parameters, "cell", minimum=0, exclusive=True))
     names, labels, target_mesh, report = transfer.transfer_parts(inputs["source"], inputs["target"], max_distance, cell)
     report["labels_sha256"] = transfer.labels_digest(names, labels)
-    if "labels" in outputs:
-        atomic_npz(outputs["labels"], names=np.array(names), labels=labels)
-    if "mesh" in outputs:
+    if "mesh" in outputs:                                  # 書けるかを、何かを書く前に確かめる
         if target_mesh is None:
             raise ToolError("移し先が npz のときは mesh を書けません（大きなメッシュの JSON は重いので labels を使ってください）")
+        others = {name: set(faces) for name, faces in target_mesh.parts.items() if name not in names}
         for i, name in enumerate(names):
             target_mesh.parts[name] = np.flatnonzero(labels == i).tolist()
         target_mesh.validate()
+        if str(outputs["mesh"]).lower().endswith(".obj"):  # OBJ は 1 つの面を 1 つのグループ（g）にしか書けない
+            labelled = set(np.flatnonzero(labels >= 0).tolist())
+            clash = sorted(name for name, faces in others.items() if faces & labelled)
+            if clash:
+                raise ToolError(f"移した部品の面が、移し先の今の parts {clash[:5]} にも入っています。OBJ は 1 つの面を 1 つのグループにしか"
+                                "書けないので、OBJ では移した部品が消えます。mesh の出力を .json にしてください")
+            owned = set().union(*(set(faces) for faces in target_mesh.parts.values()))
+            if "default" in target_mesh.parts and len(owned) < target_mesh.face_count:   # どの parts にも入らない面は g default になる
+                raise ToolError(f"どの parts にも入らない面が {target_mesh.face_count - len(owned)} 面あり（部品を付けなかった面など）、"
+                                "OBJ ではそれが部品 default のグループに書かれて、読み戻すと default にまざります。mesh の出力を .json にしてください")
+    if "labels" in outputs:
+        atomic_npz(outputs["labels"], names=np.array(names), labels=labels)
+    if "mesh" in outputs:
         _save(target_mesh, outputs)
     if "report" in outputs:
         atomic_json(outputs["report"], report)

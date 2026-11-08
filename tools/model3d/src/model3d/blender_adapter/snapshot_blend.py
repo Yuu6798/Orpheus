@@ -55,9 +55,14 @@ def main(argv=None):
         settings = json.load(stream)
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
     scene = bpy.context.scene
+    # 物体の置き場所の行列（matrix_world）は、保存したときのコマで変わる（動く物体や親）。どちらのファイルでも、
+    # シーンの最初のコマに合わせてから読む（頂点・面・uv・属性は、コマによらないメッシュのデータ）
+    scene.frame_set(scene.frame_start)
+    bpy.context.view_layer.update()
     arrays, meta = {}, {"schema_version": "model3d-blend-snapshot/0.1", "blender": bpy.app.version_string,
-                        "scene": {"start": scene.frame_start, "end": scene.frame_end, "fps": scene.render.fps},
-                        "objects": [], "evaluated": {}}
+                        "scene": {"start": scene.frame_start, "end": scene.frame_end, "fps": scene.render.fps,
+                                  "fps_base": scene.render.fps_base},     # 再生の速さは fps / fps_base
+                        "objects": [], "evaluated": {}, "matrix_frame": scene.frame_start}
     wanted = settings.get("objects")
     meshes = [ob for ob in bpy.data.objects if ob.type == "MESH" and (wanted is None or ob.name in wanted)]
     for k, ob in enumerate(meshes):

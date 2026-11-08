@@ -256,7 +256,8 @@ def check_blend_match(inputs, parameters, outputs, context):
                                              ["--blend", inputs[side], "--out", str(npz), "--meta", str(meta), "--settings", str(settings_path)],
                                              log=Path(context.step_dir) / f"blender_{side}.log", timeout=_timeout(parameters))
         snapshots[side] = blend_snapshot.load(npz, meta)
-    report = blend_snapshot.compare(snapshots["left"], snapshots["right"], tolerance)
+    report = blend_snapshot.compare(snapshots["left"], snapshots["right"], tolerance, requested=objects,
+                                    requested_attributes=attributes if isinstance(attributes, list) else None)
     report.update(left=str(inputs["left"]), right=str(inputs["right"]), frames=frames, settings=settings,
                   blender_version=records["left"]["blender_version"])
     summary = {k: v for k, v in report.items() if k not in ("objects", "evaluated_meshes", "pose_frames")}

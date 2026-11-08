@@ -61,8 +61,9 @@ def _get(container, key, index, what):
 
 
 def slot_uses(document, slot):
-    """slot のテクスチャを使う材質の並び: [{"material", "name", "texture", "image"}]。テクスチャの画像が拡張にしか
-    無い（KHR_texture_basisu・EXT_texture_webp など）なら止める。"""
+    """slot のテクスチャを使う材質の並び: [{"material", "name", "texture", "image"}]。テクスチャの画像が拡張にしか無い
+    （KHR_texture_basisu・EXT_texture_webp など）ときは image を None にし、拡張の名前を extensions に入れる（止めるのは、
+    その材質を取り出すときだけ。choose）。"""
     if slot not in SLOTS:
         raise ToolError(f"slot は {', '.join(SLOTS)} のどれかにしてください: {slot!r}")
     uses = []
@@ -73,16 +74,24 @@ def slot_uses(document, slot):
         if not isinstance(node, dict) or "index" not in node:
             continue
         texture = _get(document, "textures", node["index"], f"材質 {m} の {slot} のテクスチャ")
-        if "source" not in texture:
-            extensions = sorted((texture.get("extensions") or {}).keys())
-            raise ToolError(f"材質 {m} の {slot} のテクスチャは、画像が拡張（{', '.join(extensions) or '不明'}）にしかありません。"
-                            "拡張の画像は取り出せません")
-        uses.append({"material": m, "name": material.get("name"), "texture": node["index"], "image": texture["source"]})
+        use = {"material": m, "name": material.get("name"), "texture": node["index"], "image": texture.get("source")}
+        if use["image"] is None:
+            use["extensions"] = sorted((texture.get("extensions") or {}).keys())
+        uses.append(use)
     return uses
 
 
+def _refuse_extension_only(uses, slot):
+    for use in uses:
+        if use["image"] is None:
+            raise ToolError(f"材質 {use['material']} の {slot} のテクスチャは、画像が拡張（{', '.join(use['extensions']) or '不明'}）"
+                            "にしかありません。拡張の画像は取り出せません")
+
+
 def choose(document, slot, material=None):
-    """取り出す画像を決める。material（番号か名前）を省くと、slot を使う全部の材質が同じ画像を指すときだけ、その画像。"""
+    """取り出す画像を決める。material（番号か名前）を選べば、その材質の画像（ほかの材質の、拡張にしか無い画像では止めない）。
+    同じ名前の材質が違う画像を指すなら、どれか決めずに止める（番号で選ぶ）。
+    省くと、slot を使う全部の材質が同じ画像を指すときだけ、その画像（拡張にしか無い画像が 1 つでもあれば止める）。"""
     uses = slot_uses(document, slot)
     if material is not None:
         chosen = [u for u in uses if (u["material"] == material if isinstance(material, int) and not isinstance(material, bool)
@@ -90,9 +99,16 @@ def choose(document, slot, material=None):
         if not chosen:
             names = [(m, mat.get("name")) for m, mat in enumerate(document.get("materials") or [])]
             raise ToolError(f"材質 {material!r} に {slot} のテクスチャがありません（材質: {names}）")
+        if len({u["image"] for u in chosen}) > 1:             # 同じ名前の材質が、違う画像を指す（どれか決まらない）
+            detail = ", ".join(f"材質 {u['material']} → 画像 {u['image'] if u['image'] is not None else '（拡張だけ）'}"
+                               for u in chosen[:12])
+            raise ToolError(f"名前 {material!r} の材質が {len(chosen)} つあり、{slot} の画像が違います（{detail}）。"
+                            "material に材質の番号を書いてください")
+        _refuse_extension_only(chosen[:1], slot)
         return chosen[0], chosen
     if not uses:
         raise ToolError(f"{slot} のテクスチャを使う材質がありません")
+    _refuse_extension_only(uses, slot)
     images = sorted({u["image"] for u in uses})
     if len(images) > 1:
         detail = ", ".join(f"材質 {u['material']}（{u['name']}）→ 画像 {u['image']}" for u in uses[:12])

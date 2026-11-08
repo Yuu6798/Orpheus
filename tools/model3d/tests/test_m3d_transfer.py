@@ -58,6 +58,19 @@ def test_the_default_cell_keeps_a_few_points_per_filled_cell():
     assert 1 <= occupancy <= 6
 
 
+def test_flat_and_line_points_get_a_cell_from_their_area_or_length():
+    xs, ys = np.meshgrid(np.linspace(0, 1, 60), np.linspace(0, 1, 60))
+    flat = np.c_[xs.ravel(), ys.ravel(), np.zeros(xs.size)]                         # z の厚みが 0 の格子
+    assert spatial.default_cell(flat) > 1 / 59                                       # 点の間隔より大きい（厚み 0 に引かれない）
+    queries = flat + [0.003, 0.002, 1e-4]                                            # 面から少し浮いた問い
+    index, _, info = spatial.nearest(flat, queries)
+    assert info["brute_force"] == 0 and np.array_equal(index, _brute(flat, queries)[0])   # 全部の点と比べずに同じ答え
+    line = np.c_[np.linspace(0, 1, 500), np.zeros(500), np.zeros(500)]               # 線の点
+    index, _, info = spatial.nearest(line, line + [0.0005, 1e-5, 0])
+    assert info["brute_force"] == 0 and np.array_equal(index, np.arange(500))
+    assert spatial.default_cell(np.zeros((4, 3))) == 1.0                             # 全部の点が同じ位置
+
+
 def test_centroids_keep_the_vertex_type_and_handle_mixed_faces():
     vertices = np.array([[0, 0, 0], [3, 0, 0], [0, 3, 0], [3, 3, 0]], dtype=np.float32)
     centroid = transfer.face_centroids(vertices, np.array([[0, 1, 2]]))
@@ -157,6 +170,36 @@ def test_the_operation_writes_parts_into_a_model3d_target(tmp_path):
     assert out.parts["left"] == list(range(32)) and out.parts["right"] == list(range(32, 64)) and out.parts["keep"] == [0]
     refused = executor.run_recipe(_recipe(tmp_path, {}, "mesh.npz", {"mesh": "x.json"}), tmp_path / "runs2")
     assert refused["status"] == "failed" and "npz" in refused["steps"]["transfer"]["error"]
+    lossy = executor.run_recipe(_recipe(tmp_path, {}, "target.json", {"mesh": "target.obj"}), tmp_path / "runs3")
+    error = lossy["steps"]["transfer"]["error"]
+    assert lossy["status"] == "failed" and "OBJ" in error and "keep" in error             # 面 0 は keep と left の両方（OBJ では消える）
+    m3.Mesh(np.vstack([left[0], right[0]]).astype(np.float64), np.vstack([left[1], right[1] + 25]).tolist(),
+            name="bare").save(tmp_path / "bare.json")
+    fine = executor.run_recipe(_recipe(tmp_path, {}, "bare.json", {"mesh": "bare.obj"}), tmp_path / "runs4")
+    assert fine["status"] == "succeeded"
+    assert m3.Mesh.load(fine["steps"]["transfer"]["artifacts"]["mesh"]).parts["left"] == list(range(32))   # 重ならなければ OBJ にも残る
+
+
+def test_obj_output_refuses_to_mix_unlabelled_faces_into_a_part_named_default(tmp_path):
+    from model3d import executor
+    left, right = _grid(0.0), _grid(10.0)
+    np.savez(tmp_path / "parts.npz", names=np.array(["default", "right"]), co0=left[0], f0=left[1], co1=right[0], f1=right[1])
+    far = np.vstack([left[0], right[0] + np.float32([0, 0, 5])]).astype(np.float64)               # 右半分は遠い（部品を付けない）
+    m3.Mesh(far, np.vstack([left[1], right[1] + 25]).tolist(), name="bare").save(tmp_path / "bare.json")
+    parameters = {"max_distance": 0.5}
+    lossy = executor.run_recipe(_recipe(tmp_path, parameters, "bare.json", {"mesh": "bare.obj"}), tmp_path / "runs")
+    assert lossy["status"] == "failed" and "default" in lossy["steps"]["transfer"]["error"]      # 付けなかった面が g default にまざる
+    kept = executor.run_recipe(_recipe(tmp_path, parameters, "bare.json", {"mesh": "bare.json"}), tmp_path / "runs2")
+    out = m3.Mesh.load(kept["steps"]["transfer"]["artifacts"]["mesh"])
+    assert kept["steps"]["transfer"]["status"] == "needs_review" and out.parts["default"] == list(range(32))   # JSON なら分けたまま
+
+
+def test_repeated_source_part_names_are_refused(tmp_path):
+    left, right = _grid(0.0), _grid(10.0)
+    np.savez(tmp_path / "twins.npz", names=np.array(["leg", "leg"]), co0=left[0], f0=left[1], co1=right[0], f1=right[1])
+    _inputs(tmp_path)
+    with pytest.raises(ToolError, match="名前が重なって"):                              # 名前で parts を書くと片方の面が消える
+        transfer.transfer_parts(tmp_path / "twins.npz", tmp_path / "mesh.npz")
 
 
 class Context:

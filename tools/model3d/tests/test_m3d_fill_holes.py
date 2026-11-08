@@ -67,6 +67,37 @@ def test_an_inward_tube_is_turned_outward_and_a_stray_face_is_reoriented():
     assert report["volume"] == pytest.approx(-_prism_volume()) and not report["flipped"]   # orient なしは内向きのまま
 
 
+TETRA_OUT = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]                                 # 外向き（頂点 0 を角にした四面体）
+
+
+def test_shells_that_share_only_a_vertex_are_turned_outward_separately():
+    big = [[0, 0, 0], [2, 0, 0], [0, 2, 0], [0, 0, 2]]                                    # 体積 8/6、外向き
+    small = [[1, 0, 2], [0, 1, 2], [0, 0, 3]]                                             # 頂点 3 (0, 0, 2) だけを共有する体積 1/6 の殻
+    local = {0: 3, 1: 4, 2: 5, 3: 6}
+    inward = [[local[i] for i in face[::-1]] for face in TETRA_OUT]                      # 小さい方は内向き
+    mesh = m3.Mesh(big + small, TETRA_OUT + inward)
+    assert len(m3.face_components(mesh)) == 1 and len(m3.edge_components(mesh.faces)) == 2   # 頂点ではつながり、辺ではつながらない
+    out, report = m3.fill_holes(mesh)
+    assert report["components"] == 2 and report["flipped_components"] == 1 and report["closed"]
+    assert report["volume"] == pytest.approx(8 / 6 + 1 / 6)                               # どちらも外向き（まとめて測ると 7/6 で裏返らない）
+    assert out.faces[:4] == TETRA_OUT and out.faces[4:] == [[local[i] for i in face] for face in TETRA_OUT]
+
+
+def test_fan_caps_give_the_added_vertices_the_mean_colour_of_their_loop(tmp_path):
+    tube = _tube()
+    palette = [[i / 16, 0.5, 1.0 - i / 16] for i in range(16)]
+    tube.extra["x_vertex_colors"] = palette
+    out, _ = m3.fill_holes(tube, cap="fan")
+    colors = out.extra["x_vertex_colors"]
+    assert len(colors) == out.vertex_count == 18 and colors[:16] == palette
+    assert np.allclose(colors[16], np.mean(palette[:8], axis=0)) and np.allclose(colors[17], np.mean(palette[8:], axis=0))
+    assert len(tube.extra["x_vertex_colors"]) == 16                                       # 入力の色の並びは変えない
+    out.save(tmp_path / "tube.obj")                                                       # 数が合うので、OBJ にも色が残る
+    assert len(m3.Mesh.load(tmp_path / "tube.obj").extra["x_vertex_colors"]) == 18
+    polygon, _ = m3.fill_holes(tube)
+    assert polygon.extra["x_vertex_colors"] == palette                                    # 多角形は頂点を足さないので、色もそのまま
+
+
 def test_holes_larger_than_max_sides_are_left_open_and_reported():
     out, report = m3.fill_holes(_tube(), max_sides=6)
     assert report["filled_loops"] == 0 and report["left_open_edges"] == 16 and not report["closed"] and report["orient_skipped"]
