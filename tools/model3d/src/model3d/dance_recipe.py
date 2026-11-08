@@ -161,6 +161,8 @@ def face_projection_images(root, reused, atlas, face):
         if not reference.is_file():
             raise ToolError(f"reference is not a file inside the bundle: {face.get('reference')!r}")
         projection_settings(face["projection"])
+        if "occlusion_part" in face["projection"]:   # the face steps build no occlusion map, so the step would stop after the rebuild
+            raise ToolError("occlusion_part needs an occlusion map from texture.view_parts, which these face steps do not build")
         if "mask" in face:
             with Image.open(reference) as image:
                 mask_from(face["mask"], list(image.size))

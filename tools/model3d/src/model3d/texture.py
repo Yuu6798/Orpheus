@@ -408,12 +408,14 @@ def aligned_overlay(mesh, texture, reference, view, matrix, offset, mask=None, o
 
 
 def project_reference(mesh, texture, reference, view, matrix, offset, faces=None, mask=None, min_facing=0.2,
-                      facing_ramp=0.3, depth_tolerance=0.002, expand=1.0, max_stretch=8.0):
+                      facing_ramp=0.3, depth_tolerance=0.002, expand=1.0, max_stretch=8.0, occlusion=None):
     """参照画像をテクスチャへ写した新しいテクスチャ（texture と同じ (H,W,3) か (H,W,4)。アルファは変えない）、画素ごとの重み (H,W)、報告。
 
     faces（面の番号）があれば、その面の上の画素だけを塗る（見え隠れはメッシュ全体で判定する）。matrix・offset は
     `alignment` の 参照画像 → 視点 の変換。reference は RGB か RGBA（アルファも重みに掛ける）、mask は参照画像と同じ大きさの
     0〜255 の重み（任意）。max_stretch は `stretch` がこれを超える三角形を塗らない上限。
+    occlusion（任意）は view_parts の手前の部品の地図 (owner (H,W), depth (H,W), 自分の番号, 名前の並び)。画素の手前に別の部品があり、
+    その奥行きが点より depth_tolerance を超えて手前なら、その点は隠れる（ほかの部品に隠れた所へ参照画像を写さない）。
     """
     if mesh.uv is None:
         raise ToolError("メッシュに頂点ごとの uv がありません（テクスチャへ写せません）")
@@ -466,6 +468,17 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     k = nearest[covered]
     surface_z = plane_depth[k] + ((at[covered] - plane_origin[k]) * plane_gradient[k]).sum(axis=1)
     visible[covered] = z[covered] <= surface_z + depth_tolerance
+    if occlusion is not None:                            # ほかの部品に隠れた点（部品の地図の、画素の中心の奥行きで比べる）
+        occ_owner, occ_depth, self_index, occ_names = occlusion
+        part = np.full(len(index), -1, dtype=np.int64)
+        part_depth = np.full(len(index), np.inf)
+        part[on_view] = occ_owner[py[on_view], px[on_view]]
+        part_depth[on_view] = occ_depth[py[on_view], px[on_view]]
+        hidden = on_view & (part >= 0) & (part != self_index) & (part_depth < z - depth_tolerance)
+        visible &= ~hidden
+        counts = np.bincount(part[hidden], minlength=len(occ_names)) if hidden.any() else np.zeros(len(occ_names), dtype=np.int64)
+        report["occluded_fragments"] = int(hidden.sum())
+        report["occluded_by"] = {occ_names[i]: int(c) for i, c in enumerate(counts) if c}
     facing = np.clip((-(normal @ forward) - min_facing) / facing_ramp, 0.0, 1.0)
     source = (at - offset) @ np.linalg.inv(matrix).T
     color, outside = sample(reference, source)
@@ -491,3 +504,50 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
                   visible_fragments=int(visible.sum()), facing_fragments=int((facing > 0).sum()),
                   inside_reference_fragments=int((~outside).sum()))
     return with_alpha(new), weights, report
+
+
+# ---- 手前の部品の地図 ------------------------------------------------------------------------
+
+PART_PALETTE = np.array([[230, 80, 80], [80, 160, 230], [120, 200, 120], [240, 200, 90], [180, 120, 220], [90, 200, 200],
+                         [200, 140, 90], [140, 140, 140], [220, 120, 180], [100, 100, 200], [160, 200, 80]], dtype=float)
+
+
+def view_parts(parts, view, margin=2.0):
+    """部品 [(名前, 頂点 (N,3), 三角形 (T,3)), …] を視点の正射影で描き、画素ごとにいちばん手前の部品の番号 (H,W)（無い画素は -1）と
+    奥行き (H,W)（無い画素は inf）、部品ごとの数を返す。視点の窓（とその周り margin 画素）にかかる三角形だけを描く
+    （三角形の範囲で選ぶので、角が全部窓の外でも窓をまたぐ三角形は描く）。z バッファは texture.zbuffer（同じ入力なら同じ勝者）。"""
+    width, height = check_view(view)[5]
+    points, depths, triangles, owner, rows = [], [], [], [], []
+    offset = 0
+    for i, (name, vertices, faces) in enumerate(parts):
+        p, d = project_points(np.asarray(vertices, dtype=np.float64), view)
+        faces = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
+        corners = p[faces] if len(faces) else np.zeros((0, 3, 2))
+        low, high = corners.min(axis=1), corners.max(axis=1)
+        keep = ((high[:, 0] >= -margin) & (low[:, 0] <= width + margin) & (high[:, 1] >= -margin) & (low[:, 1] <= height + margin)
+                if len(faces) else np.zeros(0, dtype=bool))
+        points.append(p)
+        depths.append(d)
+        triangles.append(faces[keep] + offset)
+        owner.append(np.full(int(keep.sum()), i, dtype=np.int64))
+        rows.append({"index": i, "name": name, "triangles": int(len(faces)), "triangles_in_view": int(keep.sum())})
+        offset += len(p)
+    points = np.concatenate(points) if points else np.zeros((0, 2))
+    depths = np.concatenate(depths) if depths else np.zeros(0)
+    triangles = np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64)
+    owner = np.concatenate(owner) if owner else np.zeros(0, dtype=np.int64)
+    buffer, (index, x, y, _) = zbuffer(points, depths, triangles, width, height)
+    owners = np.full((height, width), -1, dtype=np.int32)
+    owners[y, x] = owner[index]
+    front = np.bincount(owner[index], minlength=len(parts)) if len(index) else np.zeros(len(parts), dtype=np.int64)
+    for row in rows:
+        row["front_pixels"] = int(front[row["index"]])
+    return owners, buffer, {"view": dict(view), "covered_pixels": int(len(index)), "parts": rows, "margin": float(margin)}
+
+
+def parts_preview(owners, background=245.0):
+    """手前の部品の地図を色で描いた画像 (H,W,3)（部品の番号ごとの色。11 色を繰り返す。無い画素は background）。"""
+    image = np.full(owners.shape + (3,), float(background))
+    covered = owners >= 0
+    image[covered] = PART_PALETTE[owners[covered] % len(PART_PALETTE)]
+    return image

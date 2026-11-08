@@ -500,6 +500,7 @@ BAD_FACE_CONFIGS = {
     "bad view": lambda c: {**c, "projection": {**c["projection"], "view": {"from": "top"}}},
     "one landmark": lambda c: {**c, "projection": {**c["projection"], "alignment": {"model": [[0, 0]], "reference": [[0, 0]]}}},
     "misspelled parameter": lambda c: {**c, "projection": {**c["projection"], "min_facng": 0.5}},
+    "occlusion part without a map": lambda c: {**c, "projection": {**c["projection"], "occlusion_part": "head"}},
     "misspelled mask key": lambda c: {**c, "mask": {**c["mask"], "feathr": 3.0}},
     "no shapes": lambda c: {**c, "mask": {"shapes": []}},
     "outside the bundle": lambda c: {**c, "reference": "../outside.png"},
