@@ -226,7 +226,7 @@ def check_replacements(timeline):
     warnings = []
     for path, runs in timeline.replacements.runs.items():
         source = timeline.sources[path]
-        frames = source.count()
+        frames = timeline.last_frame(path) + 1          # 数えるのは 1 回（Timeline が覚えて、末尾の差し替えにも使う）
         for run in runs:
             a, b = run["frames"]
             target, label = run["with"], f"replace_frames {path!r} [{a}, {b})"
@@ -264,6 +264,7 @@ class Timeline:
         self.rounding = spec.data["performer"].get("frame_rounding", "floor")
         self.replacements = Replacements(spec)
         self.sources = {}
+        self.frame_counts = {}     # replace_frames のある動画のコマ数（末尾を越えた番号の差し替えに使う。数えるのは 1 回）
         self.outgoing = {}     # blend の前のクリップ用。同じ動画を切れ目の前後で使うと 1 本の読み手が行き来して遅い
         for index, clip in enumerate(self.clips):
             if clip["path"] not in self.sources:
@@ -294,10 +295,23 @@ class Timeline:
                 return max(0, round_frame(value if segment["unit"] == "frame" else value * source.fps, self.rounding))
         return max(0, round_frame((clip["source_start"] + (t - clip["start"]) * clip["speed"]) * source.fps, self.rounding))
 
+    def last_frame(self, path):
+        """動画の最後のコマ番号（Source.count で 1 回だけ数えて覚える。check_replacements と共有）。"""
+        if path not in self.frame_counts:
+            self.frame_counts[path] = self.sources[path].count()
+        return self.frame_counts[path] - 1
+
     def source_frame(self, clip, t):
-        """ショット時刻 t に見せる元のフレーム番号（retime と丸めの後、replace_frames で差し替えた番号）。"""
+        """ショット時刻 t に見せる元のフレーム番号（retime と丸めの後、replace_frames で差し替えた番号）。
+
+        replace_frames のある動画は、末尾を越えた番号を最後のコマに止めてから差し替えを引く（読み手は最後のコマで止めて見せるので、
+        最後のコマまで届く差し替えは、末尾を越えて止まる間も効く）。差し替えの無い動画の番号は、0.2 と同じくそのまま。"""
         number = self.raw_frame(clip, t)
-        return number if clip["kind"] == "image" else self.replacements.shown(clip["path"], number)[0]
+        if clip["kind"] == "image":
+            return number
+        if clip["path"] in self.replacements.runs:
+            number = min(number, self.last_frame(clip["path"]))
+        return self.replacements.shown(clip["path"], number)[0]
 
     def blend_weight(self, clip, t):
         """t が clip の blend の窓の中なら新しい側の重み（0 より大きく 1 未満）、窓の外なら None。"""
@@ -308,7 +322,8 @@ class Timeline:
         return smoothstep((step + 1) / (frames + 1)) if 0 <= step < frames else None
 
     def mapping(self, t):
-        """時刻 t の [(clip 番号, 元のフレーム番号, 重み)]。画を読まずに決まる。blend の窓では前のクリップが先。"""
+        """時刻 t の [(clip 番号, 元のフレーム番号, 重み)]。画を読まずに決まる（replace_frames のある動画だけ、コマ数を 1 回数える）。
+        blend の窓では前のクリップが先。"""
         index = self.index_at(t)
         if index is None:
             return []

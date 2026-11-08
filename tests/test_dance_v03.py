@@ -39,6 +39,9 @@ class Stub:
     def __init__(self, fps=30.0):
         self.fps, self.width, self.height = fps, W, H
 
+    def count(self):
+        return 10 ** 6          # 素材を読まないので、末尾は十分に先とする（末尾で止まる差し替えは two_clips の動画で確かめる）
+
     def close(self):
         pass
 
@@ -236,6 +239,27 @@ def test_replacements_at_the_end_with_before_pass_and_outside_runs_warn(two_clip
     finally:
         tl.close()
     assert len(warnings) == 1 and "[40, 42)" in warnings[0] and "30 コマ" in warnings[0]
+
+
+def test_a_replacement_at_the_end_keeps_covering_the_hold_past_the_end(two_clips):
+    sp = parse(two_clips, base(replace_frames=[{"path": "a.mp4", "frames": [10, 12], "with": "before"}]))   # a は 12 コマで、1 秒（30 コマ）使う
+    tl = clips.Timeline(sp)
+    try:
+        assert clips.check_replacements(tl) == []
+        assert [tl.mapping(k / 30)[0][1] for k in (9, 10, 11, 12, 20, 29)] == [9] * 6       # 末尾を越えて止まる間も 9（壊れた 11 を見せない）
+        assert (tl.shown(29 / 30)[0].image == tl.shown(9 / 30)[0].image).all()
+    finally:
+        tl.close()
+    Image.fromarray(np.full((H, W, 3), (0, 0, 200), np.uint8)).save(two_clips / "fix.png")
+    sp = parse(two_clips, base(replace_frames=[{"path": "a.mp4", "frames": [11, 12], "with": {"image": "fix.png"}}]))
+    tl = clips.Timeline(sp)
+    try:
+        assert clips.check_replacements(tl) == []
+        assert all(tl.image_for(tl.clips[0], tl.mapping(k / 30)[0][1]) is not None for k in (11, 12, 29))   # 画像も末尾の間ずっと
+    finally:
+        tl.close()
+    usage, _, _ = targets.dance_usage(sp)
+    assert 11 not in [number for _, _, number, _ in usage["a.mp4"]]                                     # 壊れた最後のコマは出ない
 
 
 def test_an_image_stands_in_for_one_frame(two_clips):
