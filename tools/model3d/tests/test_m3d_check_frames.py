@@ -94,6 +94,10 @@ def test_the_view_puts_left_right_and_the_amplified_difference_side_by_side(tmp_
     with Image.open(tmp_path / "view.png") as view:
         assert view.size == (24, 6) and view.getpixel((16 + 1, 1)) == (40, 40, 40) and view.getpixel((16, 0)) == (0, 0, 0)
     assert info["fraction_over"][">2"] == pytest.approx(1 / 48, abs=1e-6)
+    _poke(right / "f0002.png", (2, 2), (255, 100, 200))                                     # 差 235（赤: 20 → 255）
+    checks.frame_view(left / "f0002.png", right / "f0002.png", tmp_path / "loud.png", amplify=256)
+    with Image.open(tmp_path / "loud.png") as view:
+        assert view.getpixel((16 + 2, 2)) == (255, 255, 255)                                # 整数の大きな倍率でも溢れて黒にならない
 
 
 def _recipe(tmp_path, parameters, inputs=None, step_inputs=None, outputs=None):

@@ -496,7 +496,7 @@ def frame_view(left_path, right_path, out, amplify=8):
     if a.shape != b.shape:
         raise ToolError(f"大きさの違うコマは並べられません: {left_path} と {right_path}")
     worst = np.maximum(np.abs(a - b).max(axis=2), np.abs(a_alpha - b_alpha))
-    heat = np.clip(worst * amplify, 0, 255).astype(np.uint8)
+    heat = np.clip(worst.astype(np.float64) * amplify, 0, 255).astype(np.uint8)   # 小数にしてから掛ける（整数の倍率でも int16 で溢れない）
     view = np.concatenate([a.astype(np.uint8), b.astype(np.uint8), np.stack([heat] * 3, axis=2)], axis=1)
     Image.fromarray(view).save(out)
     return {"left": str(left_path), "right": str(right_path), "amplify": amplify,
