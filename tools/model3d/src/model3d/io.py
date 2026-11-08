@@ -44,6 +44,23 @@ def read_json(path):
         raise ToolError(f"JSON を読めません: {path}（{error}）") from error
 
 
+def atomic_npz(path, **arrays):
+    """名前つきの配列を npz に書く（一時ファイルに書いてから置き換える。拡張子は足さない）。"""
+    import numpy as np
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            np.savez(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 def atomic_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

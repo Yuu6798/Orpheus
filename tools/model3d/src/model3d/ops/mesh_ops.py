@@ -1,7 +1,10 @@
-"""メッシュの操作: 読み込み、押し出し、結合、変形、面領域の切り出し、OBJ 書き出し。"""
-from ..io import ToolError, atomic_json, read_json
-from ..mesh import Mesh, extrude_profile, read_parts, remap_rig_weights, submesh, transform, weld
+"""メッシュの操作: 読み込み、押し出し、結合、変形、面領域の切り出し、法線のならし、OBJ 書き出し。"""
+from ..io import ToolError, atomic_json, atomic_npz, read_json
+from ..mesh import (UNIT_FACTORS, Mesh, extrude_profile, face_edges, read_all_parts, read_parts, remap_rig_weights,
+                    smooth_normals, submesh, transform, weld)
 from . import StepResult, number, register, require, selected
+
+SMOOTH_PARAMETERS = {"iterations", "weld"}
 
 
 def _save(mesh, outputs, name="mesh"):
@@ -34,6 +37,77 @@ def mesh_import_parts(inputs, parameters, outputs, context):
     _save(mesh, outputs)
     return StepResult(observations=[{"kind": "mesh", **mesh.summary(), "part": part, "uv": mesh.uv is not None,
                                      "normals": "x_normals" in mesh.extra}])
+
+
+def _iterations(value, where="iterations"):
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ToolError(f"{where} は 0 以上の整数にしてください（部品ごとの回数は、リポジトリ外の設定に書く）: {value!r}")
+    return value
+
+
+def _check_smooth(parameters, operation):
+    unknown = set(parameters) - SMOOTH_PARAMETERS
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(SMOOTH_PARAMETERS)}）")
+    if "iterations" not in parameters:
+        raise ToolError(f"{operation} には iterations（ならす回数。0 以上の整数）が要ります")
+
+
+@register("mesh.smooth_normals", inputs=("mesh",), outputs=("mesh", "report"),
+          summary="頂点の法線をならして x_normals に書く（頂点と面は変えない）。格子 weld（既定は 1e-5 m をメッシュの単位に換算）で同じ位置の"
+                  "頂点をまとめ（UV の継ぎ目で分かれた頂点も同じ法線になる）、面積の重みの法線から、辺でつながった隣の法線の和を足して長さ 1 に"
+                  "戻すことを iterations 回くり返す。法線が 0 のままの頂点（向かい合う面が重なる所・面の無い頂点）は数を報告する")
+def mesh_smooth_normals(inputs, parameters, outputs, context):
+    require(inputs, ("mesh",), "mesh.smooth_normals")
+    _check_smooth(parameters, "mesh.smooth_normals")
+    mesh = Mesh.load(inputs["mesh"])
+    iterations = _iterations(parameters["iterations"])
+    step = float(number(parameters, "weld", 1e-5 / UNIT_FACTORS[mesh.units], minimum=0, exclusive=True))
+    triangles, _ = mesh.triangles()
+    normals, report = smooth_normals(mesh.vertices, triangles, face_edges(mesh.faces), iterations, step)
+    mesh.extra["x_normals"] = normals.tolist()
+    _save(mesh, outputs)
+    if "report" in outputs:
+        atomic_json(outputs["report"], {"schema_version": "model3d-normals/0.1", "units": mesh.units, "parts": [{"name": mesh.name, **report}]})
+    return StepResult(observations=[{"kind": "smooth_normals", **report}])
+
+
+@register("mesh.smooth_part_normals", inputs=("parts",), outputs=("normals", "report"),
+          summary="部品ごとの npz（names と co{i}・f{i}）の全部の部品の法線を、mesh.smooth_normals と同じ計算でならし、n{i}（float32、"
+                  "頂点ごと）の npz に書く（mesh.import_parts の入力 normals になる）。iterations は全部の部品に同じ整数か、"
+                  "{部品の名前: 整数}（全部の部品を書く）。weld は npz の単位（m）で、既定 1e-5")
+def mesh_smooth_part_normals(inputs, parameters, outputs, context):
+    import numpy as np
+    require(inputs, ("parts",), "mesh.smooth_part_normals")
+    _check_smooth(parameters, "mesh.smooth_part_normals")
+    if "normals" not in outputs:
+        raise ToolError("mesh.smooth_part_normals には outputs の normals（法線の npz）が要ります")
+    parts = read_all_parts(inputs["parts"])
+    names = [name for name, _vertices, _faces in parts]
+    spec = parameters["iterations"]
+    if isinstance(spec, dict):
+        missing, extra = [n for n in names if n not in spec], sorted(set(spec) - set(names))
+        if missing or extra:
+            raise ToolError(f"iterations の部品が npz と合いません（書いていない部品: {missing}、npz に無い部品: {extra}）")
+        counts = {name: _iterations(spec[name], f"iterations.{name}") for name in names}
+    else:
+        counts = dict.fromkeys(names, _iterations(spec))
+    step = float(number(parameters, "weld", 1e-5, minimum=0, exclusive=True))
+    arrays, rows = {}, []
+    for i, (name, vertices, faces) in enumerate(parts):
+        if faces.shape[1] == 3:
+            triangles, edges = faces, face_edges(faces)
+        else:                                            # 四角形以上は、面の平面で三角形に分けて面積を取る（隣は面の縁の辺）
+            polygon = Mesh(vertices, faces.tolist())
+            triangles, edges = polygon.triangles()[0], face_edges(polygon.faces)
+        normals, report = smooth_normals(vertices, triangles, edges, counts[name], step)
+        arrays[f"n{i}"] = normals.astype(np.float32)
+        rows.append({"index": i, "name": name, **report})
+    atomic_npz(outputs["normals"], **arrays)
+    if "report" in outputs:
+        atomic_json(outputs["report"], {"schema_version": "model3d-normals/0.1", "units": "m", "parts": rows})
+    return StepResult(observations=[{"kind": "smooth_part_normals", "parts": len(rows), "vertices": sum(r["vertices"] for r in rows),
+                                     "zero_normals": sum(r["zero_normals"] for r in rows), "weld": step}])
 
 
 @register("mesh.extrude_profile", inputs=("profile",), outputs=("mesh",),
