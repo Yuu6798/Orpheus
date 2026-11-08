@@ -13,7 +13,8 @@ APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "apply_
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
-                         "review_note")
+                         "review_note", "occlusion_part")
+VIEW_PARTS_PARAMETERS = ("view", "parts", "margin", "background")
 ALIGNMENT_KEYS = ("model", "reference", "kind")
 MASK_PARAMETERS = ("size", "shapes", "feather")
 
@@ -199,22 +200,100 @@ def draw_mask(inputs, parameters, outputs, context):
     return StepResult(observations=[report])
 
 
-@register("texture.project_reference", inputs=("mesh", "texture", "reference", "mask"),
+def load_occlusion(path, view):
+    """texture.view_parts の手前の部品の地図を読む: (owner (H,W) int, depth (H,W), 名前の並び)。視点が違えば止める。"""
+    import json
+    import numpy as np
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            owner, depth, names, saved = data["owner"], data["depth"], [str(n) for n in data["names"]], json.loads(str(data["view"]))
+    except (OSError, KeyError, ValueError) as error:
+        raise ToolError(f"手前の部品の地図（owner・depth・names・view の npz）を読めません: {path}（{error}）") from error
+    if _normal_view(saved) != _normal_view(view):
+        raise ToolError(f"手前の部品の地図の視点 {saved} が、写す視点 {view} と違います（同じ view で texture.view_parts を回してください）")
+    return owner, depth, names
+
+
+def _normal_view(view):
+    return (view["from"], tuple(float(v) for v in view["center"]), float(view["span"]), tuple(int(v) for v in view["size"]))
+
+
+@register("texture.view_parts", inputs=("parts",), outputs=("occlusion", "preview", "report"),
+          summary="部品ごとの npz（names と co{i}・f{i}）の部品を、視点（view）の正射影で描き、画素ごとにいちばん手前の部品の地図を作る"
+                  "（occlusion: owner・depth・names・view の npz。texture.project_reference の入力 occlusion になり、ほかの部品に隠れた所へ"
+                  "写さない）。preview は部品ごとの色の画像、report は部品ごとの三角形・窓にかかる三角形・手前の画素の数。parts で部品を絞れる")
+def view_parts(inputs, parameters, outputs, context):
+    import json
+    import numpy as np
+    from ..io import atomic_npz
+    from ..mesh import Mesh, read_all_parts
+    require(inputs, ("parts",), "texture.view_parts")
+    _refuse_unknown(parameters, VIEW_PARTS_PARAMETERS, "texture.view_parts")
+    if "occlusion" not in outputs and "preview" not in outputs:
+        raise ToolError("texture.view_parts には outputs の occlusion（手前の部品の地図）か preview が要ります")
+    view = _view(parameters)
+    parts = read_all_parts(inputs["parts"])
+    wanted = parameters.get("parts")
+    if wanted is not None:
+        if not isinstance(wanted, list) or not wanted or not all(isinstance(n, str) for n in wanted):
+            raise ToolError(f"parts は部品の名前の並びにしてください: {wanted!r}")
+        unknown = sorted(set(wanted) - {name for name, _, _ in parts})
+        if unknown:
+            raise ToolError(f"npz に無い部品です: {unknown}")
+        parts = [part for part in parts if part[0] in wanted]
+    triangles = []
+    for name, vertices, faces in parts:
+        if faces.shape[1] != 3:                          # 四角形以上は三角形に分ける
+            faces = Mesh(vertices, faces.tolist()).triangles()[0]
+        triangles.append((name, vertices, faces))
+    margin = number(parameters, "margin", 2.0, minimum=0)
+    background = number(parameters, "background", 245.0, minimum=0)
+    owner, depth, report = texture.view_parts(triangles, view, margin)
+    names = [name for name, _, _ in triangles]
+    if "occlusion" in outputs:
+        atomic_npz(outputs["occlusion"], owner=owner, depth=depth, names=np.array(names), view=np.array(json.dumps(view)))
+    if "preview" in outputs:
+        texture.save_image(outputs["preview"], texture.parts_preview(owner, background))
+    report.update(schema_version="model3d-view-parts/0.1", names=names)
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "view_parts", "parts": len(names), "covered_pixels": report["covered_pixels"],
+                                     "front": {r["name"]: r["front_pixels"] for r in report["parts"] if r["front_pixels"]}}])
+
+
+@register("texture.project_reference", inputs=("mesh", "texture", "reference", "mask", "occlusion"),
           outputs=("texture", "weights", "report", "overlay"),
           selectable=("mesh",),
           summary="参照画像を、目印で合わせた正射影の視点からテクスチャへ写す（z バッファで見え隠れ、面の向き・マスク・アルファで重み。"
-                  "select で役割の面だけ）。任意の review_note は unresolved に残して needs_review にする")
+                  "select で役割の面だけ）。occlusion（texture.view_parts の手前の部品の地図）を渡すと、ほかの部品に隠れた所へ写さない"
+                  "（自分の部品は occlusion_part、既定はメッシュの名前）。任意の review_note は unresolved に残して needs_review にする")
 def project_reference(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "texture", "reference"), "texture.project_reference")
     if "texture" not in outputs:
         raise ToolError("outputs に texture を宣言してください")
     view, (matrix, offset, fitted), options, note = projection_settings(parameters)
+    options = dict(options)
     mesh = Mesh.load(inputs["mesh"])
     chosen = selected(context, "mesh", parameters, "texture.project_reference")
     base, reference = texture.load_texture(inputs["texture"]), texture.load_image(inputs["reference"], alpha=True)
     mask = texture.load_mask(inputs["mask"]) if "mask" in inputs else None
+    occlusion = None
+    part = parameters.get("occlusion_part")
+    if part is not None and (not isinstance(part, str) or not part):
+        raise ToolError(f"occlusion_part は手前の部品の地図の部品の名前にしてください: {part!r}")
+    if inputs.get("occlusion") is not None:
+        owner, depth, names = load_occlusion(inputs["occlusion"], view)
+        if part is not None and part not in names:
+            raise ToolError(f"occlusion_part {part!r} が手前の部品の地図にありません（{names}）")
+        own = part if part is not None else mesh.name
+        occlusion = (owner, depth, names.index(own) if own in names else -1, names)
+    elif part is not None:
+        raise ToolError("occlusion_part は入力 occlusion（手前の部品の地図）と一緒に使ってください")
     new, weights, report = texture.project_reference(
-        mesh, base, reference, view, matrix, offset, faces=chosen["faces"] if chosen else None, mask=mask, **options)
+        mesh, base, reference, view, matrix, offset, faces=chosen["faces"] if chosen else None, mask=mask, occlusion=occlusion,
+        **options)
+    if occlusion is not None:
+        report["occlusion"] = {"parts": occlusion[3], "self": occlusion[3][occlusion[2]] if occlusion[2] >= 0 else None}
     report["alignment"] = fitted
     report["units"] = mesh.units
     if "overlay" in outputs:   # 位置合わせの確認: 元のテクスチャの描画に、合わせた参照画像を半分重ねる
