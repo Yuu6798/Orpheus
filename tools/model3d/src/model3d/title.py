@@ -114,10 +114,11 @@ def image_layer(path, scale=1.0, margin=0):
 def sprite(color, cover, shadow=None, glow=None):
     """色と覆いから、影と光りを付けた絵（rgb, alpha）と、覆いが半分を超える範囲（x0, x1, y0, y1。中心合わせに使う）。
     shadow = (sigma, 濃さ): 覆いをぼかした黒い影。glow = ((r, g, b) 0〜255, sigma, 強さ): 覆いをぼかした色の光り（影の上）。
+    影も光りも、強さを掛けた後に 0〜1 に切る（1 を超えると、重ねるときに下へ負の値を掛ける。濃さが 1 以下の影は切っても同じ値）。
     文字の色は、その上に覆いの分だけ載せる。"""
     h, w = cover.shape
     rgb = np.zeros((h, w, 3), np.float32)
-    alpha = blur(cover, shadow[0]) * shadow[1] if shadow is not None else np.zeros((h, w), np.float32)
+    alpha = np.clip(blur(cover, shadow[0]) * shadow[1], 0, 1) if shadow is not None else np.zeros((h, w), np.float32)
     if glow is not None:
         glow_color, sigma, amount = glow
         g = np.clip(blur(cover, sigma) * amount, 0, 1)

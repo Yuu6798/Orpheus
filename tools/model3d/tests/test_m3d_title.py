@@ -92,6 +92,19 @@ def test_the_sprite_puts_a_shadow_and_a_glow_under_the_cover():
         title.sprite(color, np.zeros_like(cover))
 
 
+def test_a_strong_shadow_is_clamped_like_the_glow():
+    color = np.zeros((41, 41, 3), np.float32)                     # 暗い絵（色 0）
+    cover = np.zeros((41, 41), np.float32)
+    cover[10:31, 10:31] = 0.6                                     # 広く一様な覆い 0.6
+    spr = title.sprite(color, cover, shadow=(2.0, 3.0))            # 濃さ 3 の影
+    assert spr[1].max() <= 1.0 and spr[1][20, 20] == pytest.approx(1.0)   # 1 を超えない（切らないと 1.8 × 0.4 + 0.6 = 1.32）
+    dst = np.full((41, 41, 3), 0.9, np.float32)                   # 明るい下地
+    title.blit(dst, spr, 20.5, 20.5, 1.0)
+    assert dst.min() >= 0.0                                       # 下地に負の値を掛けない
+    weak = title.sprite(color, cover, shadow=(2.0, 0.7))[1]
+    assert np.array_equal(weak, (title.blur(cover, 2.0) * 0.7) * (1 - cover) + cover)   # 濃さ 1 以下は切らない（試作と同じ値）
+
+
 def test_blit_centres_the_cover_box_and_skips_faint_or_offscreen_layers():
     color, cover, lo = _square()
     spr = title.sprite(color, cover)
