@@ -31,6 +31,7 @@
         "missing": {"enum": ["error", "transparent"], "default": "error", "description": "first_frame のとき、無いコマ（ファイルが無い・動画が終わった）を止めるか、透明として飛ばすか。"},
         "alpha": {"enum": ["straight", "premultiplied"], "default": "straight", "description": "premultiplied は色にアルファが掛かったもの（読むときに straight に直す）。"},
         "resize": {"type": "boolean", "default": false, "description": "大きさが土台と違うときに縮尺する（縦横比は 1% 以内）。省けば違いはエラー。"},
+        "resize_space": {"enum": ["straight", "premultiplied"], "default": "straight", "description": "resize で縮尺するときの補間。straight は色とアルファを別々に補間する（実制作の重ねと同じ。透明な所の色が黒だと縁が暗くなる）。premultiplied は色にアルファを掛けてから補間して戻す（縁が暗くならない）。alpha: premultiplied のレイヤーは、どちらでもそのまま補間する。"},
         "opacity": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
         "start_s": {"type": "number", "minimum": 0},
         "end_s": {"type": "number", "exclusiveMinimum": 0},

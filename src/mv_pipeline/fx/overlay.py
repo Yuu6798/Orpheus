@@ -43,7 +43,8 @@ SCHEMA_VERSION = "fx-overlay/0.2"
 SCHEMA_PATH = Path(__file__).with_name("fx_overlay.schema.json")
 LAYERS_VERSION = "fx-overlay-layers/0.1"
 LAYERS_SCHEMA_PATH = Path(__file__).with_name("fx_overlay_layers.schema.json")
-PLAIN = {"first_frame": None, "missing": "error", "alpha": "straight", "resize": False, "opacity": 1.0, "style": None}
+PLAIN = {"first_frame": None, "missing": "error", "alpha": "straight", "resize": False, "resize_space": "straight", "opacity": 1.0,
+         "style": None}
 STYLE_DEFAULTS = {"shadow": {"amount": 0.45, "sigma_px": 4.0, "gain": 1.5}, "glow": {"amount": 0.9, "sigma_px": 14.0},
                   "backdrop": {"amount": 0.55, "dilate_px": 5, "iterations": 3, "sigma_px": 26.0, "gain": 1.6}}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
@@ -163,7 +164,7 @@ def describe_layer(path, options=None):
 
 def _record_options(options):
     """記録に残すレイヤーの設定（style は既定値を埋めた形）。"""
-    keep = {k: options[k] for k in ("first_frame", "missing", "alpha", "resize", "opacity") if k in options}
+    keep = {k: options[k] for k in ("first_frame", "missing", "alpha", "resize", "resize_space", "opacity") if k in options}
     for key in ("start_s", "end_s", "fade_in_s", "fade_out_s"):
         if options.get("image"):
             keep[key] = float(options.get(key, 0.0))
@@ -342,29 +343,43 @@ def _base_frames(base, n_frames):
         reader.close()
 
 
-def _fit(rgba, size):
-    """resize: true のレイヤーを土台の大きさへ（縮めるなら INTER_AREA、広げるなら INTER_LINEAR。実制作の重ねと同じ）。"""
+def _fit(rgba, size, options=None):
+    """resize: true のレイヤーを土台の大きさへ（縮めるなら INTER_AREA、広げるなら INTER_LINEAR。実制作の重ねと同じ）。
+
+    resize_space の既定の straight は、色とアルファを別々に補間する（実制作の重ねと同じ。透明な所の色が黒だと、縁が暗くなる）。
+    premultiplied は、straight のレイヤーの色にアルファを掛けてから補間して戻す（縁が暗くならない）。alpha: premultiplied の
+    レイヤーは、もともと色にアルファが掛かっているので、どちらでもそのまま補間する。"""
     if (rgba.shape[1], rgba.shape[0]) == tuple(size):
         return rgba
     import cv2
-    return cv2.resize(rgba, tuple(size), interpolation=cv2.INTER_AREA if rgba.shape[1] > size[0] else cv2.INTER_LINEAR)
+    interpolation = cv2.INTER_AREA if rgba.shape[1] > size[0] else cv2.INTER_LINEAR
+    options = options or PLAIN
+    if options.get("resize_space", "straight") != "premultiplied" or options.get("alpha") == "premultiplied":
+        return cv2.resize(rgba, tuple(size), interpolation=interpolation)
+    alpha = rgba[..., 3:4].astype(np.float32)
+    weighted = np.concatenate([rgba[..., :3].astype(np.float32) * (alpha / 255.0), alpha], axis=2)
+    out = cv2.resize(weighted, tuple(size), interpolation=interpolation)
+    covered = out[..., 3:4]
+    rgb = np.where(covered > 0, out[..., :3] * 255.0 / np.maximum(covered, np.float32(1e-6)), 0.0)
+    return np.clip(np.concatenate([rgb, covered], axis=2) + 0.5, 0, 255).astype(np.uint8)
 
 
-def _rgba(path, size, options=None):
-    """画像を uint8 RGBA で読み、土台の大きさへ合わせる。options（連番のレイヤーの設定）を渡すと、縮尺する前にこのコマの寸法を
-    確かめる（resolve は連番の 1 枚目の寸法しか見ないので、途中のコマの寸法の違いを黙って縮尺しない）。"""
+def _rgba(path, size, options=None, where=None):
+    """画像を uint8 RGBA で読み、土台の大きさへ合わせる（options の resize_space で補間）。where（連番のコマの名前）を渡すと、
+    縮尺する前にこのコマの寸法を確かめる（resolve は連番の 1 枚目の寸法しか見ないので、途中のコマの寸法の違いを黙って縮尺しない）。"""
     with Image.open(path) as image:
-        if options is not None:
-            _check_fit(image.size, size, options, f"連番のコマ {Path(path).name}")
-        return _fit(np.asarray(image.convert("RGBA"), dtype=np.uint8), size)
+        if where is not None:
+            _check_fit(image.size, size, options, where)
+        return _fit(np.asarray(image.convert("RGBA"), dtype=np.uint8), size, options)
 
 
 def _layer_frames(layer, n_frames, size=None):
     """レイヤーのコマ（uint8 RGBA）を n_frames 枚返す。first_frame で無いコマ（missing: transparent）は None。"""
     size = size or layer["size"]
-    first = layer["options"]["first_frame"]
+    options = layer["options"]
+    first = options["first_frame"]
     if layer["kind"] == "image":
-        still = _rgba(layer["path"], size)
+        still = _rgba(layer["path"], size, options)
         for _ in range(n_frames):
             yield still
         return
@@ -372,17 +387,17 @@ def _layer_frames(layer, n_frames, size=None):
         folder = Path(layer["path"])
         if first is None:
             for item in layer["files"]:
-                yield _rgba(folder / item["name"], size, layer["options"])
+                yield _rgba(folder / item["name"], size, options, f"連番のコマ {item['name']}")
             return
         names = {item["number"]: item["name"] for item in layer["files"]}
         for number in range(first, first + n_frames):
-            yield _rgba(folder / names[number], size, layer["options"]) if number in names else None
+            yield _rgba(folder / names[number], size, options, f"連番のコマ {names[number]}") if number in names else None
         return
     available = layer["frames"] if first is None else layer["available"] - first
     reader = _VideoReader(layer["path"], layer["size"], "rgba", layer.get("matrix"), start=first or 0)
     try:
         for index in range(n_frames):
-            yield _fit(reader.read(), size) if index < available else None
+            yield _fit(reader.read(), size, options) if index < available else None
     finally:
         reader.close()
 

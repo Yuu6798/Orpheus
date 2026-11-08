@@ -201,6 +201,24 @@ def test_resize_scales_a_layer_with_the_same_aspect(tmp_path):
     assert result["technical_pass"] and result["frames"] == 3
 
 
+def test_resize_space_premultiplied_keeps_the_edges_and_straight_stays_the_production_resize(tmp_path):
+    block = np.zeros((2, 2, 4), np.uint8)
+    block[0, 0] = (255, 255, 255, 255)                                                       # 白い 1 画素と、透明な黒い 3 画素
+    production = cv2.resize(block, (1, 1), interpolation=cv2.INTER_AREA)[0, 0].tolist()
+    assert overlay._fit(block, (1, 1), options(resize=True))[0, 0].tolist() == production == [64, 64, 64, 64]   # 既定は実制作と同じ
+    weighted = overlay._fit(block, (1, 1), options(resize=True, resize_space="premultiplied"))[0, 0].tolist()
+    assert weighted == [255, 255, 255, 64]                                                   # 黒に重ねると 64（straight は 16）
+    already = options(resize=True, alpha="premultiplied", resize_space="premultiplied")
+    assert overlay._fit(block, (1, 1), already)[0, 0].tolist() == [64, 64, 64, 64]          # 色にアルファが掛かった入力はそのまま
+    big = (SIZE[0] * 2, SIZE[1] * 2)
+    numbered_sequence(tmp_path / "big", range(3), size=big)
+    base_image(tmp_path / "base.png")
+    layers = write_layers(tmp_path, [{"path": "big", "resize": True, "resize_space": "premultiplied"}])
+    result = overlay.run_overlay(tmp_path / "base.png", [], out=tmp_path / "runs", fps=12, quiet=True, layers_file=layers)
+    manifest = read_json(f"{result['run_dir']}/manifest.json")
+    assert result["technical_pass"] and manifest["overlay"]["layers"][0]["options"]["resize_space"] == "premultiplied"
+
+
 def test_every_frame_of_a_sequence_keeps_the_resize_rules(tmp_path):
     base_image(tmp_path / "base.png")
     numbered_sequence(tmp_path / "mixed", range(3))                                          # 1 枚目は土台と同じ寸法
@@ -236,6 +254,7 @@ def test_a_video_layer_can_start_at_a_frame(tmp_path):
     ([{"path": "ov", "start_s": 0}], "start_s"),
     ([{"path": "ov", "missing": "transparent"}], "first_frame と一緒"),
     ([{"path": "ov", "style": {"glow": {}}}], "正しくありません"),
+    ([{"path": "ov", "resize": True, "resize_space": "linear"}], "正しくありません"),
     ([{"path": "../ov"}], "escapes"),
 ])
 def test_bad_layers_files_are_refused(tmp_path, layers, message):

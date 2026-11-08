@@ -506,6 +506,7 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 | `missing` | error | `first_frame` のとき、無いコマを止めるか（`error`）、透明として飛ばすか（`transparent`）。飛ばした数は記録の `missing_frames` |
 | `alpha` | straight | `premultiplied` は色にアルファが掛かったもの（読むときに straight に直す） |
 | `resize` | false | 土台と大きさが違うときに縮尺する（縦横比は 1% 以内。縮めるなら INTER_AREA）。無ければ違いはエラー。連番は 1 枚目だけでなく、読む各コマの寸法を同じ規則で確かめる（途中のコマの寸法の違いを黙って縮尺しない） |
+| `resize_space` | straight | `resize` で縮尺するときの補間。`straight` は色とアルファを別々に補間する（実制作の重ねと同じ。透明な所の色が黒だと、字の縁が暗くなる）。`premultiplied` は色にアルファを掛けてから補間して戻す（縁が暗くならない）。`alpha: premultiplied` のレイヤーは、どちらでもそのまま補間する |
 | `opacity` | 1 | 不透明度 |
 | `start_s` / `end_s` / `fade_in_s` / `fade_out_s` | — / — / 0 / 0 | 1 枚の画像を重ねる時刻 `[start_s, end_s)` と、出入りの秒（smoothstep）。出たままにするなら `fade_out_s` 0 |
 | `style.tint` | なし | 本体の色 = tint × 輝度（白い単色の字に色をつける）。無ければレイヤーの色 |
