@@ -117,6 +117,15 @@ class CameraPath:
             return None
         return DepthMotion(self.pivot, shift=shift, dolly=dolly)
 
+    def probe_times(self, samples=41):
+        """深度視差の端の検査で見る時刻: 0〜duration の等間隔の samples 個と、keys の時刻。
+
+        ease は単調なので、keys の値（depth_shift・dolly）の山と谷はキーの時刻にある。等間隔だけだと、
+        キーの間の短い動き（0.40 → 0.45 → 0.49 秒の depth_shift など）を飛ばす。"""
+        times = {float(t) for t in np.linspace(0.0, self.duration, samples)}
+        times.update(float(key["t"]) for key in self.keys if 0.0 <= float(key["t"]) <= self.duration)
+        return sorted(times)
+
     def out_of_bounds(self, samples=41):
         """カメラの視野が画像の外へ出る時刻があれば、その説明文を返す（なければ None）。"""
         worst = 0.0
@@ -223,7 +232,7 @@ def depth_out_of_bounds(path, depth, parallaxes=(1.0,), samples=41, tolerance_px
         return None
     width, height = path.size
     reach = max(abs(float(depth.max()) - path.pivot), abs(float(depth.min()) - path.pivot))   # |D − pivot| の最大
-    motions = [(float(t), path.depth_motion(float(t))) for t in np.linspace(0.0, path.duration, samples)]
+    motions = [(t, path.depth_motion(t)) for t in path.probe_times(samples)]
     motions = [(t, motion) for t, motion in motions if motion is not None]
     if not motions:
         return None

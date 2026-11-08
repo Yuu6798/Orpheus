@@ -323,6 +323,21 @@ def test_the_02_depth_path_drops_a_flat_depth_with_a_warning(tmp_path):
     assert spec_path.is_file()
 
 
+def test_value_regions_count_before_a_flat_depth_is_dropped(tmp_path):
+    make_project(tmp_path, 160, 90)
+    Image.fromarray(np.full((90, 160), round(0.2 * 65535), np.uint16)).save(tmp_path / "depth.png")     # 一定の 0.2
+    data = v02()
+    data["assets"]["depth"] = {"path": "depth.png", "normalize": "none",
+                               "regions": [{"box": [0.3, 0.3, 0.7, 0.7], "mode": "value", "value": 0.8}]}   # 手前を 0.8 に書く
+    ctx = render.prepare(fxspec.load_spec(write_spec(tmp_path, data)))
+    assert ctx.assets.depth is not None and not any("ほぼ一定" in w for w in ctx.warnings)               # 書いた差は捨てない
+    assert float(ctx.assets.depth.min()) == pytest.approx(0.2, abs=1e-4) and float(ctx.assets.depth.max()) == pytest.approx(0.8, abs=1e-4)
+    Image.fromarray((noisy_depth((160, 90)) * 65535).astype(np.uint16)).save(tmp_path / "depth.png")
+    data["assets"]["depth"]["regions"] = [{"box": [0, 0, 1, 1], "mode": "value", "value": 0.5}]          # 画面の全部を 1 つの値に
+    ctx = render.prepare(fxspec.load_spec(write_spec(tmp_path, data)))
+    assert ctx.assets.depth is None and any("ほぼ一定" in w for w in ctx.warnings)                     # 下ごしらえの後で平らなら使わない
+
+
 def test_a_depth_without_preparation_stays_on_the_01_path(tmp_path):
     make_project(tmp_path, 160, 90)
     ctx = render.prepare(fxspec.load_spec(write_spec(tmp_path, v02())))
@@ -376,11 +391,11 @@ def test_stills_record_the_resolved_pivot_and_the_feature(tmp_path):
 
 # ---- 画面の端 -------------------------------------------------------------------------------
 
-def brute_force_overflow(path, depth, parallaxes, samples=41):
-    """画面全体の参照位置から数えた、camera の視野を超えたはみ出しの最大（1920 幅換算の px）。"""
+def brute_force_overflow(path, depth, parallaxes, samples=41, times=None):
+    """画面全体の参照位置から数えた、camera の視野を超えたはみ出しの最大（1920 幅換算の px）。times で時刻を渡せる。"""
     width, height = path.size
     worst = 0.0
-    for t in np.linspace(0.0, path.duration, samples):
+    for t in (np.linspace(0.0, path.duration, samples) if times is None else times):
         motion = path.depth_motion(float(t))
         if motion is None:
             continue
@@ -415,6 +430,17 @@ def test_the_edge_check_warns_only_beyond_the_camera_margin_and_matches_a_full_s
         assert reported(message) == pytest.approx(brute, abs=0.15)
     else:
         assert message is None and brute * path.kpx <= 0.5                               # 0.5 出力画素までは警告しない
+
+
+def test_the_edge_check_looks_at_the_key_times_between_the_even_probes():
+    depth = noisy_depth(SIZE)
+    depth[:, :20] = 1.0                                                                  # 左の端に手前
+    keys = [{"t": 0.0}, {"t": 0.40}, {"t": 0.45, "depth_shift": [200, 0]}, {"t": 0.49}]  # 等間隔の 41 時刻は 0.375 と 0.5
+    path = path_for(keys, duration=5.0)
+    message = fxcamera.depth_out_of_bounds(path, depth, [1.0])
+    assert reported(message) == pytest.approx(brute_force_overflow(path, depth, [1.0], times=[0.45]), abs=0.15)
+    assert reported(message) > 50                                                        # 山は 0.45 秒（約 100px）
+    assert brute_force_overflow(path, depth, [1.0]) == 0.0                               # 等間隔だけなら見落とす
 
 
 def test_the_01_parallax_at_zoom_one_now_warns(tmp_path):

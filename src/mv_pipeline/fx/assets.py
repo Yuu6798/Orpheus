@@ -189,6 +189,8 @@ def prepare_depth(image, depth, base_size, box):
 
     順番: 割る（normalize: none）→ 基準画像の大きさへ（resolution: base）→ 伸ばす（normalize: percentile。
     統計は cover で切る範囲の中で取る）→ 向き（near）→ regions → 太らせ（dilate_px）→ ぼかし（blur_px）。
+    情報があるかは、下ごしらえの後の cover で切る範囲で見る（一定の深度に regions の value で書いた差を捨てない）。
+    percentile は、元の深度に幅が無いと伸ばせないので、そこで情報なしにする。
     """
     values = _raw_values(image)
     if depth["normalize"] == "none":
@@ -196,18 +198,16 @@ def prepare_depth(image, depth, base_size, box):
     if depth["resolution"] == "base" and (values.shape[1], values.shape[0]) != tuple(base_size):
         values = cv2.resize(values, tuple(base_size), interpolation=cv2.INTER_LINEAR)
     height, width = values.shape
-    window = values[int(round(box[1] * height)):int(round(box[3] * height)), int(round(box[0] * width)):int(round(box[2] * width))]
+    rows = slice(int(round(box[1] * height)), int(round(box[3] * height)))
+    cols = slice(int(round(box[0] * width)), int(round(box[2] * width)))
     if depth["normalize"] == "percentile":
-        lo, hi = np.percentile(window, [2, 98])
+        lo, hi = np.percentile(values[rows, cols], [2, 98])
         if hi - lo < 1e-6:
             return None, False
         values = np.clip((values - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
-    else:
-        if float(window.max()) - float(window.min()) < 1e-6:
-            return None, False
-        if float(values.min()) < 0.0 or float(values.max()) > 1.0:
-            raise PipelineError(f"深度画像の値が 0..1 の外にあります（{float(values.min()):.3g}〜{float(values.max()):.3g}）。"
-                                f"normalize: none は 0..1 の float か 8 / 16 bit の画像で使い、それ以外は percentile にしてください")
+    elif float(values.min()) < 0.0 or float(values.max()) > 1.0:
+        raise PipelineError(f"深度画像の値が 0..1 の外にあります（{float(values.min()):.3g}〜{float(values.max()):.3g}）。"
+                            f"normalize: none は 0..1 の float か 8 / 16 bit の画像で使い、それ以外は percentile にしてください")
     if depth["near"] == "black":
         values = (1.0 - values).astype(np.float32)
     for region in depth["regions"]:
@@ -217,7 +217,11 @@ def prepare_depth(image, depth, base_size, box):
         values = cv2.dilate(values, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (depth["dilate_px"], depth["dilate_px"])))
     if depth["blur_px"] > 0:
         values = cv2.GaussianBlur(values, (0, 0), depth["blur_px"])
-    return np.ascontiguousarray(values, dtype=np.float32), True
+    values = np.ascontiguousarray(values, dtype=np.float32)
+    seen = values[rows, cols]
+    if float(seen.max()) - float(seen.min()) < 1e-6:
+        return None, False
+    return values, True
 
 
 def resolve_pivot(pivot, assets):
