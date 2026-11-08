@@ -9,7 +9,7 @@ description = "Reproducible local music video pipeline"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.14"
-dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio-ffmpeg==0.6.0"]
+dependencies = ["jsonschema==4.26.0", "Pillow==13.0.0", "numpy==2.3.5", "imageio-ffmpeg==0.7.0"]
 
 [project.optional-dependencies]
 analysis = ["librosa==0.11.0", "numba==0.63.1", "llvmlite==0.46.0"]
