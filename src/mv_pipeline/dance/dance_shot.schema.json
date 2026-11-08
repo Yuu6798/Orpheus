@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "dance-shot/0.2",
+  "title": "dance-shot/0.3",
   "type": "object",
   "required": [
     "schema_version",
@@ -15,7 +15,7 @@
   },
   "properties": {
     "schema_version": {
-      "const": "dance-shot/0.2"
+      "const": "dance-shot/0.3"
     },
     "output": {
       "type": "object",
@@ -170,6 +170,68 @@
         "^x_": {}
       },
       "properties": {
+        "frame_rounding": {
+          "description": "元のコマ番号の丸め。floor は切り捨て（0.2 と同じ）、nearest はいちばん近いコマ（半コマは切り上げ）",
+          "enum": ["floor", "nearest"]
+        },
+        "replace_frames": {
+          "description": "壊れた元のコマ [a, b)（半開区間。mv inspect の提案と同じ）を差し替える。with は nearest（区間の前後のいちばん近いきれいなコマ。同じ距離なら前）・before・after・コマ番号・{\"image\": 画像}",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "frames"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "frames": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "with": {
+                "oneOf": [
+                  {
+                    "enum": ["nearest", "before", "after"]
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "image"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "image": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
         "clips": {
           "type": "array",
           "minItems": 1,
@@ -196,6 +258,48 @@
               },
               "source_start": {
                 "type": "number"
+              },
+              "retime": {
+                "description": "区間ごとに元のコマを付け替える（区間 [from, to) の間は source の a から b へ直線で進む。a と b が同じなら止まる）。区間の外は source_start と speed の既定の対応。unit は source の単位（frame は元のコマ番号、s は元の秒）",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "from",
+                    "to",
+                    "source"
+                  ],
+                  "additionalProperties": false,
+                  "patternProperties": {
+                    "^x_": {}
+                  },
+                  "properties": {
+                    "from": {
+                      "$ref": "#/$defs/time"
+                    },
+                    "to": {
+                      "$ref": "#/$defs/time"
+                    },
+                    "source": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      ],
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "unit": {
+                      "enum": ["frame", "s"]
+                    }
+                  }
+                }
               },
               "speed": {
                 "type": "number",
@@ -758,11 +862,24 @@
       "maxItems": 4
     },
     "time": {
-      "description": "秒の数値か拍の参照。読み込み時に秒へ解決する",
+      "description": "秒の数値か、拍の参照か、出力のコマ番号（{\"frame\": n} は n / output.fps 秒）。読み込み時に秒へ解決する",
       "oneOf": [
         {
           "type": "number",
           "minimum": 0
+        },
+        {
+          "type": "object",
+          "required": [
+            "frame"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "frame": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         },
         {
           "type": "object",

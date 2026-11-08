@@ -28,9 +28,12 @@ ANALYSIS_VERSION = 2
 FOOT_PIXELS = 3     # 足元とみなす行に要るアルファ 0.5 超の画素数
 
 
-def settings_digest(key, fit):
-    """解析の結果を左右する設定の sha256。"""
-    return hashlib.sha256(canonical_json({"version": ANALYSIS_VERSION, "key": key, "fit": fit}).encode("utf-8")).hexdigest()
+def settings_digest(key, fit, skip=()):
+    """解析の結果を左右する設定の sha256。skip（replace_frames で差し替えるコマの区間）は、あるときだけ入れる（無ければ 0.2 と同じ値）。"""
+    payload = {"version": ANALYSIS_VERSION, "key": key, "fit": fit}
+    if skip:
+        payload["skip"] = [list(run) for run in skip]
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def cache_path(out, clip_sha256, digest):
@@ -95,14 +98,20 @@ def lock_ground(foot, window_s, smooth_s, fps):
     return smooth(grounded, smooth_s, fps)
 
 
-def analyze(source, key, fit):
-    """Source を先頭から読んで解析の結果（JSON に書ける辞書）を返す。"""
+def analyze(source, key, fit, skip=()):
+    """Source を先頭から読んで解析の結果（JSON に書ける辞書）を返す。skip の区間 [a, b) のコマは欠け（前後の値で埋める）として扱う。"""
     heights, centers, feet, index = [], [], [], 0
     scale = fit["analysis_scale"]
     while True:
         image = source.read(index)
         if image is None or source.ended_at(index):
             break
+        if any(a <= index < b for a, b in skip):
+            heights.append(None)
+            centers.append(None)
+            feet.append(None)
+            index += 1
+            continue
         height, cx, foot = _measure(image, key, scale)
         heights.append(height)
         centers.append(cx)
@@ -111,22 +120,25 @@ def analyze(source, key, fit):
     fps = source.fps or 1.0
     foot = _fill(feet)
     cx = _fill(centers)
-    return {"schema_version": "dance-analysis/0.1", "frames": index, "fps": fps, "width": source.width, "height": source.height,
-            "p90_height": float(np.percentile(_fill(heights), 90)), "median_cx": float(np.median(cx)),
-            "median_foot": float(np.median(foot)),
-            "cx": [round(float(v), 3) for v in smooth(cx, fit["x_smooth_s"], fps)],
-            "ground": [round(float(v), 3) for v in lock_ground(foot, fit["ground_window_s"], fit["ground_smooth_s"], fps)]}
+    result = {"schema_version": "dance-analysis/0.1", "frames": index, "fps": fps, "width": source.width, "height": source.height,
+              "p90_height": float(np.percentile(_fill(heights), 90)), "median_cx": float(np.median(cx)),
+              "median_foot": float(np.median(foot)),
+              "cx": [round(float(v), 3) for v in smooth(cx, fit["x_smooth_s"], fps)],
+              "ground": [round(float(v), 3) for v in lock_ground(foot, fit["ground_window_s"], fit["ground_smooth_s"], fps)]}
+    if skip:
+        result["skipped"] = [list(run) for run in skip]     # 差し替えたので測らなかったコマ（無いときは 0.2 と同じ中身）
+    return result
 
 
-def load(source, clip_sha256, key, fit, out):
+def load(source, clip_sha256, key, fit, out, skip=()):
     """(解析の結果, キャッシュのパス)。無ければ解析して書く。"""
-    path = cache_path(out, clip_sha256, settings_digest(key, fit))
+    path = cache_path(out, clip_sha256, settings_digest(key, fit, skip))
     if path.is_file():
         try:
             return read_json(path), path
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass    # 壊れたキャッシュは作り直す
-    result = analyze(source, key, fit)
+    result = analyze(source, key, fit, skip)
     atomic_json(path, result)
     return result, path
 

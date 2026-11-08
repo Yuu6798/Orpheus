@@ -1,4 +1,4 @@
-"""dance-shot/0.2 設定の読み込み・検証・既定値補完（dance-shot/0.1 も読める）。
+"""dance-shot/0.3 設定の読み込み・検証・既定値補完（dance-shot/0.2 と 0.1 も読める）。
 
 load_spec(path) は検証済みで既定値を埋めた Spec を返す。以降のモジュールは spec.data の正規化済み辞書だけを見る。
 素材パスは spec ファイルのあるディレクトリ基準で、io.safe_path により逸脱を拒否する（存在確認は読み込み時）。
@@ -6,7 +6,8 @@ load_spec(path) は検証済みで既定値を埋めた Spec を返す。以降�
 座標はすべて**出力画面の正規化座標** 0..1（字の箱・UI 枠・人物の anchor・カメラの中心）。時間は**ショット時刻**（秒）。
 時刻の欄は拍の参照でも書ける（beats.py）。読み込み時に秒へ解決するので、spec.data には秒だけが入る。
 
-0.1 の spec は 0.1 のスキーマで検証し、新機能を全部切った 0.2 のデータに正規化する（`data["source_schema"]` に元の版が残る）。
+0.1 の spec は 0.1 のスキーマで検証し、新機能を全部切った 0.3 のデータに正規化する（`data["source_schema"]` に元の版が残る）。
+0.2 の spec も 0.2 のスキーマで検証し、0.3 の新しい項目は既定値（frame_rounding floor・retime なし・replace_frames なし。0.2 と同じ絵）にする。
 """
 import json
 from dataclasses import dataclass
@@ -17,11 +18,12 @@ import jsonschema
 from ..fx import spec as fxspec
 from ..fx.spec import canonical_json  # noqa: F401  キャッシュ key の正規形は fx と同じ
 from ..io import PipelineError, read_json, safe_path, sha256
-from . import SCHEMA_V01, SCHEMA_VERSION
+from . import SCHEMA_V01, SCHEMA_V02, SCHEMA_VERSION
 from . import beats as dancebeats
 from . import camera as dancecamera
 
 _SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("dance_shot.schema.json"),
+            SCHEMA_V02: Path(__file__).with_name("dance_shot_0_2.schema.json"),
             SCHEMA_V01: Path(__file__).with_name("dance_shot_0_1.schema.json")}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 SHAKE_HZ = [15.1, 12.7]
@@ -45,9 +47,9 @@ AUDIO_FADE_OUT_S = 0.25
 
 
 def schema(version=SCHEMA_VERSION):
-    """JSON Schema。0.2 の look は fx と同じ定義を使う。"""
+    """JSON Schema。0.2 と 0.3 の look は fx と同じ定義を使う。"""
     data = json.loads(_SCHEMAS[version].read_text(encoding="utf-8"))
-    if version == SCHEMA_VERSION:
+    if version != SCHEMA_V01:
         look = fxspec.look_schema()
         data["properties"]["look"] = look["look"]
         data["$defs"].update(look["defs"])
@@ -68,10 +70,13 @@ class Spec:
 
 
 def asset_refs(data):
-    """{役割: 相対パス}。役割は stage / clip:<n> / audio / font / beats。manifest の素材 sha256 の列挙に使う。"""
+    """{役割: 相対パス}。役割は stage / clip:<n> / replace:<n> / audio / font / beats。manifest の素材 sha256 の列挙に使う。"""
     refs = {"stage": data["stage"]["path"]}
     for index, clip in enumerate(data["performer"]["clips"]):
         refs[f"clip:{index}"] = clip["path"]
+    for index, run in enumerate(data["performer"]["replace_frames"]):
+        if isinstance(run["with"], dict):
+            refs[f"replace:{index}"] = run["with"]["image"]
     if data["audio"]:
         refs["audio"] = data["audio"]["path"]
     for name, font in data["lyrics"]["fonts"].items():
@@ -108,7 +113,7 @@ def _validate_schema(raw):
         raise PipelineError("dance spec must be a JSON object")
     version = raw.get("schema_version")
     if version not in _SCHEMAS:
-        raise PipelineError(f"dance spec schema_version must be {SCHEMA_VERSION!r} or {SCHEMA_V01!r}, got {version!r}")
+        raise PipelineError(f"dance spec schema_version must be {SCHEMA_VERSION!r}, {SCHEMA_V02!r} or {SCHEMA_V01!r}, got {version!r}")
     validator = jsonschema.Draft202012Validator(schema(version))
     errors = sorted(validator.iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
@@ -125,12 +130,27 @@ def _vec(value):
     return [float(v) for v in value]
 
 
+def _normalize_retime(segment, time):
+    return {"from": time(segment["from"], "retime の from"), "to": time(segment["to"], "retime の to"),
+            "source": _vec(segment["source"]), "unit": segment.get("unit", "frame"), **_ext(segment)}
+
+
+def _normalize_replace(run):
+    with_ = run.get("with", "nearest")
+    if isinstance(with_, dict):
+        with_ = {"image": with_["image"]}
+    elif not isinstance(with_, str):
+        with_ = int(with_)      # 66.0 も integer として通るので、コマ番号は int にそろえる
+    return {"path": run["path"], "frames": [int(run["frames"][0]), int(run["frames"][1])], "with": with_, **_ext(run)}
+
+
 def _normalize_clip(clip, time, legacy):
     place = clip.get("placement", {})
     transition = clip.get("transition_in", {"type": "cut"})
     return {"path": clip["path"], "kind": "image" if not legacy and clip["path"].lower().endswith(IMAGE_SUFFIXES) else "video",
             "start": time(clip["start"], "clip の start"), "end": time(clip["end"], "clip の end"),
             "source_start": float(clip.get("source_start", 0)), "speed": float(clip.get("speed", 1.0)),
+            "retime": [_normalize_retime(segment, time) for segment in clip.get("retime", [])],
             "placement": {"offset": _vec(place.get("offset", [0, 0])), "scale": float(place.get("scale", 1.0)),
                           "flip_x": bool(place.get("flip_x", False)), **_ext(place)},
             "fit": clip.get("fit", True), "beat_exempt": bool(clip.get("beat_exempt", False)), "align": clip.get("align", "beat"),
@@ -269,7 +289,8 @@ def _normalize(raw, base_dir):
     legacy = raw["schema_version"] == SCHEMA_V01
     font, fonts = _normalize_fonts(lyrics)
     grid = dancebeats.load_grid(raw.get("beats"), lambda rel: safe_path(base_dir, rel))
-    time = lambda value, where: dancebeats.resolve_time(value, grid, where)  # noqa: E731
+    fps = float(out.get("fps", 24))
+    time = lambda value, where: dancebeats.resolve_time(value, grid, where, fps)  # noqa: E731
     data = {
         "schema_version": SCHEMA_VERSION,
         "source_schema": raw["schema_version"],
@@ -288,6 +309,8 @@ def _normalize(raw, base_dir):
             "placement": {"anchor": _vec(place.get("anchor", [0.5, 0.92])), "pivot": _vec(place.get("pivot", [0.5, 1.0])),
                           "height": float(place.get("height", 0.72)), "flip_x": bool(place.get("flip_x", False)), **_ext(place)},
             "fit": None if "fit" not in performer else _normalize_fit(performer["fit"]),
+            "frame_rounding": performer.get("frame_rounding", "floor"),
+            "replace_frames": [_normalize_replace(run) for run in performer.get("replace_frames", [])],
             **_ext(performer),
         },
         "camera": {
@@ -342,6 +365,66 @@ def _validate_clips(clips, duration, warnings):
         warnings.append(f"performer: {clips[-1]['end']:g}〜{duration:g} 秒に人物がいません")
 
 
+def _validate_retime(clips, warnings):
+    """retime の区間: from < to、同じ clip の中で重ならない。clip の区間と交わらない区間は効かないので知らせる。"""
+    for clip in clips:
+        segments = sorted(clip["retime"], key=lambda s: s["from"])
+        for segment in segments:
+            if segment["to"] <= segment["from"]:
+                raise PipelineError(f"dance spec: clip {clip['path']!r} の retime の to は from より後にしてください"
+                                    f"（{segment['from']:g} → {segment['to']:g} 秒）")
+            if clip["kind"] == "image":
+                raise PipelineError(f"dance spec: 静止画の clip {clip['path']!r} に retime は使えません")
+            if segment["to"] <= clip["start"] or segment["from"] >= clip["end"]:
+                warnings.append(f"performer: clip {clip['path']!r} の retime {segment['from']:g}〜{segment['to']:g} 秒は clip の区間の外なので効きません")
+        for left, right in zip(segments, segments[1:]):
+            if right["from"] < left["to"] - 1e-9:
+                raise PipelineError(f"dance spec: clip {clip['path']!r} の retime の区間が重なっています"
+                                    f"（{left['from']:g}〜{left['to']:g} と {right['from']:g}〜{right['to']:g} 秒）")
+
+
+def _neighbours(run):
+    """nearest・before・after が見せる区間の外のコマ（前 a − 1 と後 b のうち使うもの）。"""
+    a, b = run["frames"]
+    if not isinstance(run["with"], str):
+        return []
+    return {"nearest": [n for n in (a - 1, b) if n >= 0], "before": [a - 1], "after": [b]}[run["with"]]
+
+
+def _validate_replace(runs, clips):
+    """replace_frames: 動画の clip のパス、a < b、同じ動画の区間は重ならない、差し替え先のコマが別の区間の中に無い
+    （接する 2 つの区間の前後のコマは、もう一方の壊れたコマになるので止める。1 つの区間にまとめる）。"""
+    videos = {clip["path"] for clip in clips if clip["kind"] == "video"}
+    images = {clip["path"] for clip in clips if clip["kind"] == "image"}
+    by_path = {}
+    for run in runs:
+        a, b = run["frames"]
+        if run["path"] not in videos:
+            raise PipelineError(f"dance spec: replace_frames の {run['path']!r} は performer.clips の動画ではありません"
+                                + ("（静止画の clip は差し替えられません）" if run["path"] in images else ""))
+        if b <= a:
+            raise PipelineError(f"dance spec: replace_frames の frames は [a, b)（a < b）にしてください: {run['frames']}")
+        if run["with"] == "before" and a == 0:
+            raise PipelineError(f"dance spec: replace_frames {run['frames']} は 0 コマ目からなので before は使えません")
+        by_path.setdefault(run["path"], []).append(run)
+    for path, items in by_path.items():
+        items = sorted(items, key=lambda r: r["frames"][0])
+        for left, right in zip(items, items[1:]):
+            if right["frames"][0] < left["frames"][1]:
+                raise PipelineError(f"dance spec: replace_frames の {path!r} の区間が重なっています: {left['frames']} と {right['frames']}")
+        for run in items:
+            target = run["with"]
+            if isinstance(target, int):
+                inside = [other["frames"] for other in items if other["frames"][0] <= target < other["frames"][1]]
+                if inside:
+                    raise PipelineError(f"dance spec: replace_frames の差し替え先 {target} は、差し替える区間 {inside[0]} の中です")
+            for number in _neighbours(run):
+                inside = [other["frames"] for other in items if other is not run and other["frames"][0] <= number < other["frames"][1]]
+                if inside:
+                    raise PipelineError(f"dance spec: replace_frames の {path!r} の区間 {run['frames']} と {inside[0]} が接しているので、"
+                                        f"{run['with']} の前後のコマ {number} も差し替えるコマです。1 つの区間にまとめてください")
+
+
 def _validate_audio(audio, warnings, duration):
     if audio is not None and audio["end_s"] is not None and audio["end_s"] > duration:
         warnings.append(f"audio: end_s {audio['end_s']:g} 秒がショットの長さ {duration:g} 秒より後です")
@@ -372,6 +455,8 @@ def _validate_semantics(data):
         raise PipelineError(f"dance spec: camera.keys の t は厳密な昇順にしてください: {keys}")
     _validate_seams(data["camera"]["seams"], out["fps"], warnings)
     _validate_clips(data["performer"]["clips"], duration, warnings)
+    _validate_retime(data["performer"]["clips"], warnings)
+    _validate_replace(data["performer"]["replace_frames"], data["performer"]["clips"])
     _validate_audio(data["audio"], warnings, duration)
     warnings += fxspec.look_warnings(data["look"])
     lyrics = data["lyrics"]

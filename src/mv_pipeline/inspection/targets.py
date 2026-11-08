@@ -38,7 +38,10 @@ def dance_usage(spec):
     try:
         for k in range(count):
             for index, number, weight in order.mapping(timeline.frame_time(k, fps)):
-                usage.setdefault(spec.data["performer"]["clips"][index]["path"], []).append((k, index, int(number), round(float(weight), 4)))
+                clip = spec.data["performer"]["clips"][index]
+                if order.image_for(clip, number) is not None:
+                    continue        # replace_frames の画像で見せるコマ（動画のコマは出ない）
+                usage.setdefault(clip["path"], []).append((k, index, int(number), round(float(weight), 4)))
     finally:
         order.close()
     return usage, count, fps
@@ -91,9 +94,16 @@ def actions(event, clip, th):
                                        "動きを補う補間（外部の道具）で作り直すか、生成し直す（ffmpeg の minterpolate では速い腕の動きが"
                                        "二重写しのまま残った。学習型の補間は未確認。確実なのは生成し直し）"})
     elif short:
-        out.append({"kind": "replace_frames", "frames": [a, b], "with": [a - 1 if a > 0 else None, b if b < count else None], "in_orpheus": False,
-                    "description": "前後のコマで置き換える（前のコマを保つか前後を混ぜる。前後の絵が大きく違うと、保つと止まり、混ぜると二重写しになる）。"
-                                   "Orpheus にはまだ無い（dance-shot/0.3 で予定）"})
+        dance = bool(clip.get("spec"))
+        action = {"kind": "replace_frames", "frames": [a, b], "with": [a - 1 if a > 0 else None, b if b < count else None], "in_orpheus": dance,
+                  "description": "前後のコマで置き換える（前のコマを保つか前後を混ぜる。前後の絵が大きく違うと、保つと止まり、混ぜると二重写しになる）。"
+                                 + (f"dance は spec の performer.replace_frames に {{\"path\": …, \"frames\": [{a}, {b}]}} を足す"
+                                    "（dance-shot/0.3。区間の前後のいちばん近いきれいなコマを保つ。混ぜるのは外部の道具）" if dance
+                                    else "Orpheus で差し替えられるのは dance の人物の素材だけ（dance-shot/0.3 の performer.replace_frames）")}
+        if dance:
+            action["spec_entry"] = {"pointer": "/performer/replace_frames/-",
+                                    "value": {"path": clip["rel"], "frames": [a, b], "with": "nearest" if a > 0 and b < count else "before" if a > 0 else "after"}}
+        out.append(action)
     if "duplicate_cadence" not in checks:
         out.append({"kind": "regenerate_segment", "frames": [a, b], "anchors": {"before": a - 1 if a > 0 else None, "after": b if b < count else None},
                     "description": "前後のコマを始点・終点にして、この区間だけを生成し直す（始点と終点を指定できる生成器で）"})

@@ -173,6 +173,79 @@ def smoothstep(u):
     return u * u * (3.0 - 2.0 * u)
 
 
+def round_frame(value, rounding):
+    """元のコマ番号の丸め。floor は切り捨て（誤差で 1 つ前に落ちないよう微小値を足す。0.2 と同じ）、nearest はいちばん近いコマ（半コマは切り上げ）。"""
+    return int(math.floor(value + (0.5 if rounding == "nearest" else 1e-6)))
+
+
+class Replacements:
+    """performer.replace_frames。shown(path, n) は (見せる元のコマ, 画像の読み手か None)。区間 [a, b) の外のコマはそのまま。"""
+
+    def __init__(self, spec):
+        self.runs = {}
+        self.images = {}
+        for run in spec.data["performer"]["replace_frames"]:
+            self.runs.setdefault(run["path"], []).append(run)
+            if isinstance(run["with"], dict) and run["with"]["image"] not in self.images:
+                self.images[run["with"]["image"]] = Still(spec.resolve(run["with"]["image"]))
+
+    def run_of(self, path, number):
+        for run in self.runs.get(path, ()):
+            if run["frames"][0] <= number < run["frames"][1]:
+                return run
+        return None
+
+    def shown(self, path, number):
+        run = self.run_of(path, number)
+        if run is None:
+            return number, None
+        a, b = run["frames"]
+        target = run["with"]
+        if isinstance(target, dict):
+            return number, self.images[target["image"]]             # 画像はそのコマの代わり（番号は元のまま）
+        if isinstance(target, int):
+            return target, None
+        before, after = a - 1, b
+        if target == "before" or (target == "nearest" and before >= 0 and number - before <= after - number):
+            return before, None                                   # 同じ距離なら前（実制作と同じ）
+        return after, None
+
+    def skipped(self, path):
+        """fit の解析で欠けとして扱うコマの区間 [[a, b), …]（差し替えたコマの輪郭で置き場所を決めない）。"""
+        return sorted(run["frames"] for run in self.runs.get(path, ()))
+
+    def close(self):
+        for image in self.images.values():
+            image.close()
+
+
+def check_replacements(timeline):
+    """replace_frames を素材と突き合わせる（描画の前に 1 回。差し替えのある動画だけを数える）。差し替えに使うコマが動画に無い・
+    画像の寸法が動画と違うなら止め、動画の外の区間は warnings で知らせる。動画の末尾を越えた番号は最後のコマを見せるので、
+    最後のコマまで届く区間の after・nearest は、壊れた最後のコマを見せてしまう。"""
+    warnings = []
+    for path, runs in timeline.replacements.runs.items():
+        source = timeline.sources[path]
+        frames = source.count()
+        for run in runs:
+            a, b = run["frames"]
+            target, label = run["with"], f"replace_frames {path!r} [{a}, {b})"
+            if a >= frames:
+                warnings.append(f"performer: {label} は動画（{frames} コマ）の外なので効きません")
+            elif isinstance(target, dict):
+                image = timeline.replacements.images[target["image"]]
+                if (image.width, image.height) != (source.width, source.height):
+                    raise PipelineError(f"{label} の画像 {target['image']!r} の寸法 {image.width}x{image.height} が動画の "
+                                        f"{source.width}x{source.height} と違います（置き場所は動画の寸法で決めるので、同じ寸法にしてください）")
+            elif isinstance(target, int):
+                if target >= frames:
+                    raise PipelineError(f"{label} の差し替え先 {target} は動画（{frames} コマ。0〜{frames - 1}）にありません")
+            elif target in ("after", "nearest") and b >= frames:
+                raise PipelineError(f"{label} は動画の最後のコマ（{frames - 1}）まで届くので、後ろにきれいなコマがありません"
+                                    "（before かコマ番号にしてください）")
+    return warnings
+
+
 @dataclass
 class Shown:
     """時刻 t に見せる 1 つの素材。frame は元のフレーム番号（負の開始は 0 に切った後の値）、weight は blend の重み。"""
@@ -188,6 +261,8 @@ class Timeline:
     def __init__(self, spec):
         self.clips = spec.data["performer"]["clips"]
         self.fps = spec.data["output"]["fps"]
+        self.rounding = spec.data["performer"].get("frame_rounding", "floor")
+        self.replacements = Replacements(spec)
         self.sources = {}
         self.outgoing = {}     # blend の前のクリップ用。同じ動画を切れ目の前後で使うと 1 本の読み手が行き来して遅い
         for index, clip in enumerate(self.clips):
@@ -206,12 +281,23 @@ class Timeline:
                 return index
         return None
 
-    def source_frame(self, clip, t):
-        """ショット時刻 t に見せる元のフレーム番号（フレームの切り捨て。誤差で 1 つ前に落ちないよう微小値を足す）。"""
+    def raw_frame(self, clip, t):
+        """ショット時刻 t に対応する元のフレーム番号（replace_frames の前）。retime の区間の中はその区間の付け替え、
+        外は source_start + (t − start)·speed。丸めは performer.frame_rounding（既定の floor は 0.2 と同じ）。"""
         source = self.sources[clip["path"]]
         if clip["kind"] == "image":
             return 0
-        return max(0, int(math.floor((clip["source_start"] + (t - clip["start"]) * clip["speed"]) * source.fps + 1e-6)))
+        for segment in clip.get("retime", ()):
+            if segment["from"] <= t < segment["to"]:
+                a, b = segment["source"]
+                value = a + (b - a) * (t - segment["from"]) / (segment["to"] - segment["from"])   # 実制作の付け替えと同じ式の順
+                return max(0, round_frame(value if segment["unit"] == "frame" else value * source.fps, self.rounding))
+        return max(0, round_frame((clip["source_start"] + (t - clip["start"]) * clip["speed"]) * source.fps, self.rounding))
+
+    def source_frame(self, clip, t):
+        """ショット時刻 t に見せる元のフレーム番号（retime と丸めの後、replace_frames で差し替えた番号）。"""
+        number = self.raw_frame(clip, t)
+        return number if clip["kind"] == "image" else self.replacements.shown(clip["path"], number)[0]
 
     def blend_weight(self, clip, t):
         """t が clip の blend の窓の中なら新しい側の重み（0 より大きく 1 未満）、窓の外なら None。"""
@@ -233,11 +319,19 @@ class Timeline:
             return [(index, number, 1.0)]
         return [(index - 1, self.source_frame(self.clips[index - 1], t), 1.0 - weight), (index, number, weight)]
 
+    def image_for(self, clip, number):
+        """number のコマの代わりに見せる画像の読み手（replace_frames の image）。無ければ None。"""
+        return None if clip["kind"] == "image" else self.replacements.shown(clip["path"], number)[1]
+
     def shown(self, t):
         mapped = self.mapping(t)
         readers = [self.outgoing, self.sources] if len(mapped) == 2 else [self.sources]
-        return [Shown(index, reader[self.clips[index]["path"]].read(number), number, weight)
-                for reader, (index, number, weight) in zip(readers, mapped)]
+        out = []
+        for reader, (index, number, weight) in zip(readers, mapped):
+            clip = self.clips[index]
+            still = self.image_for(clip, number)
+            out.append(Shown(index, (reader[clip["path"]] if still is None else still).read(number), number, weight))
+        return out
 
     def seam_list(self):
         """[(切れ目の時刻, 前の clip 番号, 後の clip 番号)]。隣り合う clip の境目。"""
@@ -251,3 +345,4 @@ class Timeline:
     def close(self):
         for source in (*self.sources.values(), *self.outgoing.values()):
             source.close()
+        self.replacements.close()

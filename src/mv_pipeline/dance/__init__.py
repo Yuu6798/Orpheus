@@ -1,6 +1,6 @@
 """ダンス合成（実験的）: 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せた縦動画を作る。
 
-設定スキーマ（dance-shot/0.2。0.1 も読める）は contracts/ の外にあり、昇格にはユーザー承認が要る。
+設定スキーマ（dance-shot/0.3。0.2 と 0.1 も読める）は contracts/ の外にあり、昇格にはユーザー承認が要る。
 決定論: 同じ spec・素材・環境（ライブラリ版）なら同じフレームを返す。LLM もネットワークも使わない。
 作品固有の値はコードに持たず、すべて spec に書く（作品ごとの spec と素材は Git に入れない）。
 
@@ -10,7 +10,7 @@
 モジュールの構成（CLI は `mv dance demo|render|stills|plan|accept`。詳細は docs/dance.md）:
   - spec: 読み込み・検証・既定値補完。
   - key: 緑抜き（クロマキー、緑かぶりの除去、縁の調整）。
-  - clips: 人物動画のタイムライン（ショット時刻 → 元動画のフレーム）。
+  - clips: 人物動画のタイムライン（ショット時刻 → 元動画のフレーム。丸め・retime・replace_frames を含む）。
   - lyrics: 歌詞の配置と描画（層・書体・row の積み方・語ごとの出現と色・動き・光彩、UI 枠の確認）。
   - camera: カメラの式（キー・アクセント・揺れ・seams・ブレ・視差）。
   - compose: 1 フレームの合成（ステージ → behind の字 → 人物 → フラッシュ → front の字）。
@@ -28,9 +28,10 @@ from pathlib import Path
 
 from .. import fx
 
-SCHEMA_VERSION = "dance-shot/0.2"
+SCHEMA_VERSION = "dance-shot/0.3"
+SCHEMA_V02 = "dance-shot/0.2"     # 0.3 の新しい項目（コマ番号の時刻・丸め・retime・replace_frames）を使わない spec。0.3 の既定値で読んで同じ絵
 SCHEMA_V01 = "dance-shot/0.1"
-VERSION = "0.2"
+VERSION = "0.3"
 VARIANT = "dance"
 
 _PACKAGE = Path(__file__).resolve().parent
