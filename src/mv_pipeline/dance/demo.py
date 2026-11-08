@@ -5,7 +5,8 @@
 クリップは腕の振りの位相が違うので、切れ目で姿勢が飛ぶ。そこに camera.seams の動きが入る。
 0.2 のデモのクリップは縮尺・左右の位置・足元の高さが本ごとに違い、足元はゆっくり流れ、途中で 1 回跳ぶ（fit の確認用）。
 0.3 のデモ（既定）は 0.2 のデモに、元のコマの丸め nearest・clip_c の最後の半拍の止め（retime。始まりはコマ番号の参照）・
-clip_b の壊れたコマ 1 つ（紫の帯）の差し替え（replace_frames）を足す。差し替えるので、出力に紫の帯は出ない。
+clip_b の壊れたコマ 1 つ（紫の帯）の差し替え（replace_frames）と、clip_c の拍ごとの 1 コマのストロボ（flashes の at と
+curve_frames）を足す。差し替えるので、出力に紫の帯は出ない。
 `--schema 0.2` は 0.2 の spec（壊れたコマの無い素材）、`--schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 """
 import json
@@ -222,6 +223,8 @@ def _spec(width, height, duration, fps, schema="0.3"):
                                             "source": [hold - second * 60 / BPM] * 2, "unit": "s"}]
         broken = broken_frame(duration, fps)
         performer["replace_frames"] = [{"path": "clip_b.mp4", "frames": [broken, broken + 1], "with": "nearest"}]
+        spec["flashes"].append({"at": {"grid": "beats", "from": half, "to": {"beat": third}, "except": [half]}, "strength": 0.12,
+                                "color": [235, 225, 255], "mode": "add_display", "curve_frames": {"levels": [1.0]}})   # 拍ごとに 1 コマ
     return spec
 
 

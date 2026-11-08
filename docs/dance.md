@@ -34,7 +34,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 歌詞は back が 3 row の互い違いの縦積み（reveal word・enter・exit・glow）、band が語ごとの色と行の上書き、title が sung false の層。look は vignette と grain。
 
-0.3 のデモ（既定）は、元のコマの丸めを `nearest` にし、clip_c の最後の半拍をその始まりの姿勢で止め（`retime`。始まりはコマ番号の参照）、clip_b にわざと入れた壊れたコマ 1 つ（胴の高さの紫の帯）を `replace_frames` で前後のコマに差し替える。差し替えるので出力に紫の帯は出ない（spec から `replace_frames` を消すと 1 コマだけ出る）。
+0.3 のデモ（既定）は、元のコマの丸めを `nearest` にし、clip_c の最後の半拍をその始まりの姿勢で止め（`retime`。始まりはコマ番号の参照）、clip_b にわざと入れた壊れたコマ 1 つ（胴の高さの紫の帯）を `replace_frames` で前後のコマに差し替え、clip_c の拍ごとに 1 コマのストロボ（`flashes` の `at` と `curve_frames`）を光らせる。差し替えるので出力に紫の帯は出ない（spec から `replace_frames` を消すと 1 コマだけ出る）。
 
 `mv dance demo --schema 0.2` は 0.2 の spec（壊れたコマの無い素材）、`--schema 0.1` は 0.1 の spec と素材を作る（互換の確認用）。
 
@@ -207,13 +207,27 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 - `start` の最初のフレームから見え、`fade_in_s` / `fade_out_s` で出入りする（既定 0.04 / 0.08 秒）。reveal word では語の出現時刻から `fade_in_s` を数える。
 - 縦画面の `ui_regions` の既定値は上・右・下の操作部品のおおよその範囲（目安）。字のインクが重なると warnings に残す（描画は止めない）。横画面の既定は空。
 
-**フラッシュ** — `t` から `strength × exp(−経過/decay_s)` だけ効く。front の字はその上に載るので白飛びしない。
+**フラッシュ** — `t` から `strength × exp(−経過/decay_s)` だけ効く（5·decay_s まで）。front の字はその上に載るので白飛びしない。
 
 - `mode: "lerp_linear"`（既定。0.1 と同じ）: 線形光で色へ寄せる。
 - `mode: "add_display"`: 表示用の値に strength·exp(−経過/decay)·color を足す（線形光のままではなく、sRGB に符号化した値に足す）。
 - **同じ値でも `lerp_linear` は暗部で強く見える**（線形光の補間は暗部の持ち上がりが表示空間で足す方式の 2〜3 倍になる。計算値）。旧来の実制作レンダラと同じ見え方が欲しければ `add_display` を使う。
 - `beat_exempt`: 意図して拍から外している（`mv gate check` が対象外として数える）。
 - `align`: `mv gate check` が照合する相手。`"beat"`（既定。拍）か `"downbeat"`（小節頭）。timeline の `flash_info[].align` に写す。
+
+0.3 で足した欄（どれも任意。書かなければ 0.2 と同じ絵）:
+
+- `at`（`t` の代わり。どちらか 1 つ）: 同じフラッシュを何度も出す。時刻の配列か、accents と同じ拍の格子（`{"grid": "beats", "from": …, "to": …, "every": 1, "except": […]}`）。読み込み時に時刻ごとの 1 つに展開するので、timeline の `flashes`・`flash_info` と `mv gate check` には 1 回ずつ載る。同じ欄の重なりはコマごとに強い方だけを使い、別の欄は順に重ねる。時刻が 1 つもない `at` は warnings に残る。
+- `snap`: 時刻とコマの合わせ方。
+  - `none`（既定）: `t` 以降の最初のコマから光る。
+  - `time`: `t` をいちばん近い出力のコマの時刻に寄せる（減衰もそこから数える。timeline の `t` も寄せた時刻）。拍の参照で書いた切れ目のフラッシュを、切れ目のコマに合わせるとき。
+  - `peak`: いちばん近いコマに山を出す。`t` の半コマ前から山の値で光り、減衰は `t` から数える。
+- `curve_frames`: コマごとの強さの表 `{"offset": -1, "levels": [0.3, 1, 0.6, 0.3, 0.1]}`。`t` にいちばん近いコマから `offset` コマ目に `levels[0]` を置き、`strength` を掛ける（`decay_s` は使わない。`snap` とは一緒に使えない）。1 コマだけのストロボは `{"levels": [1]}`。
+- `mv dance plan` の flashes の表（0.3 の spec）は、欄の番号・形（`decay 0.08` か `コマ -1: 0.3 1 0.6 …`）・`snap` も出す。
+
+非公開の制作の 2 つの設定（指数の減衰のフラッシュ 5 つ、コマごとの表のフラッシュ 5 つと 1 コマのストロボ 2 つ）を、この書き方の spec に写した。どちらも 960 コマすべてで、コマごとに足す表示用の色が、制作の台本の関数と float32 のビットまで同じだった（素材を読まない比較。2026-11-09）。
+- 切れ目のフラッシュは `snap: time`、決めの姿勢と最後の打ちは `snap: peak` にした。`snap` を書かないと 39 コマ、`peak` だけ書かないと 2 コマずれる。
+- 制作の稲妻の層（切れ目に重ねる絵）はステージの絵なので移していない。
 
 ## 仕上げの受け渡し口
 

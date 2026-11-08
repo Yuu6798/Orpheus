@@ -73,9 +73,17 @@ def _camera(data):
 
 
 def _flashes(data):
-    return _table("flashes", ["t", "beat", "strength", "decay", "mode", "exempt"], [
-        [_seconds(f["t"]), _beat_of(f["t"], data), f["strength"], f["decay_s"], f["mode"], "yes" if f["beat_exempt"] else ""]
-        for f in data["flashes"]])
+    if data["source_schema"] != SCHEMA_VERSION:
+        return _table("flashes", ["t", "beat", "strength", "decay", "mode", "exempt"], [
+            [_seconds(f["t"]), _beat_of(f["t"], data), f["strength"], f["decay_s"], f["mode"], "yes" if f["beat_exempt"] else ""]
+            for f in data["flashes"]])
+    rows = []
+    for f in data["flashes"]:
+        curve = f["curve_frames"]
+        shape = (f"コマ {curve['offset']:+d}: " + " ".join(f"{v:g}" for v in curve["levels"])) if curve else f"decay {f['decay_s']:g}"
+        rows.append([f["entry"], _seconds(f["t"]), _beat_of(f["t"], data), f["strength"], shape, f["snap"], f["mode"],
+                     "yes" if f["beat_exempt"] else ""])
+    return _table("flashes", ["#", "t", "beat", "strength", "shape", "snap", "mode", "exempt"], rows)
 
 
 def _lyrics(data):

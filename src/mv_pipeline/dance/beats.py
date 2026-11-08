@@ -13,6 +13,7 @@ spec の時刻の欄は秒の数値か、次の参照で書ける（読み込み
     {"bpm": 120, "offset_s": 0, "beats_per_bar": 4, "count": 512, "downbeat_phase": 0}
 """
 import json
+import math
 from dataclasses import dataclass
 
 from ..io import PipelineError, read_json
@@ -88,6 +89,11 @@ def load_grid(raw, resolve):
     offset = float(raw.get("offset_s", 0))
     beats = [offset + index * step for index in range(int(raw.get("count", 512)))]
     return Grid(beats, beats[int(raw.get("downbeat_phase", 0))::int(raw.get("beats_per_bar", 4))])
+
+
+def nearest_frame(t, fps):
+    """時刻 t にいちばん近い出力のコマ番号（半コマは切り上げ。frame_rounding の nearest と同じ丸め）。"""
+    return int(math.floor(t * fps + 0.5))
 
 
 def resolve_time(value, grid, where, fps=None):
