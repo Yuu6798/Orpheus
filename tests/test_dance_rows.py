@@ -1,5 +1,6 @@
 """performer.rows: fit を使わないクリップでも、人物の足元と中心の列を hooks と層の API に渡す（DANCE-HOOK-1）。"""
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -77,6 +78,16 @@ def test_rows_follow_the_production_formula(used, k, box):
     ground, cx_med = _production_stats(bottoms, centers, used, k, box)
     assert np.array_equal(got["ground"], ground) and got["cx_med"] == cx_med and got["used"] == list(used)
     assert not np.isnan(got["bottom"]).any() and len(got["cx"]) == 60
+
+
+def test_a_used_range_without_any_measurement_still_gives_a_finite_centre():
+    measured = {"frames": 5, "bottom": [700.0, None, None, 720.0, 710.0], "cx": [40.0, None, None, 60.0, 50.0]}   # 使う範囲を画像で差し替えた
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                                                       # All-NaN の警告も出さない
+        got = fit.rows_for(measured, (1, 2), {"hold_frames": 0, "box_frames": 1})
+    assert np.isfinite(got["cx_med"]) and got["cx_med"] == float(np.median(got["cx"][1:3]))   # 前後で埋めた値の中央値
+    assert np.isfinite(got["ground"]).all() and np.isfinite(got["cx"]).all()
+    assert fit.rows_for(measured, (0, 4), {"hold_frames": 0, "box_frames": 1})["cx_med"] == 50.0   # 写ったコマがあれば今までどおり
 
 
 # ---- spec ----------------------------------------------------------------------------

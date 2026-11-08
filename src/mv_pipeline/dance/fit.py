@@ -212,12 +212,17 @@ def hold_ground(bottom, used, hold_frames, box_frames):
 
 
 def rows_for(measured, used, settings):
-    """測定と使う範囲から hooks に渡す列: bottom・cx（毎フレーム。写っていないコマは前後の値で埋める）・ground（足元の列）・cx_med。"""
+    """測定と使う範囲から hooks に渡す列: bottom・cx（毎フレーム。写っていないコマは前後の値で埋める）・ground（足元の列）・cx_med。
+
+    cx_med は使う範囲の写ったコマの cx の中央値（非公開の制作と同じ）。使う範囲に写ったコマが 1 つも無い（全部を replace_frames の
+    画像で差し替えた）ときは、前後の値で埋めた cx の中央値にする（NaN を hooks に渡さない）。"""
     i0, i1 = used
     centers = np.array([np.nan if v is None else v for v in measured["cx"]], dtype=np.float64)
-    return {"frames": measured["frames"], "used": [i0, i1], "bottom": _fill(measured["bottom"]), "cx": _fill(measured["cx"]),
-            "ground": hold_ground(measured["bottom"], used, settings["hold_frames"], settings["box_frames"]),
-            "cx_med": float(np.nanmedian(centers[i0:i1 + 1]))}
+    filled = _fill(measured["cx"])
+    window = centers[i0:i1 + 1]
+    cx_med = float(np.median(filled[i0:i1 + 1])) if np.isnan(window).all() else float(np.nanmedian(window))
+    return {"frames": measured["frames"], "used": [i0, i1], "bottom": _fill(measured["bottom"]), "cx": filled,
+            "ground": hold_ground(measured["bottom"], used, settings["hold_frames"], settings["box_frames"]), "cx_med": cx_med}
 
 
 def record(clip, result, path):
