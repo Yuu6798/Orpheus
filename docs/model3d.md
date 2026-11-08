@@ -464,8 +464,8 @@ rig のない結合も従来どおり使えるが、メッシュとリグの整�
 `check.blend_match` は、2 つの .blend の中身を比べる。作り直したキャラが採用版と同じか、工程を移した後も同じ形と骨の動きになるかを、数で確かめるため。リポジトリ外の試作で、作り直したキャラと採用版を比べた台本を移した。Blender で中身を書き出し（`blender_adapter/snapshot_blend.py`）、比べは Blender の外の numpy でする（`model3d.blend_snapshot`）。
 
 **比べるもの**（試作と同じ読み方）:
-- 物体の有無（左にだけある・右にだけある）、シーンの最初と最後のコマと fps。
-- メッシュごと: 頂点（物体の中の座標、float32）、面の角の数と面のつなぎ（面の角ごとの頂点）、作用中の uv（面の角ごと）、属性、置き場所の行列。
+- 物体の有無（左にだけある・右にだけある）、シーンの最初と最後のコマと fps と `fps_base`（再生の速さは fps / fps_base）。
+- メッシュごと: 頂点（物体の中の座標、float32）、面の角の数と面のつなぎ（面の角ごとの頂点）、作用中の uv（面の角ごと）、属性（値と、置き場所 `domain`・型 `type`）、置き場所の行列。
   - `attributes`: 比べる属性の名前の並びか `"all"`（既定。`.` で始まる内部の属性と `position` は除く）。
   - `objects`: 比べるメッシュの名前の並び（既定は全部）。
 - 骨: 名前（並べ替えて）、静止の行列、姿勢の行列（`pose_frames` のコマ。`"all"` はシーンの全部のコマ、省くと `frames`）。アーマチュアが 2 つ以上なら `armature` で選ぶ。
@@ -473,7 +473,7 @@ rig のない結合も従来どおり使えるが、メッシュとリグの整�
 
 **合否**:
 - `exact`: 全部が同じ（物体・シーン・頂点・面のつなぎ・uv・属性・置き場所・骨の名前と静止と姿勢・変形した形の sha256）。違いの大きさは `max_coordinate_error`・`matrix_world_max_error`・`rest_matrix_max_abs_error`・`pose_matrix_max_abs_error`・`sampled_max_coordinate_error`。
-- `tolerance`（`{"coordinate", "matrix", "value"}`）を渡すと、形のつくり（物体・頂点と面の数とつなぎ・骨の名前・姿勢のコマ）が同じで、座標の違いが `coordinate`、行列の違いが `matrix`、uv と属性の違いが `value` の中なら合格。`value` が無ければ uv と属性は同じであること。
+- `tolerance`（`{"coordinate", "matrix", "value"}`）を渡すと、形のつくり（物体・シーン・頂点と面の数とつなぎ・属性の置き場所と型・骨の名前・姿勢のコマ）が同じで、座標の違いが `coordinate`、行列の違いが `matrix`、uv と属性の違いが `value` の中なら合格。`value` が無ければ uv と属性は同じであること。
 - `tolerance` を渡さなければ、全部が同じ（`exact`）かで合否を出す（float の端数でも違えば不合格。試作の作り直しの比べでも、端数の 3e-7 で同じにならなかった）。
 - `report_only` で測るだけ、`strict` で不合格を失敗にする。数を出す検査なので、採否は人が決める。
 

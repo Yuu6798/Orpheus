@@ -56,7 +56,8 @@ def main(argv=None):
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
     scene = bpy.context.scene
     arrays, meta = {}, {"schema_version": "model3d-blend-snapshot/0.1", "blender": bpy.app.version_string,
-                        "scene": {"start": scene.frame_start, "end": scene.frame_end, "fps": scene.render.fps},
+                        "scene": {"start": scene.frame_start, "end": scene.frame_end, "fps": scene.render.fps,
+                                  "fps_base": scene.render.fps_base},     # 再生の速さは fps / fps_base
                         "objects": [], "evaluated": {}}
     wanted = settings.get("objects")
     meshes = [ob for ob in bpy.data.objects if ob.type == "MESH" and (wanted is None or ob.name in wanted)]

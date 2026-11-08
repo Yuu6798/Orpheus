@@ -56,8 +56,15 @@ def compare(left, right, tolerance=None):
             if attr not in lo["attributes"] or attr not in ro["attributes"]:
                 attributes[attr] = {"identical": False, "missing": "left" if attr not in lo["attributes"] else "right", "max_error": None}
                 continue
-            a, b = larr[lo["attributes"][attr]["key"]], rarr[ro["attributes"][attr]["key"]]
-            attributes[attr] = {"identical": _same(a, b), "missing": None, "max_error": _max_error(a, b)}
+            la, ra = lo["attributes"][attr], ro["attributes"][attr]
+            a, b = larr[la["key"]], rarr[ra["key"]]
+            # 置き場所（domain）と型（type）も比べる。違えば値の幅では許さない（形のつくりの違い。頂点と面の数が同じなら、
+            # 置き場所が変わっても配列の形は同じになる）
+            same_kind = la.get("domain") == ra.get("domain") and la.get("type") == ra.get("type")
+            attributes[attr] = {"identical": same_kind and _same(a, b), "missing": None,
+                                "max_error": _max_error(a, b) if same_kind else None, "kind_identical": same_kind}
+            if not same_kind:
+                attributes[attr].update(domain=[la.get("domain"), ra.get("domain")], type=[la.get("type"), ra.get("type")])
         matrix_error = _max_error(larr[f"{lk}_matrix"], rarr[f"{rk}_matrix"])
         row = {"name": name, "left_vertices": int(len(co_l)), "right_vertices": int(len(co_r)), "vertices_exact": _same(co_l, co_r),
                "max_coordinate_error": _max_error(co_l, co_r),
@@ -91,6 +98,7 @@ def compare(left, right, tolerance=None):
                  and report["bone_names_identical"] and report["pose_frames_identical"]
                  and all(o["left_vertices"] == o["right_vertices"] and o["polygon_count_identical"] and o["loop_vertices_identical"]
                          and o["polygon_sizes_identical"] for o in report["objects"])
+                 and all(info.get("kind_identical", True) for o in report["objects"] for info in o["attributes"].values())
                  and all(e["vertex_count_identical"] for e in evaluations))
     geometry = all(o["vertices_exact"] and o["uv_identical"] and o["attributes_identical"] and o["matrix_world_identical"]
                    for o in report["objects"])
@@ -100,7 +108,7 @@ def compare(left, right, tolerance=None):
     report["tolerance"] = tolerance
     failures = []
     if not structure:
-        failures.append("形のつくり（物体・シーン・頂点と面の数とつなぎ・骨の名前・姿勢のコマ）が同じではありません")
+        failures.append("形のつくり（物体・シーン・頂点と面の数とつなぎ・属性の置き場所と型・骨の名前・姿勢のコマ）が同じではありません")
     if tolerance is None:
         if structure and not report["exact"]:
             failures.append("全部が同じではありません（違いの大きさは max_* を見る。許す幅は tolerance で渡す）")
@@ -116,7 +124,9 @@ def compare(left, right, tolerance=None):
             if not o["uv_identical"] and (value is None or beyond(o["uv_max_error"], value) or o["uv_max_error"] is None):
                 failures.append(f"{o['name']}: uv が違います")
             for attr, info in o["attributes"].items():
-                if not info["identical"] and (value is None or info["max_error"] is None or beyond(info["max_error"], value)):
+                if not info.get("kind_identical", True):
+                    failures.append(f"{o['name']}: 属性 {attr} の置き場所か型が違います（置き場所 {info['domain']}、型 {info['type']}）")
+                elif not info["identical"] and (value is None or info["max_error"] is None or beyond(info["max_error"], value)):
                     failures.append(f"{o['name']}: 属性 {attr} が違います")
         for key in ("rest_matrix_max_abs_error", "pose_matrix_max_abs_error"):
             if beyond(report[key], matrix):

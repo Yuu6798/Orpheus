@@ -14,14 +14,15 @@ from model3d.io import ToolError, atomic_json
 EYE = np.eye(4).tolist()
 
 
-def _description(shift=0.0, uv_shift=0.0, attr=1.0, sizes=(3, 3), extra_object=False, pose_shift=0.0, evaluated_shift=0.0):
+def _description(shift=0.0, uv_shift=0.0, attr=1.0, sizes=(3, 3), extra_object=False, pose_shift=0.0, evaluated_shift=0.0,
+                 fps_base=1.0):
     """代役の Blender が書き出しに変える、.blend の中身の説明（JSON）。"""
     objects = [{"name": "body", "co": [[0, 0, 0], [1 + shift, 0, 0], [0, 1, 0], [1, 1, 0]], "loops": [0, 1, 2, 1, 3, 2],
                 "sizes": list(sizes), "uv": [[0, 0], [1 + uv_shift, 0], [0, 1], [1, 0], [1, 1], [0, 1]],
                 "attributes": {"inside": [0.0, attr, 0.0, 1.0]}, "matrix": EYE}]
     if extra_object:
         objects.append({"name": "hat", "co": [[0, 0, 2]], "loops": [], "sizes": [], "uv": None, "attributes": {}, "matrix": EYE})
-    return {"scene": {"start": 1, "end": 3, "fps": 30}, "objects": objects, "bones": ["hip", "spine"],
+    return {"scene": {"start": 1, "end": 3, "fps": 30, "fps_base": fps_base}, "objects": objects, "bones": ["hip", "spine"],
             "rest": [EYE, EYE], "pose_shift": pose_shift, "evaluated_shift": evaluated_shift}
 
 
@@ -121,6 +122,25 @@ def test_structure_uv_and_attribute_differences_fail(tmp_path):
     assert values["objects"][0]["attributes"]["inside"]["max_error"] == 0.5
     allowed = blend_snapshot.compare(left, _snapshot(tmp_path, "d", uv_shift=0.5, attr=0.5), {"value": 0.5})
     assert allowed["pass"] is True                                            # value の幅なら uv と属性の違いも許す
+
+
+def test_an_attribute_that_moved_domain_or_changed_type_is_a_structural_difference(tmp_path):
+    left = _snapshot(tmp_path, "a")
+    for key, changed in (("domain", "FACE"), ("type", "INT")):
+        right = _snapshot(tmp_path, f"b_{key}")
+        right[0]["objects"][0]["attributes"]["inside"][key] = changed          # 値と配列の形は同じまま
+        for tolerance in (None, {"coordinate": 1.0, "matrix": 1.0, "value": 1.0}):
+            report = blend_snapshot.compare(left, right, tolerance)
+            inside = report["objects"][0]["attributes"]["inside"]
+            assert not inside["identical"] and inside["kind_identical"] is False and not report["exact"]
+            assert report["pass"] is False and "形のつくり" in report["failures"][0]   # 値の幅では許さない
+    assert inside["type"] == ["FLOAT", "INT"] and inside["domain"] == ["POINT", "POINT"]
+
+
+def test_a_different_frame_rate_base_makes_the_scenes_differ(tmp_path):
+    report = blend_snapshot.compare(_snapshot(tmp_path, "a"), _snapshot(tmp_path, "b", fps_base=1.001))
+    assert not report["scene_identical"] and report["scene"]["right"]["fps_base"] == 1.001       # 再生の速さは fps / fps_base
+    assert not report["exact"] and report["pass"] is False and "形のつくり" in report["failures"][0]
 
 
 def test_bad_snapshots_and_tolerances_are_refused(tmp_path):
