@@ -180,6 +180,20 @@ def test_the_operation_writes_parts_into_a_model3d_target(tmp_path):
     assert m3.Mesh.load(fine["steps"]["transfer"]["artifacts"]["mesh"]).parts["left"] == list(range(32))   # 重ならなければ OBJ にも残る
 
 
+def test_obj_output_refuses_to_mix_unlabelled_faces_into_a_part_named_default(tmp_path):
+    from model3d import executor
+    left, right = _grid(0.0), _grid(10.0)
+    np.savez(tmp_path / "parts.npz", names=np.array(["default", "right"]), co0=left[0], f0=left[1], co1=right[0], f1=right[1])
+    far = np.vstack([left[0], right[0] + np.float32([0, 0, 5])]).astype(np.float64)               # 右半分は遠い（部品を付けない）
+    m3.Mesh(far, np.vstack([left[1], right[1] + 25]).tolist(), name="bare").save(tmp_path / "bare.json")
+    parameters = {"max_distance": 0.5}
+    lossy = executor.run_recipe(_recipe(tmp_path, parameters, "bare.json", {"mesh": "bare.obj"}), tmp_path / "runs")
+    assert lossy["status"] == "failed" and "default" in lossy["steps"]["transfer"]["error"]      # 付けなかった面が g default にまざる
+    kept = executor.run_recipe(_recipe(tmp_path, parameters, "bare.json", {"mesh": "bare.json"}), tmp_path / "runs2")
+    out = m3.Mesh.load(kept["steps"]["transfer"]["artifacts"]["mesh"])
+    assert kept["steps"]["transfer"]["status"] == "needs_review" and out.parts["default"] == list(range(32))   # JSON なら分けたまま
+
+
 def test_repeated_source_part_names_are_refused(tmp_path):
     left, right = _grid(0.0), _grid(10.0)
     np.savez(tmp_path / "twins.npz", names=np.array(["leg", "leg"]), co0=left[0], f0=left[1], co1=right[0], f1=right[1])

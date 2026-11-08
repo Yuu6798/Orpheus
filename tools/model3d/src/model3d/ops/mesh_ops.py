@@ -191,6 +191,10 @@ def mesh_transfer_parts(inputs, parameters, outputs, context):
             if clash:
                 raise ToolError(f"移した部品の面が、移し先の今の parts {clash[:5]} にも入っています。OBJ は 1 つの面を 1 つのグループにしか"
                                 "書けないので、OBJ では移した部品が消えます。mesh の出力を .json にしてください")
+            owned = set().union(*(set(faces) for faces in target_mesh.parts.values()))
+            if "default" in target_mesh.parts and len(owned) < target_mesh.face_count:   # どの parts にも入らない面は g default になる
+                raise ToolError(f"どの parts にも入らない面が {target_mesh.face_count - len(owned)} 面あり（部品を付けなかった面など）、"
+                                "OBJ ではそれが部品 default のグループに書かれて、読み戻すと default にまざります。mesh の出力を .json にしてください")
     if "labels" in outputs:
         atomic_npz(outputs["labels"], names=np.array(names), labels=labels)
     if "mesh" in outputs:
