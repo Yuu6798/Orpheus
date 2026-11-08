@@ -102,6 +102,10 @@ def _fx_parser(commands):
     compare.add_argument("--reference-offset", type=float, default=0.0, help="time in the reference video at shot time 0 (seconds)")
     compare.add_argument("--reference-label", default="reference", help="ASCII label of the reference tile")
     compare.add_argument("--out", type=Path, help="default: <run parent>/compare-<run_id>-<key8>.mp4")
+    masks = sub.add_parser("masks", help="make masks from a plan (external alpha, polygons, GrabCut, islands, cuts)")
+    masks.add_argument("plan", type=Path, help="fx-masks/0.1 plan (JSON)")
+    masks.add_argument("--out", type=Path, help="output folder (default: the plan's folder)")
+    masks.add_argument("--force", action="store_true", help="overwrite existing mask files whose content differs")
     legacy = sub.add_parser("legacy", help="run an external production renderer and record it as a run")
     legacy.add_argument("--renderer", type=Path, required=True)
     legacy.add_argument("--config", type=Path, required=True)
@@ -317,6 +321,9 @@ def fx_command(args):
         return guides.write_image_grid(args.image, args.out, args.crop, args.units, args.step, args.width)
     if command == "compare":
         return runs.compare_run(args.run_dir, args.reference, args.reference_offset, args.reference_label, args.out, _progress)
+    if command == "masks":
+        from .fx import masks
+        return masks.make_masks(args.plan, args.out, args.force)
     raise PipelineError(f"Unsupported fx command: {command}")
 
 

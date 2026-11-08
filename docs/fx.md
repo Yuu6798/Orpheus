@@ -296,6 +296,56 @@ fx はセグメンテーションモデルを持たない。マスクは次の�
 
 深度画像は 8/16bit の PNG。外部の深度推定ツールの出力をそのまま置ける。
 
+### マスク作り（`mv fx masks`）
+
+切り抜きツールの出力の欠け（刃先・足元など）を多角形で補い、GrabCut で縁を詰め、地面から人物を抜く、といった手順を計画ファイル（`fx-masks/0.1`、`src/mv_pipeline/fx/fx_masks.schema.json`。`contracts/` の外）に並べて、マスクを作る。
+rembg などの学習モデルはここでは動かさない（外で動かし、出力を `image` で受け取る）。計画には作品ごとの多角形が入るので、素材の隣に置いて Git に入れない。
+
+```json
+{
+  "schema_version": "fx-masks/0.1",
+  "base": "base.png",
+  "size": [1672, 941],
+  "units": "norm",
+  "masks": [
+    {"id": "subject", "steps": [
+      {"op": "image", "path": "mask_subject_rembg.png"},
+      {"op": "polygon", "points": [[0.50, 0.30], [0.67, 0.10], [0.68, 0.10], [0.51, 0.32]], "blur": 1.0},
+      {"op": "islands", "keep": "share", "share": 0.02, "threshold": 127, "grow_px": 9}]},
+    {"id": "ground", "steps": [
+      {"op": "polygon", "points": [[0, 1], [0, 0.94], [0.29, 0.675], [0.71, 0.675], [1, 0.94], [1, 1]]},
+      {"op": "cut", "mask": "subject", "threshold": 40, "grow_px": 11}],
+     "blur": 5.0, "exclusive_of": ["subject"]}
+  ]
+}
+```
+
+```sh
+uv run mv fx masks masks.json                 # 計画のフォルダに mask_subject.png・mask_ground.png・masks_preview.png・masks_record.json
+uv run mv fx masks masks.json --out trial/    # 別のフォルダに書く（今のマスクと見比べる）
+```
+
+- マスクは並びの順に作る。各マスクは `steps` を順に掛けてから、`blur`（仕上げのぼかしの σ）と `exclusive_of`（先に作ったマスクと重ねない: `min(このマスク, 255 − そのマスク)`）を掛ける。値は 8 bit の 0..255。
+- `size` は作るマスクの大きさ（省けば基準画像の大きさ。基準画像は縦横比が同じなら縮尺する）。`units` が `norm` なら座標は 0..1、`px` ならその大きさの画素。
+
+| 手順（op） | 内容 |
+|---|---|
+| `image` | 外で作ったマスクを読む。RGBA でアルファが一定でなければアルファ、16 bit は 257 で割る（16 bit かは画素の値ではなく画像の形式で決める）、それ以外は輝度。大きさが違えば縮尺する |
+| `polygon` | 多角形を 255 で塗り、`blur`（σ）でぼかして合わせる |
+| `grabcut` | 多角形の内側を `band_px` 縮めた所を前景、`band_px` 広げた所の外を背景と決め、間を基準画像の色で詰める（`iterations`、乱数は `seed` で固定） |
+| `close` | 楕円の直径 `px`（奇数）で穴とすき間を閉じる |
+| `islands` | `threshold` を超える画素の塊のうち、`largest` は最大だけ、`share` は最大の `share` 倍以上を残し、その範囲を `grow_px` 広げた外を 0 にする |
+| `cut` | 先に作ったマスクの `threshold` を超える所を `grow_px` 広げて 0 にする。`before_blur` なら、そのマスクの仕上げのぼかしの前を使う |
+| `blur` | 途中でぼかす（`sigma`） |
+
+- `image`・`polygon`・`grabcut` は `combine`（`max` 足す / `min` 共通部分 / `subtract` 引く / `replace` 置きかえる。既定は `max`）で今のマスクと合わせる。
+- 既にあるマスクの中身が違えば、上書きせずに止める（手で直したマスクを守るため。上書きするなら `--force`）。同じ中身なら書き直さない。
+- マスクの書き出し先（`out`）が、確認用の絵（`masks_preview.png`）・記録（`masks_record.json`）の名前か、ほかのマスクと同じファイル（`./` などで綴りが違っても）なら、何も書く前に止める（`--force` でも）。
+- 出力（マスク・確認用の絵・記録）が入力（計画・基準画像・`image` の画像）と同じファイルになるときも、何も書く前に止める（入力を壊さない。計画のフォルダーに書くとき、計画を `masks_record.json` と名付けた場合や、`image` が id の既定の書き出し先 `mask_<id>.png` を読む場合など）。入力の名前を変えるか、`--out` で別のフォルダーに書く。
+- 確認用の絵（`masks_preview.png`）は、基準画像 × 0.6 に、マスクを赤・緑・青の順に × 0.45 で足し、GrabCut の多角形を水色の線で描いたもの。
+- 記録（`masks_record.json`、`fx-masks-record/0.1`）には、計画と入力の sha256、各マスクの面積（127 を超える画素）、マスクどうしの重なり（両方が 20 を超える画素）、GrabCut が変えた画素の数、OpenCV の版を残す。数は残すだけで、合否は出さない。
+- 実制作の 2 つのマスク作りの台本を計画に書き直して確かめた。段階 1 の切り抜き + 多角形の計画は、段階 1 で使ったマスク 2 枚と画素まで同じだった。GrabCut の計画は、同じ基準画像から作った台本の出力と、マスクも確認用の絵も画素まで同じだった。どちらも同じ OpenCV が前提で、GrabCut は版が違うと結果が変わりうる。
+
 ## 実作品の素材での回し方
 
 素材のある環境（Cowork や PC）で、**spec を素材の隣に置いて**実行する。素材・spec・出力は Git に入れない（このリポジトリは public）。
@@ -317,6 +367,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look] [--guides [grid,lights,masks]] [--grid-step S] [--reference VIDEO] [--reference-offset S] [--reference-label TEXT]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし）。目盛りと基準の列は[見比べの補助](#見比べの補助目盛り基準の列比較動画) |
 | `mv fx guides IMAGE --out OUT.png [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
+| `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する |
 
