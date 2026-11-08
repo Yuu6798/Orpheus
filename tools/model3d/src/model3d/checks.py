@@ -337,3 +337,40 @@ def motion(points, stance=None, fps=30.0, bend_min_deg=25.0, contact_height=0.03
                 failures.append(f"{name}: 骨の長さのぶれが {value:.6g}（しきい値 {limit}）")
     report.update({"pass": not failures, "failures": failures})
     return report
+
+
+UV_STRETCH_THRESHOLDS = ("max_over", "max_degenerate")
+
+
+def uv_stretch(mesh, width, height, threshold=8.0, thresholds=None):
+    """uv の伸び（三角形ごとの、テクスチャの画素での周長 / 3D の周長を、その中央値で割った値）を測る。uv が島をまたいで
+    引き伸ばされた三角形ほど大きい（texture.project_reference の max_stretch と同じ値）。3D で潰れた三角形は数えて外す。
+    しきい値（max_over: threshold を超える三角形の数、max_degenerate: 潰れた三角形の数）を渡したときだけ合否を出す。"""
+    from . import texture
+    if mesh.uv is None:
+        return {"check": "uv_stretch", "pass": None, "status": "skipped", "reason": "メッシュに uv がありません",
+                "triangles": 0}
+    triangles, _ = mesh.triangles()
+    corners = texture.texel_coordinates(mesh.uv[triangles], width, height)
+    ratio = texture.stretch(corners, mesh.vertices[triangles])
+    finite = np.isfinite(ratio)
+    extent = np.ptp(corners, axis=1).max(axis=1)
+    usable = ratio[finite]
+    report = {"check": "uv_stretch", "status": "done", "texture_size": [int(width), int(height)], "triangles": int(len(ratio)),
+              "degenerate": int((~finite).sum()), "threshold": float(threshold), "over": int((usable > threshold).sum()),
+              "ratio_percentiles": (dict(zip(("p50", "p99", "p99_9", "max"),
+                                             [round(float(v), 3) for v in np.percentile(usable, [50, 99, 99.9, 100])]))
+                                    if len(usable) else None),
+              "uv_extent_px": (dict(zip(("p99", "max"), [round(float(v), 2) for v in np.percentile(extent, [99, 100])]))
+                               if len(extent) else None)}
+    thresholds = thresholds or {}
+    if not thresholds:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+        return report
+    failures = []
+    if "max_over" in thresholds and report["over"] > thresholds["max_over"]:
+        failures.append(f"伸びが {threshold:g} を超える三角形が {report['over']} 個（上限 {thresholds['max_over']:g}）")
+    if "max_degenerate" in thresholds and report["degenerate"] > thresholds["max_degenerate"]:
+        failures.append(f"3D で潰れた三角形が {report['degenerate']} 個（上限 {thresholds['max_degenerate']:g}）")
+    report.update({"pass": not failures, "failures": failures})
+    return report

@@ -1174,3 +1174,66 @@ def fill_holes(mesh, max_sides=0, cap="polygon", orient=True, part=None):
               "flipped": flipped_components > 0, "orient_skipped": bool(orient and left_open), "normals_dropped": dropped,
               "units": out.units}
     return out, report
+
+
+# ---- 部品の一覧 ----------------------------------------------------------------------
+
+def list_parts(path, normals=None):
+    """部品ごとの npz（names と co{i}・f{i}・uv{i}）の部品の一覧（形の数と確かめ）。normals（別の npz の n{i}）を渡すと、
+    部品ごとに法線があるか・頂点と同じ形か・有限かも見る。名前の無い法線（n{i} の i が部品より多い）も並べる。pickle は読まない。
+    確かめで見つけたこと（非有限の頂点・無い頂点を指す面・形の合わない uv や法線）は problems に並べる（止めない）。"""
+    names = _part_names(path)
+    count = len(names)
+    arrays = _npz_arrays(path, "部品の npz", [key for i in range(count) for key in (f"co{i}", f"f{i}")],
+                         optional=[f"uv{i}" for i in range(count)])
+    given = None
+    if normals is not None:
+        with np.load(normals, allow_pickle=False) as data:
+            keys = list(data.files)
+        given = _npz_arrays(normals, "法線の npz", [], optional=[f"n{i}" for i in range(count)])
+        stray = sorted(k for k in keys if k not in {f"n{i}" for i in range(count)})
+    rows, problems = [], []
+    for i, name in enumerate(names):
+        vertices, faces, uv = arrays[f"co{i}"], arrays[f"f{i}"], arrays[f"uv{i}"]
+        _check_part_geometry(vertices, faces, i, path)
+        sides = int(faces.shape[1])
+        row = {"index": i, "name": name, "vertices": int(len(vertices)), "faces": int(len(faces)), "sides": sides,
+               "triangles": int(len(faces) * (sides - 2))}
+        finite = bool(np.isfinite(vertices).all())
+        indices_ok = not faces.size or (int(faces.min()) >= 0 and int(faces.max()) < len(vertices))
+        row.update(finite=finite, face_indices_ok=bool(indices_ok))
+        if len(vertices) and finite:
+            row["bounds"] = {"min": [round(float(x), 6) for x in vertices.min(axis=0)],
+                             "max": [round(float(x), 6) for x in vertices.max(axis=0)]}
+        if not finite:
+            problems.append(f"{name}: 頂点に非有限の値があります")
+        if not indices_ok:
+            problems.append(f"{name}: 面が無い頂点を指しています")
+        if uv is not None:
+            uv_ok = uv.shape == (len(vertices), 2) and np.issubdtype(uv.dtype, np.number)
+            row["uv"] = {"shape_ok": bool(uv_ok)}
+            if uv_ok and len(uv):
+                row["uv"].update(min=[round(float(x), 6) for x in uv.min(axis=0)], max=[round(float(x), 6) for x in uv.max(axis=0)],
+                                 finite=bool(np.isfinite(uv).all()))
+            if not uv_ok:
+                problems.append(f"{name}: uv{i} の形 {uv.shape} が頂点 ({len(vertices)}, 2) と合いません")
+        else:
+            row["uv"] = None
+        if given is not None:
+            n = given[f"n{i}"]
+            if n is None:
+                row["normals"] = {"present": False}
+                problems.append(f"{name}: 法線 n{i} がありません")
+            else:
+                ok = n.shape == vertices.shape and np.issubdtype(n.dtype, np.number)
+                row["normals"] = {"present": True, "shape_ok": bool(ok), "finite": bool(ok and np.isfinite(n).all())}
+                if not ok:
+                    problems.append(f"{name}: 法線 n{i} の形 {n.shape} が頂点 {vertices.shape} と合いません")
+        rows.append(row)
+    if given is not None and stray:
+        problems.append(f"どの部品にも当たらない法線の配列があります: {stray}")
+    return {"schema_version": "model3d-parts/0.1", "parts": rows,
+            "totals": {"parts": count, "vertices": sum(r["vertices"] for r in rows), "faces": sum(r["faces"] for r in rows),
+                       "triangles": sum(r["triangles"] for r in rows)},
+            "normals": None if given is None else {"file": str(normals), "stray": stray},
+            "problems": problems}
