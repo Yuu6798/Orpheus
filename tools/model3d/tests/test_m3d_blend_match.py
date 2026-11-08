@@ -163,6 +163,24 @@ def test_non_finite_values_fail_even_with_a_tolerance_and_the_report_stays_writa
     json.dumps(report, allow_nan=False)                                          # NaN を書かないので、報告を書ける
 
 
+def test_a_tolerance_that_leaves_out_a_kind_still_requires_that_kind_to_be_the_same(tmp_path):
+    left = _snapshot(tmp_path, "a")
+    moved = _snapshot(tmp_path, "b")
+    moved[1]["o0_matrix"][0, 3] = 5.0                                           # 置き場所だけが大きく違う
+    posed = _snapshot(tmp_path, "c", pose_shift=0.5)                            # 骨の姿勢だけが違う
+    shifted = _snapshot(tmp_path, "d", shift=0.5, evaluated_shift=0.5)           # 頂点と変形した形だけが違う
+    for right, tolerance, words in ((moved, {"coordinate": 1.0}, ("置き場所の行列", "matrix")),     # matrix を渡していない
+                                    (posed, {"coordinate": 1.0, "value": 1.0}, ("pose_matrix", "matrix")),
+                                    (shifted, {"matrix": 1.0}, ("頂点が同じではありません", "coordinate")),  # coordinate を渡していない
+                                    (shifted, {"value": 1.0}, ("変形した形が同じではありません", "coordinate"))):
+        report = blend_snapshot.compare(left, right, tolerance)
+        assert report["pass"] is False and not report["exact"], tolerance       # 渡し忘れた項目を上限なしで通さない
+        assert any(all(w in f for w in words) for f in report["failures"]), report["failures"]
+    assert blend_snapshot.compare(left, moved, {"matrix": 5.0})["pass"] is True  # 渡した幅の中で、ほかの項目は同じ
+    assert blend_snapshot.compare(left, posed, {"matrix": 0.5})["pass"] is True
+    assert blend_snapshot.compare(left, shifted, {"coordinate": 1.0})["pass"] is True
+
+
 def test_the_operation_checks_the_named_meshes(tmp_path):
     from model3d import executor
     blender = stand_in_executable(tmp_path, "blender", STAND_IN)

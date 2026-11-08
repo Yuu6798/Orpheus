@@ -2,7 +2,8 @@
 
 リポジトリ外の試作（作り直したキャラと採用版の比べ）と同じ項目: 物体の有無・シーン・メッシュごとの頂点（物体の中の座標）・面のつなぎ・
 面の角の数・uv・属性・置き場所の行列、骨の名前・静止の行列・姿勢の行列、変形した世界の形（sha256 と等間隔の頂点）。
-全部が同じかを exact に、違いの大きさを max_* に出す。tolerance を渡すと、座標と行列の違いがその中かで合否を出す。"""
+全部が同じかを exact に、違いの大きさを max_* に出す。tolerance を渡すと、座標と行列の違いがその中かで合否を出す
+（渡していない項目は同じであること）。"""
 import json
 from pathlib import Path
 
@@ -44,10 +45,11 @@ def _same(a, b):
 
 
 def compare(left, right, tolerance=None, requested=None, requested_attributes=None):
-    """2 つの書き出し（load の戻り）を比べた報告。tolerance（{"coordinate", "matrix", "value"}）を渡せば、その中で合否を出す。
-    渡さなければ、全部が同じ（exact）かで合否を出す。requested（名前を挙げて比べるメッシュの並び）と requested_attributes
-    （名前を挙げて比べる属性の並び）を渡せば、その名前が両方の書き出しにあるかも確かめる（無い名前は黙って外さず、形のつくりの
-    違いにする。属性は、選んだメッシュのどれかにあればよい）。非有限の値（NaN・無限大）があれば、違いを測らずに不合格にする。"""
+    """2 つの書き出し（load の戻り）を比べた報告。tolerance（{"coordinate", "matrix", "value"}）を渡せば、その中で合否を出す
+    （渡していない項目は同じであること）。渡さなければ、全部が同じ（exact）かで合否を出す。requested（名前を挙げて比べる
+    メッシュの並び）と requested_attributes（名前を挙げて比べる属性の並び）を渡せば、その名前が両方の書き出しにあるかも確かめる
+    （無い名前は黙って外さず、形のつくりの違いにする。属性は、選んだメッシュのどれかにあればよい）。非有限の値（NaN・無限大）が
+    あれば、違いを測らずに不合格にする。"""
     (lmeta, larr), (rmeta, rarr) = left, right
     lobjects = {o["name"]: o for o in lmeta["objects"]}
     robjects = {o["name"]: o for o in rmeta["objects"]}
@@ -151,12 +153,19 @@ def compare(left, right, tolerance=None, requested=None, requested_attributes=No
     else:
         def beyond(value, limit):
             return value is not None and limit is not None and value > limit
+        # 渡していない項目は、同じであることを求める（uv と属性の value と同じ扱い。渡し忘れた項目を上限なしで通さない）。
+        # 違いの大きさが None（形が違う・非有限）は、形のつくりか non_finite で不合格にしてあるので、ここでは重ねない
         coordinate, matrix, value = (tolerance.get(k) for k in TOLERANCE_KEYS)
+        omitted = "を渡していないので、同じであることを求めます"
         for o in report["objects"]:
             if beyond(o["max_coordinate_error"], coordinate):
                 failures.append(f"{o['name']}: 頂点の違い {o['max_coordinate_error']:.3g} が coordinate を超えます")
+            elif coordinate is None and o["max_coordinate_error"] is not None and not o["vertices_exact"]:
+                failures.append(f"{o['name']}: 頂点が同じではありません（違い {o['max_coordinate_error']:.3g}。coordinate {omitted}）")
             if beyond(o["matrix_world_max_error"], matrix):
                 failures.append(f"{o['name']}: 置き場所の行列の違い {o['matrix_world_max_error']:.3g} が matrix を超えます")
+            elif matrix is None and o["matrix_world_max_error"] is not None and not o["matrix_world_identical"]:
+                failures.append(f"{o['name']}: 置き場所の行列が同じではありません（違い {o['matrix_world_max_error']:.3g}。matrix {omitted}）")
             if not o["uv_identical"] and (value is None or beyond(o["uv_max_error"], value) or o["uv_max_error"] is None):
                 failures.append(f"{o['name']}: uv が違います")
             for attr, info in o["attributes"].items():
@@ -167,15 +176,21 @@ def compare(left, right, tolerance=None, requested=None, requested_attributes=No
         for key in ("rest_matrix_max_abs_error", "pose_matrix_max_abs_error"):
             if beyond(report[key], matrix):
                 failures.append(f"骨の {key} {report[key]:.3g} が matrix を超えます")
+            elif matrix is None and report[key] not in (0.0, None):
+                failures.append(f"骨の {key} {report[key]:.3g} が 0 ではありません（matrix {omitted}）")
         for e in evaluations:
             if beyond(e["sampled_max_coordinate_error"], coordinate):
                 failures.append(f"コマ {e['frame']} の {e['object']}: 変形した形の違い {e['sampled_max_coordinate_error']:.3g} が coordinate を超えます")
+            elif (coordinate is None and e["vertex_count_identical"] and e["sampled_max_coordinate_error"] is not None
+                  and not e["all_evaluated_vertices_exact"]):                 # exact と同じく、頂点の全部（sha256）で比べる
+                failures.append(f"コマ {e['frame']} の {e['object']}: 変形した形が同じではありません（coordinate {omitted}）")
     report.update({"pass": not failures, "failures": failures})
     return report
 
 
 def check_tolerance(value):
-    """tolerance の形を確かめる: {"coordinate": 数, "matrix": 数, "value": 数}（どれも任意、0 以上）。"""
+    """tolerance の形を確かめる: {"coordinate": 数, "matrix": 数, "value": 数}（どれも任意、0 以上。渡していない項目は、
+    compare が同じであることを求める）。"""
     if value is None:
         return None
     if not isinstance(value, dict) or not value or set(value) - set(TOLERANCE_KEYS):

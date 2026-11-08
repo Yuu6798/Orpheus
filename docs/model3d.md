@@ -473,7 +473,7 @@ rig のない結合も従来どおり使えるが、メッシュとリグの整�
 
 **合否**:
 - `exact`: 全部が同じ（物体・シーン・頂点・面のつなぎ・uv・属性・置き場所・骨の名前と静止と姿勢・変形した形の sha256）。違いの大きさは `max_coordinate_error`・`matrix_world_max_error`・`rest_matrix_max_abs_error`・`pose_matrix_max_abs_error`・`sampled_max_coordinate_error`。
-- `tolerance`（`{"coordinate", "matrix", "value"}`）を渡すと、形のつくり（物体・シーン・頂点と面の数とつなぎ・属性の置き場所と型・骨の名前・姿勢のコマ）が同じで、座標の違いが `coordinate`、行列の違いが `matrix`、uv と属性の違いが `value` の中なら合格。`value` が無ければ uv と属性は同じであること。
+- `tolerance`（`{"coordinate", "matrix", "value"}`）を渡すと、形のつくり（物体・シーン・頂点と面の数とつなぎ・属性の置き場所と型・骨の名前・姿勢のコマ）が同じで、座標の違いが `coordinate`、行列の違いが `matrix`、uv と属性の違いが `value` の中なら合格。渡していない項目は同じであること（`coordinate` が無ければ頂点と変形した形（`exact` と同じく頂点の全部の sha256）、`matrix` が無ければ置き場所と骨の静止と姿勢、`value` が無ければ uv と属性。渡し忘れた項目を上限なしで通さない）。
 - `tolerance` を渡さなければ、全部が同じ（`exact`）かで合否を出す（float の端数でも違えば不合格。試作の作り直しの比べでも、端数の 3e-7 で同じにならなかった）。
 - 非有限の値（NaN・無限大）があれば、違いの大きさを測らずに不合格にする（`non_finite` に場所を並べ、違いの大きさは null。`tolerance` でも許さない）。
 - `report_only` で測るだけ、`strict` で不合格を失敗にする。数を出す検査なので、採否は人が決める。
