@@ -144,9 +144,9 @@ def _grade(x, sat, gain, con):
     return y
 
 
-def _band(look, x, y0, y1, grade, grain):
+def _band(look, x, y0, y1, grade, grain, quantize=True):
     """行 y0:y1 の表示用の値 x（float32 (h, W, 3)、0..1）に grade → ×255 → vignette → grain を掛け、切り捨てた uint8 を返す。
-    x は変更しない。"""
+    quantize=False なら、0..255 に切った float32 のまま返す（切り捨ては呼び出し側。overlays を重ねてから）。x は変更しない。"""
     if grade is not None:
         out = _grade(x, *grade)
         out *= 255.0
@@ -157,10 +157,10 @@ def _band(look, x, y0, y1, grade, grain):
     if grain is not None:
         out += grain[y0:y1]
     np.clip(out, 0.0, 255.0, out=out)
-    return out.astype(np.uint8)
+    return out.astype(np.uint8) if quantize else out
 
 
-def _run(look, source, t, encode):
+def _run(look, source, t, encode, quantize=True):
     """source（(H, W, 3)）を行の帯ごとに encode で表示用の float32 にして look を掛け、uint8 (H, W, 3) にする。
 
     どの段も画素ごとの演算なので、帯に分けても結果は一括と bit 単位で同じ。帯に分けるのは、25 MB 級の一時配列を
@@ -172,10 +172,10 @@ def _run(look, source, t, encode):
     grain = look.grain[grain_index(tau, look.fps) % len(look.grain)] if look.grain is not None else None
     height, width = source.shape[:2]
     rows = max(1, _BAND_PIXELS // width)
-    out = np.empty(source.shape[:2] + (3,), dtype=np.uint8)
+    out = np.empty(source.shape[:2] + (3,), dtype=np.uint8 if quantize else np.float32)
     for y0 in range(0, height, rows):
         y1 = min(height, y0 + rows)
-        out[y0:y1] = _band(look, encode(source[y0:y1]), y0, y1, grade, grain)
+        out[y0:y1] = _band(look, encode(source[y0:y1]), y0, y1, grade, grain, quantize)
     return out
 
 
@@ -193,3 +193,9 @@ def apply(look, linear, t):
     linear は変更しない（静止カメラ・光なしの linear は ctx.assets.plate そのものでありうるので、絶対にその場で書き換えない）。
     """
     return _run(look, linear, t, to_srgb_float)
+
+
+def apply_float(look, linear, t):
+    """apply と同じ計算で、最後の切り捨ての前の値（float32 (H, W, 3)、0..255 に切ったもの）を返す。
+    overlays を重ねてから切り捨てるため。重ねるものが無ければ np.clip(…).astype(np.uint8) が apply とビット単位で同じ。"""
+    return _run(look, linear, t, to_srgb_float, quantize=False)

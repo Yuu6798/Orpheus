@@ -128,6 +128,11 @@
       "patternProperties": {"^x_": {}}
     },
     "lights": {"type": "array", "items": {"$ref": "#/$defs/light"}},
+    "overlays": {
+      "type": "array",
+      "items": {"type": "object"},
+      "description": "描画の中で重ねる透過レイヤー（歌詞の連番・題字のカード）。各要素は fx_overlay_layers.schema.json の layer と同じ形（path は連番のフォルダ、image は時刻つきの 1 枚の画像。動画は受けない）で、spec の読み込みでその形を検証する。look の後・最後の 8 bit への丸めの前に、全 4 版に同じものを重ねる。大きさは output と同じ（resize: true なら縮尺）。無ければ従来とバイト同一。"
+    },
     "look": {
       "type": "object",
       "description": "最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式・同じ既定値）。光とレイヤーの後、表示用の値（ガンマ符号化した 0..1）の上で全 4 版に同じものを掛ける。周辺減光と粒状感は出力画面基準（元画像の座標ではない）。無い子（grade / vignette / grain）は無効、look 自体が無ければ従来とバイト同一。",

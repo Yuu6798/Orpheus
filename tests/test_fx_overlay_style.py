@@ -233,6 +233,14 @@ def test_every_frame_of_a_sequence_keeps_the_resize_rules(tmp_path):
         overlay.run_overlay(tmp_path / "base.png", [], out=tmp_path / "runs2", fps=12, quiet=True, layers_file=allowed)
 
 
+def test_every_frame_of_a_sequence_must_keep_its_alpha(tmp_path):
+    base_image(tmp_path / "base.png")
+    numbered_sequence(tmp_path / "ov", range(3))
+    Image.new("RGB", SIZE, (255, 255, 255)).save(tmp_path / "ov" / "00002.png")                # 3 枚目だけアルファが無い（1 枚目は透過）
+    with pytest.raises(PipelineError, match="アルファがありません"):                             # 不透明な白で土台を覆わない
+        overlay.run_overlay(tmp_path / "base.png", [tmp_path / "ov"], out=tmp_path / "runs", fps=12, quiet=True)
+
+
 def test_a_video_layer_can_start_at_a_frame(tmp_path):
     import subprocess
 

@@ -76,6 +76,7 @@ def _fx_parser(commands):
     render.add_argument("--no-grid", action="store_true")
     render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
     render.add_argument("--no-look", action="store_true", help="ignore spec.look (render without the look stage)")
+    render.add_argument("--no-overlays", action="store_true", help="ignore spec.overlays (render without lyrics and cards)")
     stills = sub.add_parser("stills", help="still sheet: rows = times, columns = variants")
     stills.add_argument("spec", type=Path)
     stills.add_argument("--times", type=float, nargs="+", required=True)
@@ -83,6 +84,7 @@ def _fx_parser(commands):
     stills.add_argument("--out", type=Path)
     stills.add_argument("--scale", type=float, default=1.0)
     stills.add_argument("--no-look", action="store_true", help="ignore spec.look (render without the look stage)")
+    stills.add_argument("--no-overlays", action="store_true", help="ignore spec.overlays (render without lyrics and cards)")
     stills.add_argument("--guides", nargs="?", const="grid,lights",
                         help="draw guides on each cell: comma-separated grid,lights,masks (default when given: grid,lights)")
     stills.add_argument("--grid-step", type=float, help="grid spacing in source-normalized units (default: from the visible span)")
@@ -311,11 +313,11 @@ def fx_command(args):
         return demo.create(args.dir, args.width, args.height, args.duration, args.fps, look=args.look)
     if command == "render":
         return runs.render_run(args.spec, args.variants, args.start, args.duration, args.out, args.scale,
-                               not args.no_grid, args.force, _progress, no_look=args.no_look)
+                               not args.no_grid, args.force, _progress, no_look=args.no_look, no_overlays=args.no_overlays)
     if command == "stills":
         return runs.stills(args.spec, args.times, args.variants, args.out, args.scale, no_look=args.no_look, guides=args.guides,
                            grid_step=args.grid_step, reference=args.reference, reference_offset=args.reference_offset,
-                           reference_label=args.reference_label)
+                           reference_label=args.reference_label, no_overlays=args.no_overlays)
     if command == "guides":
         from .fx import guides
         return guides.write_image_grid(args.image, args.out, args.crop, args.units, args.step, args.width)

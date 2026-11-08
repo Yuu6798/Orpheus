@@ -81,6 +81,7 @@ spec に `look` があれば**全 4 版に同じ look が掛かる**（版は増
 ```
 
 - 必須は `schema_version`・`output.width/height`・`duration_s`・`assets.base`。他は任意（未指定の機能は無効）。出力寸法は偶数。
+- `overlays`（任意）: 描画の中で重ねる透過レイヤー（歌詞の連番・題字のカード）。[spec の中で重ねる](#spec-の中で重ねるoverlays)。無ければ従来とバイト単位で同じ出力。
 - `look`（任意）: 最終フレームの色調整・周辺減光・粒状感。0.1 のときに版番号を上げずに足したので、0.1 の spec でも使える。座標規約は上の元画像基準ではなく**出力画面基準**（下の look 節）。無ければ従来とバイト単位で同じ出力。
 - 座標（`light.position`・`camera.center`）は**元画像（基準画像）の正規化座標**（0..1）、長さ（`light.radius`・`emitter.size`）は**元画像の幅**が基準。
   出力と縦横比が違うときは cover で中央に合わせて切るが（切った割合は warnings に残る。黙って切らない）、座標は切った後の画面ではなく元画像で解釈して出力画素へ写す。
@@ -363,8 +364,8 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | コマンド | 内容 |
 |---|---|
 | `mv fx demo DIR [--width 960 --height 540 --duration 10 --fps 24] [--look]` | 合成素材と spec.json を作る（`--look` で夜向けの look の例を足す） |
-| `mv fx render SPEC [--variants base,layers,light,both] [--start S] [--duration D] [--out DIR] [--scale 1.0] [--no-grid] [--force] [--no-look]` | 版ごとの MP4 と 2×2 グリッドを run として出す |
-| `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look] [--guides [grid,lights,masks]] [--grid-step S] [--reference VIDEO] [--reference-offset S] [--reference-label TEXT]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし）。目盛りと基準の列は[見比べの補助](#見比べの補助目盛り基準の列比較動画) |
+| `mv fx render SPEC [--variants base,layers,light,both] [--start S] [--duration D] [--out DIR] [--scale 1.0] [--no-grid] [--force] [--no-look] [--no-overlays]` | 版ごとの MP4 と 2×2 グリッドを run として出す |
+| `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look] [--no-overlays] [--guides [grid,lights,masks]] [--grid-step S] [--reference VIDEO] [--reference-offset S] [--reference-label TEXT]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし）。目盛りと基準の列は[見比べの補助](#見比べの補助目盛り基準の列比較動画) |
 | `mv fx guides IMAGE --out OUT.png [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
@@ -430,7 +431,7 @@ uv run mv fx compare fx_runs/<run_id> --reference reference.mp4 --reference-labe
 
 **manifest**（`fx-run/0.1`）: spec の sha256（元ファイルと正規化形の両方）、全素材の sha256・寸法、engine（版 + **fx パッケージの全ファイル（.py と schema）の sha256 から作る指紋**）、
 ライブラリ版（python・numpy・opencv・Pillow・ffmpeg）、seed、区間（start・duration・fps・frames）、出力寸法・scale、版ごとの
-出力パス・frames・sha256・technical_pass・検査内容・有効な機能（look があれば `look` も）・`empty`、`look`（`applied` / `disabled` / `absent`）、`depth`（深度視差の記録 `pivot`・`pivot_from`・`motion`。深度が無ければ null）、warnings、status。
+出力パス・frames・sha256・technical_pass・検査内容・有効な機能（look があれば `look` も）・`empty`、`look`（`applied` / `disabled` / `absent`）、`depth`（深度視差の記録 `pivot`・`pivot_from`・`motion`。深度が無ければ null）、`overlays`（`state`: `applied` / `disabled` / `absent` と、使うコマの sha256 の記録 `layers`）、warnings、status。
 
 **status** は `running → succeeded | failed`。失敗（例外・技術検査不合格・Ctrl-C）しても過去の成功 run と `index.json` は変わらず、
 失敗した run は原因つきで残る。プロセスが強制終了して `running` のまま残った run は、次に同じ出力先を使うときに `failed`（interrupted）へ直す。
@@ -478,7 +479,7 @@ uv run mv overlay --base fx_runs/<run_id>/both.mp4 --layer lyrics_png/ --layer s
 - コマ数・fps・寸法が合わないものはエラー（勝手に合わせない）。土台が画像なら `--fps` が要り、コマ数はレイヤーから決まる（決まらなければ `--frames`）。土台が動画なら fps とコマ数は動画から。
 - run（既定 `<土台のフォルダ>/overlay_runs/<run_id>/`）に `overlay.mp4`・`manifest.json`・`render.log` を残し、`index.json` に key → run_id を登録する。key は土台・各レイヤーの使うコマ・音声の sha256 と設定から作り、同じ入力の成功 run は再利用する（`--force` で作り直す）。manifest の `overlay` の欄（土台・レイヤーごとの使うコマの sha256・音声・レイヤーごとの設定 `options`・書き出しの設定）は `fx_overlay.schema.json`（fx-overlay/0.2。`contracts/` の外）で検証してから書く。
 - 書き出しの後に `probe.check_video`（technical_pass。寸法・fps・コマ数・色タグ・音声の尺）を通す。通らなければ run は failed。
-- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー。実験的。Remotion の実際の連番ではまだ通していない。
+- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー（連番は読む各コマで確かめる。アルファの無いコマは不透明になって土台を覆うため）。実験的。Remotion の実際の連番ではまだ通していない。
 
 **レイヤーごとの設定（`--layers`。fx-overlay-layers/0.1）** — `--layer` の代わりに、設定ファイル（`src/mv_pipeline/fx/fx_overlay_layers.schema.json`）で重ねる。
 
@@ -518,6 +519,28 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 - 長さ（`sigma_px`・`dilate_px`）は出力の短い辺を 1080 としたときの画素（1920x1080 でも 1080x1920 でもそのままの画素。縮めた下見では一緒に縮む）。
 - 仕上げ・不透明度・`premultiplied`・1 枚の画像の無いレイヤーだけなら、0.1 と同じ式（レイヤーごとに 8 bit へ丸める）で、`--layer` と同じ絵になる。
 - 段階 1 の 0.2 の描画に、見本の字の連番を公開版の歌詞と同じ仕上げで重ね、公開版と並べて見た（白に近い桃の本体・紫の光彩・影）。
+
+### spec の中で重ねる（`overlays`）
+
+`mv overlay` は書き出した動画に後から重ねるが、fx-shot の `overlays` は**描画の中で**重ねる（FX-LYRIC-1）。書き出しが 1 回で済み（圧縮が 2 度掛からない）、look の後・最後の 8 bit への丸めの前に重ねるので、実制作の描画と同じ順になる。
+
+```json
+"overlays": [
+  {"path": "lyrics_png", "first_frame": 3066, "missing": "transparent",
+   "style": {"tint": [255, 250, 255], "shadow": {}, "glow": {"color": [150, 70, 230]}}},
+  {"image": "title.png", "start_s": 2.5, "end_s": 4.0, "fade_in_s": 0.5, "fade_out_s": 0.5}
+]
+```
+
+- 各要素は `--layers` の layer と同じ形（`fx_overlay_layers.schema.json` で検証する）。違いは、`path` が連番のフォルダだけ（動画は `mv overlay` で重ねる）なことと、時間が**ショット時刻**なこと。
+- 連番のコマは、ショット時刻 t のいちばん近いコマ n = round(t·fps)（grain と同じ丸め）。`first_frame` が無ければ連番はショット全体のコマ数とちょうど同じ枚数で n 枚目、あれば番号 `first_frame + n` のファイル。`--start` で区間を切っても、同じ時刻は同じコマになる。
+- 大きさは spec の `output` と同じであること（`resize: true` なら縦横比 1% 以内で縮尺）。`--scale` の下見では一緒に縮める。仕上げの長さ（`sigma_px` など）も、描画の短い辺に合わせて縮む。
+- 連番は 1 枚目だけでなく、読む各コマで、アルファがあることと寸法（spec の `output` に対して）を確かめる（アルファの無いコマは不透明になって絵を覆うので止める）。
+- **全 4 版に同じものを**重ねる（look と同じ）。版の `features` に `overlays` が載る。`--no-overlays` で外して描ける（key が分かれる。manifest の `overlays.state` は `disabled`）。
+- 計算: look があれば、look の float（切り捨ての前、0..255 に切ったもの）に重ねてから切り捨てる。look が無ければ、`to_srgb8` の値に重ねて四捨五入する。これは、書き出した版に `mv overlay` で重ねるのと同じ値（圧縮の前のコマで、試験で確認）。
+- **見えるものが無い時刻は、overlays の無い spec とバイト単位で同じ**（重ねの経路を通らない）。見える時刻でも、重ねの届かない画素は同じ値になる。
+- run の key には、使うコマ（ショット全体）と画像の sha256 が入る。連番の 1 コマを描き直せば、作り直しになる。
+- 段階 1 の 0.2 の spec に見本の字の連番を overlays として重ねた描画は、書き出した版に `mv overlay` で重ねたものと平均 1.3〜2.6/255 の差だった（向こうは圧縮が 2 度掛かる分）。
 
 ## accept
 

@@ -22,7 +22,7 @@ from pathlib import Path
 import jsonschema
 
 from ..io import PipelineError, read_json, safe_path, sha256
-from . import SCHEMA_V01, SCHEMA_VERSION
+from . import SCHEMA_V01, SCHEMA_VERSION, spec_layers
 
 _SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("fx_shot.schema.json"),
             SCHEMA_V01: Path(__file__).with_name("fx_shot_0_1.schema.json")}
@@ -92,7 +92,7 @@ def parse_spec(raw, base_dir, path=None, digest=""):
     data = _normalize(raw)
     warnings = _validate_semantics(data)
     base_dir = Path(base_dir).resolve()
-    for rel in asset_refs(data).values():
+    for rel in list(asset_refs(data).values()) + [entry["source"] for entry in data["overlays"]]:
         safe_path(base_dir, rel)  # 逸脱は PipelineError
     return Spec(data=data, base_dir=base_dir, path=path, sha256=digest, warnings=tuple(warnings))
 
@@ -192,6 +192,7 @@ def _normalize(raw):
         "layers": None if layers is None else _normalize_layers(layers),
         "lights": [_normalize_light(light) for light in raw.get("lights", [])],
         "look": None if raw.get("look") is None else normalize_look(raw["look"]),
+        "overlays": spec_layers.normalize(raw.get("overlays")),
     }
     data.update(_ext(raw))
     return data

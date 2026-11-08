@@ -9,6 +9,8 @@ t は**ショット時刻**（spec の時間軸。start 付きで描いても同
 spec に layers や lights が無ければその機能はどの版でも無効（版は残り、variant_notes に記録される）。
 spec に look（色調整・周辺減光・粒状感）があれば、光とレイヤーの後の最終段で**全 4 版に同じものを**掛ける
 （look.py）。look が無ければ従来の to_srgb8 の経路で、出力は従来とバイト単位で同じ。
+spec に overlays（歌詞の連番・題字のカード）があれば、その時刻に見えるものを look の後・最後の 8 bit への丸めの前に
+全 4 版に同じように重ねる（spec_layers.py。実制作と同じ順）。見えるものが無い時刻は、overlays の無い spec とバイト単位で同じ。
 
 CLI や run 管理の担当者向け:
   - write_video(out, frames, size, fps, crf, n_frames, audio=None, log_path=None) は任意のフレーム列
@@ -33,7 +35,7 @@ from PIL import Image
 
 from .. import media
 from ..io import PipelineError
-from . import VARIANTS, camera, layers, light, timeline
+from . import VARIANTS, camera, layers, light, spec_layers, timeline
 from . import look as fxlook
 from .assets import Assets, load_assets, resolve_pivot
 from .color import soft_add, to_srgb8
@@ -56,6 +58,7 @@ class Context:
     hole: object = None              # 背景の穴埋め重み float32 (H, W)。plane が無ければ None
     look: object = None              # look.Look（周辺減光・粒状感は prepare で 1 回だけ作る）。spec に look が無ければ None
     depth_info: dict | None = None   # 深度視差の記録 {pivot, pivot_from, motion}（manifest 用）。深度が無ければ None
+    overlays: list = field(default_factory=list)   # spec_layers.Layer の列（spec に overlays が無ければ空）
 
     @property
     def fps(self):
@@ -89,6 +92,7 @@ class Context:
         data = self.spec.data
         base = ["camera"] + (["depth_parallax"] if self.assets.depth is not None and self.path.has_depth_motion else [])
         base += ["look"] if self.look is not None else []     # look は全 4 版に同じものが掛かる
+        base += ["overlays"] if self.overlays else []          # overlays も全 4 版に同じものを重ねる
         notes = {"base": {"features": base, "empty": False}}
         notes["layers"] = {"features": base + ["layers"], "empty": False} if self.has_layers \
             else {"features": base, "empty": True, "note": "spec に layers が無い（または plane/effects が空）ため base と同じ映像"}
@@ -146,7 +150,8 @@ def prepare(spec, scale=1.0, size=None):
         if not lt.receivers and lt.glow_w is None:
             warnings.append(f"light {lt.id!r} は receivers も emitter も無く、何も描きません")
     look = fxlook.prepare(data["look"], size, data["output"]["fps"]) if data["look"] is not None else None
-    return Context(spec, size, assets, path, background, planes, items, lights, warnings, hole, look, depth_info)
+    overlays = spec_layers.prepare(spec, size)
+    return Context(spec, size, assets, path, background, planes, items, lights, warnings, hole, look, depth_info, overlays)
 
 
 def frame(ctx, t, variant):
@@ -156,6 +161,16 @@ def frame(ctx, t, variant):
     use_layers = ctx.has_layers and variant in ("layers", "both")
     active = light.levels(ctx.lights, t) if ctx.has_lights and variant in ("light", "both") else []
     linear = _layered(ctx, t, active) if use_layers else _flat(ctx, t, active)
+    visible = spec_layers.at(ctx.overlays, t) if ctx.overlays else []
+    if visible:
+        # look があれば切り捨ての前の float に重ねてから切り捨てる（実制作と同じ順）。無ければ to_srgb8 の値に重ねて四捨五入する
+        # （書き出した版に mv overlay で重ねるのと同じ値）。重ねの外の画素は、どちらも overlays の無い絵と同じ値になる
+        scale = min(ctx.size) / 1080.0
+        if ctx.look is not None:
+            display = spec_layers.composite(fxlook.apply_float(ctx.look, linear, t), visible, scale)
+            return np.clip(display, 0, 255).astype(np.uint8)
+        display = spec_layers.composite(to_srgb8(linear).astype(np.float32), visible, scale)
+        return np.clip(display + 0.5, 0, 255).astype(np.uint8)
     if ctx.look is not None:      # linear は ctx.assets.plate そのものでありうる（静止カメラ）。look は新しい配列を返す
         return fxlook.apply(ctx.look, linear, t)
     return to_srgb8(linear)
