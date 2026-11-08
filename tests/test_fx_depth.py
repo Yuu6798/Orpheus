@@ -338,6 +338,20 @@ def test_value_regions_count_before_a_flat_depth_is_dropped(tmp_path):
     assert ctx.assets.depth is None and any("ほぼ一定" in w for w in ctx.warnings)                     # 下ごしらえの後で平らなら使わない
 
 
+def test_a_prepared_depth_smaller_than_the_frame_stays_in_zero_to_one(tmp_path):
+    make_project(tmp_path, 160, 90)
+    step = np.zeros((18, 32), np.uint16)
+    step[:, 16:] = 65535                                                     # 0 と 1 の段差。描画（160x90）より小さい
+    Image.fromarray(step).save(tmp_path / "depth.png")
+    data = v02()
+    data["assets"]["depth"] = {"path": "depth.png", "normalize": "none"}
+    ctx = render.prepare(fxspec.load_spec(write_spec(tmp_path, data)))
+    depth = ctx.assets.depth
+    assert ctx.size == (160, 90) and depth.shape == (90, 160)
+    assert float(depth.min()) == 0.0 and float(depth.max()) == 1.0           # 拡大の 3 次補間の行き過ぎを 0..1 に切る
+    assert 0.0 < float(depth[45, 80]) < 1.0                                  # 段差の所は補間のまま
+
+
 def test_a_depth_without_preparation_stays_on_the_01_path(tmp_path):
     make_project(tmp_path, 160, 90)
     ctx = render.prepare(fxspec.load_spec(write_spec(tmp_path, v02())))

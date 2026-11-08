@@ -286,7 +286,8 @@ def load_assets(spec, size):
             depth, informative = normalize_depth(values, depth_spec["near"])
         else:
             values, informative = prepare_depth(image, depth_spec, base_size, box)
-            depth = np.ascontiguousarray(_crop_resize(values, box, size), dtype=np.float32) if informative else None
+            # 描画より小さい深度は 3 次補間で拡大するので、段差で 0..1 を行き過ぎる。0.1 の経路（normalize_depth）と同じく切る
+            depth = np.ascontiguousarray(np.clip(_crop_resize(values, box, size), 0.0, 1.0), dtype=np.float32) if informative else None
         if not informative:
             depth = None  # 警告と描画を一致させる: 深度視差も light の depth ゲートも無効にする
             warnings.append("深度画像がほぼ一定のため、深度は使いません（深度視差と light の depth 指定も無効）")
