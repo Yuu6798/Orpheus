@@ -1009,3 +1009,203 @@ def smooth_normals(vertices, triangles, edges, iterations, step=1e-5):
                   max_turn_deg=round(float(turn.max()), 3) if len(turn) else 0.0,
                   zero_normals=int((np.linalg.norm(v, axis=1) <= 0.5).sum()), isolated=int((~used).sum()))
     return v[inv], report
+
+
+# ---- 穴ふさぎ ----------------------------------------------------------------------
+
+FILL_CAPS = ("polygon", "fan")
+
+
+def orient_faces(faces):
+    """隣り合う面の向きをそろえる（共有する辺を互いに逆向きに使うように、面の頂点の並びを逆にする。Blender の
+    recalc_face_normals のうち、向きをそろえる所）。辺でつながった面の集まりごとに、裏返す面が少ない方にそろえる。
+    戻りは (そろえた面のリスト, 裏返した面の数)。3 つ以上の面が使う辺や、裏表のない面（メビウスの帯のような）なら止める。"""
+    users = {}
+    for f, face in enumerate(faces):
+        for i in range(len(face)):
+            a, b = face[i], face[(i + 1) % len(face)]
+            users.setdefault((a, b) if a < b else (b, a), []).append((f, a < b))
+    neighbours = [[] for _ in faces]
+    for key, used in users.items():
+        if len(used) > 2:
+            raise ToolError(f"3 つ以上の面が使う辺があります（多様体でない。辺 {list(key)}）。穴の縁が決まりません")
+        if len(used) == 2 and used[0][0] != used[1][0]:
+            (f, forward_f), (g, forward_g) = used
+            same = forward_f == forward_g                # 同じ向きに使っている = どちらかを裏返す
+            neighbours[f].append((g, same))
+            neighbours[g].append((f, same))
+    flip, flipped = [None] * len(faces), 0
+    for seed in range(len(faces)):
+        if flip[seed] is not None:
+            continue
+        flip[seed], member, stack = False, [seed], [seed]
+        while stack:
+            f = stack.pop()
+            for g, same in neighbours[f]:
+                want = flip[f] != same
+                if flip[g] is None:
+                    flip[g] = want
+                    member.append(g)
+                    stack.append(g)
+                elif flip[g] != want:
+                    raise ToolError(f"面の裏表がそろえられません（面 {g} の辺のつながりが、メビウスの帯のように裏と表をつなぐ）")
+        count = sum(1 for f in member if flip[f])
+        if count * 2 > len(member):                      # 裏返す面が少ない方にそろえる（元の向きをできるだけ残す）
+            for f in member:
+                flip[f] = not flip[f]
+            count = len(member) - count
+        flipped += count
+    return [list(face[::-1]) if turned else list(face) for face, turned in zip(faces, flip)], flipped
+
+
+def edge_components(faces):
+    """辺を共有する面でつながった面の集まり（連結成分）。頂点だけを共有する集まりは別にする（face_components と違う所。
+    面の向きは辺のつながりでしか決まらないので、向きを直す単位にする）。最小の面番号の順に並べ、各成分の面番号は昇順。"""
+    parent = list(range(len(faces)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first = {}
+    for f, face in enumerate(faces):
+        for i in range(len(face)):
+            a, b = face[i], face[(i + 1) % len(face)]
+            g = first.setdefault((a, b) if a < b else (b, a), f)
+            if g != f:
+                root, other = find(g), find(f)
+                if root != other:
+                    parent[other] = root
+    groups = {}
+    for f in range(len(faces)):
+        groups.setdefault(find(f), []).append(f)
+    return sorted(groups.values(), key=lambda members: members[0])
+
+
+def boundary_loops(mesh):
+    """穴の縁の輪（境の辺 = 1 つの面だけが使う辺を、面の向きにたどった頂点の列）と、辺の数の確かめ。
+
+    3 つ以上の面が使う辺・同じ向きに 2 度使う辺（面の向きがそろっていない）・つぶれた辺・2 つ以上の輪が通る頂点（蝶ネクタイ）が
+    あれば止める（どの面でふさぐかが決まらない）。輪は、いちばん小さい頂点の番号の順に、その頂点から並べる。"""
+    n = mesh.vertex_count
+    half = face_edges(mesh.faces)
+    if not len(half):
+        return [], {"edges": 0, "boundary_edges": 0}
+    if (half[:, 0] == half[:, 1]).any():
+        raise ToolError(f"つぶれた辺（同じ頂点を続けて使う面）が {int((half[:, 0] == half[:, 1]).sum())} 本あります。先に mesh.weld で退化面を除いてください")
+    pair = np.sort(half, axis=1)
+    _, undirected, use = np.unique(pair[:, 0] * n + pair[:, 1], return_inverse=True, return_counts=True)
+    undirected = undirected.ravel()
+    if (use > 2).any():
+        raise ToolError(f"3 つ以上の面が使う辺が {int((use > 2).sum())} 本あります（多様体でない）。穴の縁が決まりません")
+    _, same = np.unique(half[:, 0] * n + half[:, 1], return_counts=True)
+    if (same > 1).any():
+        raise ToolError(f"同じ向きに 2 度使う辺が {int((same > 1).sum())} 本あります（隣り合う面の向きがそろっていない）。"
+                        "向きをそろえてから穴をふさいでください")
+    border = half[use[undirected] == 1]
+    starts, counts = np.unique(border[:, 0], return_counts=True)
+    if (counts > 1).any():
+        raise ToolError(f"2 つ以上の穴の縁が通る頂点が {int((counts > 1).sum())} 個あります（最初の頂点: "
+                        f"{starts[counts > 1][:5].tolist()}）。どう分けてふさぐかが決まりません")
+    following = dict(zip(border[:, 0].tolist(), border[:, 1].tolist()))
+    loops, seen = [], set()
+    for start in sorted(following):
+        if start in seen:
+            continue
+        loop, u = [start], following[start]
+        seen.add(start)
+        while u != start:
+            if u in seen or u not in following:
+                raise ToolError(f"穴の縁が輪になりません（頂点 {u}）")
+            loop.append(u)
+            seen.add(u)
+            u = following[u]
+        loops.append(loop)
+    return loops, {"edges": int(len(use)), "boundary_edges": int(len(border))}
+
+
+def fill_holes(mesh, max_sides=0, cap="polygon", orient=True, part=None):
+    """穴（境の辺の輪）を面でふさいだメッシュと報告。今の面と頂点の番号は変えず、新しい面（と頂点）は後ろに足す。
+
+    - 先に、隣り合う面の向きをそろえる（orient_faces。リポジトリ外の試作の Blender の recalc_face_normals と同じ役目）。
+    - cap "polygon": 輪ごとに 1 つの多角形（頂点を足さない。試作の Blender の holes_fill と同じ形）。
+      "fan": 輪の頂点の平均に頂点を 1 つ足し、三角形の扇でふさぐ（平らでない輪に向く）。
+    - ふさぐ面は、隣の面と向きがそろうように、縁を逆にたどる。
+    - max_sides: この数より多い辺の輪はふさがない（0 は全部）。残った輪は報告に載せる。
+    - orient: ふさいだ後、辺でつながった面の集まり（edge_components。頂点だけでつながった殻は別の集まり）ごとに体積が
+      負（内向き）なら、その集まりの面を裏返して外向きにする。
+    - part: ふさいだ面を、この名前の parts に入れる（省くと parts は変えない）。
+    - x_normals（頂点の法線）は、ふさいだ形に合わないので外す。uv と頂点色（x_vertex_colors）は、足した頂点に輪の平均を付ける
+      （入力の頂点色の並びは変えず、新しい並びにする）。"""
+    if cap not in FILL_CAPS:
+        raise ToolError(f"cap は {' か '.join(FILL_CAPS)} にしてください: {cap!r}")
+    if not isinstance(max_sides, int) or isinstance(max_sides, bool) or max_sides < 0:
+        raise ToolError(f"max_sides は 0 以上の整数にしてください（0 は全部）: {max_sides!r}")
+    degenerate = sum(1 for face in mesh.faces for i in range(len(face)) if face[i] == face[(i + 1) % len(face)])
+    if degenerate:
+        raise ToolError(f"つぶれた辺（同じ頂点を続けて使う面）が {degenerate} 本あります。先に mesh.weld で退化面を除いてください")
+    out = mesh.copy()
+    out.faces, reoriented = orient_faces(out.faces)
+    loops, counts = boundary_loops(out)
+    vertices, uv = [out.vertices], [] if out.uv is None else [out.uv]
+    palette = out.extra.get("x_vertex_colors")             # 頂点ごとの色（数が頂点と同じときだけ。write_obj と同じ決まり）
+    colors = np.asarray(palette, dtype=np.float64) if isinstance(palette, list) and len(palette) == out.vertex_count else None
+    added_colors = []
+    first_new_face, first_new_vertex = out.face_count, out.vertex_count
+    rows, filled_edges, left_open = [], 0, 0
+    for loop in loops:
+        filled = not max_sides or len(loop) <= max_sides
+        rows.append({"start": int(loop[0]), "edges": len(loop), "filled": filled})
+        if not filled:
+            left_open += len(loop)
+            continue
+        filled_edges += len(loop)
+        reverse = [loop[0]] + loop[:0:-1]                # 縁を逆にたどる（隣の面と向きがそろう）
+        if cap == "polygon":
+            out.faces.append([int(i) for i in reverse])
+        else:
+            center = first_new_vertex + sum(len(v) for v in vertices[1:])
+            vertices.append(out.vertices[loop].mean(axis=0, keepdims=True))
+            if uv:
+                uv.append(out.uv[loop].mean(axis=0, keepdims=True))
+            if colors is not None:
+                added_colors.append(colors[loop].mean(axis=0).tolist())
+            for a, b in zip(reverse, reverse[1:] + reverse[:1]):
+                out.faces.append([int(a), int(b), int(center)])
+    out.vertices = np.concatenate(vertices) if len(vertices) > 1 else out.vertices
+    if uv and len(uv) > 1:
+        out.uv = np.concatenate(uv)
+    if added_colors:                                      # 新しい並びにする（入力のメッシュと並びを共有しているため）
+        out.extra["x_vertex_colors"] = list(palette) + added_colors
+    new_faces = list(range(first_new_face, out.face_count))
+    if part is not None and new_faces:
+        out.parts.setdefault(str(part), []).extend(new_faces)
+    dropped = out.extra.pop("x_normals", None) is not None
+    components, flipped_components = edge_components(out.faces), 0
+    if orient and not left_open and out.faces:           # 辺でつながった閉じた面の集まりごとに、体積が負なら裏返す（外向きに）
+        triangles, owner = out.triangles()
+        label = np.empty(out.face_count, dtype=np.int64)
+        for c, members in enumerate(components):
+            label[members] = c
+        points = out.vertices[triangles]
+        share = np.einsum("ij,ij->i", points[:, 0], np.cross(points[:, 1], points[:, 2])) / 6.0
+        volumes = np.zeros(len(components))
+        np.add.at(volumes, label[owner], share)
+        for c in np.flatnonzero(volumes < 0):
+            for f in components[c]:
+                out.faces[f] = out.faces[f][::-1]
+            flipped_components += 1
+    volume = float(out.signed_volume())
+    out.validate()
+    after = out.edge_report()
+    report = {"cap": cap, "loops": rows, "filled_loops": sum(1 for r in rows if r["filled"]), "filled_edges": filled_edges,
+              "left_open_edges": left_open, "faces_added": len(new_faces), "vertices_added": out.vertex_count - first_new_vertex,
+              "boundary_edges_before": counts["boundary_edges"], "closed": bool(after.get("closed")),
+              "boundary_edges_after": after["boundary_edges"], "nonmanifold_edges_after": after["nonmanifold_edges"],
+              "volume": volume, "volume_l": round(volume * UNIT_FACTORS[out.units] ** 3 * 1000, 6),
+              "faces_reoriented": reoriented, "components": len(components), "flipped_components": flipped_components,
+              "flipped": flipped_components > 0, "orient_skipped": bool(orient and left_open), "normals_dropped": dropped,
+              "units": out.units}
+    return out, report
