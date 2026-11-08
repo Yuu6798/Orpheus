@@ -653,8 +653,18 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": [
-          "t"
+        "description": "t（1 回）か at（複数の時刻か拍の格子。同じ欄の重なりはコマごとに強い方）のどちらか 1 つ",
+        "oneOf": [
+          {
+            "required": [
+              "t"
+            ]
+          },
+          {
+            "required": [
+              "at"
+            ]
+          }
         ],
         "additionalProperties": false,
         "patternProperties": {
@@ -663,6 +673,45 @@
         "properties": {
           "t": {
             "$ref": "#/$defs/time"
+          },
+          "at": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/time"
+                }
+              },
+              {
+                "$ref": "#/$defs/time_grid"
+              }
+            ]
+          },
+          "snap": {
+            "description": "none（既定。t 以降の最初のコマから）、time（t をいちばん近い出力のコマの時刻に寄せる。減衰もそこから）、peak（いちばん近いコマに山を出す。半コマまで早く光り、減衰は t から）",
+            "enum": ["none", "time", "peak"]
+          },
+          "curve_frames": {
+            "description": "コマごとの強さの表。t にいちばん近い出力のコマから offset コマ目に levels[0] を置き、strength を掛ける（decay_s は使わない）。1 コマのストロボは {\"levels\": [1]}",
+            "type": "object",
+            "required": [
+              "levels"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "offset": {
+                "type": "integer"
+              },
+              "levels": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
           },
           "strength": {
             "type": "number",

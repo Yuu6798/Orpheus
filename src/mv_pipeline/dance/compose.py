@@ -21,6 +21,7 @@ from ..fx import timeline
 from ..fx.color import color_to_linear, from_srgb_float, to_linear, to_srgb8, to_srgb_float
 from ..io import PipelineError, sha256
 from . import SCHEMA_V01
+from . import beats as dancebeats
 from . import fit as dancefit
 from . import key as dancekey
 from . import lyrics as dancelyrics
@@ -300,15 +301,32 @@ def _performer(ctx, t, matrix, samples=()):
     return old_color + (new_color - old_color) * weight, old_alpha + (new_alpha - old_alpha) * weight
 
 
+def flash_level(flash, t, fps):
+    """時刻 t の 1 つのフラッシュの強さ。効いていなければ None。
+
+    curve_frames: t にいちばん近い出力のコマと、フラッシュの t にいちばん近いコマの差で表を引く（strength × levels）。
+    それ以外: strength × exp(−経過/decay_s) を 5·decay_s の間。snap peak は半コマ前から山の値で光る（経過は 0 で数える）。"""
+    curve = flash["curve_frames"]
+    if curve is not None:
+        k = dancebeats.nearest_frame(t, fps) - dancebeats.nearest_frame(flash["t"], fps) - curve["offset"]
+        return float(flash["strength"] * curve["levels"][k]) if 0 <= k < len(curve["levels"]) else None
+    age = t - flash["t"]
+    lead = 0.5 / fps if flash["snap"] == "peak" else 0.0
+    if -lead <= age < 5 * flash["decay_s"]:
+        return float(flash["strength"] * math.exp(-max(age, 0.0) / flash["decay_s"]))
+    return None
+
+
 def _active_flashes(ctx, t):
-    """時刻 t に効いているフラッシュの [(強さ, 色, mode)]。色は lerp_linear なら線形、add_display なら表示用の値 0..1。"""
-    active = []
+    """時刻 t に効いているフラッシュの [(強さ, 色, mode)]。色は lerp_linear なら線形、add_display なら表示用の値 0..1。
+    同じ欄（at で展開したもの）の重なりはコマごとに強い方だけ、別の欄は順に重ねる。"""
+    active = {}
     for flash in ctx.flashes:
-        age = t - flash["t"]
-        if 0 <= age < 5 * flash["decay_s"]:
-            strength = float(flash["strength"] * math.exp(-age / flash["decay_s"]))
-            active.append((strength, flash["display"] if flash["mode"] == "add_display" else flash["linear"], flash["mode"]))
-    return active
+        strength = flash_level(flash, t, ctx.fps)
+        if strength is None or (flash["entry"] in active and active[flash["entry"]][0] >= strength):
+            continue
+        active[flash["entry"]] = (strength, flash["display"] if flash["mode"] == "add_display" else flash["linear"], flash["mode"])
+    return list(active.values())
 
 
 def _flash(out, strength, color, mode):

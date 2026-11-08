@@ -101,8 +101,9 @@ def parse_spec(raw, base_dir, path=None, digest=""):
     """生の辞書から Spec を作る（テストやメモリ上の spec 用）。"""
     _validate_schema(raw)
     base_dir = Path(base_dir).resolve()
-    data = _normalize(raw, base_dir)
-    warnings = _validate_semantics(data)
+    notes = []
+    data = _normalize(raw, base_dir, notes)
+    warnings = notes + _validate_semantics(data)
     for rel in asset_refs(data).values():
         safe_path(base_dir, rel)  # 逸脱は PipelineError
     return Spec(data=data, base_dir=base_dir, path=path, sha256=digest, warnings=tuple(warnings))
@@ -163,17 +164,17 @@ def _normalize_stage(stage, legacy):
             "parallax": float(stage.get("parallax", 1.0)), **_ext(stage)}
 
 
-def _accent_times(at, grid, time, duration):
-    """accents の at を秒の配列にする（時刻の配列か、拍の格子の指定）。"""
+def _accent_times(at, grid, time, duration, name="accents"):
+    """accents（と flashes）の at を秒の配列にする（時刻の配列か、拍の格子の指定）。name はエラーの文言に使う欄の名前。"""
     if isinstance(at, list):
-        return sorted(time(value, "accents の at") for value in at)
+        return sorted(time(value, f"{name} の at") for value in at)
     if grid is None:
-        raise PipelineError("dance spec: accents の grid の指定には beats が必要です")
+        raise PipelineError(f"dance spec: {name} の grid の指定には beats が必要です")
     source = grid.downbeats if at["grid"] == "downbeats" else grid.beats
-    first, last = time(at.get("from", 0), "accents の from"), time(at.get("to", duration), "accents の to")
+    first, last = time(at.get("from", 0), f"{name} の from"), time(at.get("to", duration), f"{name} の to")
     picked = [t for t in source if first <= t <= last][::int(at.get("every", 1))]
     tolerance = float(at.get("except_tolerance_s", 0.05))
-    skip = [time(value, "accents の except") for value in at.get("except", [])]
+    skip = [time(value, f"{name} の except") for value in at.get("except", [])]
     return [t for t in picked if all(abs(t - other) > tolerance for other in skip)]
 
 
@@ -182,6 +183,29 @@ def _normalize_accent(accent, grid, time, duration):
     return {"times": _accent_times(accent["at"], grid, time, duration), "zoom": float(accent.get("zoom", 1.0)),
             "attack_s": float(accent.get("attack_s", 0)), "decay_s": decay, "shake_px": float(accent.get("shake_px", 0)),
             "shake_decay_s": float(accent.get("shake_decay_s", decay)), "shake_hz": _vec(accent.get("shake_hz", SHAKE_HZ)), **_ext(accent)}
+
+
+def _normalize_flashes(flashes, grid, time, duration, fps, notes):
+    """flashes を 1 回ずつのフラッシュに展開する（at は時刻ごとに 1 つ。entry は元の欄の番号で、同じ欄の重なりはコマごとに強い方）。
+    snap: time は t をいちばん近い出力のコマの時刻にする。0.1・0.2 の spec は snap none・curve なし・欄ごとに 1 つ（同じ絵）。"""
+    out = []
+    for entry, f in enumerate(flashes):
+        snap = f.get("snap", "none")
+        times = [time(f["t"], "flashes の t")] if "t" in f else _accent_times(f["at"], grid, time, duration, "flashes")
+        if not times:
+            notes.append(f"flashes: {entry} 番目の at に時刻が 1 つもないので、光りません")
+        curve = f.get("curve_frames")
+        curve = None if curve is None else {"offset": int(curve.get("offset", 0)), "levels": [float(v) for v in curve["levels"]]}
+        if curve is not None and snap != "none":
+            raise PipelineError(f"dance spec: flashes の {entry} 番目の curve_frames は t にいちばん近いコマが基準なので、snap は使えません")
+        for t in times:
+            if snap == "time":
+                t = dancebeats.nearest_frame(t, fps) / fps
+            out.append({"t": t, "strength": float(f.get("strength", 0.6)), "decay_s": float(f.get("decay_s", 0.2)),
+                        "color": _vec(f.get("color", [255, 255, 255])), "mode": f.get("mode", "lerp_linear"),
+                        "beat_exempt": bool(f.get("beat_exempt", False)), "align": f.get("align", "beat"),
+                        "snap": snap, "curve_frames": curve, "entry": entry, **_ext(f)})
+    return out
 
 
 def _normalize_seam(seam, time):
@@ -277,7 +301,7 @@ def _normalize_audio(audio):
             "fade_out_s": float(audio.get("fade_out_s", AUDIO_FADE_OUT_S)), **_ext(audio)}
 
 
-def _normalize(raw, base_dir):
+def _normalize(raw, base_dir, notes=None):
     out = raw["output"]
     audio = raw.get("audio")
     performer = raw["performer"]
@@ -323,9 +347,7 @@ def _normalize(raw, base_dir):
             **_ext(camera),
         },
         "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"]),
-        "flashes": [{"t": time(f["t"], "flashes の t"), "strength": float(f.get("strength", 0.6)), "decay_s": float(f.get("decay_s", 0.2)),
-                     "color": _vec(f.get("color", [255, 255, 255])), "mode": f.get("mode", "lerp_linear"),
-                     "beat_exempt": bool(f.get("beat_exempt", False)), "align": f.get("align", "beat"), **_ext(f)} for f in raw.get("flashes", [])],
+        "flashes": _normalize_flashes(raw.get("flashes", []), grid, time, float(raw["duration_s"]), fps, [] if notes is None else notes),
         "lyrics": {
             "font": font, "fonts": fonts,
             "ui_regions": [{"name": r["name"], "box": _vec(r["box"])} for r in lyrics["ui_regions"]] if "ui_regions" in lyrics
