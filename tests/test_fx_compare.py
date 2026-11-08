@@ -5,9 +5,10 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
+from fx_synth import make_project, run_cli  # noqa: E402
 from mv_pipeline import fx, media  # noqa: E402
-from mv_pipeline.fx import compare, probe, render  # noqa: E402
-from mv_pipeline.io import PipelineError  # noqa: E402
+from mv_pipeline.fx import compare, probe, render, runs  # noqa: E402
+from mv_pipeline.io import PipelineError, read_json  # noqa: E402
 
 SIZE = (160, 90)
 COLORS = {"base": (200, 40, 40), "layers": (40, 200, 40), "light": (40, 40, 200), "both": (200, 200, 40)}
@@ -149,3 +150,123 @@ def test_stamp_blends_inside_the_image_and_clips_at_the_edge():
 def test_save_png_atomic_leaves_no_temporary_file(tmp_path):
     compare.save_png_atomic(np.zeros((4, 4, 3), dtype=np.uint8), tmp_path / "sub" / "a.png")
     assert [p.name for p in (tmp_path / "sub").iterdir()] == ["a.png"]
+
+
+# ---- 基準の動画と並べた比較動画（mv fx compare） -------------------------------------------
+
+def test_the_compare_layout_matches_the_production_one():
+    layout = compare.compare_layout((1920, 1080))
+    assert layout["tiles"] == {"reference": (0, 0, 960, 540), "both": (960, 0, 960, 540), "base": (0, 584, 640, 360),
+                               "layers": (640, 584, 640, 360), "light": (1280, 584, 640, 360)}
+    assert layout["footer"] == (24, 944) and layout["margin"] == 28
+    portrait = compare.compare_layout((1080, 1920))["tiles"]
+    assert portrait["both"] == (540, 0, 540, 960) and portrait["light"] == (720, 1040, 360, 640)
+
+
+def counting_video(path, frames=30, size=(160, 90), fps=12):
+    """コマ i を灰色 8·i で塗った動画（基準の動画の代わり）。"""
+    render.write_video(path, (np.full((size[1], size[0], 3), 8 * i, np.uint8) for i in range(frames)), size, fps, 10, frames)
+    return path
+
+
+@pytest.fixture(scope="module")
+def finished_run(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("compare")
+    spec_path = make_project(folder, 480, 270)
+    return folder, runs.render_run(spec_path, grid=False)
+
+
+def frame_of(path, index, size):
+    return decode(path, size)[index].astype(int)
+
+
+def test_compare_places_the_reference_frames_next_to_the_variants(finished_run):
+    folder, run = finished_run
+    reference = counting_video(folder / "ref.mp4")
+    result = runs.compare_run(run["run_dir"], reference, offset=0.25, label="published")
+    assert result["technical_pass"] and result["frames"] == 24 and result["reference"]["first_frame"] == 3   # 0.25·12
+    record = read_json(result["record"])
+    assert record["schema_version"] == "fx-compare/0.1" and record["reference"]["first_frame"] == 3
+    assert set(record["run"]["variants"]) == set(fx.VARIANTS) and record["output"]["technical_pass"]
+    frames = decode(result["path"], (480, 270)).astype(int)
+    for i in (0, 10, 20):
+        tile = frames[i][30:130, 10:230]                                                       # 基準の枠（ラベルの帯の下）
+        assert np.abs(tile - 8 * (3 + i)).max() <= 6, i
+    x, y, w, h = compare.compare_layout((480, 270))["tiles"]["base"]
+    reader = compare._Reader(run["variants"]["base"]["path"], (w, h), 24)
+    try:
+        expected = [reader.read().astype(int) for _ in range(24)]
+    finally:
+        reader.close()
+    assert np.abs(frames[12][y + 24:y + h, x:x + w] - expected[12][24:]).mean() < 3            # base の枠は base.mp4 のその時刻
+
+
+def test_the_reference_fps_must_match_within_the_rounding_of_the_reading():
+    assert runs.same_fps(24.0, 24) and runs.same_fps(23.98, 24000 / 1001) and runs.same_fps(29.97, 30000 / 1001)   # 丸めの幅は同じ
+    assert not runs.same_fps(23.98, 24) and not runs.same_fps(59.94, 60) and not runs.same_fps(11.99, 12)          # 本当に違う fps
+
+
+def test_matching_rates_count_the_reference_with_the_unrounded_run_fps(finished_run, monkeypatch):
+    from mv_pipeline.inspection import video
+    folder, run = finished_run
+    reference = counting_video(folder / "ref_offset.mp4")
+    read = video.describe
+    monkeypatch.setattr(video, "describe", lambda path: {**read(path), "fps": 12.004})        # 小数 2 桁の読みで 12 と同じとみなす幅
+    starts, decode_frames = [], video.frames
+
+    def frames(path, size, info, start=0, end=None):
+        starts.append(start)
+        return decode_frames(path, size, info, start=0, end=end - start)                   # 短い動画の先頭を読む（start だけを見る）
+
+    monkeypatch.setattr(video, "frames", frames)
+    result = runs.compare_run(run["run_dir"], reference, offset=125.0)
+    assert starts == [1500] and result["reference"]["first_frame"] == 1500                # 125·12。読んだ 12.004 で数えると 1501
+    assert read_json(result["record"])["reference"]["fps_used"] == 12.0
+
+
+def test_the_stills_reference_counts_with_the_spec_fps_when_the_rates_match(tmp_path, monkeypatch):
+    from mv_pipeline.inspection import video
+    reference = counting_video(tmp_path / "ref.mp4")
+    read = video.describe
+    monkeypatch.setattr(video, "describe", lambda path: {**read(path), "fps": 12.004})
+    monkeypatch.setattr(video, "grab", lambda path, indices, info, size=None, total=None:
+                        {i: np.zeros((size[1], size[0], 3), np.uint8) for i in indices})
+    same = runs.reference_cells(reference, [125.0], 0.0, (160, 90), "ref", fps=12)
+    assert same["frames_used"] == [1500] and same["fps_used"] == 12.0                     # spec と同じ fps なら丸めていない fps で
+    other = runs.reference_cells(reference, [125.0], 0.0, (160, 90), "ref", fps=24)
+    assert other["frames_used"] == [1501] and other["fps_used"] == 12.004                 # 違う fps なら読んだ fps で
+
+
+def test_compare_refuses_mismatched_or_short_references(finished_run):
+    folder, run = finished_run
+    with pytest.raises(PipelineError, match="fps"):
+        runs.compare_run(run["run_dir"], counting_video(folder / "ref24.mp4", fps=24))
+    near = counting_video(folder / "ref11988.mp4", fps=12000 / 1001)                           # ffmpeg は 11.99 fps と出す
+    with pytest.raises(PipelineError, match="fps"):                                           # 1 対 1 に並べると、だんだんずれる
+        runs.compare_run(run["run_dir"], near)
+    short = counting_video(folder / "short.mp4", frames=30)
+    out = folder / "short_compare.mp4"
+    with pytest.raises(PipelineError, match="コマ目で終わりました"):
+        runs.compare_run(run["run_dir"], short, offset=1.5, out=out)                           # 18 コマ目から 24 コマは無い
+    assert not out.exists()
+    with pytest.raises(PipelineError, match="ASCII"):
+        runs.compare_run(run["run_dir"], short, label="公開版")
+    with pytest.raises(PipelineError, match="manifest"):
+        runs.compare_run(folder, short)
+
+
+def test_compare_refuses_a_run_whose_outputs_changed(tmp_path):
+    spec_path = make_project(tmp_path, 160, 90)
+    run = runs.render_run(spec_path, variants="base", grid=False)
+    with open(run["variants"]["base"]["path"], "ab") as stream:
+        stream.write(b"x")
+    with pytest.raises(PipelineError, match="manifest の記録と違います"):
+        runs.compare_run(run["run_dir"], counting_video(tmp_path / "ref.mp4"))
+
+
+def test_the_compare_command(finished_run):
+    folder, run = finished_run
+    code, result, err = run_cli("fx", "compare", run["run_dir"], "--reference", counting_video(folder / "cli_ref.mp4"),
+                                "--out", folder / "cli_compare.mp4")
+    assert code == 0, err
+    assert result["path"].endswith("cli_compare.mp4") and (folder / "cli_compare.json").is_file()
