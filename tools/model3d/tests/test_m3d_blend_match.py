@@ -146,6 +146,23 @@ def test_named_meshes_that_are_missing_fail_instead_of_being_skipped(tmp_path):
     assert found["exact"] and found["pass"] and found["requested_objects_missing"] == {"left": [], "right": []}
 
 
+def test_named_attributes_that_no_mesh_has_fail_instead_of_being_skipped(tmp_path):
+    left, right = _snapshot(tmp_path, "a"), _snapshot(tmp_path, "b")
+    report = blend_snapshot.compare(left, right, requested_attributes=["inside", "insdie"])          # 打ち間違い
+    assert report["requested_attributes_missing"] == {"left": ["insdie"], "right": ["insdie"]}
+    assert report["pass"] is False and any("名前を挙げた属性" in f for f in report["failures"])
+    assert blend_snapshot.compare(left, right, requested_attributes=["inside"])["pass"] is True
+
+
+def test_non_finite_values_fail_even_with_a_tolerance_and_the_report_stays_writable(tmp_path):
+    left, right = _snapshot(tmp_path, "a"), _snapshot(tmp_path, "b")
+    right[1]["o0_co"][2, 0] = np.nan                                            # 頂点の 1 つが NaN
+    report = blend_snapshot.compare(left, right, {"coordinate": 1.0, "matrix": 1.0, "value": 1.0})
+    assert report["non_finite"] == ["body"] and report["objects"][0]["max_coordinate_error"] is None
+    assert report["pass"] is False and any("非有限" in f for f in report["failures"])   # NaN > 上限 が偽でも通さない
+    json.dumps(report, allow_nan=False)                                          # NaN を書かないので、報告を書ける
+
+
 def test_the_operation_checks_the_named_meshes(tmp_path):
     from model3d import executor
     blender = stand_in_executable(tmp_path, "blender", STAND_IN)
@@ -155,6 +172,9 @@ def test_the_operation_checks_the_named_meshes(tmp_path):
                   "objects": ["ghost"]}
     step = executor.run_recipe(_recipe(tmp_path, parameters), tmp_path / "runs")["steps"]["match"]
     assert step["status"] == "needs_review" and any("名前を挙げたメッシュ" in u for u in step["unresolved"])
+    attributes = {k: v for k, v in parameters.items() if k != "objects"} | {"attributes": ["ghost"]}
+    step = executor.run_recipe(_recipe(tmp_path, attributes), tmp_path / "runs2")["steps"]["match"]
+    assert step["status"] == "needs_review" and any("名前を挙げた属性" in u for u in step["unresolved"])
 
 
 def test_a_different_frame_rate_base_makes_the_scenes_differ(tmp_path):

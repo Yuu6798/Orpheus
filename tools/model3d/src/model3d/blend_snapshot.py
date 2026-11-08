@@ -25,21 +25,29 @@ def load(npz, meta):
 
 
 def _max_error(a, b):
+    """違いの最大。形が違えば None。非有限の値（NaN・無限大）があっても None（数で測れず、報告の JSON にも書けない。
+    compare が non_finite に並べて不合格にする。NaN のままだと、tolerance の比べ NaN > 上限 が偽で通ってしまう）。"""
     if a.shape != b.shape:
         return None
     if not a.size:
         return 0.0
-    return float(np.abs(a.astype(np.float64) - b.astype(np.float64)).max())
+    diff = np.abs(a.astype(np.float64) - b.astype(np.float64))
+    return float(diff.max()) if np.isfinite(diff).all() else None
+
+
+def _non_finite(*arrays):
+    return any(x is not None and x.size and not np.isfinite(np.asarray(x, dtype=np.float64)).all() for x in arrays)
 
 
 def _same(a, b):
     return a is not None and b is not None and a.shape == b.shape and a.dtype == b.dtype and bool(np.array_equal(a, b))
 
 
-def compare(left, right, tolerance=None, requested=None):
+def compare(left, right, tolerance=None, requested=None, requested_attributes=None):
     """2 つの書き出し（load の戻り）を比べた報告。tolerance（{"coordinate", "matrix", "value"}）を渡せば、その中で合否を出す。
-    渡さなければ、全部が同じ（exact）かで合否を出す。requested（名前を挙げて比べるメッシュの並び）を渡せば、その名前が両方の
-    書き出しにあるかも確かめる（無い名前は黙って外さず、形のつくりの違いにする）。"""
+    渡さなければ、全部が同じ（exact）かで合否を出す。requested（名前を挙げて比べるメッシュの並び）と requested_attributes
+    （名前を挙げて比べる属性の並び）を渡せば、その名前が両方の書き出しにあるかも確かめる（無い名前は黙って外さず、形のつくりの
+    違いにする。属性は、選んだメッシュのどれかにあればよい）。非有限の値（NaN・無限大）があれば、違いを測らずに不合格にする。"""
     (lmeta, larr), (rmeta, rarr) = left, right
     lobjects = {o["name"]: o for o in lmeta["objects"]}
     robjects = {o["name"]: o for o in rmeta["objects"]}
@@ -51,11 +59,20 @@ def compare(left, right, tolerance=None, requested=None):
     if requested is not None:
         unfound = {"left": sorted(set(requested) - set(lobjects)), "right": sorted(set(requested) - set(robjects))}
         report["requested_objects_missing"] = unfound
+    attributes_unfound = None
+    if requested_attributes is not None:                   # 打ち間違いや、書き出せない型の属性（どのメッシュにも無い名前）
+        seen = {side: {a for o in meta["objects"] for a in o["attributes"]} for side, meta in (("left", lmeta), ("right", rmeta))}
+        attributes_unfound = {side: sorted(set(requested_attributes) - names) for side, names in seen.items()}
+        report["requested_attributes_missing"] = attributes_unfound
+    non_finite = []
     for name in sorted(set(lobjects) & set(robjects)):
         lo, ro = lobjects[name], robjects[name]
         lk, rk = lo["key"], ro["key"]
         co_l, co_r = larr[f"{lk}_co"], rarr[f"{rk}_co"]
         uv_l, uv_r = larr.get(f"{lk}_uv"), rarr.get(f"{rk}_uv")
+        if _non_finite(co_l, co_r, uv_l, uv_r, larr[f"{lk}_matrix"], rarr[f"{rk}_matrix"],
+                       *(larr[i["key"]] for i in lo["attributes"].values()), *(rarr[i["key"]] for i in ro["attributes"].values())):
+            non_finite.append(name)
         attributes = {}
         for attr in sorted(set(lo["attributes"]) | set(ro["attributes"])):
             if attr not in lo["attributes"] or attr not in ro["attributes"]:
@@ -88,6 +105,8 @@ def compare(left, right, tolerance=None, requested=None):
     if report["bone_names_identical"] and lmeta["bones"]:
         report["rest_matrix_max_abs_error"] = _max_error(larr["rest"], rarr["rest"])
         report["pose_matrix_max_abs_error"] = (_max_error(larr["poses"], rarr["poses"]) if report["pose_frames_identical"] else None)
+        if _non_finite(larr.get("rest"), rarr.get("rest"), larr.get("poses"), rarr.get("poses")):
+            non_finite.append("bones")
     else:
         report["rest_matrix_max_abs_error"] = report["pose_matrix_max_abs_error"] = None
     evaluations = []
@@ -95,20 +114,24 @@ def compare(left, right, tolerance=None, requested=None):
         le, re_ = lmeta["evaluated"][frame], rmeta["evaluated"][frame]
         for name in sorted(set(le) & set(re_)):
             a, b = larr[le[name]["key"]], rarr[re_[name]["key"]]
+            if _non_finite(a, b):
+                non_finite.append(f"{name}（コマ {frame}）")
             evaluations.append({"frame": int(frame), "object": name, "vertex_count_identical": le[name]["vertices"] == re_[name]["vertices"],
                                 "all_evaluated_vertices_exact": le[name]["sha256"] == re_[name]["sha256"],
                                 "sampled_max_coordinate_error": _max_error(a, b)})
     report["evaluated_meshes"] = evaluations
+    report["non_finite"] = non_finite
     structure = (not report["missing_objects"] and not report["additional_objects"] and report["scene_identical"]
                  and report["bone_names_identical"] and report["pose_frames_identical"]
                  and all(o["left_vertices"] == o["right_vertices"] and o["polygon_count_identical"] and o["loop_vertices_identical"]
                          and o["polygon_sizes_identical"] for o in report["objects"])
                  and all(info.get("kind_identical", True) for o in report["objects"] for info in o["attributes"].values())
                  and not (unfound and (unfound["left"] or unfound["right"]))
+                 and not (attributes_unfound and (attributes_unfound["left"] or attributes_unfound["right"]))
                  and all(e["vertex_count_identical"] for e in evaluations))
     geometry = all(o["vertices_exact"] and o["uv_identical"] and o["attributes_identical"] and o["matrix_world_identical"]
                    for o in report["objects"])
-    report["exact"] = bool(structure and geometry and report["rest_matrix_max_abs_error"] in (0.0, None)
+    report["exact"] = bool(structure and geometry and not non_finite and report["rest_matrix_max_abs_error"] in (0.0, None)
                            and report["pose_matrix_max_abs_error"] in (0.0, None)
                            and all(e["all_evaluated_vertices_exact"] for e in evaluations))
     report["tolerance"] = tolerance
@@ -117,6 +140,11 @@ def compare(left, right, tolerance=None, requested=None):
         failures.append("形のつくり（物体・シーン・頂点と面の数とつなぎ・属性の置き場所と型・骨の名前・姿勢のコマ）が同じではありません")
     if unfound and (unfound["left"] or unfound["right"]):
         failures.append(f"名前を挙げたメッシュがありません（左に無い: {unfound['left'][:10]}、右に無い: {unfound['right'][:10]}）")
+    if attributes_unfound and (attributes_unfound["left"] or attributes_unfound["right"]):
+        failures.append(f"名前を挙げた属性が、選んだメッシュのどれにもありません（左: {attributes_unfound['left'][:10]}、"
+                        f"右: {attributes_unfound['right'][:10]}。打ち間違いか、書き出せない型）")
+    if non_finite:                                         # tolerance でも許さない（違いの大きさを測れない）
+        failures.append(f"非有限の値（NaN・無限大）があり、違いの大きさを測れません: {non_finite[:10]}")
     if tolerance is None:
         if structure and not report["exact"]:
             failures.append("全部が同じではありません（違いの大きさは max_* を見る。許す幅は tolerance で渡す）")
