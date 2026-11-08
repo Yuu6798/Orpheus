@@ -311,10 +311,14 @@ def prepare_push(inputs, parameters, outputs, context):
     record = launcher.run_blender(blender, PREPARE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                   timeout=_timeout(parameters))
     report = read_json(outputs["report"])
+    colliders = report.get("colliders", [])
+    unresolved = [f"当たり {c.get('name')}: 間引いた後に開いた辺 {c.get('open_edges')}・3 面以上で使う辺 {c.get('nonmanifold_edges')}"
+                  "（閉じていない当たりでは、押し出しの内外の判定が狂う）"
+                  for c in colliders if c.get("open_edges") or c.get("nonmanifold_edges")]
     observation = {"kind": "prepare_push", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"],
-                   "colliders": [{k: c.get(k) for k in ("name", "from", "open_edges", "flipped", "faces")}
-                                 for c in report.get("colliders", [])],
+                   "colliders": [{k: c.get(k) for k in ("name", "from", "open_edges", "nonmanifold_edges", "flipped", "faces")}
+                                 for c in colliders],
                    "groups": [{"mesh": g.get("mesh"), "pieces": g.get("pieces"), "front": (g.get("front") or {}).get("vertices"),
                                "back": (g.get("back") or {}).get("vertices")} for g in report.get("groups", [])]}
-    return StepResult(observations=[observation])
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))

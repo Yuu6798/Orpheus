@@ -137,7 +137,8 @@ def value(flag):
 open(value("--out-blend"), "wb").write(b"prepared")
 settings = json.load(open(value("--settings"), encoding="utf-8"))
 json.dump({"schema_version": "model3d-prepare-push/0.1", "blender": "4.5.15", "scale_length": 1.0,
-           "colliders": [{"name": c["name"], "from": c["from"], "armature": "rig", "filled_edges": 12, "open_edges": 0,
+           "colliders": [{"name": c["name"], "from": c["from"], "armature": "rig", "filled_edges": 12,
+                          "open_edges": 3 if "open" in c["from"] else 0, "open_edges_before_decimate": 0, "nonmanifold_edges": 0,
                           "volume_l": 6.4, "flipped": True, "vertices": 100, "faces": 196} for c in settings["colliders"]],
            "groups": [{"mesh": g["mesh"], "armature": "rig", "bones": g["bones"], "seeds": 40, "pieces": 2, "chosen": 50,
                        "front": {"name": g["front"], "vertices": 26}, "back": {"name": g["back"], "vertices": 21}, "left_out": 3,
@@ -165,11 +166,28 @@ def test_the_operation_writes_the_settings_and_passes_them_to_blender(tmp_path):
     assert Path(step["artifacts"]["blend"]).read_bytes() == b"prepared"
     observation = step["observations"][0]
     assert observation["kind"] == "prepare_push" and observation["blender_version"] == "4.5.15"
-    assert observation["colliders"] == [{"name": "proxy_leg_L", "from": "leg_L", "open_edges": 0, "flipped": True, "faces": 196},
-                                        {"name": "proxy_leg_R", "from": "leg_R", "open_edges": 0, "flipped": True, "faces": 196}]
+    assert observation["colliders"] == [{"name": "proxy_leg_L", "from": "leg_L", "open_edges": 0, "nonmanifold_edges": 0, "flipped": True,
+                                         "faces": 196},
+                                        {"name": "proxy_leg_R", "from": "leg_R", "open_edges": 0, "nonmanifold_edges": 0, "flipped": True,
+                                         "faces": 196}]
     assert observation["groups"] == [{"mesh": "skirt", "pieces": 2, "front": 26, "back": 21}]
     again = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
     assert again["steps"]["prepare"]["reused_from"] is None        # Blender は外部の実行ファイルなので毎回実行
+
+
+def test_a_collider_left_open_after_decimation_needs_review(tmp_path):
+    from model3d import executor
+    (tmp_path / "char.blend").write_bytes(b"char")
+    blender = stand_in_executable(tmp_path, "blender", STAND_IN)
+    parameters = {"blender": str(blender), "colliders": [{"from": "leg_open"}, {"from": "leg_R"}]}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "prepare",
+                                           "inputs": {"char": {"path": "char.blend"}},
+                                           "steps": [{"id": "prepare", "operation": "render.prepare_push",
+                                                      "inputs": {"blend": "$inputs.char"}, "parameters": parameters,
+                                                      "outputs": {"blend": "prepared.blend", "report": "prepare.json"}}]})
+    step = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["steps"]["prepare"]
+    assert step["status"] == "needs_review" and len(step["unresolved"]) == 1           # 間引いた後に開いた当たりだけ
+    assert "proxy_leg_open" in step["unresolved"][0] and "開いた辺 3" in step["unresolved"][0]
 
 
 class Context:

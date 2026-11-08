@@ -192,6 +192,11 @@ def make_collider(bpy, bmesh, spec, material, unit=1.0):
     decimate = px.modifiers.new("dec", "DECIMATE")
     decimate.ratio = spec["decimate"]
     bpy.ops.object.modifier_apply(modifier=decimate.name)
+    check = bmesh.new()                                  # 押し出しに使うのは間引いた後の形なので、閉じているかを間引いた後にも数える
+    check.from_mesh(px.data)
+    open_after = sum(1 for e in check.edges if e.is_boundary)
+    nonmanifold = sum(1 for e in check.edges if len(e.link_faces) > 2)
+    check.free()
     px.data.shade_smooth()
     if source_armature is not None:
         m = px.modifiers.new("armature", "ARMATURE")
@@ -203,7 +208,8 @@ def make_collider(bpy, bmesh, spec, material, unit=1.0):
         setattr(px, key, False)
     px[COLLIDER_MARK] = True                             # look.toon などの既定のメッシュ選びから外す印（hide_render は付けない）
     return {"name": px.name, "from": src.name, "armature": source_armature.object.name if source_armature else None,
-            "filled_edges": len(holes), "open_edges": open_left,
+            "filled_edges": len(holes), "open_edges": open_after, "open_edges_before_decimate": open_left,
+            "nonmanifold_edges": nonmanifold,
             "volume_l": round(world_litres(volume, np.array(src.matrix_world), unit), 3), "shape_keys_dropped": dropped,
             "flipped": bool(volume < 0), "vertices": len(px.data.vertices), "faces": len(px.data.polygons), "weld_local": weld}
 

@@ -1,10 +1,11 @@
 """メッシュの操作: 読み込み、押し出し、結合、変形、面領域の切り出し、法線のならし、OBJ 書き出し。"""
 from ..io import ToolError, atomic_json, atomic_npz, read_json
-from ..mesh import (UNIT_FACTORS, Mesh, extrude_profile, face_edges, read_all_parts, read_parts, remap_rig_weights,
-                    smooth_normals, submesh, transform, weld)
+from ..mesh import (UNIT_FACTORS, Mesh, extrude_profile, face_edges, fill_holes, read_all_parts, read_parts,
+                    remap_rig_weights, smooth_normals, submesh, transform, weld)
 from . import StepResult, number, register, require, selected
 
 SMOOTH_PARAMETERS = {"iterations", "weld"}
+FILL_PARAMETERS = {"max_sides", "cap", "orient", "part"}
 
 
 def _save(mesh, outputs, name="mesh"):
@@ -108,6 +109,34 @@ def mesh_smooth_part_normals(inputs, parameters, outputs, context):
         atomic_json(outputs["report"], {"schema_version": "model3d-normals/0.1", "units": "m", "parts": rows})
     return StepResult(observations=[{"kind": "smooth_part_normals", "parts": len(rows), "vertices": sum(r["vertices"] for r in rows),
                                      "zero_normals": sum(r["zero_normals"] for r in rows), "weld": step}])
+
+
+@register("mesh.fill_holes", inputs=("mesh",), outputs=("mesh", "report"),
+          summary="穴（1 つの面だけが使う辺の輪）を面でふさぎ、閉じたメッシュにする（collision.push_out の当たりなど）。今の面と頂点の番号は"
+                  "変えず、ふさぐ面を後ろに足す。cap: polygon（輪ごとに 1 つの多角形）か fan（輪の平均に頂点を足して三角形の扇）。"
+                  "orient で、体積が負なら全部の面を裏返して外向きに。max_sides より多い辺の輪は残す（要確認）。多様体でない辺・"
+                  "向きのそろわない面・2 つの輪が通る頂点・つぶれた辺は止める。x_normals は外す")
+def mesh_fill_holes(inputs, parameters, outputs, context):
+    require(inputs, ("mesh",), "mesh.fill_holes")
+    unknown = set(parameters) - FILL_PARAMETERS
+    if unknown:
+        raise ToolError(f"mesh.fill_holes の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(FILL_PARAMETERS)}）")
+    orient = parameters.get("orient", True)
+    if not isinstance(orient, bool):
+        raise ToolError(f"orient は true か false にしてください: {orient!r}")
+    part = parameters.get("part")
+    if part is not None and (not isinstance(part, str) or not part):
+        raise ToolError(f"part はふさいだ面を入れる parts の名前（空でない文字列）にしてください: {part!r}")
+    mesh = Mesh.load(inputs["mesh"])
+    filled, report = fill_holes(mesh, parameters.get("max_sides", 0), parameters.get("cap", "polygon"), orient, part)
+    _save(filled, outputs)
+    if "report" in outputs:
+        atomic_json(outputs["report"], {"schema_version": "model3d-fill-holes/0.1", "name": mesh.name, **report})
+    unresolved = [f"ふさがなかった穴が {sum(1 for r in report['loops'] if not r['filled'])} つ（辺 {report['left_open_edges']} 本。"
+                  "max_sides より大きい）。メッシュは閉じていない"] if report["left_open_edges"] else []
+    observation = {"kind": "fill_holes", **{k: v for k, v in report.items() if k != "loops"},
+                   "loop_sizes": [r["edges"] for r in report["loops"]][:50]}
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
 
 
 @register("mesh.extrude_profile", inputs=("profile",), outputs=("mesh",),
