@@ -170,6 +170,29 @@
         "^x_": {}
       },
       "properties": {
+        "rows": {
+          "description": "足元と中心の列（hooks と層の API に渡す。fit の有無にかかわらず全クリップで測る）の設定。アルファ 0.5 超の最下の画素の行と x の中央値を analysis_scale の縮小で測り、足元は前後 hold_frames コマの最大を box_frames コマの平均でならす",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "analysis_scale": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "hold_frames": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "box_frames": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
         "frame_rounding": {
           "description": "元のコマ番号の丸め。floor は切り捨て（0.2 と同じ）、nearest はいちばん近いコマ（半コマは切り上げ）",
           "enum": ["floor", "nearest"]

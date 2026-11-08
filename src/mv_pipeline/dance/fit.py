@@ -143,6 +143,78 @@ def load(source, clip_sha256, key, fit, out, skip=()):
     return result, path
 
 
+# ---- 足元と中心の列（performer.rows。hooks と層の API に渡す。置き場所には使わない） ----------------------------------
+
+ROWS_VERSION = 1
+
+
+def measure_rows(source, key, scale, skip=()):
+    """毎フレームの最下の画素の行と、x の中央値（元動画の画素。写っていなければ None）。
+
+    アルファ 0.5 超の画素を、scale の縮小（cv2.resize の既定の補間）で数える。最下の行は画素の行の番号（下端ではない）、
+    x は画素の列の番号の中央値で、どちらも ÷ scale で元動画の画素に戻す（非公開の制作と同じ定義）。skip の区間 [a, b)
+    のコマは欠けとして扱う（replace_frames で差し替えるコマ）。"""
+    bottoms, centers, index = [], [], 0
+    while True:
+        image = source.read(index)
+        if image is None or source.ended_at(index):
+            break
+        bottom = center = None
+        if not any(a <= index < b for a, b in skip):
+            small = image if scale == 1.0 else cv2.resize(image, None, fx=scale, fy=scale)
+            ys, xs = np.nonzero(dancekey.alpha_of(small, key) > 0.5)
+            if len(ys):
+                bottom, center = float(ys.max()) / scale, float(np.median(xs)) / scale
+        bottoms.append(bottom)
+        centers.append(center)
+        index += 1
+    return {"schema_version": "dance-rows/0.1", "frames": index, "scale": scale, "bottom": bottoms, "cx": centers}
+
+
+def rows_digest(key, scale, skip=()):
+    payload = {"version": ROWS_VERSION, "key": key, "scale": scale}
+    if skip:
+        payload["skip"] = [list(run) for run in skip]
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def load_rows(source, clip_sha256, key, scale, out, skip=()):
+    """(毎フレームの測定, キャッシュのパス)。無ければ測って書く。"""
+    path = out / "analysis" / f"{clip_sha256}-rows-{rows_digest(key, scale, skip)}.json"
+    if path.is_file():
+        try:
+            return read_json(path), path
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass    # 壊れたキャッシュは作り直す
+    result = measure_rows(source, key, scale, skip)
+    atomic_json(path, result)
+    return result, path
+
+
+def hold_ground(bottom, used, hold_frames, box_frames):
+    """毎フレームの最下の行から足元の列を作る（非公開の制作と同じ式）。
+
+    写っていないコマは前後の値で埋め、使う範囲 used = [i0, i1] の外は端の値で止める（出ないコマに列を引かせない）。
+    前後 hold_frames コマ（端では窓が短くなる）の最大で接地している足の位置を取り、端の値で延ばして box_frames コマの平均でならす。"""
+    b = _fill(bottom)
+    i0, i1 = used
+    b[:i0] = b[i0]
+    b[i1 + 1:] = b[i1]
+    k = int(hold_frames)
+    g = np.array([b[max(0, i - k):i + k + 1].max() for i in range(len(b))])
+    pad = int(box_frames) // 2
+    return np.convolve(np.pad(g, pad, mode="edge"), np.ones(int(box_frames)) / int(box_frames), mode="valid")
+
+
+def rows_for(measured, used, settings):
+    """測定と使う範囲から hooks に渡す列: bottom・cx（毎フレーム。写っていないコマは前後の値で埋める）・ground（足元の列）・cx_med。"""
+    i0, i1 = used
+    centers = np.array([np.nan if v is None else v for v in measured["cx"]], dtype=np.float64)
+    return {"frames": measured["frames"], "used": [i0, i1], "bottom": _fill(measured["bottom"]), "cx": _fill(measured["cx"]),
+            "ground": hold_ground(measured["bottom"], used, settings["hold_frames"], settings["box_frames"]),
+            "cx_med": float(np.nanmedian(centers[i0:i1 + 1]))}
+
+
 def record(clip, result, path):
     """timeline と manifest に残す 1 クリップ分の記録。"""
     return {"path": clip, "sha256": sha256(path), "p90_height": result["p90_height"], "median_cx": result["median_cx"],

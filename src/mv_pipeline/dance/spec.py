@@ -222,6 +222,11 @@ def _normalize_seam(seam, time):
             **_ext(seam)}
 
 
+def _normalize_rows(rows):
+    return {"analysis_scale": float(rows.get("analysis_scale", 0.5)), "hold_frames": int(rows.get("hold_frames", 10)),
+            "box_frames": int(rows.get("box_frames", 9)), **_ext(rows)}
+
+
 def _normalize_fit(fit):
     return {"mode": fit.get("mode", "frame"), "body_height": float(fit.get("body_height", 0.62)), "x": fit.get("x", "none"),
             "x_smooth_s": float(fit.get("x_smooth_s", 0.5)), "ground": fit.get("ground", "none"),
@@ -333,6 +338,7 @@ def _normalize(raw, base_dir, notes=None):
             "placement": {"anchor": _vec(place.get("anchor", [0.5, 0.92])), "pivot": _vec(place.get("pivot", [0.5, 1.0])),
                           "height": float(place.get("height", 0.72)), "flip_x": bool(place.get("flip_x", False)), **_ext(place)},
             "fit": None if "fit" not in performer else _normalize_fit(performer["fit"]),
+            "rows": _normalize_rows(performer.get("rows", {})),
             "frame_rounding": performer.get("frame_rounding", "floor"),
             "replace_frames": [_normalize_replace(run) for run in performer.get("replace_frames", [])],
             **_ext(performer),
@@ -477,6 +483,9 @@ def _validate_semantics(data):
         raise PipelineError(f"dance spec: camera.keys の t は厳密な昇順にしてください: {keys}")
     _validate_seams(data["camera"]["seams"], out["fps"], warnings)
     _validate_clips(data["performer"]["clips"], duration, warnings)
+    if data["performer"]["rows"]["box_frames"] % 2 == 0:
+        raise PipelineError(f"dance spec: performer.rows.box_frames は奇数にしてください（中心のコマの前後を同じ数だけ平均する）: "
+                            f"{data['performer']['rows']['box_frames']}")
     _validate_retime(data["performer"]["clips"], warnings)
     _validate_replace(data["performer"]["replace_frames"], data["performer"]["clips"])
     _validate_audio(data["audio"], warnings, duration)

@@ -48,6 +48,7 @@ class Context:
     text: dict = field(default_factory=dict)         # z -> [(層名, Line の列)]（層を書いた順）
     hooks: object = None             # hooks.Hooks
     look: object = None              # fx.look.Look
+    rows: dict = None                # 動画のパス -> 足元と中心の列（fit.rows_for）。hooks を使うか rows=True のときだけ
 
     @property
     def fps(self):
@@ -188,14 +189,43 @@ def _fit_analysis(spec, clips, out):
     return found
 
 
-def prepare(spec, scale=1.0, out=None, hooks=None):
-    """out は fit の解析のキャッシュを置く場所（既定は spec の隣の dance_runs）。hooks は hooks.Hooks。"""
+def _used_ranges(spec, clips):
+    """{動画のパス: [出る元のコマの最小, 最大]}（blend の窓の前のクリップも数える）。"""
+    fps = spec.data["output"]["fps"]
+    found = {}
+    for k in range(timeline.frame_count(spec.data["duration_s"], fps)):
+        for index, number, _ in clips.mapping(timeline.frame_time(k, fps)):
+            low, high = found.get(clips.clips[index]["path"], (number, number))
+            found[clips.clips[index]["path"]] = (min(low, number), max(high, number))
+    return found
+
+
+def _rows(spec, clips, out):
+    """{動画のパス: 足元と中心の列}。fit の有無にかかわらず全クリップで測る（測定は内容と設定でキャッシュする）。"""
+    performer = spec.data["performer"]
+    settings = performer["rows"]
+    used = _used_ranges(spec, clips)
+    rows = {}
+    for path, source in clips.sources.items():
+        measured, file = dancefit.load_rows(source, sha256(spec.resolve(path)), performer["key"], settings["analysis_scale"], out,
+                                            clips.replacements.skipped(path))
+        last = measured["frames"] - 1
+        low, high = used.get(path, (0, last))
+        rows[path] = {**dancefit.rows_for(measured, [min(low, last), min(high, last)], settings), "file": f"analysis/{file.name}"}
+    return rows
+
+
+def prepare(spec, scale=1.0, out=None, hooks=None, rows=None):
+    """out は fit の解析のキャッシュを置く場所（既定は spec の隣の dance_runs）。hooks は hooks.Hooks。
+    rows は足元と中心の列を作るか（既定は hooks を使うときだけ）。作らなければ描く絵は 0.3 の前と同じ。"""
     size = scaled_size(spec, scale)
     stage = Stage(spec, size)
     clips = Timeline(spec)
     try:
         replace_warnings = check_replacements(clips)
-        analysis = _fit_analysis(spec, clips, Path(out) if out else spec.base_dir / "dance_runs")
+        out_dir = Path(out) if out else spec.base_dir / "dance_runs"
+        analysis = _fit_analysis(spec, clips, out_dir)
+        body_rows = _rows(spec, clips, out_dir) if (hooks is not None if rows is None else rows) else None
         place = [_placement(spec, clip, clips.sources[clip["path"]], size, analysis[clip["path"]][0] if clip["fit"] and clip["path"] in analysis else None)
                  for clip in clips.clips]
         lines, text_warnings = dancelyrics.prepare(spec.data, spec.resolve, size)
@@ -219,7 +249,8 @@ def prepare(spec, scale=1.0, out=None, hooks=None):
     text = {z: [(layer["name"], [line for line in lines if line.layer == layer["name"]]) for layer in layers if layer["z"] == z]
             for z in ("behind", "front")}
     look = fxlook.prepare(spec.data["look"], size, spec.data["output"]["fps"]) if spec.data["look"] is not None else None
-    ctx = Context(spec, size, stage, clips, place, lines, warnings, flashes, records, camera=camera, text=text, hooks=hooks, look=look)
+    ctx = Context(spec, size, stage, clips, place, lines, warnings, flashes, records, camera=camera, text=text, hooks=hooks, look=look,
+                  rows=body_rows)
     if hooks is not None:
         try:
             hooks.prepare(ctx)
@@ -423,6 +454,32 @@ def _text_layers(ctx, z, t, dt, matrix, samples):
     return [TextLayer(ctx, name, lines, t, dt, matrix, samples) for name, lines in visible if lines]
 
 
+def body_info(ctx, index, number, matrix):
+    """clip index の元のコマ number の足元と中心を、出力の画素（カメラの後）で返す。列が無ければ None。
+
+    feet: 足元の列（ground）と clip の中心の中央値（cx_med）の点。bottom: このコマの最下の行と x の中央値の点。
+    scale: 元動画の 1 画素が出力の何画素か（配置の縮尺 × カメラの倍率）。source: 元動画の画素での値。
+    座標は画素の番号（画素の中心が整数。img[y, x] で塗れる）。人物の描き方（縮尺して左右反転し、貼ってカメラを掛ける）と同じ対応にする。
+    placement_matrix は画素の端を基準にした座標なので、元の画素の中心（番号 + 0.5）を写してから 0.5 を引く。"""
+    clip = ctx.clips.clips[index]
+    rows = None if ctx.rows is None else ctx.rows.get(clip["path"])
+    if rows is None:
+        return None
+    n = int(min(max(number, 0), rows["frames"] - 1))
+    place = np.asarray(placement_matrix(ctx.place[index], n), dtype=np.float64)
+    camera = np.asarray(matrix, dtype=np.float64)
+    total = camera[:, :2] @ place[:, :2]
+
+    def screen(x, y):
+        before = place[:, :2] @ np.array([x + 0.5, y + 0.5]) + place[:, 2] - 0.5      # カメラの前の画面の画素の番号
+        return [float(v) for v in camera[:, :2] @ before + camera[:, 2]]
+
+    source = {"frame": n, "ground": float(rows["ground"][n]), "bottom": float(rows["bottom"][n]), "cx": float(rows["cx"][n]),
+              "cx_med": rows["cx_med"]}
+    return {"feet": screen(source["cx_med"], source["ground"]), "bottom": screen(source["cx"], source["bottom"]),
+            "scale": float(np.sqrt(abs(np.linalg.det(total)))), "source": source}
+
+
 def layers(ctx, t):
     """時刻 t の層を作る。"""
     dt = 1.0 / ctx.fps
@@ -435,7 +492,7 @@ def layers(ctx, t):
     if mapped:
         index, number, weight = mapped[-1]
         info = {"clip": index, "source_frame": number, "placement": placement_matrix(ctx.place[index], number), "camera": matrix.tolist(),
-                "blend": weight if len(mapped) == 2 else None}
+                "blend": weight if len(mapped) == 2 else None, "body": body_info(ctx, index, number, matrix)}
     return FrameLayers(t, int(round(t * ctx.fps)), _stage_view(ctx, t, state, samples), _text_layers(ctx, "behind", t, dt, matrix, samples),
                        _text_layers(ctx, "front", t, dt, matrix, samples), _performer(ctx, t, matrix, samples), info, _active_flashes(ctx, t),
                        {"zoom": view.total_zoom, "center": view.center, "rotate": view.total_rotate, "shake": view.shake,
