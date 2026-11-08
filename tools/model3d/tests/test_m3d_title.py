@@ -295,6 +295,25 @@ def test_the_blend_is_chosen_per_layer(tmp_path):
     assert np.array_equal(out["over"][56:], out["prototype"][56:])                 # 既定のままの層（画像）は同じ
 
 
+def test_transparent_frames_are_refused_and_opaque_rgba_frames_are_titled(tmp_path):
+    from PIL import Image
+    _badge(tmp_path / "badge.png")
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for T in (1, 2):                                               # アルファが全部 255 の RGBA（試作のコマと同じ形）
+        Image.new("RGBA", (64, 96), (20, 90, 150, 255)).save(frames / f"f{T:04d}.png")
+    call(tmp_path, _parameters(range=[1, 2], start=0.1, out_dir="opaque"))
+    with Image.open(tmp_path / "opaque" / "f0001.png") as copied, Image.open(tmp_path / "opaque" / "f0002.png") as titled:
+        assert copied.mode == "RGBA" and titled.mode == "RGB"      # 前のコマはそのまま写し、題字のコマは RGB（試作と同じ）
+    Image.new("RGBA", (64, 96), (0, 0, 0, 0)).save(frames / "f0002.png")          # 透けたコマ（render.stage の透けた背景など）
+    with pytest.raises(ToolError, match="透けた画素"):
+        call(tmp_path, _parameters(range=[1, 2], start=0.1, out_dir="late"))
+    Image.new("RGBA", (64, 96), (0, 0, 0, 0)).save(frames / "f0001.png")
+    with pytest.raises(ToolError, match="透けた画素"):
+        call(tmp_path, _parameters(range=[1, 2], start=0.5, out_dir="early"))
+    assert not (tmp_path / "early").exists()                       # 最初のコマが透けていれば、写す前に止める
+
+
 @pytest.mark.parametrize("changes, message", [
     ({"wobble": 1}, "知らないパラメーター"),
     ({"layers": []}, "layers"),

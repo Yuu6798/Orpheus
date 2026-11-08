@@ -36,6 +36,16 @@ def _blur_setting(value, where, keys):
     return blur, amount
 
 
+def _refuse_transparency(image, T):
+    """透けた画素（アルファか透けの色が 255 未満）のあるコマは止める。題字のコマは RGB に書くので、透けが消えるため。
+    アルファがあっても全部 255 なら重ねる（試作のコマは RGBA で、題字を重ねたコマは RGB に書いた）。"""
+    if image.mode not in ("RGBA", "LA", "PA") and "transparency" not in image.info:
+        return
+    if image.convert("RGBA").getchannel("A").getextrema()[0] < 255:
+        raise ToolError(f"コマに透けた画素があります（T {T}）。render.title は透けを残せないので、透けたコマには重ねません。"
+                        "先に土台へ重ねてから（mv overlay など）、題字を重ねてください")
+
+
 def layer_settings(layer, index, recipe_dir):
     """層の設定を確かめ、既定を埋める。文字（text）か画像（image）のどちらか 1 つ。"""
     from .. import title
@@ -163,7 +173,8 @@ def _frames(inputs, parameters, context):
                   "大きさ・色・縁取り・字送り、層ごとに光り（glow）、全体に影。画像の層には、影と光りが広がる透けた余白を足す。"
                   "重ね方の既定は試作と同じ（覆いを二度掛ける）。層ごとの blend で、ふつうの重ね方 over も選べる。"
                   "大きさ・位置・ぼかしは基準の幅（既定 1080）の画素で書き、コマの幅に合わせる。"
-                  "start より前のコマはそのまま写す。frames は書いたコマの一覧（model3d-frames/0.1。render.assemble の入力になる）。"
+                  "start より前のコマはそのまま写す。透けた画素のあるコマは止める（題字のコマは RGB に書くので）。"
+                  "frames は書いたコマの一覧（model3d-frames/0.1。render.assemble の入力になる）。"
                   "書体・画像・コマのフォルダは隠れた入力なので再利用しない（毎回実行）")
 def title_frames(inputs, parameters, outputs, context):
     from PIL import Image
@@ -198,6 +209,7 @@ def title_frames(inputs, parameters, outputs, context):
         raise ToolError(f"重ねるコマがありません（{len(missing)} コマ。最初の T: {missing[:10]}）: {source_dir}")
     with Image.open(frames[0][2]) as first:
         W, H = first.size
+        _refuse_transparency(first, frames[0][0])        # 写す前に止める（render.stage の透けた背景など）
     k = W / reference
     sprites = [build_sprite(layer, k, shadow) for layer in settings]
     Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -217,6 +229,7 @@ def title_frames(inputs, parameters, outputs, context):
         with Image.open(source) as image:
             if image.size != (W, H):
                 raise ToolError(f"コマの大きさがそろっていません（T {T}: {image.size}、最初のコマ: {(W, H)}）")
+            _refuse_transparency(image, T)
             img = np.asarray(image.convert("RGB")).astype(np.float32) / 255.0
         u = title.smoothstep((s - start) / fade_in) if fade_in > 0 else 1.0
         for layer, (spr, _detail) in zip(settings, sprites):
