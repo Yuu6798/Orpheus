@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fx-masks/0.1",
+  "description": "fx のマスク作りの計画（`mv fx masks`）。実験的で contracts/ の外にある。マスクは並びの順に作り、各マスクは steps を順に掛けてから blur（仕上げのぼかし）と exclusive_of（ほかのマスクと重ねない）を掛ける。値は 8 bit の 0..255。座標は units が norm なら作る大きさ（size）の正規化座標 0..1、px ならその画素。素材パスは計画のファイルのあるディレクトリ基準。作品ごとの多角形を含むので、計画は素材の隣に置き、Git に入れない。`x_` で始まる鍵はどの階層でも許す。",
+  "type": "object",
+  "required": ["schema_version", "base", "masks"],
+  "properties": {
+    "schema_version": {"const": "fx-masks/0.1"},
+    "base": {"$ref": "#/$defs/path", "description": "基準画像（GrabCut と確認用の絵に使う）。size と違えば、その大きさへ縮尺する。"},
+    "size": {"$ref": "#/$defs/size", "description": "作るマスクの大きさ [幅, 高さ]。省けば基準画像の大きさ。基準画像と同じ縦横比（1% 以内）であること。"},
+    "units": {"enum": ["norm", "px"], "default": "norm"},
+    "masks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/mask"}},
+    "preview": {"type": "boolean", "default": true, "description": "確認用の絵（基準画像を暗くして、マスクを赤・緑・青の順に重ねたもの）を書くか。"}
+  },
+  "additionalProperties": false,
+  "patternProperties": {"^x_": {}},
+  "$defs": {
+    "path": {"type": "string", "minLength": 1},
+    "id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"},
+    "size": {
+      "type": "array",
+      "prefixItems": [{"type": "integer", "minimum": 2, "maximum": 16384}, {"type": "integer", "minimum": 2, "maximum": 16384}],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "point": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "points": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 3},
+    "combine": {"enum": ["max", "min", "subtract", "replace"], "default": "max",
+                "description": "今のマスクとの合わせ方。max は足す（和）、min は共通部分、subtract は引く、replace は置きかえる。"},
+    "mask": {
+      "type": "object",
+      "required": ["id", "steps"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}},
+        "blur": {"type": "number", "minimum": 0, "maximum": 200, "default": 0, "description": "仕上げのガウスぼかしの σ（画素）。cut の before_blur はこの前の状態を指す。"},
+        "exclusive_of": {"type": "array", "items": {"$ref": "#/$defs/id"}, "description": "先に作ったマスクと重ねない: 仕上げの後に min(このマスク, 255 − そのマスク)。"},
+        "out": {"$ref": "#/$defs/path", "description": "書くファイル名（出力先からの相対）。省けば mask_<id>.png。"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step": {
+      "type": "object",
+      "required": ["op"],
+      "properties": {"op": {"enum": ["image", "polygon", "grabcut", "close", "islands", "cut", "blur"]}},
+      "allOf": [
+        {"if": {"properties": {"op": {"const": "image"}}}, "then": {"$ref": "#/$defs/step_image"}},
+        {"if": {"properties": {"op": {"const": "polygon"}}}, "then": {"$ref": "#/$defs/step_polygon"}},
+        {"if": {"properties": {"op": {"const": "grabcut"}}}, "then": {"$ref": "#/$defs/step_grabcut"}},
+        {"if": {"properties": {"op": {"const": "close"}}}, "then": {"$ref": "#/$defs/step_close"}},
+        {"if": {"properties": {"op": {"const": "islands"}}}, "then": {"$ref": "#/$defs/step_islands"}},
+        {"if": {"properties": {"op": {"const": "cut"}}}, "then": {"$ref": "#/$defs/step_cut"}},
+        {"if": {"properties": {"op": {"const": "blur"}}}, "then": {"$ref": "#/$defs/step_blur"}}
+      ]
+    },
+    "step_image": {
+      "description": "外で作ったマスク（rembg などの切り抜きのアルファ、手描き）を読む。RGBA でアルファが一定でなければアルファ、それ以外は輝度。size と違えば縮尺する（縦横比は 1% 以内）。",
+      "required": ["op", "path"],
+      "properties": {"op": {"const": "image"}, "path": {"$ref": "#/$defs/path"}, "combine": {"$ref": "#/$defs/combine"}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step_polygon": {
+      "description": "多角形を 255 で塗り、blur（σ、画素）でぼかしてから合わせる。",
+      "required": ["op", "points"],
+      "properties": {"op": {"const": "polygon"}, "points": {"$ref": "#/$defs/points"},
+                     "blur": {"type": "number", "minimum": 0, "maximum": 200, "default": 0},
+                     "combine": {"$ref": "#/$defs/combine"}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step_grabcut": {
+      "description": "多角形を手がかりに、基準画像の色で縁を詰める（cv2.grabCut）。多角形の内側を band_px 縮めた所は前景、外側を band_px 広げた所の外は背景と決め、その間を GrabCut に任せる。seed で乱数を固定する。",
+      "required": ["op", "points"],
+      "properties": {"op": {"const": "grabcut"}, "points": {"$ref": "#/$defs/points"},
+                     "band_px": {"type": "integer", "minimum": 1, "maximum": 500, "default": 14},
+                     "iterations": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                     "seed": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 7},
+                     "combine": {"$ref": "#/$defs/combine"}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step_close": {
+      "description": "小さな穴とすき間を閉じる（楕円の直径 px のクロージング）。",
+      "required": ["op", "px"],
+      "properties": {"op": {"const": "close"}, "px": {"type": "integer", "minimum": 1, "maximum": 201}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step_islands": {
+      "description": "飛び地を消す。threshold を超える画素の連結成分のうち、largest は最大のものだけ、share は最大の share 倍以上のものを残す。残す範囲を grow_px（楕円の直径）だけ広げ、その外を 0 にする（中の値はそのまま）。",
+      "required": ["op"],
+      "properties": {"op": {"const": "islands"}, "keep": {"enum": ["largest", "share"], "default": "share"},
+                     "share": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.02},
+                     "threshold": {"type": "integer", "minimum": 0, "maximum": 254, "default": 127},
+                     "grow_px": {"type": "integer", "minimum": 0, "maximum": 201, "default": 0}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step_cut": {
+      "description": "先に作ったマスク mask の threshold を超える所を grow_px（楕円の直径）だけ広げ、そこを 0 にする（地面から人物を抜くなど）。before_blur なら、そのマスクの仕上げのぼかしの前の状態を使う。",
+      "required": ["op", "mask"],
+      "properties": {"op": {"const": "cut"}, "mask": {"$ref": "#/$defs/id"},
+                     "threshold": {"type": "integer", "minimum": 0, "maximum": 254, "default": 0},
+                     "grow_px": {"type": "integer", "minimum": 0, "maximum": 201, "default": 0},
+                     "before_blur": {"type": "boolean", "default": false}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "step_blur": {
+      "description": "途中でぼかす（σ、画素）。",
+      "required": ["op", "sigma"],
+      "properties": {"op": {"const": "blur"}, "sigma": {"type": "number", "exclusiveMinimum": 0, "maximum": 200}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    }
+  }
+}
