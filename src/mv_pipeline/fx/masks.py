@@ -200,7 +200,10 @@ def _open(path, role):
 
 
 def read_gray(path, role="image"):
-    """マスクの画像 → uint8。RGBA でアルファが一定でなければアルファ、16 bit は 257 で割る、それ以外は輝度。"""
+    """マスクの画像 → uint8。RGBA でアルファが一定でなければアルファ、16 bit は 257 で割る、それ以外は輝度。
+
+    16 bit（I;16 などの I モード。fx の深度の _full_scale と同じ決め方）かは画像の形式で決める。値の大きさで決めると、
+    255 以下の画素だけの 16 bit のマスクを 8 bit とみなして、ほぼ 0 の値を不透明にしてしまう。"""
     image = _open(path, role)
     if image.mode in ("RGBA", "LA", "PA"):
         alpha = np.asarray(image.convert("RGBA"))[..., 3]
@@ -208,7 +211,7 @@ def read_gray(path, role="image"):
             return np.ascontiguousarray(alpha)
     if image.mode.startswith("I"):
         values = np.asarray(image, dtype=np.float64)
-        return np.clip(values / 257.0 + 0.5, 0, 255).astype(np.uint8) if values.max() > 255 else values.astype(np.uint8)
+        return np.clip(values / 257.0 + 0.5, 0, 255).astype(np.uint8)
     return np.asarray(image.convert("L"))
 
 
@@ -304,20 +307,46 @@ def _png(path, array, force, protect):
     return True, sha256(path)
 
 
+PREVIEW_NAME, RECORD_NAME = "masks_preview.png", "masks_record.json"
+
+
+def output_targets(plan, out_dir):
+    """マスクごとの書き出し先（解決した絶対パス）。確認用の絵と記録の名前や、ほかのマスクと同じファイルを指せば、何も書く前に止める
+    （綴りが違っても同じファイルなら同じ。確認用の絵は preview を切っていても名前を空けておく）。"""
+    import os
+
+    def key(path):
+        return os.path.normcase(str(path))
+
+    reserved = {key((Path(out_dir) / name).resolve()) for name in (PREVIEW_NAME, RECORD_NAME)}
+    targets, seen = {}, {}
+    for mask in plan["masks"]:
+        target = safe_path(out_dir, mask["out"])
+        if key(target) in reserved:
+            raise PipelineError(f"マスク {mask['id']!r} の書き出し先 {mask['out']!r} は、確認用の絵か記録（{PREVIEW_NAME}・{RECORD_NAME}）と"
+                                f"同じです。別の名前にしてください")
+        if key(target) in seen:
+            raise PipelineError(f"マスク {mask['id']!r} と {seen[key(target)]!r} の書き出し先が同じファイルです: {mask['out']!r}")
+        seen[key(target)] = mask["id"]
+        targets[mask["id"]] = target
+    return targets
+
+
 def make_masks(plan_path, out=None, force=False):
     """`mv fx masks`: 計画からマスクを作って書き、記録（masks_record.json）を残す。結果の要約を返す。"""
     plan, base_dir = load_plan(plan_path)
-    built = build(plan, base_dir)
     out_dir = Path(out).resolve() if out else base_dir
+    targets = output_targets(plan, out_dir)
+    built = build(plan, base_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = {}
     for mask in plan["masks"]:
-        target = safe_path(out_dir, mask["out"])
+        target = targets[mask["id"]]
         changed, digest = _png(target, built["masks"][mask["id"]]["final"], force, protect=True)
         written[mask["id"]] = {"path": str(target), "sha256": digest, "written": changed}
     preview_path = None
     if plan["preview"]:
-        preview_path = out_dir / "masks_preview.png"
+        preview_path = out_dir / PREVIEW_NAME
         _png(preview_path, preview(built["base_rgb"], [built["masks"][m["id"]]["final"] for m in plan["masks"]], built["grabcuts"]),
              force, protect=False)
     numbers = counts(built["masks"])
@@ -328,7 +357,7 @@ def make_masks(plan_path, out=None, force=False):
               "inputs": built["inputs"], "size": built["size"], "masks": written, "preview": str(preview_path) if preview_path else None,
               "counts": numbers, "warnings": built["warnings"],
               "engine": {"version": VERSION, "fingerprint": fingerprint(), "opencv": cv2.__version__}}
-    atomic_json(out_dir / "masks_record.json", record)
+    atomic_json(out_dir / RECORD_NAME, record)
     return {"masks": {k: v["path"] for k, v in written.items()}, "written": [k for k, v in written.items() if v["written"]],
-            "preview": record["preview"], "record": str(out_dir / "masks_record.json"), "size": built["size"],
+            "preview": record["preview"], "record": str(out_dir / RECORD_NAME), "size": built["size"],
             "counts": numbers, "warnings": built["warnings"]}

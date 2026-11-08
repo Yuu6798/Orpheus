@@ -202,6 +202,13 @@ def test_read_gray_takes_alpha_or_luminance_or_16_bit(tmp_path):
     assert masks.read_gray(tmp_path / "d.png")[0, 0] == 255 and masks.read_gray(tmp_path / "rgb.png")[0, 0] == 200
 
 
+def test_a_16_bit_mask_is_scaled_by_its_format_not_by_its_values(tmp_path):
+    Image.fromarray(np.array([[0, 255]] * 2, np.uint16)).save(tmp_path / "dim16.png")         # 255 を超える画素が無くても 16 bit
+    assert masks.read_gray(tmp_path / "dim16.png")[0].tolist() == [0, 1]                       # 255/257 はほぼ 1（8 bit の 255 ではない）
+    Image.fromarray(np.array([[0, 255, 32896]] * 2, np.uint16)).save(tmp_path / "mixed16.png")
+    assert masks.read_gray(tmp_path / "mixed16.png")[0].tolist() == [0, 1, 128]               # 1 画素が 255 を超えても同じ目盛り
+
+
 # ---- 書き出しと検証 ---------------------------------------------------------------
 
 def test_existing_masks_are_kept_unless_forced(tmp_path):
@@ -245,6 +252,20 @@ def test_bad_plans_are_refused(tmp_path, mutate, message):
     mutate(plan)
     with pytest.raises(PipelineError, match=message):
         masks.make_masks(write_plan(tmp_path, plan))
+
+
+@pytest.mark.parametrize("out, message", [
+    ("masks_preview.png", "確認用の絵か記録"),
+    ("masks_record.json", "確認用の絵か記録"),
+    ("./mask_subject.png", "同じファイル"),                                                  # 綴りが違っても同じファイル
+])
+def test_a_mask_cannot_be_written_over_the_preview_the_record_or_another_mask(tmp_path, out, message):
+    write_scene(tmp_path)
+    plan = json.loads(json.dumps(ALPHA_PLAN))
+    plan["masks"][1]["out"] = out
+    with pytest.raises(PipelineError, match=message):
+        masks.make_masks(write_plan(tmp_path, plan), tmp_path / "out", force=True)
+    assert not (tmp_path / "out").exists()                                                    # 何も書く前に止める
 
 
 def test_grabcut_on_an_impossible_polygon_explains_itself(tmp_path):
