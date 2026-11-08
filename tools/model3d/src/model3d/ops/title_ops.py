@@ -9,7 +9,7 @@ from . import StepResult, number, register
 
 TITLE_PARAMETERS = {"frames_dir", "range", "fps", "out_dir", "start", "fade_in", "reference_width", "shadow", "layers"}
 LAYER_KEYS = {"text", "image", "font", "variation", "size", "color", "stroke", "stroke_color", "tracking", "glow", "center", "rise",
-              "opacity"}
+              "opacity", "blend"}
 TEXT_ONLY = {"font", "variation", "size", "color", "stroke", "stroke_color", "tracking"}
 DEFAULT_SHADOW = {"blur": 9, "amount": 0.7}
 
@@ -38,6 +38,7 @@ def _blur_setting(value, where, keys):
 
 def layer_settings(layer, index, recipe_dir):
     """層の設定を確かめ、既定を埋める。文字（text）か画像（image）のどちらか 1 つ。"""
+    from .. import title
     where = f"layers[{index}]"
     if not isinstance(layer, dict):
         raise ToolError(f"{where} は {{\"text\" か \"image\", \"center\", …}} にしてください: {layer!r}")
@@ -51,6 +52,10 @@ def layer_settings(layer, index, recipe_dir):
            "opacity": float(number(layer, "opacity", 1.0, minimum=0))}
     if out["opacity"] > 1:
         raise ToolError(f"{where}.opacity は 0〜1 にしてください: {out['opacity']}")
+    out["blend"] = layer.get("blend", "prototype")
+    if out["blend"] not in title.BLENDS:
+        raise ToolError(f"{where}.blend は {' か '.join(repr(b) for b in title.BLENDS)} にしてください"
+                        f"（既定の 'prototype' は試作と同じ重ね方、'over' はふつうの重ね方）: {out['blend']!r}")
     glow = layer.get("glow")
     if glow is not None:
         if not isinstance(glow, dict) or set(glow) != {"color", "blur", "amount"}:
@@ -110,8 +115,11 @@ def build_sprite(layer, k, shadow):
                       "font_sha256": sha256(layer["font"]) if layer["font"] else None, "variation": layer["variation"],
                       "size_px": size, "stroke_px": stroke, "tracking": layer["tracking"]}
         else:
-            color, cover = title.image_layer(layer["image"], k)
-            detail = {"kind": "image", "image": str(layer["image"]), "image_sha256": sha256(layer["image"])}
+            # 影と光りが画像の外へ広がる余白（ぼかしの届く画素）。文字の層の余白は試作と同じ（text_layer）
+            sigmas = ([shadow_k[0]] if shadow_k is not None else []) + ([glow_k[1]] if glow_k is not None else [])
+            margin = max((title.blur_reach(s) for s in sigmas), default=0)
+            color, cover = title.image_layer(layer["image"], k, margin)
+            detail = {"kind": "image", "image": str(layer["image"]), "image_sha256": sha256(layer["image"]), "margin_px": margin}
         spr = title.sprite(color, cover, shadow_k, glow_k)
     except (OSError, ValueError) as error:
         raise ToolError(f"題字の層を絵にできません: {error}") from error
@@ -152,7 +160,9 @@ def _frames(inputs, parameters, context):
 @register("render.title", inputs=("frames",), outputs=("frames", "report"), cacheable=False,
           summary="描いたコマ（frames の model3d-frames/0.1 か、frames_dir と range の T）に、題字の層（文字か画像）を重ねて、別のフォルダへ書く。"
                   "窓の秒（T = 1 が 0 秒）の start から fade_in 秒で、なめらかに浮かび上がる（rise 画素ぶん上がりながら）。文字は書体と形（可変の書体）・"
-                  "大きさ・色・縁取り・字送り、層ごとに光り（glow）、全体に影。大きさ・位置・ぼかしは基準の幅（既定 1080）の画素で書き、コマの幅に合わせる。"
+                  "大きさ・色・縁取り・字送り、層ごとに光り（glow）、全体に影。画像の層には、影と光りが広がる透けた余白を足す。"
+                  "重ね方の既定は試作と同じ（覆いを二度掛ける）。層ごとの blend で、ふつうの重ね方 over も選べる。"
+                  "大きさ・位置・ぼかしは基準の幅（既定 1080）の画素で書き、コマの幅に合わせる。"
                   "start より前のコマはそのまま写す。frames は書いたコマの一覧（model3d-frames/0.1。render.assemble の入力になる）。"
                   "書体・画像・コマのフォルダは隠れた入力なので再利用しない（毎回実行）")
 def title_frames(inputs, parameters, outputs, context):
@@ -211,7 +221,7 @@ def title_frames(inputs, parameters, outputs, context):
         u = title.smoothstep((s - start) / fade_in) if fade_in > 0 else 1.0
         for layer, (spr, _detail) in zip(settings, sprites):
             cx, cy = layer["center"]
-            title.blit(img, spr, cx * k, (cy + layer["rise"] * (1 - u)) * k, u * layer["opacity"])
+            title.blit(img, spr, cx * k, (cy + layer["rise"] * (1 - u)) * k, u * layer["opacity"], layer["blend"])
         Image.fromarray(title.to_uint8(img)).save(target)
         titled.append(T)
         listing.append({"T": T, "f": f, "file": target.name, "sha256": sha256(target), "bytes": target.stat().st_size})
@@ -226,7 +236,7 @@ def title_frames(inputs, parameters, outputs, context):
               "out_dir": str(Path(out_dir).resolve()), "resolution": [W, H], "fps": fps, "start": start, "fade_in": fade_in,
               "reference_width": reference, "scale": k,
               "shadow": {"blur_px": max(1.0, shadow[0] * k), "amount": shadow[1]} if shadow is not None else None,
-              "layers": [dict(detail, center=list(layer["center"]), rise=layer["rise"], opacity=layer["opacity"])
+              "layers": [dict(detail, center=list(layer["center"]), rise=layer["rise"], opacity=layer["opacity"], blend=layer["blend"])
                          for layer, (_spr, detail) in zip(settings, sprites)],
               "titled": {"count": len(titled), "first": titled[0] if titled else None, "last": titled[-1] if titled else None},
               "copied": len(frames) - len(titled), "seconds": elapsed}

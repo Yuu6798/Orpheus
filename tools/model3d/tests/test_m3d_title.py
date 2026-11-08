@@ -1,4 +1,4 @@
-"""render.title: 題字の絵（ぼかし・文字・影と光り・重ね方）と、コマへの重ね方（前のコマは写す・浮かび上がり・一覧と報告・
+"""render.title: 題字の絵（ぼかし・文字・影と光り・重ね方・画像の層の余白）と、コマへの重ね方（前のコマは写す・浮かび上がり・一覧と報告・
 render.assemble へのつなぎ）。書体は Pillow の内蔵の書体（ファイル不要）。"""
 import json
 from pathlib import Path
@@ -108,6 +108,46 @@ def test_blit_centres_the_cover_box_and_skips_faint_or_offscreen_layers():
     assert np.array_equal(title.to_uint8(np.array([[[0.999, 1.5, -1.0]]], np.float32)), [[[254, 255, 0]]])   # 切り捨て
 
 
+def test_blit_applies_the_cover_twice_like_the_prototype_unless_blend_is_over():
+    white = np.ones((5, 5, 3), np.float32)                        # 白の覆い 0.6（文字の縁や、半透明の画像の画素）
+    spr = title.sprite(white, np.full((5, 5), 0.6, np.float32))
+    twice, over, half = (np.zeros((5, 5, 3), np.float32) for _ in range(3))
+    assert title.blit(twice, spr, 2.5, 2.5, 1.0) and title.blit(over, spr, 2.5, 2.5, 1.0, "over")
+    assert twice[2, 2, 0] == pytest.approx(0.36) and over[2, 2, 0] == pytest.approx(0.6)   # 既定は試作と同じく覆いを二度掛ける
+    title.blit(half, spr, 2.5, 2.5, 0.5, "over")
+    assert half[2, 2, 0] == pytest.approx(0.3)                    # over の濃さは、色と覆いの両方に掛かる
+    color, cover, _ = _square()
+    solid = title.sprite(color, cover)
+    a, b = np.full((40, 60, 3), 0.2, np.float32), np.full((40, 60, 3), 0.2, np.float32)
+    title.blit(a, solid, 30.0, 20.0, 0.7)
+    title.blit(b, solid, 30.0, 20.0, 0.7, "over")
+    assert np.array_equal(a, b) and a.max() > 0.2                 # 覆いが 1 か 0 の画素は、どちらでも同じ
+    with pytest.raises(ValueError, match="blend"):
+        title.blit(a, solid, 30.0, 20.0, 1.0, "add")
+
+
+def test_image_layers_get_room_for_the_shadow_and_the_glow(tmp_path):
+    from PIL import Image
+    from model3d.ops import title_ops
+    Image.new("RGBA", (8, 8), (255, 40, 40, 255)).save(tmp_path / "opaque.png")    # 透けの無い画像（全面が覆い）
+    glow = {"color": [0, 0, 255], "blur": 2, "amount": 0.8}
+    layer = title_ops.layer_settings({"image": "opaque.png", "center": [30, 20], "glow": glow}, 0, tmp_path)
+    (rgb, alpha, box), detail = title_ops.build_sprite(layer, 1.0, (2.0, 0.7))
+    margin = title.blur_reach(2.0)
+    assert margin == 8 and detail["margin_px"] == margin and alpha.shape == (8 + 2 * margin, 8 + 2 * margin)
+    assert box == (margin, margin + 8, margin, margin + 8)                         # 覆いの範囲（中心合わせ）は画像のまま
+    dst = np.zeros((40, 60, 3), np.float32)
+    title.blit(dst, (rgb, alpha, box), 30.0, 20.0, 1.0)
+    inside = (slice(16, 24), slice(26, 34))
+    outside = np.ones((40, 60), bool)
+    outside[inside] = False
+    assert np.allclose(dst[inside], [1.0, 40 / 255, 40 / 255])                     # 画像の中は画像の色のまま
+    assert dst[outside][:, 2].max() > 0.05 and (dst[outside].max(axis=-1) > 0).sum() > 100   # 画像の外へ光り（青）が付く
+    bare = title_ops.layer_settings({"image": "opaque.png", "center": [30, 20]}, 0, tmp_path)
+    (_, plain, _), plain_detail = title_ops.build_sprite(bare, 1.0, None)
+    assert plain_detail["margin_px"] == 0 and plain.shape == (8, 8)               # 影も光りも無ければ余白も無い
+
+
 def _frames(directory, count=10, size=(64, 96)):
     from PIL import Image
     directory.mkdir(parents=True, exist_ok=True)
@@ -184,6 +224,8 @@ def test_the_operation_copies_the_frames_before_the_title_and_fades_it_in(tmp_pa
     assert text["kind"] == "text" and text["chars"] == 2 and text["size_px"] == 16 and text["stroke_px"] == 1
     assert "Qx" not in json.dumps(report)                          # 題字の文字そのものは報告に書かない（sha256 と字数だけ）
     assert report["layers"][1]["kind"] == "image" and report["layers"][1]["opacity"] == 0.95
+    assert [layer["blend"] for layer in report["layers"]] == ["prototype", "prototype"]          # 既定の重ね方は試作と同じ
+    assert report["layers"][1]["margin_px"] == title.blur_reach(2.0) and "margin_px" not in text   # 余白を足すのは画像の層だけ
     observation = step["observations"][0]
     assert observation["kind"] == "title" and observation["titled"] == 5 and observation["first_titled"] == 6
 
@@ -224,6 +266,22 @@ def call(tmp_path, parameters, inputs=None, outputs=None):
     return get("render.title").function(inputs or {}, parameters, declared, Context(tmp_path))
 
 
+def test_the_blend_is_chosen_per_layer(tmp_path):
+    _frames(tmp_path / "frames", count=1)
+    _badge(tmp_path / "badge.png")
+    out = {}
+    for blend in ("prototype", "over"):
+        layers = [dict(LAYERS[0], blend=blend), LAYERS[1]]
+        call(tmp_path, _parameters(range=[1, 1], start=0.0, fade_in=0.0, layers=layers, out_dir=blend),
+             outputs={"frames": f"{blend}.json", "report": f"{blend}_report.json"})
+        report = json.loads((tmp_path / f"{blend}_report.json").read_text(encoding="utf-8"))
+        assert [layer["blend"] for layer in report["layers"]] == [blend, "prototype"]
+        out[blend] = _rgb(tmp_path / blend / "f0001.png").astype(int)
+    glyphs = (slice(18, 42), slice(16, 48))
+    assert (out["over"] >= out["prototype"]).all() and (out["over"][glyphs] > out["prototype"][glyphs]).any()   # 縁と光りが明るい
+    assert np.array_equal(out["over"][56:], out["prototype"][56:])                 # 既定のままの層（画像）は同じ
+
+
 @pytest.mark.parametrize("changes, message", [
     ({"wobble": 1}, "知らないパラメーター"),
     ({"layers": []}, "layers"),
@@ -240,6 +298,7 @@ def call(tmp_path, parameters, inputs=None, outputs=None):
     ({"layers": [{"image": "badge.png", "center": [1, 1], "font": "x.ttf"}]}, "文字の項目"),
     ({"layers": [{"image": "no-such.png", "center": [1, 1]}]}, "画像がありません"),
     ({"layers": [{"text": "A", "size": 9, "center": [1, 1], "shape": "round"}]}, "知らない項目"),
+    ({"layers": [{"text": "A", "size": 9, "center": [1, 1], "blend": "add"}]}, "blend"),
     ({"shadow": {"blur": 0, "amount": 0.7}}, "blur"),
     ({"start": None}, "start"),
     ({"range": [3, 1]}, "range"),

@@ -2,8 +2,10 @@
 
 リポジトリ外の試作の題字（2D 完成版の題字と同じ字形・大きさ・光り方・出方）を移した。計算は float32 で、書き出しは 0〜255 への
 切り捨て（試作と同じ。同じコマになる）。ぼかしは、OpenCV の GaussianBlur（sigma の指定・float の画像・端は反射 101）と同じ長さと
-形の核を numpy で掛ける（model3d は OpenCV に頼らない）。"""
+形の核を numpy で掛ける（model3d は OpenCV に頼らない）。重ね方の既定も試作と同じ（覆いを二度掛ける。blit の blend）。"""
 import numpy as np
+
+BLENDS = ("prototype", "over")      # 重ね方: 試作と同じ（既定）か、ふつうの重ね方
 
 
 def smoothstep(u):
@@ -21,6 +23,11 @@ def gaussian_kernel(sigma):
     x = np.arange(n, dtype=np.float64) - (n - 1) / 2
     t = np.exp(-(x * x) / (2.0 * sigma * sigma))
     return (t / t.sum()).astype(np.float32)
+
+
+def blur_reach(sigma):
+    """ぼかしが覆いの外へ届く画素（核の長さの半分。sigma の約 4 倍。sigma 2 で 8、9 で 36、18 で 72）。"""
+    return len(gaussian_kernel(sigma)) // 2
 
 
 def reflect101(n, r):
@@ -89,14 +96,18 @@ def text_layer(text, font, size, color=(255, 255, 255), stroke=0, stroke_color=(
     return arr[..., :3], arr[..., 3]
 
 
-def image_layer(path, scale=1.0):
-    """画像（PNG など）の色と覆い（透けの無い画像は全面が覆い）。scale ≠ 1 なら Lanczos で大きさを変える。"""
+def image_layer(path, scale=1.0, margin=0):
+    """画像（PNG など）の色と覆い（透けの無い画像は全面が覆い）。scale ≠ 1 なら Lanczos で大きさを変える。
+    周りに margin 画素の透けた余白を足す（影と光りの広がる場所。余白が無いと、透けの無い画像や端まで描いた画像の影と光りは、
+    画像の外へ出られず、上に載る画像の色に隠れる）。"""
     from PIL import Image
     with Image.open(path) as source:
         image = source.convert("RGBA")
     if scale != 1.0:
         image = image.resize((max(1, int(round(image.width * scale))), max(1, int(round(image.height * scale)))), Image.LANCZOS)
     arr = np.asarray(image).astype(np.float32) / 255.0
+    if margin > 0:
+        arr = np.pad(arr, ((margin, margin), (margin, margin), (0, 0)))
     return arr[..., :3], arr[..., 3]
 
 
@@ -120,9 +131,16 @@ def sprite(color, cover, shadow=None, glow=None):
     return rgb, alpha, (int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1)
 
 
-def blit(dst, spr, cx, cy, amount):
+def blit(dst, spr, cx, cy, amount, blend="prototype"):
     """絵を、覆いの範囲の中心が (cx, cy) に来るように、amount（0〜1）の濃さで dst（H×W×3、float32、0〜1）に重ねる。
-    amount が 0.003 以下か、画面の外なら何もしない。重ねたら True。"""
+    amount が 0.003 以下か、画面の外なら何もしない。重ねたら True。
+    絵の色（sprite の rgb）は、影・光り・文字を覆いで重ねた色で、覆いを掛け済み。blend:
+    - "prototype"（既定。試作と同じ）: その色に、もう一度 alpha × amount を掛けて重ねる。半ば透けた画素（文字の縁・光り・影・
+      半透明の画像）は "over" より暗い（白の覆い 0.6 は、黒の上で 0.36）。採用版の題字はこの重ね方。
+    - "over": ふつうの重ね方（色 × amount + 下 × (1 − alpha × amount)。白の覆い 0.6 は、黒の上で 0.6）。
+    alpha が 1 か 0 の画素は、どちらでも同じ。"""
+    if blend not in BLENDS:
+        raise ValueError(f"blend は {' か '.join(BLENDS)} にしてください: {blend!r}")
     rgb, alpha, (bx0, bx1, by0, by1) = spr
     H, W = dst.shape[:2]
     x0, y0 = int(round(cx - (bx0 + bx1) / 2)), int(round(cy - (by0 + by1) / 2))
@@ -131,7 +149,8 @@ def blit(dst, spr, cx, cy, amount):
     if xb <= xa or yb <= ya or amount <= 0.003:
         return False
     a = alpha[ya - y0:yb - y0, xa - x0:xb - x0, None] * amount
-    dst[ya:yb, xa:xb] = rgb[ya - y0:yb - y0, xa - x0:xb - x0] * a + dst[ya:yb, xa:xb] * (1 - a)
+    color = rgb[ya - y0:yb - y0, xa - x0:xb - x0]
+    dst[ya:yb, xa:xb] = (color * a if blend == "prototype" else color * np.float32(amount)) + dst[ya:yb, xa:xb] * (1 - a)
     return True
 
 
