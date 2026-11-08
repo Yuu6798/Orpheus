@@ -105,6 +105,15 @@ def test_each_sequence_frame_is_checked_against_the_output_size(tmp_path):
         render.frame(ctx, 5 / FPS, "base")
 
 
+def test_each_sequence_frame_must_keep_its_alpha(tmp_path):
+    lyric_sequence(tmp_path / "ov", range(FRAMES))
+    Image.new("RGB", (W, H), (255, 255, 255)).save(tmp_path / "ov" / "00005.png")             # 途中の 1 コマだけアルファが無い
+    ctx = render.prepare(fxspec.load_spec(project(tmp_path, [{"path": "ov"}])))
+    render.frame(ctx, 4 / FPS, "base")
+    with pytest.raises(PipelineError, match="アルファがありません"):                            # 不透明な白で絵を覆わない
+        render.frame(ctx, 5 / FPS, "base")
+
+
 # ---- 絵 --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("look", [None, LOOK])

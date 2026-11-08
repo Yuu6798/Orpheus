@@ -479,7 +479,7 @@ uv run mv overlay --base fx_runs/<run_id>/both.mp4 --layer lyrics_png/ --layer s
 - コマ数・fps・寸法が合わないものはエラー（勝手に合わせない）。土台が画像なら `--fps` が要り、コマ数はレイヤーから決まる（決まらなければ `--frames`）。土台が動画なら fps とコマ数は動画から。
 - run（既定 `<土台のフォルダ>/overlay_runs/<run_id>/`）に `overlay.mp4`・`manifest.json`・`render.log` を残し、`index.json` に key → run_id を登録する。key は土台・各レイヤーの使うコマ・音声の sha256 と設定から作り、同じ入力の成功 run は再利用する（`--force` で作り直す）。manifest の `overlay` の欄（土台・レイヤーごとの使うコマの sha256・音声・レイヤーごとの設定 `options`・書き出しの設定）は `fx_overlay.schema.json`（fx-overlay/0.2。`contracts/` の外）で検証してから書く。
 - 書き出しの後に `probe.check_video`（technical_pass。寸法・fps・コマ数・色タグ・音声の尺）を通す。通らなければ run は failed。
-- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー。実験的。Remotion の実際の連番ではまだ通していない。
+- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー（連番は読む各コマで確かめる。アルファの無いコマは不透明になって土台を覆うため）。実験的。Remotion の実際の連番ではまだ通していない。
 
 **レイヤーごとの設定（`--layers`。fx-overlay-layers/0.1）** — `--layer` の代わりに、設定ファイル（`src/mv_pipeline/fx/fx_overlay_layers.schema.json`）で重ねる。
 
@@ -535,6 +535,7 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 - 各要素は `--layers` の layer と同じ形（`fx_overlay_layers.schema.json` で検証する）。違いは、`path` が連番のフォルダだけ（動画は `mv overlay` で重ねる）なことと、時間が**ショット時刻**なこと。
 - 連番のコマは、ショット時刻 t のいちばん近いコマ n = round(t·fps)（grain と同じ丸め）。`first_frame` が無ければ連番はショット全体のコマ数とちょうど同じ枚数で n 枚目、あれば番号 `first_frame + n` のファイル。`--start` で区間を切っても、同じ時刻は同じコマになる。
 - 大きさは spec の `output` と同じであること（`resize: true` なら縦横比 1% 以内で縮尺）。`--scale` の下見では一緒に縮める。仕上げの長さ（`sigma_px` など）も、描画の短い辺に合わせて縮む。
+- 連番は 1 枚目だけでなく、読む各コマで、アルファがあることと寸法（spec の `output` に対して）を確かめる（アルファの無いコマは不透明になって絵を覆うので止める）。
 - **全 4 版に同じものを**重ねる（look と同じ）。版の `features` に `overlays` が載る。`--no-overlays` で外して描ける（key が分かれる。manifest の `overlays.state` は `disabled`）。
 - 計算: look があれば、look の float（切り捨ての前、0..255 に切ったもの）に重ねてから切り捨てる。look が無ければ、`to_srgb8` の値に重ねて四捨五入する。これは、書き出した版に `mv overlay` で重ねるのと同じ値（圧縮の前のコマで、試験で確認）。
 - **見えるものが無い時刻は、overlays の無い spec とバイト単位で同じ**（重ねの経路を通らない）。見える時刻でも、重ねの届かない画素は同じ値になる。

@@ -119,9 +119,13 @@ def check_fit(found, size, options, where, target="base"):
 
 def read_rgba(path, size, options=None, where=None, expected=None, target="base"):
     """画像を uint8 RGBA で読み、size へ合わせる（options の resize_space で補間）。where（連番のコマの名前）を渡すと、
-    縮尺する前にこのコマの寸法を expected（省けば size）に対して確かめる（1 枚目の寸法だけを見て、途中のコマの違いを黙って縮尺しない）。"""
+    RGBA に直して縮尺する前に、このコマのアルファと、寸法を expected（省けば size）に対して確かめる（入口は連番の 1 枚目しか
+    見ないので、途中のコマの違いを黙って通さない。アルファの無いコマは RGBA に直すと不透明になり、下の絵を覆う）。"""
     with Image.open(path) as image:
         if where is not None:
+            if not has_alpha(image):
+                raise PipelineError(f"{where} にアルファがありません（{image.mode}）。透過の PNG にしてください"
+                                    f"（アルファの無いコマは不透明になり、下の絵を覆います）")
             check_fit(image.size, expected or size, options, where, target)
         return fit(np.asarray(image.convert("RGBA"), dtype=np.uint8), size, options)
 
