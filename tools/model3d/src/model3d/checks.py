@@ -351,13 +351,16 @@ def uv_stretch(mesh, width, height, threshold=8.0, thresholds=None):
         return {"check": "uv_stretch", "pass": None, "status": "skipped", "reason": "メッシュに uv がありません",
                 "triangles": 0}
     triangles, _ = mesh.triangles()
+    points = mesh.vertices[triangles]
     corners = texture.texel_coordinates(mesh.uv[triangles], width, height)
-    ratio = texture.stretch(corners, mesh.vertices[triangles])
-    finite = np.isfinite(ratio)
+    ratio = texture.stretch(corners, points)
+    # 3D で潰れた三角形（3 つの頂点が同じ位置で、周長が 0）は、3D の形から数える。stretch は、全部の三角形が潰れていると
+    # inf ではなく 0 を返すので、比から決めると潰れた三角形を数えそこなう
+    collapsed = ~(np.linalg.norm(points - np.roll(points, 1, axis=1), axis=2).sum(axis=1) > 0)
     extent = np.ptp(corners, axis=1).max(axis=1)
-    usable = ratio[finite]
+    usable = ratio[~collapsed & np.isfinite(ratio)]
     report = {"check": "uv_stretch", "status": "done", "texture_size": [int(width), int(height)], "triangles": int(len(ratio)),
-              "degenerate": int((~finite).sum()), "threshold": float(threshold), "over": int((usable > threshold).sum()),
+              "degenerate": int(collapsed.sum()), "threshold": float(threshold), "over": int((usable > threshold).sum()),
               "ratio_percentiles": (dict(zip(("p50", "p99", "p99_9", "max"),
                                              [round(float(v), 3) for v in np.percentile(usable, [50, 99, 99.9, 100])]))
                                     if len(usable) else None),

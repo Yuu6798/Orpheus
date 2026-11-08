@@ -1181,7 +1181,8 @@ def fill_holes(mesh, max_sides=0, cap="polygon", orient=True, part=None):
 def list_parts(path, normals=None):
     """部品ごとの npz（names と co{i}・f{i}・uv{i}）の部品の一覧（形の数と確かめ）。normals（別の npz の n{i}）を渡すと、
     部品ごとに法線があるか・頂点と同じ形か・有限かも見る。名前の無い法線（n{i} の i が部品より多い）も並べる。pickle は読まない。
-    確かめで見つけたこと（非有限の頂点・無い頂点を指す面・形の合わない uv や法線）は problems に並べる（止めない）。"""
+    確かめで見つけたこと（非有限の頂点・uv・法線、無い頂点を指す面、形の合わない uv や法線）は problems に並べる（止めない）。
+    非有限の値の範囲は書かない（報告の JSON に NaN は書けない）。"""
     names = _part_names(path)
     count = len(names)
     arrays = _npz_arrays(path, "部品の npz", [key for i in range(count) for key in (f"co{i}", f"f{i}")],
@@ -1213,8 +1214,12 @@ def list_parts(path, normals=None):
             uv_ok = uv.shape == (len(vertices), 2) and np.issubdtype(uv.dtype, np.number)
             row["uv"] = {"shape_ok": bool(uv_ok)}
             if uv_ok and len(uv):
-                row["uv"].update(min=[round(float(x), 6) for x in uv.min(axis=0)], max=[round(float(x), 6) for x in uv.max(axis=0)],
-                                 finite=bool(np.isfinite(uv).all()))
+                if np.isfinite(uv).all():
+                    row["uv"].update(min=[round(float(x), 6) for x in uv.min(axis=0)],
+                                     max=[round(float(x), 6) for x in uv.max(axis=0)], finite=True)
+                else:                                    # 範囲は書かない（NaN は報告の JSON に書けない）
+                    row["uv"]["finite"] = False
+                    problems.append(f"{name}: uv{i} に非有限の値があります")
             if not uv_ok:
                 problems.append(f"{name}: uv{i} の形 {uv.shape} が頂点 ({len(vertices)}, 2) と合いません")
         else:
@@ -1226,9 +1231,12 @@ def list_parts(path, normals=None):
                 problems.append(f"{name}: 法線 n{i} がありません")
             else:
                 ok = n.shape == vertices.shape and np.issubdtype(n.dtype, np.number)
-                row["normals"] = {"present": True, "shape_ok": bool(ok), "finite": bool(ok and np.isfinite(n).all())}
+                finite_normals = bool(ok and np.isfinite(n).all())
+                row["normals"] = {"present": True, "shape_ok": bool(ok), "finite": finite_normals}
                 if not ok:
                     problems.append(f"{name}: 法線 n{i} の形 {n.shape} が頂点 {vertices.shape} と合いません")
+                elif not finite_normals:                 # read_parts（mesh.import_parts）は、この法線を読まない
+                    problems.append(f"{name}: 法線 n{i} に非有限の値があります")
         rows.append(row)
     if given is not None and stray:
         problems.append(f"どの部品にも当たらない法線の配列があります: {stray}")
