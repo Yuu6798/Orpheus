@@ -351,13 +351,16 @@ def uv_stretch(mesh, width, height, threshold=8.0, thresholds=None):
         return {"check": "uv_stretch", "pass": None, "status": "skipped", "reason": "メッシュに uv がありません",
                 "triangles": 0}
     triangles, _ = mesh.triangles()
+    points = mesh.vertices[triangles]
     corners = texture.texel_coordinates(mesh.uv[triangles], width, height)
-    ratio = texture.stretch(corners, mesh.vertices[triangles])
-    finite = np.isfinite(ratio)
+    ratio = texture.stretch(corners, points)
+    # 3D で潰れた三角形（3 つの頂点が同じ位置で、周長が 0）は、3D の形から数える。stretch は、全部の三角形が潰れていると
+    # inf ではなく 0 を返すので、比から決めると潰れた三角形を数えそこなう
+    collapsed = ~(np.linalg.norm(points - np.roll(points, 1, axis=1), axis=2).sum(axis=1) > 0)
     extent = np.ptp(corners, axis=1).max(axis=1)
-    usable = ratio[finite]
+    usable = ratio[~collapsed & np.isfinite(ratio)]
     report = {"check": "uv_stretch", "status": "done", "texture_size": [int(width), int(height)], "triangles": int(len(ratio)),
-              "degenerate": int((~finite).sum()), "threshold": float(threshold), "over": int((usable > threshold).sum()),
+              "degenerate": int(collapsed.sum()), "threshold": float(threshold), "over": int((usable > threshold).sum()),
               "ratio_percentiles": (dict(zip(("p50", "p99", "p99_9", "max"),
                                              [round(float(v), 3) for v in np.percentile(usable, [50, 99, 99.9, 100])]))
                                     if len(usable) else None),
@@ -381,9 +384,12 @@ FRAME_BANDS = (0, 2, 8, 16, 64, 128)
 
 
 def frame_files(source):
-    """コマのフォルダ（f<T>.png）か、描いたコマの一覧（model3d-frames/0.1 の JSON）から {T: ファイル}。"""
+    """コマのフォルダ（f<T>.png）か、描いたコマの一覧（model3d-frames/0.1 の JSON）から {T: ファイル}。
+    一覧なら、コマのファイルがあることと、一覧の sha256 が今のファイルと同じことを確かめる（一覧を作った後に描き直したフォルダを、
+    古い一覧のまま比べない。render.assemble と同じ決まり）。"""
     import re
     from pathlib import Path
+    from .io import sha256
     source = Path(source)
     if source.is_dir():
         found = {}
@@ -395,7 +401,18 @@ def frame_files(source):
     from . import contracts
     manifest = contracts.load("frames", source)
     directory = Path(manifest["directory"])
-    return {fr["T"]: directory / fr["file"] for fr in manifest["frames"]}
+    found, stale = {}, []
+    for fr in manifest["frames"]:
+        path = directory / fr["file"]
+        if not path.is_file():
+            raise ToolError(f"描いたコマの一覧のコマがありません（T {fr['T']}）: {path}")
+        if fr.get("sha256") and sha256(path) != fr["sha256"]:
+            stale.append(fr["T"])
+        found[fr["T"]] = path
+    if stale:
+        raise ToolError(f"描いたコマの一覧と、今のファイルが違います（{len(stale)} コマ。最初の T: {stale[:10]}）: {source}。"
+                        "描き直したなら、一覧も作り直してください")
+    return found
 
 
 def _frame_arrays(path):
@@ -482,7 +499,7 @@ def frame_view(left_path, right_path, out, amplify=8):
     if a.shape != b.shape:
         raise ToolError(f"大きさの違うコマは並べられません: {left_path} と {right_path}")
     worst = np.maximum(np.abs(a - b).max(axis=2), np.abs(a_alpha - b_alpha))
-    heat = np.clip(worst * amplify, 0, 255).astype(np.uint8)
+    heat = np.clip(worst.astype(np.float64) * amplify, 0, 255).astype(np.uint8)   # 小数にしてから掛ける（整数の倍率でも int16 で溢れない）
     view = np.concatenate([a.astype(np.uint8), b.astype(np.uint8), np.stack([heat] * 3, axis=2)], axis=1)
     Image.fromarray(view).save(out)
     return {"left": str(left_path), "right": str(right_path), "amplify": amplify,

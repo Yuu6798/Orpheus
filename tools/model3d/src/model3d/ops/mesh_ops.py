@@ -113,8 +113,9 @@ def mesh_smooth_part_normals(inputs, parameters, outputs, context):
 
 @register("mesh.fill_holes", inputs=("mesh",), outputs=("mesh", "report"),
           summary="穴（1 つの面だけが使う辺の輪）を面でふさぎ、閉じたメッシュにする（collision.push_out の当たりなど）。今の面と頂点の番号は"
-                  "変えず、ふさぐ面を後ろに足す。cap: polygon（輪ごとに 1 つの多角形）か fan（輪の平均に頂点を足して三角形の扇）。"
-                  "orient で、体積が負なら全部の面を裏返して外向きに。max_sides より多い辺の輪は残す（要確認）。多様体でない辺・"
+                  "変えず、ふさぐ面を後ろに足す。cap: polygon（輪ごとに 1 つの多角形）か fan（輪の平均に頂点を足して三角形の扇。"
+                  "足した頂点には輪の uv と頂点色の平均）。orient で、辺でつながった面の集まりごとに、体積が負なら裏返して外向きに。"
+                  "max_sides より多い辺の輪は残す（要確認）。多様体でない辺・"
                   "向きのそろわない面・2 つの輪が通る頂点・つぶれた辺は止める。x_normals は外す")
 def mesh_fill_holes(inputs, parameters, outputs, context):
     require(inputs, ("mesh",), "mesh.fill_holes")
