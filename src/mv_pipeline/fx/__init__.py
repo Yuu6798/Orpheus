@@ -23,6 +23,8 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
   - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート（基準の列つき）と、
     基準の動画と並べた比較動画（`mv fx compare`）。
   - guides: 元画像の目盛り（`mv fx guides`）と、描いたコマに重ねる格子・光・マスクの印（`mv fx stills --guides`）。
+  - layering: 透過レイヤーを重ねる式（色づけ・影・光彩・後光）と設定の部品（overlay と spec_layers が共有）。
+  - spec_layers: spec の overlays（描画の中で、look の後・最後の丸めの前に全版へ重ねる透過レイヤー）。
   - masks: 計画（fx-masks/0.1）からマスクを作る（`mv fx masks`。外の切り抜き・多角形・GrabCut・飛び地消し・ほかのマスクを避ける）。
   - probe: ffmpeg だけで行う構造検査 check_video（technical_pass。ffprobe 不要）。
   - runs: run ディレクトリ・manifest・キャッシュ（index.json）・stills・accept。key は描画に影響する入力すべて

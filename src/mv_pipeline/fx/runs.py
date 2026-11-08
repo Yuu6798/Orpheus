@@ -76,15 +76,27 @@ def content_key(kind, sp, assets, extra):
                                   "engine": fingerprint(), **extra})
 
 
-def render_key(sp, assets, variants, start, duration, n_frames, size, scale, grid, libraries):
-    """fx render の key。描画結果（MP4 のバイト列）に影響する入力はここに全部入れる。"""
-    return content_key("render", sp, assets, {
-        "variants": list(variants), "start": start, "duration": duration, "frames": n_frames,
-        "size": list(size), "scale": float(scale), "grid": grid, "libraries": libraries})
+def render_key(sp, assets, variants, start, duration, n_frames, size, scale, grid, libraries, overlays=None):
+    """fx render の key。描画結果（MP4 のバイト列）に影響する入力はここに全部入れる（overlays は使うコマの sha256）。"""
+    extra = {"variants": list(variants), "start": start, "duration": duration, "frames": n_frames,
+             "size": list(size), "scale": float(scale), "grid": grid, "libraries": libraries}
+    if overlays:
+        extra["overlays"] = overlays
+    return content_key("render", sp, assets, extra)
 
 
 def default_out(sp):
     return sp.base_dir / "fx_runs"
+
+
+def resolve_overlays(sp, no_overlays=False):
+    """(有効な spec, overlays の状態, 素材の記録)。状態は applied / disabled（--no-overlays で外した）/ absent。"""
+    from . import spec_layers
+    if not sp.data["overlays"]:
+        return sp, "absent", []
+    if no_overlays:
+        return spec_layers.without(sp), "disabled", []
+    return sp, "applied", spec_layers.describe(sp)
 
 
 def resolve_look(sp, no_look=False):
@@ -290,14 +302,15 @@ def summarize(run_dir, manifest, reused):
     grid = manifest.get("grid")
     return {"run_id": manifest["run_id"], "run_dir": str(run_dir), "reused": reused, "status": manifest["status"],
             "technical_pass": manifest["technical_pass"], "interval": manifest["interval"],
-            "size": manifest["output"]["size"], "look": manifest.get("look"), "depth": manifest.get("depth"), "variants": variants,
+            "size": manifest["output"]["size"], "look": manifest.get("look"), "depth": manifest.get("depth"),
+            "overlays": (manifest.get("overlays") or {}).get("state"), "variants": variants,
             "grid": str(run_dir / grid["path"]) if grid else None, "warnings": manifest["warnings"]}
 
 
 # ---- render ------------------------------------------------------------------
 
 def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, scale=1.0, grid=True, force=False,
-               progress=None, no_look=False):
+               progress=None, no_look=False, no_overlays=False):
     """spec から版ごとの MP4（と grid.mp4）を描き、run として記録する。同じ入力で成功済みなら再利用する。
     no_look=True なら spec の look を外して描く（比較用。manifest の look は disabled）。"""
     from . import assets as fxassets
@@ -306,6 +319,7 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
     began = time.monotonic()
     say = progress or (lambda message: None)
     sp, look_state = resolve_look(fxspec.load_spec(spec_path), no_look)
+    sp, overlays_state, overlay_records = resolve_overlays(sp, no_overlays)
     variants = parse_variants(variants)
     start, duration, n_frames = resolve_interval(sp, start, duration)
     size = render.scaled_size(sp, scale)
@@ -313,17 +327,17 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
     libraries = render.library_versions()
     grid = bool(grid) and len(variants) > 1
     fps = sp.data["output"]["fps"]
-    key = render_key(sp, assets, variants, start, duration, n_frames, size, scale, grid, libraries)
+    key = render_key(sp, assets, variants, start, duration, n_frames, size, scale, grid, libraries, overlay_records)
     out = (Path(out) if out else default_out(sp)).resolve()
     with Session(out, key, "render", "render.log", say=say, tag="[fx]", force=force) as session:
         if session.reused:
             # 再利用した run の manifest.look は作ったときの呼び出しの状態。この呼び出しの状態（映像は同じ）を返す
-            return {**summarize(session.reused_dir, session.reused, reused=True), "look": look_state}
+            return {**summarize(session.reused_dir, session.reused, reused=True), "look": look_state, "overlays": overlays_state}
         run = session.run
         shutil.copyfile(sp.path, run.dir / "spec.json")
         run.manifest.update(
             spec=spec_record(sp), assets=assets, engine=engine_record(fx, "fx"), libraries=libraries,
-            seed=sp.data["seed"], look=look_state,
+            seed=sp.data["seed"], look=look_state, overlays={"state": overlays_state, "layers": overlay_records},
             interval={"start": start, "duration": duration, "fps": fps, "frames": n_frames},
             output={"size": list(size), "scale": float(scale), "crf": sp.data["output"]["crf"]},
             variants={}, grid=None, warnings=[])
@@ -383,7 +397,7 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
 # ---- stills ------------------------------------------------------------------
 
 def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, guides=None, grid_step=None,
-           reference=None, reference_offset=0.0, reference_label="reference"):
+           reference=None, reference_offset=0.0, reference_label="reference", no_overlays=False):
     """行=時刻・列=版の静止画シートを <out>/stills-<key8>.png に書く（同じ入力は同じファイル名）。
     no_look=True なら spec の look を外して描く（look の有無はファイル名＝key に出る）。
     guides: 各マスに重ねる印（"grid,lights,masks" の部分集合。guides.parse_kinds）。grid_step は格子の間隔（省けば見えている幅から）。
@@ -394,6 +408,7 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, 
 
     began = time.monotonic()
     sp, look_state = resolve_look(fxspec.load_spec(spec_path), no_look)
+    sp, overlays_state, overlay_records = resolve_overlays(sp, no_overlays)
     variants = parse_variants(variants)
     times = resolve_times(sp, times)
     size = render.scaled_size(sp, scale)
@@ -404,6 +419,8 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, 
     extra = {"variants": list(variants), "times": times, "size": list(size), "scale": float(scale), "libraries": render.library_versions()}
     if kinds:
         extra["guides"] = {"kinds": list(kinds), "grid_step": grid_step}
+    if overlay_records:
+        extra["overlays"] = overlay_records
     ref = None
     if reference is not None:
         ref = reference_cells(reference, times, reference_offset, size, reference_label, sp.data["output"]["fps"])
@@ -414,6 +431,7 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, 
     path = (Path(out) if out else default_out(sp)).resolve() / f"stills-{key[:8]}.png"
     compare.save_png_atomic(sheet, path)
     result = {"path": str(path), "times": times, "variants": list(variants), "cell": list(size), "look": look_state,
+              "overlays": overlays_state,
               "sheet": [sheet.shape[1], sheet.shape[0]], "warnings": list(ctx.warnings), "depth": ctx.depth_info}
     if kinds:
         result["guides"] = list(kinds)
