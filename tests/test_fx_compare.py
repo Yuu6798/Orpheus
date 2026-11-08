@@ -201,10 +201,18 @@ def test_compare_places_the_reference_frames_next_to_the_variants(finished_run):
     assert np.abs(frames[12][y + 24:y + h, x:x + w] - expected[12][24:]).mean() < 3            # base の枠は base.mp4 のその時刻
 
 
+def test_the_reference_fps_must_match_within_the_rounding_of_the_reading():
+    assert runs.same_fps(24.0, 24) and runs.same_fps(23.98, 24000 / 1001) and runs.same_fps(29.97, 30000 / 1001)   # 丸めの幅は同じ
+    assert not runs.same_fps(23.98, 24) and not runs.same_fps(59.94, 60) and not runs.same_fps(11.99, 12)          # 本当に違う fps
+
+
 def test_compare_refuses_mismatched_or_short_references(finished_run):
     folder, run = finished_run
     with pytest.raises(PipelineError, match="fps"):
         runs.compare_run(run["run_dir"], counting_video(folder / "ref24.mp4", fps=24))
+    near = counting_video(folder / "ref11988.mp4", fps=12000 / 1001)                           # ffmpeg は 11.99 fps と出す
+    with pytest.raises(PipelineError, match="fps"):                                           # 1 対 1 に並べると、だんだんずれる
+        runs.compare_run(run["run_dir"], near)
     short = counting_video(folder / "short.mp4", frames=30)
     out = folder / "short_compare.mp4"
     with pytest.raises(PipelineError, match="コマ目で終わりました"):

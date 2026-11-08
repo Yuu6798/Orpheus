@@ -455,6 +455,14 @@ def reference_cells(path, times, offset, size, label):
 # ---- compare -------------------------------------------------------------------
 
 COMPARE_SCHEMA = "fx-compare/0.1"
+FPS_READ_TOLERANCE = 0.005   # ffmpeg は fps を小数 2 桁で出す（23.976 → 23.98）。読める幅はこの丸めまで
+
+
+def same_fps(measured, fps):
+    """読んだ fps（ffmpeg の表示。小数 2 桁）が run の fps と同じか。丸めの幅（0.005）より大きい差は本当に違う fps。
+
+    24 と 23.976（23.98 と出る）を同じとみなすと、1 対 1 に並べたコマが 60 秒で 1 コマ以上ずれる。"""
+    return abs(float(measured) - float(fps)) <= FPS_READ_TOLERANCE + 1e-9
 
 
 def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, progress=None):
@@ -489,8 +497,9 @@ def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, pro
     fps, n_frames, start = manifest["interval"]["fps"], manifest["interval"]["frames"], manifest["interval"]["start"]
     reference = Path(reference).resolve()
     info = video.describe(reference)
-    if abs(info["fps"] - fps) > 1e-3 * fps:
-        raise PipelineError(f"基準の動画の fps {info['fps']:g} が run の fps {fps:g} と違います（コマを 1 対 1 に並べるため、同じ fps の動画にしてください）")
+    if not same_fps(info["fps"], fps):
+        raise PipelineError(f"基準の動画の fps {info['fps']:g} が run の fps {fps:g} と違います（コマを 1 対 1 に並べるため、同じ fps の動画に"
+                            f"してください。24 と 23.976 のように少しでも違うと、だんだんずれます）")
     first = validate.frame_at(offset + start, info["fps"])
     if first < 0:
         raise PipelineError(f"--reference-offset {offset:g} では基準の動画の 0 秒より前を指します")
