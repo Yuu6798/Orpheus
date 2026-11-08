@@ -206,6 +206,37 @@ def test_the_reference_fps_must_match_within_the_rounding_of_the_reading():
     assert not runs.same_fps(23.98, 24) and not runs.same_fps(59.94, 60) and not runs.same_fps(11.99, 12)          # 本当に違う fps
 
 
+def test_matching_rates_count_the_reference_with_the_unrounded_run_fps(finished_run, monkeypatch):
+    from mv_pipeline.inspection import video
+    folder, run = finished_run
+    reference = counting_video(folder / "ref_offset.mp4")
+    read = video.describe
+    monkeypatch.setattr(video, "describe", lambda path: {**read(path), "fps": 12.004})        # 小数 2 桁の読みで 12 と同じとみなす幅
+    starts, decode_frames = [], video.frames
+
+    def frames(path, size, info, start=0, end=None):
+        starts.append(start)
+        return decode_frames(path, size, info, start=0, end=end - start)                   # 短い動画の先頭を読む（start だけを見る）
+
+    monkeypatch.setattr(video, "frames", frames)
+    result = runs.compare_run(run["run_dir"], reference, offset=125.0)
+    assert starts == [1500] and result["reference"]["first_frame"] == 1500                # 125·12。読んだ 12.004 で数えると 1501
+    assert read_json(result["record"])["reference"]["fps_used"] == 12.0
+
+
+def test_the_stills_reference_counts_with_the_spec_fps_when_the_rates_match(tmp_path, monkeypatch):
+    from mv_pipeline.inspection import video
+    reference = counting_video(tmp_path / "ref.mp4")
+    read = video.describe
+    monkeypatch.setattr(video, "describe", lambda path: {**read(path), "fps": 12.004})
+    monkeypatch.setattr(video, "grab", lambda path, indices, info, size=None, total=None:
+                        {i: np.zeros((size[1], size[0], 3), np.uint8) for i in indices})
+    same = runs.reference_cells(reference, [125.0], 0.0, (160, 90), "ref", fps=12)
+    assert same["frames_used"] == [1500] and same["fps_used"] == 12.0                     # spec と同じ fps なら丸めていない fps で
+    other = runs.reference_cells(reference, [125.0], 0.0, (160, 90), "ref", fps=24)
+    assert other["frames_used"] == [1501] and other["fps_used"] == 12.004                 # 違う fps なら読んだ fps で
+
+
 def test_compare_refuses_mismatched_or_short_references(finished_run):
     folder, run = finished_run
     with pytest.raises(PipelineError, match="fps"):

@@ -406,7 +406,7 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, 
         extra["guides"] = {"kinds": list(kinds), "grid_step": grid_step}
     ref = None
     if reference is not None:
-        ref = reference_cells(reference, times, reference_offset, size, reference_label)
+        ref = reference_cells(reference, times, reference_offset, size, reference_label, sp.data["output"]["fps"])
         extra["reference"] = {key: ref[key] for key in ("sha256", "offset_s", "label", "frames_used")}
     key = content_key("stills", sp, assets, extra)
     ctx = render.prepare(sp, scale)
@@ -418,7 +418,8 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, 
     if kinds:
         result["guides"] = list(kinds)
     if ref:
-        result["reference"] = {key: ref[key] for key in ("path", "sha256", "offset_s", "label", "fps", "frames_used", "warnings")}
+        result["reference"] = {key: ref[key] for key in ("path", "sha256", "offset_s", "label", "fps", "fps_used", "frames_used",
+                                                         "warnings")}
     return {**result, "seconds": round(time.monotonic() - began, 1)}
 
 
@@ -428,8 +429,10 @@ def _ascii_label(label, option):
     return label
 
 
-def reference_cells(path, times, offset, size, label):
-    """stills の基準の列: 各時刻 offset + t に最も近いコマを size に縮めたもの（mv inspect と同じ読み手。復号順のコマ番号）。"""
+def reference_cells(path, times, offset, size, label, fps=None):
+    """stills の基準の列: 各時刻 offset + t に最も近いコマを size に縮めたもの（mv inspect と同じ読み手。復号順のコマ番号）。
+
+    fps（spec の fps）を渡すと、読んだ fps がそれと同じとみなせるとき、丸めていない fps でコマを数える（reference_fps）。"""
     import math
 
     from .. import validate
@@ -437,7 +440,8 @@ def reference_cells(path, times, offset, size, label):
     label = _ascii_label(label, "--reference-label")
     path = Path(path).resolve()
     info = video.describe(path)
-    indices = [validate.frame_at(offset + t, info["fps"]) for t in times]
+    rate = reference_fps(info["fps"], fps)
+    indices = [validate.frame_at(offset + t, rate) for t in times]
     if min(indices) < 0:
         raise PipelineError(f"--reference-offset {offset:g} では基準の動画の 0 秒より前を指します（時刻 {min(times):g}）")
     grabbed = video.grab(path, indices, info, size=tuple(size))
@@ -448,7 +452,7 @@ def reference_cells(path, times, offset, size, label):
     if not math.isclose(info["width"] / info["height"], size[0] / size[1], rel_tol=0.01):
         warnings.append(f"基準の動画 {info['width']}x{info['height']} は出力 {size[0]}x{size[1]} と縦横比が違い、引き伸ばして並べています")
     return {"label": label, "path": str(path), "sha256": sha256(path), "offset_s": float(offset), "fps": info["fps"],
-            "frames": [grabbed[i] for i in indices], "frames_used": indices, "times": [i / info["fps"] for i in indices],
+            "fps_used": rate, "frames": [grabbed[i] for i in indices], "frames_used": indices, "times": [i / rate for i in indices],
             "warnings": warnings}
 
 
@@ -463,6 +467,12 @@ def same_fps(measured, fps):
 
     24 と 23.976（23.98 と出る）を同じとみなすと、1 対 1 に並べたコマが 60 秒で 1 コマ以上ずれる。"""
     return abs(float(measured) - float(fps)) <= FPS_READ_TOLERANCE + 1e-9
+
+
+def reference_fps(measured, fps=None):
+    """基準の動画のコマを数える fps。読んだ fps が fps と同じとみなせれば、丸めていない fps（読んだ値は小数 2 桁に丸めてあり、
+    24000/1001 の動画を 23.98 で数えると 300 秒で 1 コマ、600 秒で 2 コマずれる）。違うか fps が無ければ、読んだ fps。"""
+    return float(fps) if fps is not None and same_fps(measured, fps) else float(measured)
 
 
 def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, progress=None):
@@ -500,7 +510,8 @@ def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, pro
     if not same_fps(info["fps"], fps):
         raise PipelineError(f"基準の動画の fps {info['fps']:g} が run の fps {fps:g} と違います（コマを 1 対 1 に並べるため、同じ fps の動画に"
                             f"してください。24 と 23.976 のように少しでも違うと、だんだんずれます）")
-    first = validate.frame_at(offset + start, info["fps"])
+    rate = reference_fps(info["fps"], fps)      # 同じとみなしたので、丸めていない run の fps で数える
+    first = validate.frame_at(offset + start, rate)
     if first < 0:
         raise PipelineError(f"--reference-offset {offset:g} では基準の動画の 0 秒より前を指します")
     reference_sha = sha256(reference)
@@ -515,7 +526,7 @@ def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, pro
     notes = {v: {"empty": r["empty"]} for v, r in recorded.items()}
 
     def footer(i):
-        return f"frame {i}   t={start + i / fps:.3f}s   {label} {(first + i) / info['fps']:.3f}s"
+        return f"frame {i}   t={start + i / fps:.3f}s   {label} {(first + i) / rate:.3f}s"
 
     reader = video.frames(reference, top, info, start=first, end=first + n_frames)
     say(f"[fx] compare: {', '.join(sources)} + {label}（{n_frames} フレーム）")
@@ -529,7 +540,7 @@ def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, pro
     record = {"schema_version": COMPARE_SCHEMA, "created_at": now(), "key": key,
               "run": {"run_id": manifest["run_id"], "dir": str(run_dir), "interval": manifest["interval"], "variants": recorded},
               "reference": {"path": str(reference), "sha256": reference_sha, "label": label, "offset_s": float(offset),
-                            "fps": info["fps"], "first_frame": first, "frames": n_frames},
+                            "fps": info["fps"], "fps_used": rate, "first_frame": first, "frames": n_frames},
               "layout": {name: list(tile) for name, tile in layout["tiles"].items()},
               "output": {"path": str(out), "sha256": sha256(out), "frames": checks["frames"], "technical_pass": checks["pass"],
                          "checks": checks, "render_seconds": written["seconds"]},
