@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "fx-overlay",
-  "description": "mv overlay が run の manifest.json の overlay の欄に残す、入力と設定の記録（fx-overlay/0.1。contracts/ の外）。土台・各レイヤー（連番は各コマの sha256）・音声の sha256 と、書き出しの設定。",
+  "description": "mv overlay が run の manifest.json の overlay の欄に残す、入力と設定の記録（fx-overlay/0.2。contracts/ の外）。土台・各レイヤー（連番は使った各コマの sha256）・音声の sha256 と、レイヤーごとの設定（options: first_frame・missing・alpha・resize・opacity・時刻・style）と、書き出しの設定。0.1 からの変更は、options と 1 枚の画像のレイヤー（kind image）を足し、alpha をレイヤーごとにしたこと。",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "base", "layers", "audio", "settings"],
   "properties": {
-    "schema_version": {"const": "fx-overlay/0.1"},
+    "schema_version": {"const": "fx-overlay/0.2"},
     "base": {
       "type": "object",
       "required": ["kind", "path", "sha256", "size", "fps", "frames"],
@@ -26,21 +26,23 @@
         "type": "object",
         "required": ["kind", "path", "size", "frames"],
         "properties": {
-          "kind": {"enum": ["frames", "video"]},
+          "kind": {"enum": ["frames", "video", "image"]},
           "path": {"type": "string"},
           "size": {"$ref": "#/$defs/size"},
-          "frames": {"type": "integer", "minimum": 1},
+          "frames": {"type": ["integer", "null"], "minimum": 1},
+          "options": {"type": "object"},
           "fps": {"type": ["number", "null"]},
           "sha256": {"$ref": "#/$defs/sha256"},
           "files": {
             "type": "array",
             "items": {"type": "object", "required": ["name", "sha256"],
-                      "properties": {"name": {"type": "string"}, "sha256": {"$ref": "#/$defs/sha256"}}}
+                      "properties": {"name": {"type": "string"}, "sha256": {"$ref": "#/$defs/sha256"}, "number": {"type": "integer"}}}
           }
         },
         "allOf": [
           {"if": {"properties": {"kind": {"const": "frames"}}}, "then": {"required": ["files"]}},
-          {"if": {"properties": {"kind": {"const": "video"}}}, "then": {"required": ["sha256"]}}
+          {"if": {"properties": {"kind": {"const": "video"}}}, "then": {"required": ["sha256"]}},
+          {"if": {"properties": {"kind": {"const": "image"}}}, "then": {"required": ["sha256"]}}
         ]
       }
     },
@@ -51,13 +53,12 @@
     },
     "settings": {
       "type": "object",
-      "required": ["fps", "crf", "size", "frames", "alpha", "blend"],
+      "required": ["fps", "crf", "size", "frames", "blend"],
       "properties": {
         "fps": {"type": "number", "exclusiveMinimum": 0},
         "crf": {"type": "integer", "minimum": 0, "maximum": 51},
         "size": {"$ref": "#/$defs/size"},
         "frames": {"type": "integer", "minimum": 1},
-        "alpha": {"const": "straight"},
         "blend": {"const": "srgb"}
       }
     }

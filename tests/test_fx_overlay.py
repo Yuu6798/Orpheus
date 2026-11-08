@@ -68,11 +68,12 @@ def test_image_base_with_a_png_sequence_and_audio_passes_and_records_every_frame
     run_dir = tmp_path / "runs" / result["run_id"]
     manifest = read_json(run_dir / "manifest.json")
     record = manifest["overlay"]
-    assert record["schema_version"] == "fx-overlay/0.1" and record["base"]["kind"] == "image" and record["base"]["frames"] is None
+    assert record["schema_version"] == "fx-overlay/0.2" and record["base"]["kind"] == "image" and record["base"]["frames"] is None
     assert [f["name"] for f in record["layers"][0]["files"]] == [f"frame_{i:04d}.png" for i in range(N)]
     assert all(f["sha256"] == sha256(tmp_path / "layer" / f["name"]) for f in record["layers"][0]["files"])
     assert record["audio"]["sha256"] == sha256(tmp_path / "song.wav") and record["settings"] == {
-        "fps": float(FPS), "crf": 18, "size": list(SIZE), "frames": N, "alpha": "straight", "blend": "srgb"}
+        "fps": float(FPS), "crf": 18, "size": list(SIZE), "frames": N, "blend": "srgb"}
+    assert record["layers"][0]["options"]["alpha"] == "straight" and record["layers"][0]["options"]["style"] is None   # 0.2 はレイヤーごと
     checks = manifest["variants"]["overlay"]["checks"]
     assert checks["pass"] and checks["video"]["matrix"] == "bt709" and checks["audio"]["decoded_s"] == pytest.approx(N / FPS, abs=0.11)
     frame = _first_frame_rgb(run_dir / "overlay.mp4")
@@ -99,7 +100,7 @@ def test_mismatched_frame_counts_sizes_and_missing_fps_are_errors(tmp_path):
         Image.new("RGBA", (32, 24), (0, 0, 0, 0)).save(small / f"f{i}.png")
     with pytest.raises(PipelineError, match="寸法が合いません"):
         overlay.run_overlay(tmp_path / "base.png", [small], out=tmp_path / "runs", fps=FPS)
-    with pytest.raises(PipelineError, match="--layer を 1 つ以上"):
+    with pytest.raises(PipelineError, match="--layer か --layers を指定"):
         overlay.run_overlay(tmp_path / "base.png", [], out=tmp_path / "runs", fps=FPS)
     assert not (tmp_path / "runs").exists()      # 入力の検証で止まった分は run を作らない
 
@@ -170,4 +171,4 @@ def test_cli_runs_and_a_failed_check_leaves_a_failed_run(tmp_path, monkeypatch):
         overlay.run_overlay(tmp_path / "base.png", [tmp_path / "layer"], out=tmp_path / "runs", fps=FPS, force=True, quiet=True)
     manifests = [read_json(p) for p in (tmp_path / "runs").glob("*/manifest.json")]
     assert sorted(m["status"] for m in manifests) == ["failed", "succeeded"]
-    assert json.loads(json.dumps(manifests[0]["overlay"]))["schema_version"] == "fx-overlay/0.1"
+    assert json.loads(json.dumps(manifests[0]["overlay"]))["schema_version"] == "fx-overlay/0.2"
