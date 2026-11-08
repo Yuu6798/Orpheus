@@ -89,6 +89,12 @@ def test_the_image_is_chosen_by_slot_and_material():
     webp["textures"][0] = {"extensions": {"EXT_texture_webp": {"source": 0}}}
     with pytest.raises(ToolError, match="EXT_texture_webp"):
         glb.choose(webp, "baseColor")
+    mixed, _ = _document(images, [_material("a", base=0), _material("b", base=1)])
+    mixed["textures"][1] = {"extensions": {"KHR_texture_basisu": {"source": 1}}}
+    assert glb.choose(mixed, "baseColor", "a")[0]["image"] == 0                    # 別の材質の、拡張にしか無い画像では止めない
+    for chosen in ("b", None):                                                     # その材質を選ぶか、選ばずに全部の材質を見ると止める
+        with pytest.raises(ToolError, match="KHR_texture_basisu"):
+            glb.choose(mixed, "baseColor", chosen)
     missing, _ = _document(images, [_material("a", base=7)])
     with pytest.raises(ToolError, match="番号 7"):
         glb.choose(missing, "baseColor")
