@@ -1,8 +1,13 @@
-"""テクスチャの操作: 参照画像（設定画など）を UV テクスチャへ写す、テクスチャを貼ったメッシュを正射影で描く、マスクを描く。"""
-from .. import texture
-from ..io import ToolError, atomic_json
+"""テクスチャの操作: 参照画像（設定画など）を UV テクスチャへ写す、テクスチャを貼ったメッシュを正射影で描く、マスクを描く、
+GLB から材質のテクスチャを取り出す。"""
+from pathlib import Path
+
+from .. import glb, texture
+from ..io import ToolError, atomic_json, sha256
 from ..mesh import Mesh
 from . import StepResult, number, register, require, selected
+
+EXTRACT_PARAMETERS = ("slot", "material", "decode")
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
@@ -48,6 +53,71 @@ def mask_from(parameters, size):
     """texture.draw_mask のパラメーター（size は呼ぶ側が決める）を確かめてマスクを描く。dance-recipe も事前の確認に使う。"""
     _refuse_unknown(parameters, MASK_PARAMETERS, "texture.draw_mask")
     return texture.draw_mask(size, parameters.get("shapes"), number(parameters, "feather", 0.0, minimum=0))
+
+
+@register("texture.extract_glb", inputs=("glb",), outputs=("image", "report"),
+          summary="GLB（glTF 2.0 のバイナリ）から、材質のテクスチャの画像を取り出す（slot: baseColor・metallicRoughness・normal・"
+                  "occlusion・emissive。既定 baseColor）。material（番号か名前）を省くと、全部の材質が同じ画像を指すときだけ取り出す。"
+                  "既定は埋め込まれたバイトをそのまま書く（出力の拡張子は画像の種類に合わせる）。decode: true なら Pillow で開いて、"
+                  "出力の拡張子の形式で書き直す。外のファイルを指す画像・拡張にしか無い画像・壊れた GLB は止める")
+def extract_glb(inputs, parameters, outputs, context):
+    import hashlib
+    import io
+    require(inputs, ("glb",), "texture.extract_glb")
+    _refuse_unknown(parameters, EXTRACT_PARAMETERS, "texture.extract_glb")
+    if "image" not in outputs:
+        raise ToolError("texture.extract_glb には outputs の image（書き出す画像のファイル名）が要ります")
+    slot = parameters.get("slot", "baseColor")
+    material = parameters.get("material")
+    if material is not None and not (isinstance(material, str) and material
+                                     or isinstance(material, int) and not isinstance(material, bool) and material >= 0):
+        raise ToolError(f"material は材質の番号（0 以上の整数）か名前にしてください: {material!r}")
+    decode = parameters.get("decode", False)
+    if not isinstance(decode, bool):
+        raise ToolError(f"decode は true か false にしてください: {decode!r}")
+    source = Path(inputs["glb"])
+    data = source.read_bytes()
+    document, blob = glb.read_glb(data, f"GLB（{source.name}）")
+    use, users = glb.choose(document, slot, material)
+    raw, record = glb.image_bytes(document, blob, use["image"])
+    target = Path(outputs["image"])
+    suffix = target.suffix.lower()
+    from PIL import Image, UnidentifiedImageError
+    size = mode = None
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            size, mode = list(image.size), image.mode
+            if decode:
+                image.load()
+                try:
+                    image.save(target)
+                except (KeyError, ValueError, OSError) as error:
+                    raise ToolError(f"画像を {suffix or '拡張子なし'} の形式で書けません（{image.mode}）: {error}") from error
+    except UnidentifiedImageError as error:
+        if decode:
+            raise ToolError(f"埋め込まれた画像（{record['mimeType']}）を Pillow で開けません: {error}") from error
+    if not decode:
+        allowed = glb.SUFFIXES.get(record["mimeType"])
+        if allowed is None:
+            raise ToolError(f"画像の種類（mimeType {record['mimeType']!r}）が分からないので、そのまま書く拡張子を決められません")
+        if suffix not in allowed:
+            raise ToolError(f"埋め込まれた画像は {record['mimeType']} です。そのまま書くなら出力の拡張子を {' か '.join(allowed)} に"
+                            f"してください（{suffix or '拡張子なし'} の形式に変えるなら decode: true）")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    report = {"schema_version": "model3d-glb-image/0.1",
+              "glb": {"file": source.name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)},
+              "slot": slot, "material": {"index": use["material"], "name": use["name"]} if material is not None else None,
+              "materials": [{"index": u["material"], "name": u["name"]} for u in users], "texture": use["texture"],
+              "image": {**record, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+              "written": {"file": target.name, "bytes": target.stat().st_size, "sha256": sha256(target), "decoded": decode},
+              "size": size, "mode": mode}
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    observation = {"kind": "extract_glb", "slot": slot, "image": record["index"], "name": record["name"],
+                   "mimeType": record["mimeType"], "bytes": len(raw), "size": size, "mode": mode, "decoded": decode,
+                   "materials": len(users)}
+    return StepResult(observations=[observation])
 
 
 @register("texture.render_view", inputs=("mesh", "texture"), outputs=("image", "report"),
