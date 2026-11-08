@@ -138,3 +138,61 @@ def check_uv_stretch(inputs, parameters, outputs, context):
     thresholds = {key: number(parameters, key, minimum=0) for key in checks.UV_STRETCH_THRESHOLDS if parameters.get(key) is not None}
     report = checks.uv_stretch(Mesh.load(inputs["mesh"]), width, height, threshold, thresholds)
     return _finish(report, outputs, parameters, "uv の伸びの検査")
+
+
+FRAMES_PARAMETERS = {"left_dir", "right_dir", "range", "top", "amplify", "view_frame", "strict", "report_only",
+                     *checks.FRAME_THRESHOLDS}
+
+
+def frame_sides(inputs, parameters, recipe_dir):
+    """左右のコマの並び: 入力 left / right（描いたコマの一覧）か、パラメーター left_dir / right_dir（コマのフォルダ）。range で T を絞る。"""
+    from pathlib import Path
+    from ..io import resolve_path
+    sides, sources = {}, {}
+    for side in ("left", "right"):
+        given, folder = inputs.get(side), parameters.get(f"{side}_dir")
+        if (given is None) == (folder is None):
+            raise ToolError(f"{side} は、入力 {side}（描いたコマの一覧 model3d-frames/0.1）か、パラメーター {side}_dir（コマのフォルダ）の"
+                            "どちらか 1 つにしてください")
+        source = Path(given) if given is not None else resolve_path(recipe_dir, folder)
+        if folder is not None and not source.is_dir():
+            raise ToolError(f"{side}_dir のフォルダがありません: {source}")
+        sides[side], sources[side] = checks.frame_files(source), str(source)
+    span = parameters.get("range")
+    if span is not None:
+        if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in span)
+                or span[0] > span[1]):
+            raise ToolError(f"range は [最初の T, 最後の T]（1 以上の整数、最初 ≤ 最後）にしてください: {span!r}")
+        sides = {side: {T: path for T, path in files.items() if span[0] <= T <= span[1]} for side, files in sides.items()}
+    if not sides["left"]:
+        raise ToolError(f"左にコマがありません（f<T>.png）: {sources['left']}")
+    return sides, sources
+
+
+@register("check.frames", inputs=("left", "right"), outputs=("report", "view"), cacheable=False,
+          summary="2 つのコマの並び（描いたコマの一覧か、コマのフォルダ）を、同じ T どうしで画素で比べる: 同じコマの数・違う画素の数・"
+                  "いちばん大きい値の差・色の差の平均・透けの違い・差の大きさごとの画素の数・違いの大きいコマ。片方にしか無いコマと大きさの"
+                  "違うコマも並べる。view で [左 | 右 | 差 × amplify] の PNG。しきい値（コマごとの max_differing_pixels・"
+                  "max_channel_diff・max_mean_abs）を渡したときだけ合否を出す。コマは隠れた入力なので再利用しない")
+def check_frames(inputs, parameters, outputs, context):
+    from . import number
+    unknown = set(parameters) - FRAMES_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.frames の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(FRAMES_PARAMETERS)}）")
+    sides, sources = frame_sides(inputs, parameters, context.recipe_dir)
+    thresholds = {key: number(parameters, key, minimum=0) for key in checks.FRAME_THRESHOLDS if parameters.get(key) is not None}
+    top = number(parameters, "top", 5, minimum=1, integer=True)
+    amplify = number(parameters, "amplify", 8, minimum=0, exclusive=True)
+    report = checks.compare_frames(sides["left"], sides["right"], thresholds, top)
+    report.update(left=sources["left"], right=sources["right"])
+    if "view" in outputs:
+        T = parameters.get("view_frame")
+        if T is None:
+            T = report["worst_frames"][0]["T"] if report["worst_frames"] else None
+        if T is None or T not in sides["left"] or T not in sides["right"]:
+            raise ToolError(f"view に並べるコマがありません（view_frame {T!r} が左右の両方に無い）")
+        report["view"] = {"T": T, **checks.frame_view(sides["left"][T], sides["right"][T], outputs["view"], amplify)}
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    summary = {k: v for k, v in report.items() if k != "rows"}
+    return _finish(summary, {k: v for k, v in outputs.items() if k != "report"}, parameters, "コマの比べ")

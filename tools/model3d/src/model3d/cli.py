@@ -188,6 +188,19 @@ def parser():
     script.add_argument("--timeout", type=float)
     script.add_argument("args", nargs="*")
 
+    frames = commands.add_parser("frames", help="compare two folders of rendered frames (f<T>.png) or two frames lists")
+    frames_sub = frames.add_subparsers(dest="frames_command", required=True)
+    frames_compare = frames_sub.add_parser("compare", help="pixel differences of the same T in two frame sequences")
+    frames_compare.add_argument("left", type=Path, help="frame folder (f<T>.png) or model3d-frames/0.1 JSON")
+    frames_compare.add_argument("right", type=Path, help="frame folder (f<T>.png) or model3d-frames/0.1 JSON")
+    frames_compare.add_argument("--out", type=Path, help="write the full report (with one row per frame) here")
+    frames_compare.add_argument("--view", type=Path, help="write [left | right | difference] of one frame as PNG")
+    frames_compare.add_argument("--view-frame", type=int, help="T to view (default: the frame with the most differing pixels)")
+    frames_compare.add_argument("--amplify", type=float, default=8.0, help="difference brightness factor in the view (default 8)")
+    frames_compare.add_argument("--top", type=int, default=5, help="how many worst frames to list (default 5)")
+    frames_compare.add_argument("--max-differing-pixels", type=float, help="per-frame limit; with any limit the exit code is 1 on failure")
+    frames_compare.add_argument("--max-channel-diff", type=float, help="per-frame limit of the largest value difference (0-255)")
+    frames_compare.add_argument("--max-mean-abs", type=float, help="per-frame limit of the mean colour difference")
     commands.add_parser("ops", help="list the registered operations")
     return p
 
@@ -430,6 +443,25 @@ def command(args):
             return {"out": str(args.out.resolve()), **record}
         return launcher.run_blender(args.blender.resolve(), args.script.resolve(), args.blend.resolve() if args.blend else None,
                                     args.args, timeout=args.timeout)
+    if args.command == "frames":
+        from . import checks
+        sides = {side: checks.frame_files(path) for side, path in (("left", args.left), ("right", args.right))}
+        if not sides["left"]:
+            raise ToolError(f"左にコマがありません（f<T>.png）: {args.left}")
+        limits = {"max_differing_pixels": args.max_differing_pixels, "max_channel_diff": args.max_channel_diff,
+                  "max_mean_abs": args.max_mean_abs}
+        report = checks.compare_frames(sides["left"], sides["right"], {k: v for k, v in limits.items() if v is not None}, args.top)
+        report.update(left=str(args.left.resolve()), right=str(args.right.resolve()))
+        if args.view:
+            T = args.view_frame if args.view_frame is not None else (report["worst_frames"][0]["T"] if report["worst_frames"] else None)
+            if T is None or T not in sides["left"] or T not in sides["right"]:
+                raise ToolError(f"--view に並べるコマがありません（T {T!r} が左右の両方に無い）")
+            report["view"] = {"T": T, "out": str(args.view.resolve()),
+                              **checks.frame_view(sides["left"][T], sides["right"][T], args.view, args.amplify)}
+        if args.out:
+            atomic_json(args.out, report)
+        args.failed = 1 if report["pass"] is False else 0
+        return {k: v for k, v in report.items() if k != "rows"}
     if args.command == "ops":
         from . import ops
         return ops.describe()

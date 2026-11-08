@@ -377,3 +377,130 @@ def uv_stretch(mesh, width, height, threshold=8.0, thresholds=None):
         failures.append(f"3D で潰れた三角形が {report['degenerate']} 個（上限 {thresholds['max_degenerate']:g}）")
     report.update({"pass": not failures, "failures": failures})
     return report
+
+
+FRAME_THRESHOLDS = ("max_differing_pixels", "max_channel_diff", "max_mean_abs")
+FRAME_BANDS = (0, 2, 8, 16, 64, 128)
+
+
+def frame_files(source):
+    """コマのフォルダ（f<T>.png）か、描いたコマの一覧（model3d-frames/0.1 の JSON）から {T: ファイル}。
+    一覧なら、コマのファイルがあることと、一覧の sha256 が今のファイルと同じことを確かめる（一覧を作った後に描き直したフォルダを、
+    古い一覧のまま比べない。render.assemble と同じ決まり）。"""
+    import re
+    from pathlib import Path
+    from .io import sha256
+    source = Path(source)
+    if source.is_dir():
+        found = {}
+        for path in source.iterdir():
+            m = re.fullmatch(r"f(\d+)\.png", path.name)
+            if m and path.is_file():
+                found[int(m.group(1))] = path
+        return found
+    from . import contracts
+    manifest = contracts.load("frames", source)
+    directory = Path(manifest["directory"])
+    found, stale = {}, []
+    for fr in manifest["frames"]:
+        path = directory / fr["file"]
+        if not path.is_file():
+            raise ToolError(f"描いたコマの一覧のコマがありません（T {fr['T']}）: {path}")
+        if fr.get("sha256") and sha256(path) != fr["sha256"]:
+            stale.append(fr["T"])
+        found[fr["T"]] = path
+    if stale:
+        raise ToolError(f"描いたコマの一覧と、今のファイルが違います（{len(stale)} コマ。最初の T: {stale[:10]}）: {source}。"
+                        "描き直したなら、一覧も作り直してください")
+    return found
+
+
+def _frame_arrays(path):
+    from PIL import Image
+    with Image.open(path) as image:
+        rgb = np.asarray(image.convert("RGB"), dtype=np.int16)       # 色はリポジトリ外の試作と同じ読み方（透けは別に比べる）
+        alpha = np.asarray(image.convert("RGBA").getchannel("A"), dtype=np.int16)
+    return rgb, alpha
+
+
+def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS):
+    """2 つのコマの並び（{T: ファイル}）を、同じ T どうしで画素で比べる。ファイルが同じ（sha256）なら開かずに同じとする。
+
+    コマごとに、違う画素の数（色か透けのどれかが違う）・いちばん大きい値の差（0〜255）・色の差の平均（R・G・B の 3 つ。
+    リポジトリ外の試作の比べと同じ値）・透けの違う画素の数。片方にしか無いコマと、大きさの違うコマも並べる。
+    左を基準に比べる: しきい値（コマごとの max_differing_pixels・max_channel_diff・max_mean_abs）を渡したときだけ合否を出し、
+    そのときは右に無いコマと大きさの違うコマも不合格にする（右にしか無いコマは並べるだけ）。"""
+    from .io import sha256
+    from PIL import Image
+    rows, missing_right, size_mismatch = [], [], []
+    identical = pixels = differing_total = 0
+    over = dict.fromkeys(bands, 0)
+    for T in sorted(left):
+        if T not in right:
+            missing_right.append(T)
+            continue
+        if sha256(left[T]) == sha256(right[T]):
+            with Image.open(left[T]) as image:
+                width, height = image.size
+            identical += 1
+            pixels += width * height
+            rows.append({"T": T, "identical": True, "same_file": True, "differing_pixels": 0, "max_channel_diff": 0,
+                         "mean_abs_diff": 0.0, "alpha_differing_pixels": 0})
+            continue
+        (a, a_alpha), (b, b_alpha) = _frame_arrays(left[T]), _frame_arrays(right[T])
+        if a.shape != b.shape:
+            size_mismatch.append(T)
+            rows.append({"T": T, "size_left": [a.shape[1], a.shape[0]], "size_right": [b.shape[1], b.shape[0]]})
+            continue
+        diff = np.abs(a - b)
+        alpha = np.abs(a_alpha - b_alpha)
+        worst = np.maximum(diff.max(axis=2), alpha)
+        differing = int((worst > 0).sum())
+        identical += differing == 0
+        pixels += a.shape[0] * a.shape[1]
+        differing_total += differing
+        for band in bands:
+            over[band] += int((worst > band).sum())
+        rows.append({"T": T, "identical": differing == 0, "same_file": False, "differing_pixels": differing,
+                     "max_channel_diff": int(max(diff.max(), alpha.max())), "mean_abs_diff": float(diff.mean()),
+                     "alpha_differing_pixels": int((alpha > 0).sum())})
+    missing_left = sorted(T for T in right if T not in left)
+    report = {"check": "frames", "status": "done", "frames": len(left), "compared": sum(1 for r in rows if "differing_pixels" in r),
+              "identical_frames": int(identical), "missing_on_right": missing_right, "missing_on_left": missing_left,
+              "size_mismatch": size_mismatch, "differing_pixels": differing_total, "pixels": pixels,
+              "max_channel_diff": max((r.get("max_channel_diff", 0) for r in rows), default=0),
+              "pixels_over": {f">{band}": count for band, count in over.items()},
+              "worst_frames": sorted((r for r in rows if "differing_pixels" in r), key=lambda r: -r["differing_pixels"])[:top],
+              "rows": rows}
+    thresholds = thresholds or {}
+    if not thresholds:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+        return report
+    failures = []
+    if missing_right:                                    # 左を基準に比べる（右にしか無いコマは並べるだけ。一部のコマと全部のコマを比べられる）
+        failures.append(f"右に無いコマがあります（T: {missing_right[:10]}）")
+    if size_mismatch:
+        failures.append(f"大きさの違うコマがあります（T: {size_mismatch[:10]}）")
+    limits = {"max_differing_pixels": "differing_pixels", "max_channel_diff": "max_channel_diff", "max_mean_abs": "mean_abs_diff"}
+    for key, field in limits.items():
+        if key in thresholds:
+            beyond = [r["T"] for r in rows if field in r and r[field] > thresholds[key]]
+            if beyond:
+                failures.append(f"{field} が {thresholds[key]:g} を超えるコマが {len(beyond)} 枚（最初の T: {beyond[:10]}）")
+    report.update({"pass": not failures, "failures": failures})
+    return report
+
+
+def frame_view(left_path, right_path, out, amplify=8):
+    """1 組のコマを [左 | 右 | 差（いちばん大きい値の差 × amplify）] に並べた PNG（リポジトリ外の試作の見比べと同じ並び）。"""
+    from PIL import Image
+    a, a_alpha = _frame_arrays(left_path)
+    b, b_alpha = _frame_arrays(right_path)
+    if a.shape != b.shape:
+        raise ToolError(f"大きさの違うコマは並べられません: {left_path} と {right_path}")
+    worst = np.maximum(np.abs(a - b).max(axis=2), np.abs(a_alpha - b_alpha))
+    heat = np.clip(worst.astype(np.float64) * amplify, 0, 255).astype(np.uint8)   # 小数にしてから掛ける（整数の倍率でも int16 で溢れない）
+    view = np.concatenate([a.astype(np.uint8), b.astype(np.uint8), np.stack([heat] * 3, axis=2)], axis=1)
+    Image.fromarray(view).save(out)
+    return {"left": str(left_path), "right": str(right_path), "amplify": amplify,
+            "fraction_over": {f">{t}": round(float((worst > t).mean()), 6) for t in FRAME_BANDS}}
