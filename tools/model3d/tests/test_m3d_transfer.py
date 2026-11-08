@@ -170,6 +170,22 @@ def test_the_operation_writes_parts_into_a_model3d_target(tmp_path):
     assert out.parts["left"] == list(range(32)) and out.parts["right"] == list(range(32, 64)) and out.parts["keep"] == [0]
     refused = executor.run_recipe(_recipe(tmp_path, {}, "mesh.npz", {"mesh": "x.json"}), tmp_path / "runs2")
     assert refused["status"] == "failed" and "npz" in refused["steps"]["transfer"]["error"]
+    lossy = executor.run_recipe(_recipe(tmp_path, {}, "target.json", {"mesh": "target.obj"}), tmp_path / "runs3")
+    error = lossy["steps"]["transfer"]["error"]
+    assert lossy["status"] == "failed" and "OBJ" in error and "keep" in error             # 面 0 は keep と left の両方（OBJ では消える）
+    m3.Mesh(np.vstack([left[0], right[0]]).astype(np.float64), np.vstack([left[1], right[1] + 25]).tolist(),
+            name="bare").save(tmp_path / "bare.json")
+    fine = executor.run_recipe(_recipe(tmp_path, {}, "bare.json", {"mesh": "bare.obj"}), tmp_path / "runs4")
+    assert fine["status"] == "succeeded"
+    assert m3.Mesh.load(fine["steps"]["transfer"]["artifacts"]["mesh"]).parts["left"] == list(range(32))   # 重ならなければ OBJ にも残る
+
+
+def test_repeated_source_part_names_are_refused(tmp_path):
+    left, right = _grid(0.0), _grid(10.0)
+    np.savez(tmp_path / "twins.npz", names=np.array(["leg", "leg"]), co0=left[0], f0=left[1], co1=right[0], f1=right[1])
+    _inputs(tmp_path)
+    with pytest.raises(ToolError, match="名前が重なって"):                              # 名前で parts を書くと片方の面が消える
+        transfer.transfer_parts(tmp_path / "twins.npz", tmp_path / "mesh.npz")
 
 
 class Context:

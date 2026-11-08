@@ -178,14 +178,22 @@ def mesh_transfer_parts(inputs, parameters, outputs, context):
     cell = None if parameters.get("cell") is None else float(number(parameters, "cell", minimum=0, exclusive=True))
     names, labels, target_mesh, report = transfer.transfer_parts(inputs["source"], inputs["target"], max_distance, cell)
     report["labels_sha256"] = transfer.labels_digest(names, labels)
-    if "labels" in outputs:
-        atomic_npz(outputs["labels"], names=np.array(names), labels=labels)
-    if "mesh" in outputs:
+    if "mesh" in outputs:                                  # 書けるかを、何かを書く前に確かめる
         if target_mesh is None:
             raise ToolError("移し先が npz のときは mesh を書けません（大きなメッシュの JSON は重いので labels を使ってください）")
+        others = {name: set(faces) for name, faces in target_mesh.parts.items() if name not in names}
         for i, name in enumerate(names):
             target_mesh.parts[name] = np.flatnonzero(labels == i).tolist()
         target_mesh.validate()
+        if str(outputs["mesh"]).lower().endswith(".obj"):  # OBJ は 1 つの面を 1 つのグループ（g）にしか書けない
+            labelled = set(np.flatnonzero(labels >= 0).tolist())
+            clash = sorted(name for name, faces in others.items() if faces & labelled)
+            if clash:
+                raise ToolError(f"移した部品の面が、移し先の今の parts {clash[:5]} にも入っています。OBJ は 1 つの面を 1 つのグループにしか"
+                                "書けないので、OBJ では移した部品が消えます。mesh の出力を .json にしてください")
+    if "labels" in outputs:
+        atomic_npz(outputs["labels"], names=np.array(names), labels=labels)
+    if "mesh" in outputs:
         _save(target_mesh, outputs)
     if "report" in outputs:
         atomic_json(outputs["report"], report)
