@@ -289,7 +289,7 @@ def summarize(run_dir, manifest, reused):
     grid = manifest.get("grid")
     return {"run_id": manifest["run_id"], "run_dir": str(run_dir), "reused": reused, "status": manifest["status"],
             "technical_pass": manifest["technical_pass"], "interval": manifest["interval"],
-            "size": manifest["output"]["size"], "look": manifest.get("look"), "variants": variants,
+            "size": manifest["output"]["size"], "look": manifest.get("look"), "depth": manifest.get("depth"), "variants": variants,
             "grid": str(run_dir / grid["path"]) if grid else None, "warnings": manifest["warnings"]}
 
 
@@ -333,6 +333,7 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
             say("[fx] --no-look: spec の look を外して描きます")
         ctx = render.prepare(sp, scale)
         run.manifest["warnings"] = list(ctx.warnings)
+        run.manifest["depth"] = ctx.depth_info
         for warning in ctx.warnings:
             run.log(f"warning: {warning}")
         notes = ctx.variant_notes()
@@ -399,7 +400,7 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False):
     path = (Path(out) if out else default_out(sp)).resolve() / f"stills-{key[:8]}.png"
     compare.save_png_atomic(sheet, path)
     return {"path": str(path), "times": times, "variants": list(variants), "cell": list(size), "look": look_state,
-            "sheet": [sheet.shape[1], sheet.shape[0]], "warnings": list(ctx.warnings),
+            "sheet": [sheet.shape[1], sheet.shape[0]], "warnings": list(ctx.warnings), "depth": ctx.depth_info,
             "seconds": round(time.monotonic() - began, 1)}
 
 

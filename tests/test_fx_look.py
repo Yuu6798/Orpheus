@@ -534,7 +534,8 @@ def test_without_look_changes_the_canonical_form_only_when_a_look_exists(tmp_pat
 def test_schema_documents_look_and_stays_valid():
     import jsonschema
     jsonschema.Draft202012Validator.check_schema(fxspec.schema())
-    assert "look" in fxspec.schema()["properties"] and fx.SCHEMA_VERSION == "fx-shot/0.1"          # 版番号は据え置き
+    assert "look" in fxspec.schema()["properties"] and fx.SCHEMA_VERSION == "fx-shot/0.2"
+    assert "look" in fxspec.schema(fx.SCHEMA_V01)["properties"]          # look は 0.1 の版番号のまま足した（0.1 の spec でも使える）
 
 
 # ---- render（opencv が要る） ----------------------------------------------------------
