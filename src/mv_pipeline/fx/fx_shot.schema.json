@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "fx-shot/0.1",
-  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。座標（light.position・camera.center）は元画像（基準画像）の正規化座標 0..1、長さ（light.radius・emitter.size）は元画像の幅が基準。出力の縦横比が違って cover で切られても、被写体・マスクに対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈する）。カメラが動いても光と対象は一緒に動く。時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
+  "title": "fx-shot/0.2",
+  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。0.2 は 0.1 に深度視差の項目（camera.pivot、camera.keys の depth_shift と dolly、assets.depth の下ごしらえ）を足した版で、0.1 の spec（fx_shot_0_1.schema.json）もそのまま読める（新しい項目は既定値になり、絵は 0.1 と同じ）。座標（light.position・camera.center）は元画像（基準画像）の正規化座標 0..1、長さ（light.radius・emitter.size）は元画像の幅が基準。出力の縦横比が違って cover で切られても、被写体・マスクに対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈する）。カメラが動いても光と対象は一緒に動く。時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
   "type": "object",
   "required": ["schema_version", "output", "duration_s", "assets"],
   "properties": {
-    "schema_version": {"const": "fx-shot/0.1"},
+    "schema_version": {"const": "fx-shot/0.2"},
     "output": {
       "type": "object",
       "required": ["width", "height"],
@@ -43,7 +43,12 @@
               "required": ["path"],
               "properties": {
                 "path": {"$ref": "#/$defs/path"},
-                "near": {"enum": ["white", "black"], "default": "white"}
+                "near": {"enum": ["white", "black"], "default": "white"},
+                "normalize": {"enum": ["percentile", "none"], "default": "percentile", "description": "percentile は 2〜98 パーセンタイルを 0..1 に伸ばす（0.1 と同じ）。none は伸ばさず、16 bit なら 65535、8 bit なら 255 で割るだけ（float の画像はそのままで、0..1 に収まっていること）。実制作の pivot の値は none の尺度。"},
+                "resolution": {"enum": ["depth", "base"], "default": "depth", "description": "regions・dilate_px・blur_px を掛ける解像度で、px もこの画素で数える。depth は深度画像のまま、base は先に基準画像の大きさへ線形補間で合わせてから。"},
+                "regions": {"type": "array", "items": {"$ref": "#/$defs/depth_region"}, "description": "深度を平面か一定の値に置きかえる領域（画面に合成するモニターを歪ませない、遠景を止めるなど）。並びの順に掛ける。"},
+                "dilate_px": {"type": "integer", "minimum": 0, "maximum": 99, "default": 0, "description": "手前を太らせる楕円の直径（奇数。0 で無効）。手前の物の縁が背景ごと動き、輪郭が裂けにくくなる。"},
+                "blur_px": {"type": "number", "minimum": 0, "maximum": 100, "default": 0, "description": "太らせた後に掛けるガウスぼかしの σ（0 で無効）。"}
               },
               "additionalProperties": false,
               "patternProperties": {"^x_": {}}
@@ -77,8 +82,29 @@
       "type": "object",
       "properties": {
         "keys": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/camera_key"}},
-        "parallax_px": {"type": "number", "minimum": 0, "maximum": 400, "default": 0},
-        "parallax_dir": {"$ref": "#/$defs/vec2", "default": [1, 0]}
+        "parallax_px": {"type": "number", "minimum": 0, "maximum": 400, "default": 0, "description": "0.1 の深度視差。ショット全体で 0 から parallax_px × parallax_dir へ in_out で動く（keys の depth_shift の省略形。両方は書けない）。"},
+        "parallax_dir": {"$ref": "#/$defs/vec2", "default": [1, 0]},
+        "pivot": {
+          "description": "深度視差で動かない深さ（0..1、1 = 手前）。数か、マスクの中（{\"mask\": id}）か元画像の箱の中（{\"box\": [x0, y0, x1, y1]}）の深度の中央値。既定 0.5（0.1 と同じ）。",
+          "oneOf": [
+            {"$ref": "#/$defs/unit"},
+            {
+              "type": "object",
+              "required": ["mask"],
+              "properties": {"mask": {"$ref": "#/$defs/id"}},
+              "additionalProperties": false,
+              "patternProperties": {"^x_": {}}
+            },
+            {
+              "type": "object",
+              "required": ["box"],
+              "properties": {"box": {"$ref": "#/$defs/box"}},
+              "additionalProperties": false,
+              "patternProperties": {"^x_": {}}
+            }
+          ],
+          "default": 0.5
+        }
       },
       "additionalProperties": false,
       "patternProperties": {"^x_": {}}
@@ -140,8 +166,33 @@
         "t": {"type": "number", "minimum": 0},
         "zoom": {"type": "number", "minimum": 1, "maximum": 8, "default": 1},
         "center": {"$ref": "#/$defs/point", "default": [0.5, 0.5]},
+        "depth_shift": {"$ref": "#/$defs/vec2", "default": [0, 0], "description": "深さが pivot から 1 違う面の変位（出力幅 1920 換算の px。+x で手前が右、+y で手前が下へ）。画素の変位は depth_shift × (D − pivot)。"},
+        "dolly": {"type": "number", "minimum": -1, "maximum": 1, "default": 0, "description": "深さが pivot から 1 違う面の、画面の中心からの拡大率（正で手前ほど大きく = 寄り、負で引き）。"},
         "ease": {"$ref": "#/$defs/ease", "default": "linear"}
       },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "box": {
+      "type": "array",
+      "description": "元画像の正規化座標の箱 [x0, y0, x1, y1]（x0 < x1、y0 < y1）。",
+      "prefixItems": [{"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}],
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "depth_region": {
+      "type": "object",
+      "description": "深度を置きかえる領域。quad（元画像の正規化座標の四隅。画像の外にはみ出してよい）か box のどちらか。plane は inner に縮めた範囲の深度に最小二乗の平面を当て、grow に広げた範囲へ書く。value は grow に広げた範囲を value にする。縁は blur_px の σ でなじませる（px は assets.depth.resolution の画素）。",
+      "properties": {
+        "quad": {"type": "array", "items": {"$ref": "#/$defs/vec2"}, "minItems": 4, "maxItems": 4},
+        "box": {"$ref": "#/$defs/box"},
+        "mode": {"enum": ["plane", "value"], "default": "plane"},
+        "value": {"$ref": "#/$defs/unit"},
+        "inner": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.92},
+        "grow": {"type": "number", "minimum": 1, "maximum": 2, "default": 1.03},
+        "blur_px": {"type": "number", "minimum": 0, "maximum": 200, "default": 4}
+      },
+      "oneOf": [{"required": ["quad"]}, {"required": ["box"]}],
       "additionalProperties": false,
       "patternProperties": {"^x_": {}}
     },

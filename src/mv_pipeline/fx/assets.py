@@ -9,6 +9,9 @@
 - 深度: 8/16bit/float/RGB を 2〜98 パーセンタイルで 0..1 に正規化（外れ値で潰れない）。
   結果は 1 = 手前、0 = 奥（near: white|black で向きを揃える）。ほぼ一定の深度は情報が無いので
   使わない（Assets.depth = None。深度視差も light の depth ゲートも無効になり、警告を残す）。
+  fx-shot/0.2 の下ごしらえ（normalize: none・regions・dilate_px・blur_px）があれば、切り出しの前に
+  resolution の画素で 正規化 → 向き → regions → 太らせ → ぼかし の順に掛ける（prepare_depth。実制作の 2.5D と同じ順・同じ演算）。
+  下ごしらえが無ければ 0.1 と同じ経路（切り出して縮尺 → 正規化）で、値もビット単位で同じ。
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -122,6 +125,126 @@ def normalize_depth(values, near):
     return (out if near == "white" else 1.0 - out).astype(np.float32), True
 
 
+def _plain_depth(depth):
+    """下ごしらえの無い深度か（0.1 と同じ経路で読む）。"""
+    return depth["normalize"] == "percentile" and not depth["regions"] and depth["dilate_px"] == 0 and depth["blur_px"] == 0
+
+
+def _full_scale(image, values):
+    """normalize: none で割る値。16 bit（I モード）は 65535、8 bit は 255、float はそのまま（1）。"""
+    if image.mode == "F":
+        return 1.0
+    if image.mode.startswith("I"):
+        if float(values.max()) > 65535:
+            raise PipelineError("深度画像の値が 16 bit（65535）を超えています。normalize: none は 8 / 16 bit か 0..1 の float の画像で使ってください")
+        return 65535.0
+    return 255.0
+
+
+def _int_points(points):
+    """多角形の頂点を cv2.fillConvexPoly の整数座標にする（実制作と同じ int32 への切り捨て）。"""
+    return points.astype(np.int32)
+
+
+def region_quad(region, size):
+    """regions の 1 つ（正規化済み）の四隅を、size = (w, h) の画素の float32 にする。"""
+    width, height = size
+    if "box" in region:
+        x0, y0, x1, y1 = region["box"]
+        points = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    else:
+        points = region["quad"]
+    return np.array([[x * width, y * height] for x, y in points], dtype=np.float32)
+
+
+def apply_region(values, quad, mode="plane", value=None, inner=0.92, grow=1.03, blur_px=4.0):
+    """quad（画素の四隅）の中の深度を、最小二乗の平面（mode plane）か value に置きかえる。縁は blur_px の σ でなじませる。
+
+    plane: 重心へ inner 倍に縮めた四角形の中の深度に z = a·x + b·y + c を当て、grow 倍に広げた四角形へ書く（実制作の flatten_quad と同じ演算）。
+    """
+    height, width = values.shape
+    center = quad.mean(axis=0)
+    if mode == "plane":
+        inside = np.zeros((height, width), np.uint8)
+        cv2.fillConvexPoly(inside, _int_points(center + (quad - center) * inner), 1)
+        ys, xs = np.nonzero(inside)
+        if len(xs) < 3:
+            raise PipelineError(f"assets.depth.regions: 平面を当てる画素が {len(xs)} 個しかありません（四隅が画像の外か、小さすぎます）")
+        design = np.stack([xs, ys, np.ones_like(xs)], 1).astype(np.float64)
+        coef, *_ = np.linalg.lstsq(design, values[ys, xs].astype(np.float64), rcond=None)
+        yy, xx = np.mgrid[0:height, 0:width]
+        target = (coef[0] * xx + coef[1] * yy + coef[2]).astype(np.float32)
+    else:
+        target = float(value)
+    weight = np.zeros((height, width), np.uint8)
+    cv2.fillConvexPoly(weight, _int_points(center + (quad - center) * grow), 255)
+    weight = weight.astype(np.float32) / 255.0
+    if blur_px > 0:
+        weight = cv2.GaussianBlur(weight, (0, 0), blur_px)
+    return values * (1 - weight) + target * weight
+
+
+def prepare_depth(image, depth, base_size, box):
+    """0.2 の下ごしらえをした深度（resolution の画素のまま、切り出す前）と、情報があるか。
+
+    順番: 割る（normalize: none）→ 基準画像の大きさへ（resolution: base）→ 伸ばす（normalize: percentile。
+    統計は cover で切る範囲の中で取る）→ 向き（near）→ regions → 太らせ（dilate_px）→ ぼかし（blur_px）。
+    """
+    values = _raw_values(image)
+    if depth["normalize"] == "none":
+        values = values / _full_scale(image, values)
+    if depth["resolution"] == "base" and (values.shape[1], values.shape[0]) != tuple(base_size):
+        values = cv2.resize(values, tuple(base_size), interpolation=cv2.INTER_LINEAR)
+    height, width = values.shape
+    window = values[int(round(box[1] * height)):int(round(box[3] * height)), int(round(box[0] * width)):int(round(box[2] * width))]
+    if depth["normalize"] == "percentile":
+        lo, hi = np.percentile(window, [2, 98])
+        if hi - lo < 1e-6:
+            return None, False
+        values = np.clip((values - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+    else:
+        if float(window.max()) - float(window.min()) < 1e-6:
+            return None, False
+        if float(values.min()) < 0.0 or float(values.max()) > 1.0:
+            raise PipelineError(f"深度画像の値が 0..1 の外にあります（{float(values.min()):.3g}〜{float(values.max()):.3g}）。"
+                                f"normalize: none は 0..1 の float か 8 / 16 bit の画像で使い、それ以外は percentile にしてください")
+    if depth["near"] == "black":
+        values = (1.0 - values).astype(np.float32)
+    for region in depth["regions"]:
+        values = apply_region(values, region_quad(region, (width, height)), region["mode"], region["value"],
+                              region["inner"], region["grow"], region["blur_px"])
+    if depth["dilate_px"]:
+        values = cv2.dilate(values, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (depth["dilate_px"], depth["dilate_px"])))
+    if depth["blur_px"] > 0:
+        values = cv2.GaussianBlur(values, (0, 0), depth["blur_px"])
+    return np.ascontiguousarray(values, dtype=np.float32), True
+
+
+def resolve_pivot(pivot, assets):
+    """camera.pivot（正規化済み）を数にして (値, 出どころ) を返す。出どころは spec / mask:<id> / box。
+
+    マスクと箱は、描画サイズの深度（下ごしらえ・切り出しの後）の中央値。マスクは 0.5 より大きい画素、箱は元画像の正規化座標。
+    深度が無ければ深度視差は無効なので既定の 0.5 を返す（spec の警告が残る）。
+    """
+    if not isinstance(pivot, dict):
+        return float(pivot), "spec"
+    if assets.depth is None:
+        return 0.5, "spec"
+    if "mask" in pivot:
+        inside = assets.masks[pivot["mask"]] > 0.5
+        if not inside.any():
+            raise PipelineError(f"camera.pivot の mask {pivot['mask']!r} が画面の中でほぼ空です（0.5 を超える画素がありません）")
+        return float(np.median(assets.depth[inside])), f"mask:{pivot['mask']}"
+    height, width = assets.depth.shape
+    u0, v0 = to_screen(assets.box, pivot["box"][0], pivot["box"][1])
+    u1, v1 = to_screen(assets.box, pivot["box"][2], pivot["box"][3])
+    x0, x1 = max(0, int(round(u0 * width))), min(width, int(round(u1 * width)))
+    y0, y1 = max(0, int(round(v0 * height))), min(height, int(round(v1 * height)))
+    if x1 <= x0 or y1 <= y0:
+        raise PipelineError(f"camera.pivot の box {pivot['box']} が画面（cover で切った範囲）の外です")
+    return float(np.median(assets.depth[y0:y1, x0:x1])), "box"
+
+
 def load_assets(spec, size):
     """spec と描画サイズ (W, H) から Assets を作る。"""
     width, height = size
@@ -150,11 +273,16 @@ def load_assets(spec, size):
             values = cv2.GaussianBlur(values, (0, 0), sigma, borderType=cv2.BORDER_REPLICATE)
         masks[mask_id] = np.ascontiguousarray(values, dtype=np.float32)
     depth = None
-    if data["assets"]["depth"]:
-        image = _open(spec.resolve(data["assets"]["depth"]["path"]), "depth")
+    depth_spec = data["assets"]["depth"]
+    if depth_spec:
+        image = _open(spec.resolve(depth_spec["path"]), "depth")
         _check_aspect("depth", image, base_size)
-        values = _crop_resize(_raw_values(image), box, size)
-        depth, informative = normalize_depth(values, data["assets"]["depth"]["near"])
+        if _plain_depth(depth_spec):
+            values = _crop_resize(_raw_values(image), box, size)
+            depth, informative = normalize_depth(values, depth_spec["near"])
+        else:
+            values, informative = prepare_depth(image, depth_spec, base_size, box)
+            depth = np.ascontiguousarray(_crop_resize(values, box, size), dtype=np.float32) if informative else None
         if not informative:
             depth = None  # 警告と描画を一致させる: 深度視差も light の depth ゲートも無効にする
             warnings.append("深度画像がほぼ一定のため、深度は使いません（深度視差と light の depth 指定も無効）")

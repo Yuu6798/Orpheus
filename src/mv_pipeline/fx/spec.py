@@ -1,7 +1,8 @@
-"""fx-shot/0.1 設定の読み込み・検証・既定値補完。
+"""fx-shot/0.2 設定の読み込み・検証・既定値補完（0.1 の spec も読む）。
 
 load_spec(path) は検証済みで既定値を埋めた Spec を返す。以降のモジュールは spec.data の
 正規化済み辞書だけを見る（生 JSON は見ない）。`x_` で始まる鍵はそのまま残るが描画には使われない。
+0.1 の spec はその版の schema で検証し、0.2 の正規形（新しい項目は既定値）にそろえる。既定値は 0.1 と同じ絵になる値。
 素材パスは spec ファイルのあるディレクトリ基準で、io.safe_path により逸脱を拒否する
 （存在確認は assets 読み込み時）。
 
@@ -21,14 +22,16 @@ from pathlib import Path
 import jsonschema
 
 from ..io import PipelineError, read_json, safe_path, sha256
-from . import SCHEMA_VERSION
+from . import SCHEMA_V01, SCHEMA_VERSION
 
-_SCHEMA_PATH = Path(__file__).with_name("fx_shot.schema.json")
+_SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("fx_shot.schema.json"),
+            SCHEMA_V01: Path(__file__).with_name("fx_shot_0_1.schema.json")}
 BACKGROUND = "background"   # emitter.attach で背景の層を指す予約語（plane の id には使えない）
+DEFAULT_PIVOT = 0.5         # 0.1 の深度視差の動かない深さ
 
 
-def schema():
-    return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+def schema(version=SCHEMA_VERSION):
+    return json.loads(_SCHEMAS[version].read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -97,9 +100,10 @@ def parse_spec(raw, base_dir, path=None, digest=""):
 def _validate_schema(raw):
     if not isinstance(raw, dict):
         raise PipelineError("fx spec must be a JSON object")
-    if raw.get("schema_version") != SCHEMA_VERSION:
-        raise PipelineError(f"fx spec schema_version must be {SCHEMA_VERSION!r}, got {raw.get('schema_version')!r}")
-    validator = jsonschema.Draft202012Validator(schema())
+    version = raw.get("schema_version")
+    if not isinstance(version, str) or version not in _SCHEMAS:
+        raise PipelineError(f"fx spec schema_version must be {SCHEMA_VERSION!r} or {SCHEMA_V01!r}, got {version!r}")
+    validator = jsonschema.Draft202012Validator(schema(version))
     errors = sorted(validator.iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
         lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {_message(e)}" for e in errors[:8]]
@@ -174,14 +178,15 @@ def _normalize(raw):
         "audio": None if audio is None else {"path": audio["path"], "offset_s": _f(audio.get("offset_s", 0)), **_ext(audio)},
         "assets": {
             "base": assets["base"],
-            "depth": None if depth is None else {"path": depth["path"], "near": depth.get("near", "white"), **_ext(depth)},
+            "depth": None if depth is None else _normalize_depth(depth),
             "masks": masks,
             **_ext(assets),
         },
         "camera": {
-            "keys": _keys(keys, {"zoom": 1.0, "center": [0.5, 0.5]}),
+            "keys": _keys(keys, {"zoom": 1.0, "center": [0.5, 0.5], "depth_shift": [0.0, 0.0], "dolly": 0.0}),
             "parallax_px": _f(camera.get("parallax_px", 0)),
             "parallax_dir": _vec(camera.get("parallax_dir", [1, 0])),
+            "pivot": _normalize_pivot(camera.get("pivot", DEFAULT_PIVOT)),
             **_ext(camera),
         },
         "layers": None if layers is None else _normalize_layers(layers),
@@ -190,6 +195,79 @@ def _normalize(raw):
     }
     data.update(_ext(raw))
     return data
+
+
+def _normalize_depth(depth):
+    """assets.depth を正規化する。0.1 の {path, near} には 0.2 の既定値（0.1 と同じ下ごしらえ = 何もしない）を足す。"""
+    return {"path": depth["path"], "near": depth.get("near", "white"),
+            "normalize": depth.get("normalize", "percentile"), "resolution": depth.get("resolution", "depth"),
+            "regions": [_normalize_region(region) for region in depth.get("regions", [])],
+            "dilate_px": _i(depth.get("dilate_px", 0)), "blur_px": _f(depth.get("blur_px", 0)), **_ext(depth)}
+
+
+def _normalize_region(region):
+    shape = {"box": _vec(region["box"])} if "box" in region else {"quad": [_vec(point) for point in region["quad"]]}
+    return {**shape, "mode": region.get("mode", "plane"),
+            "value": None if region.get("value") is None else _f(region["value"]),
+            "inner": _f(region.get("inner", 0.92)), "grow": _f(region.get("grow", 1.03)),
+            "blur_px": _f(region.get("blur_px", 4.0)), **_ext(region)}
+
+
+def _normalize_pivot(pivot):
+    """数はそのまま、{"mask": id} と {"box": [...]} は辞書のまま（値は描画の準備で深度から決まる）。"""
+    if not isinstance(pivot, dict):
+        return _f(pivot)
+    if "mask" in pivot:
+        return {"mask": pivot["mask"], **_ext(pivot)}
+    return {"box": _vec(pivot["box"]), **_ext(pivot)}
+
+
+def depth_motion_keys(camera):
+    """camera.keys に depth_shift か dolly の動きがあるか（正規化済みの camera）。"""
+    return any(key["depth_shift"] != [0.0, 0.0] or key["dolly"] != 0.0 for key in camera["keys"])
+
+
+def _check_box(box, label):
+    if not (box[0] < box[2] and box[1] < box[3]):
+        raise PipelineError(f"fx spec: {label} は [x0, y0, x1, y1] で x0 < x1、y0 < y1 にしてください: {box}")
+
+
+def _quad_area(quad):
+    xs, ys = [p[0] for p in quad], [p[1] for p in quad]
+    return 0.5 * abs(sum(xs[i] * ys[(i + 1) % 4] - xs[(i + 1) % 4] * ys[i] for i in range(4)))
+
+
+def _validate_depth(data, warnings):
+    """0.2 の深度視差の項目（camera.pivot・keys の depth_shift / dolly・assets.depth の下ごしらえ）の検証。"""
+    camera, depth, masks = data["camera"], data["assets"]["depth"], data["assets"]["masks"]
+    if camera["parallax_px"] > 0 and any(key["depth_shift"] != [0.0, 0.0] for key in camera["keys"]):
+        raise PipelineError("fx spec: camera.parallax_px と camera.keys の depth_shift は一緒に使えません"
+                            "（parallax_px は「0 から parallax_px × parallax_dir へ in_out で動く depth_shift」の省略形）。どちらか一方にしてください")
+    pivot = camera["pivot"]
+    if isinstance(pivot, dict) and "mask" in pivot and pivot["mask"] not in masks:
+        raise PipelineError(f"fx spec: camera.pivot の mask {pivot['mask']!r} が assets.masks にありません")
+    if isinstance(pivot, dict) and "box" in pivot:
+        _check_box(pivot["box"], "camera.pivot.box")
+    if depth:
+        if depth["dilate_px"] % 2 == 0 and depth["dilate_px"] != 0:
+            raise PipelineError(f"fx spec: assets.depth.dilate_px は奇数にしてください（0 で無効）: {depth['dilate_px']}")
+        for index, region in enumerate(depth["regions"]):
+            label = f"assets.depth.regions[{index}]"
+            if "box" in region:
+                _check_box(region["box"], f"{label}.box")
+            elif _quad_area(region["quad"]) < 1e-9:
+                raise PipelineError(f"fx spec: {label}.quad の四隅が面になっていません（面積 0）: {region['quad']}")
+            if region["mode"] == "value" and region["value"] is None:
+                raise PipelineError(f"fx spec: {label} は mode \"value\" なので value（0..1）を指定してください")
+            if region["mode"] == "plane" and region["value"] is not None:
+                warnings.append(f"{label}: value は mode \"value\" のときだけ使います（mode \"plane\" では無視します）")
+    moving = camera["parallax_px"] > 0 or depth_motion_keys(camera)
+    if depth_motion_keys(camera) and not depth:
+        warnings.append("camera.keys の depth_shift・dolly を指定していますが assets.depth がないため深度視差は無効です")
+    if pivot != DEFAULT_PIVOT and not depth:
+        warnings.append("camera.pivot を指定していますが assets.depth がないため使いません")
+    elif pivot != DEFAULT_PIVOT and not moving:
+        warnings.append("camera.pivot を指定していますが、深度視差（parallax_px・keys の depth_shift / dolly）が無いので効きません")
 
 
 def _normalize_layers(layers):
@@ -339,5 +417,6 @@ def _validate_semantics(data):
             warnings.append(f"light {light['id']!r}: depth を指定していますが assets.depth がないため無視します")
     if data["camera"]["parallax_px"] > 0 and not data["assets"]["depth"]:
         warnings.append("camera.parallax_px > 0 ですが assets.depth がないため深度視差は無効です")
+    _validate_depth(data, warnings)
     warnings += look_warnings(data["look"])
     return warnings

@@ -15,8 +15,15 @@ zoom は対数空間で p 倍する。zoom は倍率なので「z0 から見た�
 p > 1 の plane のスケールが 0 や負になり、plane が潰れて反転し、背景の深度視差（スケールで割る）も壊れる。
 線形との差が小さいのは zoom の変化が小さいときだけ（デモの 1.0→1.08 で p=0.4〜1.3 の最大差は 1920 幅で約 1.2px。1→2 で p=0.4 だと倍率は 1.40 から 1.32 になる）。
 center は画面上の位置（符号つきの移動）なので線形のままでよい。
+
+深度視差（fx-shot/0.2）: 出力画素ごとに k = D − pivot（D は出力側の深度、pivot は動かない深さ）とし、
+    変位 = (shift + (画素 − 画面の中心) × dolly) × k         （出力画素。内容がこの向きへ動く）
+で入力をずらして引く。shift は keys の depth_shift（1920 換算 px）を補間して W/1920 を掛けたもの、dolly は keys の dolly。
+画面の中心は (W/2, H/2)（画素の番号で数える。実制作の 2.5D と同じ）。0.1 の parallax_px は shift の省略形で、
+振幅 parallax_px × (W/1920) × in_out(t/尺) と向き parallax_dir に分けた 0.1 の式のまま計算する（pivot 0.5 で 0.1 とビット一致）。
 """
 import functools
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -25,11 +32,24 @@ from . import timeline
 from .assets import to_screen
 
 
+@dataclass(frozen=True)
+class DepthMotion:
+    """時刻 t の深度視差。shift は出力画素（深さの差 1 あたり）、dolly は深さの差 1 あたりの拡大率。
+    legacy は 0.1 の parallax_px の (振幅, 向き)。0.1 と同じ丸めの順で計算するために別に持つ。"""
+    pivot: float
+    shift: tuple = (0.0, 0.0)
+    dolly: float = 0.0
+    legacy: tuple | None = None
+
+
 class CameraPath:
-    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0)):
+    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0), pivot=0.5):
         self.keys = camera["keys"]
         self.box = tuple(box)
         self.parallax_px = camera["parallax_px"]
+        self.pivot = float(pivot)     # 数にしたもの（{"mask"}・{"box"} は render.prepare が深度から決めて渡す）
+        self.depth_keys = any(any(v != 0.0 for v in key.get("depth_shift", (0.0, 0.0))) or key.get("dolly", 0.0) != 0.0
+                              for key in self.keys)
         direction = np.asarray(camera["parallax_dir"], dtype=np.float64)
         norm = float(np.hypot(*direction))
         self.direction = (0.0, 0.0) if norm == 0 else (direction[0] / norm, direction[1] / norm)
@@ -76,6 +96,27 @@ class CameraPath:
             return 0.0
         return self.parallax_px * self.kpx * float(timeline.ease("in_out", t / self.duration))
 
+    @property
+    def has_depth_motion(self):
+        """spec に深度視差の動き（parallax_px か keys の depth_shift / dolly）があるか。"""
+        return self.parallax_px > 0 or self.depth_keys
+
+    def depth_motion(self, t):
+        """時刻 t の深度視差（DepthMotion）。動かない時刻なら None（warp だけで描く。0.1 の t=0 と同じ近道）。"""
+        dolly, shift = 0.0, (0.0, 0.0)
+        if self.depth_keys:
+            state = timeline.interp(self.keys, t, ["depth_shift", "dolly"])
+            dolly = float(state["dolly"])
+            shift = (float(state["depth_shift"][0]) * self.kpx, float(state["depth_shift"][1]) * self.kpx)
+        if self.parallax_px > 0:      # 0.1 の経路（depth_shift と一緒には書けない。dolly は足せる）
+            amplitude = self.depth_amplitude(t)
+            if (amplitude == 0.0 or self.direction == (0.0, 0.0)) and dolly == 0.0:
+                return None
+            return DepthMotion(self.pivot, dolly=dolly, legacy=(amplitude, self.direction))
+        if shift == (0.0, 0.0) and dolly == 0.0:
+            return None
+        return DepthMotion(self.pivot, shift=shift, dolly=dolly)
+
     def out_of_bounds(self, samples=41):
         """カメラの視野が画像の外へ出る時刻があれば、その説明文を返す（なければ None）。"""
         worst = 0.0
@@ -105,6 +146,23 @@ def warp(img, matrix, size, border=cv2.BORDER_REPLICATE):
     return cv2.warpAffine(img, matrix, size, flags=cv2.INTER_LINEAR, borderMode=border)
 
 
+@functools.lru_cache(maxsize=16)
+def _edge_band(size, band):
+    """画面の端から band 画素の帯（上下左右）の座標 (xs, ys)。float32 の (行, 1024)（cv2.remap は 1 辺 32767 未満しか受けない）。
+    端数は帯の最初の画素を繰り返して埋める（最小・最大は変わらない）。"""
+    width, height = size
+    band = max(1, min(band, width // 2, height // 2))
+    xs, ys = np.meshgrid(np.arange(width, dtype=np.float32), np.arange(height, dtype=np.float32))
+    edge = (xs < band) | (xs >= width - band) | (ys < band) | (ys >= height - band)
+    flat_x, flat_y = xs[edge], ys[edge]
+    pad = -len(flat_x) % 1024
+    out = (np.concatenate([flat_x, np.full(pad, flat_x[0], np.float32)]).reshape(-1, 1024),
+           np.concatenate([flat_y, np.full(pad, flat_y[0], np.float32)]).reshape(-1, 1024))
+    for array in out:
+        array.setflags(write=False)
+    return out
+
+
 @functools.lru_cache(maxsize=4)
 def _grid(size):
     width, height = size
@@ -114,17 +172,87 @@ def _grid(size):
     return xs, ys
 
 
-def warp_with_depth(img, matrix, size, depth, amplitude, direction):
-    """camera 変換 + 深度視差。近いほど direction へ動く: 画素の移動量 = amplitude × (D − 0.5) × direction。
+def depth_offsets(depth_out, size, motion, coords=None):
+    """出力画素ごとの深度視差の変位 (dx, dy)（出力画素。内容がこの向きへ動く）。depth_out は出力側の深度。
 
-    D は出力側の深度（元の深度を同じ行列で変換したもの）。amplitude が 0 なら warp と同じ。
-    """
-    if depth is None or amplitude == 0.0 or direction == (0.0, 0.0):
-        return warp(img, matrix, size)
-    depth_out = warp(depth, matrix, size)
-    shift = (depth_out - np.float32(0.5)) * np.float32(amplitude)
+    coords = (xs, ys) は depth_out と同じ形の出力画素の座標（省略時は画面全体の格子）。"""
+    k = depth_out - np.float32(motion.pivot)
+    if motion.legacy is not None:        # 0.1 の parallax_px: 0.1 と同じ式・同じ丸めの順
+        amplitude, direction = motion.legacy
+        shift = k * np.float32(amplitude)
+        dx, dy = shift * np.float32(direction[0]), shift * np.float32(direction[1])
+        if motion.dolly != 0.0:
+            xs, ys = _grid(size) if coords is None else coords
+            dolly = np.float32(motion.dolly)
+            dx = dx + (xs - np.float32(size[0] / 2.0)) * dolly * k
+            dy = dy + (ys - np.float32(size[1] / 2.0)) * dolly * k
+        return dx, dy
+    sx, sy = np.float32(motion.shift[0]), np.float32(motion.shift[1])
+    if motion.dolly == 0.0:
+        return sx * k, sy * k
+    xs, ys = _grid(size) if coords is None else coords
+    dolly = np.float32(motion.dolly)                  # 実制作の 2.5D と同じ順: (shift + (x − W/2)·dolly)·k
+    return (sx + (xs - np.float32(size[0] / 2.0)) * dolly) * k, (sy + (ys - np.float32(size[1] / 2.0)) * dolly) * k
+
+
+def sample_maps(matrix, size, depth_out, motion):
+    """cv2.remap の参照位置（入力画像の画素）。深度視差の変位を引いてから camera の逆変換を掛ける。"""
+    dx, dy = depth_offsets(depth_out, size, motion)
     xs, ys = _grid(size)
     scale = float(matrix[0, 0])
-    map_x = ((xs - shift * np.float32(direction[0])) - np.float32(matrix[0, 2])) / np.float32(scale)
-    map_y = ((ys - shift * np.float32(direction[1])) - np.float32(matrix[1, 2])) / np.float32(scale)
+    map_x = ((xs - dx) - np.float32(matrix[0, 2])) / np.float32(scale)
+    map_y = ((ys - dy) - np.float32(matrix[1, 2])) / np.float32(scale)
+    return map_x, map_y
+
+
+def warp_with_depth(img, matrix, size, depth, motion):
+    """camera 変換 + 深度視差。D は出力側の深度（元の深度を同じ行列で変換したもの）。motion が None なら warp と同じ。"""
+    if depth is None or motion is None:
+        return warp(img, matrix, size)
+    map_x, map_y = sample_maps(matrix, size, warp(depth, matrix, size), motion)
     return cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def depth_out_of_bounds(path, depth, parallaxes=(1.0,), samples=41, tolerance_px=0.5):
+    """深度視差の変位で、画面の端が入力画像の外を参照する時刻があれば、その説明文を返す（なければ None）。
+
+    camera の視野のはみ出し（CameraPath.out_of_bounds）を超えた分だけを数える。parallaxes は深度視差を掛ける層の
+    視差（平らな版は 1.0、layers のある版は背景の parallax も）。値は 1920 幅換算の px。
+    """
+    if depth is None or not path.has_depth_motion:
+        return None
+    width, height = path.size
+    reach = max(abs(float(depth.max()) - path.pivot), abs(float(depth.min()) - path.pivot))   # |D − pivot| の最大
+    motions = [(float(t), path.depth_motion(float(t))) for t in np.linspace(0.0, path.duration, samples)]
+    motions = [(t, motion) for t, motion in motions if motion is not None]
+    if not motions:
+        return None
+
+    def reach_px(motion):
+        if motion.legacy is not None:
+            amplitude, direction = motion.legacy
+            sx, sy = amplitude * abs(direction[0]), amplitude * abs(direction[1])
+        else:
+            sx, sy = abs(motion.shift[0]), abs(motion.shift[1])
+        return (sx + sy + abs(motion.dolly) * max(width, height) / 2.0) * reach
+
+    # 変位は (|shift| + |dolly|·半幅)·reach を超えないので、それより内側の画素は端より外を引けない。端の帯だけ調べる
+    xs, ys = _edge_band(path.size, int(np.ceil(max(reach_px(motion) for _, motion in motions))) + 2)
+    worst = 0.0
+    for t, motion in motions:
+        for parallax in parallaxes:
+            matrix = path.matrix(float(t), parallax)
+            scale, tx, ty = float(matrix[0, 0]), float(matrix[0, 2]), float(matrix[1, 2])
+            source_x, source_y = (xs - np.float32(tx)) / np.float32(scale), (ys - np.float32(ty)) / np.float32(scale)
+            depth_out = cv2.remap(depth, source_x, source_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            dx, dy = depth_offsets(depth_out, path.size, motion, (xs, ys))
+            map_x, map_y = ((xs - dx) - np.float32(tx)) / np.float32(scale), ((ys - dy) - np.float32(ty)) / np.float32(scale)
+            camera_x = (np.array([0.0, width - 1.0]) - tx) / scale       # 変位なしの参照位置（端の画素）
+            camera_y = (np.array([0.0, height - 1.0]) - ty) / scale
+            before = (-camera_x[0], camera_x[1] - (width - 1), -camera_y[0], camera_y[1] - (height - 1))   # 左・右・上・下
+            after = (-float(map_x.min()), float(map_x.max()) - (width - 1), -float(map_y.min()), float(map_y.max()) - (height - 1))
+            worst = max(worst, max(a - max(b, 0.0) for a, b in zip(after, before)) * scale)
+    if worst > tolerance_px:
+        return (f"深度視差の変位で、画面の端が画像の外を最大 {worst / path.kpx:.1f}px（1920 幅換算）参照します"
+                f"（端の画素を引き伸ばして埋めます。camera を寄せるか、depth_shift・dolly・parallax_px を小さくしてください）")
+    return None

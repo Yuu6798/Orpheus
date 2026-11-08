@@ -25,10 +25,13 @@ def test_full_spec_loads_and_fills_defaults(tmp_path):
     data = spec.data
     assert data["output"] == {"width": 320, "height": 180, "fps": 24.0, "crf": 18}
     assert data["seed"] == 0 and data["audio"] is None and data["layers"] is None and data["lights"] == []
-    assert data["camera"]["keys"] == [{"t": 0.0, "ease": "linear", "zoom": 1.0, "center": [0.5, 0.5]}]
+    assert data["camera"]["keys"] == [{"t": 0.0, "ease": "linear", "zoom": 1.0, "center": [0.5, 0.5],
+                                       "depth_shift": [0.0, 0.0], "dolly": 0.0}]            # 0.1 の spec も 0.2 の正規形にそろう
+    assert data["schema_version"] == fx.SCHEMA_VERSION and data["camera"]["pivot"] == 0.5
     assert data["assets"]["depth"] is None and data["assets"]["masks"] == {}
     full = parse(tmp_path, spec_dict()).data
-    assert full["assets"]["depth"] == {"path": "depth.png", "near": "white"}
+    assert full["assets"]["depth"] == {"path": "depth.png", "near": "white", "normalize": "percentile", "resolution": "depth",
+                                       "regions": [], "dilate_px": 0, "blur_px": 0.0}
     assert full["assets"]["masks"]["subject"] == {"path": "mask_subject.png", "feather_px": 0.0}
     assert full["assets"]["masks"]["ground"]["feather_px"] == 2.0
     light = full["lights"][0]
@@ -70,7 +73,7 @@ def test_canonical_json_ignores_key_order():
         {"a": [2, {"c": 2, "d": 1}], "b": 1})
 
 
-@pytest.mark.parametrize("version", ["fx-shot/0.2", "fx-shot/0", None, 1])
+@pytest.mark.parametrize("version", ["fx-shot/0.3", "fx-shot/0", None, 1, ["fx-shot/0.2"]])
 def test_rejects_wrong_schema_version(tmp_path, version):
     data = spec_dict()
     if version is None:

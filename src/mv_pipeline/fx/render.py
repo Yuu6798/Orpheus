@@ -35,7 +35,7 @@ from .. import media
 from ..io import PipelineError
 from . import VARIANTS, camera, layers, light, timeline
 from . import look as fxlook
-from .assets import Assets, load_assets
+from .assets import Assets, load_assets, resolve_pivot
 from .color import soft_add, to_srgb8
 
 FADE_IN_S = 0.02
@@ -55,6 +55,7 @@ class Context:
     warnings: list = field(default_factory=list)
     hole: object = None              # 背景の穴埋め重み float32 (H, W)。plane が無ければ None
     look: object = None              # look.Look（周辺減光・粒状感は prepare で 1 回だけ作る）。spec に look が無ければ None
+    depth_info: dict | None = None   # 深度視差の記録 {pivot, pivot_from, motion}（manifest 用）。深度が無ければ None
 
     @property
     def fps(self):
@@ -86,7 +87,7 @@ class Context:
     def variant_notes(self):
         """版ごとの {features: 有効な機能, empty: その機能が spec に無く base と同じ映像か}（manifest 用）。"""
         data = self.spec.data
-        base = ["camera"] + (["depth_parallax"] if self.assets.depth is not None and data["camera"]["parallax_px"] > 0 else [])
+        base = ["camera"] + (["depth_parallax"] if self.assets.depth is not None and self.path.has_depth_motion else [])
         base += ["look"] if self.look is not None else []     # look は全 4 版に同じものが掛かる
         notes = {"base": {"features": base, "empty": False}}
         notes["layers"] = {"features": base + ["layers"], "empty": False} if self.has_layers \
@@ -112,14 +113,21 @@ def prepare(spec, scale=1.0, size=None):
     size = tuple(size) if size else scaled_size(spec, scale)
     data = spec.data
     assets = load_assets(spec, size)
-    path = camera.CameraPath(data["camera"], data["duration_s"], size, assets.box)
+    pivot, pivot_from = resolve_pivot(data["camera"]["pivot"], assets)
+    path = camera.CameraPath(data["camera"], data["duration_s"], size, assets.box, pivot)
     warnings = list(spec.warnings) + list(assets.warnings)
     bounds = path.out_of_bounds()
     if bounds:
         warnings.append(bounds)
     items, planes, background, hole = [], [], assets.plate, None
     layer_spec = data["layers"]
-    if layer_spec and (layer_spec["planes"] or layer_spec["effects"]):
+    layered = bool(layer_spec and (layer_spec["planes"] or layer_spec["effects"]))
+    depth_bounds = camera.depth_out_of_bounds(path, assets.depth, [1.0] + ([layer_spec["background"]["parallax"]] if layered else []))
+    if depth_bounds:
+        warnings.append(depth_bounds)
+    depth_info = None if assets.depth is None else {"pivot": round(pivot, 6), "pivot_from": pivot_from,
+                                                    "motion": path.has_depth_motion}
+    if layered:
         for plane_spec in layer_spec["planes"]:
             alpha = assets.masks[plane_spec["mask"]]
             if float(alpha.max()) < 0.01:
@@ -138,7 +146,7 @@ def prepare(spec, scale=1.0, size=None):
         if not lt.receivers and lt.glow_w is None:
             warnings.append(f"light {lt.id!r} は receivers も emitter も無く、何も描きません")
     look = fxlook.prepare(data["look"], size, data["output"]["fps"]) if data["look"] is not None else None
-    return Context(spec, size, assets, path, background, planes, items, lights, warnings, hole, look)
+    return Context(spec, size, assets, path, background, planes, items, lights, warnings, hole, look, depth_info)
 
 
 def frame(ctx, t, variant):
@@ -159,8 +167,7 @@ def _flat(ctx, t, active):
         add, roi = light.compose(active, image, ctx.size, None, "all")
         if add is not None:
             image = soft_add(image, add, roi)
-    return camera.warp_with_depth(image, ctx.path.matrix(t, 1.0), ctx.size, ctx.assets.depth,
-                                  ctx.path.depth_amplitude(t), ctx.path.direction)
+    return camera.warp_with_depth(image, ctx.path.matrix(t, 1.0), ctx.size, ctx.assets.depth, ctx.path.depth_motion(t))
 
 
 def _layered(ctx, t, active):
@@ -177,8 +184,7 @@ def _layered(ctx, t, active):
         if lit_add is not None:
             plate_lit = soft_add(plate, lit_add, lit_roi)
     spec_bg = ctx.spec.data["layers"]["background"]
-    out = camera.warp_with_depth(background, path.matrix(t, spec_bg["parallax"]), size, ctx.assets.depth,
-                                 path.depth_amplitude(t), path.direction)
+    out = camera.warp_with_depth(background, path.matrix(t, spec_bg["parallax"]), size, ctx.assets.depth, path.depth_motion(t))
     for item in ctx.stack:
         if isinstance(item, layers.Plane):
             glow = light.hosted_glow(active, plate, size, hosted[item.id], lit_add, lit_roi, plate_lit) \
