@@ -268,6 +268,41 @@ def test_a_mask_cannot_be_written_over_the_preview_the_record_or_another_mask(tm
     assert not (tmp_path / "out").exists()                                                    # 何も書く前に止める
 
 
+def _plan_named_like_the_record(folder, plan):
+    return write_plan(folder, plan, "masks_record.json")                                    # 計画のフォルダーに書くと記録が上書きする
+
+
+def _base_named_like_the_preview(folder, plan):
+    (folder / "masks_preview.png").write_bytes((folder / "base.png").read_bytes())
+    return write_plan(folder, dict(plan, base="masks_preview.png"))
+
+
+def _image_read_from_the_default_output(folder, plan):
+    (folder / "mask_subject.png").write_bytes((folder / "alpha.png").read_bytes())          # id subject の書き出し先（既定）を読む
+    plan["masks"][0]["steps"][0]["path"] = "mask_subject.png"
+    return write_plan(folder, plan)
+
+
+def _mask_written_over_the_base(folder, plan):
+    plan["masks"][1]["out"] = "base.png"
+    return write_plan(folder, plan)
+
+
+@pytest.mark.parametrize("arrange, message", [
+    (_plan_named_like_the_record, "入力（計画）"),
+    (_base_named_like_the_preview, "入力（基準画像）"),
+    (_image_read_from_the_default_output, "入力（image の mask_subject.png）"),
+    (_mask_written_over_the_base, "入力（基準画像）"),
+])
+def test_no_output_is_written_over_an_input(tmp_path, arrange, message):
+    write_scene(tmp_path)
+    plan_path = arrange(tmp_path, json.loads(json.dumps(ALPHA_PLAN)))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    with pytest.raises(PipelineError, match=message):
+        masks.make_masks(plan_path, force=True)                                             # 計画のフォルダーに書く。--force でも止める
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()} == before    # 入力を含め、何も書いていない
+
+
 def test_grabcut_on_an_impossible_polygon_explains_itself(tmp_path):
     write_scene(tmp_path)
     plan = dict(GRABCUT_PLAN, masks=[{"id": "all", "steps": [{"op": "grabcut", "points": [(0, 0), (240, 0), (240, 160), (0, 160)], "band_px": 1}]}])

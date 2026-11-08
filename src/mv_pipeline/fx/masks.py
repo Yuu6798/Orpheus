@@ -310,21 +310,33 @@ def _png(path, array, force, protect):
 PREVIEW_NAME, RECORD_NAME = "masks_preview.png", "masks_record.json"
 
 
-def output_targets(plan, out_dir):
-    """マスクごとの書き出し先（解決した絶対パス）。確認用の絵と記録の名前や、ほかのマスクと同じファイルを指せば、何も書く前に止める
-    （綴りが違っても同じファイルなら同じ。確認用の絵は preview を切っていても名前を空けておく）。"""
+def output_targets(plan, out_dir, plan_path, base_dir):
+    """マスクごとの書き出し先（解決した絶対パス）。何も書く前に、次を止める（綴りが違っても同じファイルなら同じ）:
+    確認用の絵か記録の名前のマスク（確認用の絵は preview を切っていても名前を空けておく）、ほかのマスクと同じ書き出し先、
+    入力（計画・基準画像・image の画像）と同じファイルに書く出力（マスク・確認用の絵・記録。入力を壊さない）。"""
     import os
 
     def key(path):
-        return os.path.normcase(str(path))
+        return os.path.normcase(str(Path(path).resolve()))
 
-    reserved = {key((Path(out_dir) / name).resolve()) for name in (PREVIEW_NAME, RECORD_NAME)}
+    inputs = {key(plan_path): "計画", key(safe_path(base_dir, plan["base"])): "基準画像"}
+    for mask in plan["masks"]:
+        for step in mask["steps"]:
+            if step["op"] == "image":
+                inputs.setdefault(key(safe_path(base_dir, step["path"])), f"image の {step['path']}")
+    auxiliary = {key(Path(out_dir) / name): name for name in (PREVIEW_NAME, RECORD_NAME)}
+    for path, name in auxiliary.items():
+        if path in inputs:
+            raise PipelineError(f"{name} を書くと、入力（{inputs[path]}）を上書きします。入力の名前を変えるか、--out で別のフォルダーに書いてください")
     targets, seen = {}, {}
     for mask in plan["masks"]:
         target = safe_path(out_dir, mask["out"])
-        if key(target) in reserved:
+        if key(target) in auxiliary:
             raise PipelineError(f"マスク {mask['id']!r} の書き出し先 {mask['out']!r} は、確認用の絵か記録（{PREVIEW_NAME}・{RECORD_NAME}）と"
                                 f"同じです。別の名前にしてください")
+        if key(target) in inputs:
+            raise PipelineError(f"マスク {mask['id']!r} の書き出し先 {mask['out']!r} は、入力（{inputs[key(target)]}）と同じファイルです。"
+                                f"別の名前にするか、--out で別のフォルダーに書いてください")
         if key(target) in seen:
             raise PipelineError(f"マスク {mask['id']!r} と {seen[key(target)]!r} の書き出し先が同じファイルです: {mask['out']!r}")
         seen[key(target)] = mask["id"]
@@ -336,7 +348,7 @@ def make_masks(plan_path, out=None, force=False):
     """`mv fx masks`: 計画からマスクを作って書き、記録（masks_record.json）を残す。結果の要約を返す。"""
     plan, base_dir = load_plan(plan_path)
     out_dir = Path(out).resolve() if out else base_dir
-    targets = output_targets(plan, out_dir)
+    targets = output_targets(plan, out_dir, plan_path, base_dir)
     built = build(plan, base_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = {}
