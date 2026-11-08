@@ -8,6 +8,8 @@ from ..mesh import Mesh
 from . import StepResult, number, register, require, selected
 
 EXTRACT_PARAMETERS = ("slot", "material", "decode")
+APPLY_PARAMETERS = ("match", "min_replacements", "image_name", "blender", "timeout")
+APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "apply_texture.py"
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
@@ -117,6 +119,48 @@ def extract_glb(inputs, parameters, outputs, context):
     observation = {"kind": "extract_glb", "slot": slot, "image": record["index"], "name": record["name"],
                    "mimeType": record["mimeType"], "bytes": len(raw), "size": size, "mode": mode, "decoded": decode,
                    "materials": len(users)}
+    return StepResult(observations=[observation])
+
+
+@register("texture.apply_to_blend", inputs=("blend", "texture"), outputs=("blend", "report"), cacheable=False,
+          summary=".blend の材質の画像ノードのうち、match（画像の名前かパスのファイル名。大文字と小文字・.001 の印は見ない）に合う画像だけを、"
+                  "新しいテクスチャにつなぎ替えて詰め込み、別の .blend に書く（Blender の中で）。合う画像は色空間がそろい、同じ大きさで"
+                  "あること。詰め込んだバイトがテクスチャと同じこと・合わない画像ノードが変わらないこと・入力が変わらないことを確かめる。"
+                  "形・骨・材質のつなぎ方は変えない。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def apply_to_blend(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend", "texture"), "texture.apply_to_blend")
+    _refuse_unknown(parameters, APPLY_PARAMETERS, "texture.apply_to_blend")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"texture.apply_to_blend には outputs の {', '.join(missing)} が要ります")
+    match = parameters.get("match")
+    if not isinstance(match, str) or not match.strip():
+        raise ToolError("texture.apply_to_blend には match（差し替える画像の名前）が要ります（既定は無い。作品ごとの値なのでレシピに書く）")
+    minimum = number(parameters, "min_replacements", 1, minimum=1, integer=True)
+    image_name = parameters.get("image_name", Path(inputs["texture"]).name)
+    if not isinstance(image_name, str) or not image_name:
+        raise ToolError(f"image_name は新しい画像の名前（空でない文字列）にしてください: {image_name!r}")
+    if not str(outputs["blend"]).lower().endswith(".blend"):
+        raise ToolError(f"outputs の blend は .blend にしてください: {outputs['blend']}")
+    blender = _blender(parameters, context, "texture.apply_to_blend")
+    settings_path = Path(context.step_dir) / "apply_texture_settings.json"
+    atomic_json(settings_path, {"match": match, "min_replacements": minimum, "image_name": image_name})
+    args = ["--blend", inputs["blend"], "--texture", inputs["texture"], "--out-blend", outputs["blend"],
+            "--report", outputs["report"], "--settings", str(settings_path)]
+    record = launcher.run_blender(blender, APPLY_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    if (not report.get("replacement_texture_packed") or not report.get("input_files_unchanged")
+            or report.get("replaced_node_count", 0) < minimum):
+        raise ToolError("画像の差し替えが、確かめの決まり（詰め込み・入力が変わらない・差し替えた数）を満たしていません: "
+                        f"{ {k: report.get(k) for k in ('replacement_texture_packed', 'input_files_unchanged', 'replaced_node_count')} }")
+    observation = {"kind": "apply_texture", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "replaced": report.get("replaced_node_count"),
+                   "unrelated_unchanged": report.get("unrelated_image_nodes_verified_unchanged"),
+                   "atlas_size_wh": report.get("atlas_size_wh"), "packed_texture_sha256": report.get("packed_texture_sha256")}
     return StepResult(observations=[observation])
 
 
