@@ -201,18 +201,25 @@ def _used_ranges(spec, clips):
 
 
 def _rows(spec, clips, out):
-    """{動画のパス: 足元と中心の列}。fit の有無にかかわらず全クリップで測る（測定は内容と設定でキャッシュする）。"""
+    """({動画のパス: 足元と中心の列}, warnings)。fit の有無にかかわらず全クリップで測る（測定は内容と設定でキャッシュする）。
+
+    どのコマにも人物が測れない動画（全部を replace_frames で差し替えた・key が合わない）は列を作らない（その clip の body は
+    None）。列は hooks に渡す手がかりなので、作れなくても描画は止めず、warnings に残す。"""
     performer = spec.data["performer"]
     settings = performer["rows"]
     used = _used_ranges(spec, clips)
-    rows = {}
+    rows, notes = {}, []
     for path, source in clips.sources.items():
         measured, file = dancefit.load_rows(source, sha256(spec.resolve(path)), performer["key"], settings["analysis_scale"], out,
                                             clips.replacements.skipped(path))
+        if all(value is None for value in measured["bottom"]):
+            notes.append(f"performer.rows: {path} はどのコマにも人物を測れない（全部を replace_frames で差し替えたか、key が合わない）ので、"
+                         f"足元と中心の列を作りません（その clip の body は None）")
+            continue
         last = measured["frames"] - 1
         low, high = used.get(path, (0, last))
         rows[path] = {**dancefit.rows_for(measured, [min(low, last), min(high, last)], settings), "file": f"analysis/{file.name}"}
-    return rows
+    return rows, notes
 
 
 def prepare(spec, scale=1.0, out=None, hooks=None, rows=None):
@@ -225,7 +232,7 @@ def prepare(spec, scale=1.0, out=None, hooks=None, rows=None):
         replace_warnings = check_replacements(clips)
         out_dir = Path(out) if out else spec.base_dir / "dance_runs"
         analysis = _fit_analysis(spec, clips, out_dir)
-        body_rows = _rows(spec, clips, out_dir) if (hooks is not None if rows is None else rows) else None
+        body_rows, rows_warnings = _rows(spec, clips, out_dir) if (hooks is not None if rows is None else rows) else (None, [])
         place = [_placement(spec, clip, clips.sources[clip["path"]], size, analysis[clip["path"]][0] if clip["fit"] and clip["path"] in analysis else None)
                  for clip in clips.clips]
         lines, text_warnings = dancelyrics.prepare(spec.data, spec.resolve, size)
@@ -233,7 +240,7 @@ def prepare(spec, scale=1.0, out=None, hooks=None, rows=None):
         clips.close()
         stage.close()
         raise
-    warnings = list(spec.warnings) + replace_warnings + text_warnings
+    warnings = list(spec.warnings) + replace_warnings + rows_warnings + text_warnings
     for source in (*clips.sources.values(), stage.source):
         if isinstance(source, Source) and source.matrix not in KNOWN_MATRICES:
             warnings.append(f"{source.path.name}: 色の行列のタグ（{source.matrix or 'なし'}）から行列を決められないので BT.601 として読みます。"

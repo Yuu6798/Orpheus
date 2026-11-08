@@ -206,3 +206,17 @@ def test_frames_the_shot_never_shows_do_not_pull_the_ground(tmp_path):
         assert rows["used"][0] == 6 and set(np.round(rows["ground"], 6)) == {101.0}
     finally:
         ctx.close()
+
+
+def test_a_video_with_no_measured_frame_leaves_its_body_empty_and_still_draws(tmp_path):
+    write_video(tmp_path / "a.mp4", [person(101) for _ in range(12)])
+    Image.fromarray(person(110)).save(tmp_path / "end.png")
+    Image.fromarray(np.full((H, W, 3), GREEN, np.uint8)).save(tmp_path / "fix.png")          # 人物の写っていない代わりの絵
+    path = spec(tmp_path, rows={"analysis_scale": 1.0}, replace_frames=[{"path": "a.mp4", "frames": [0, 12], "with": {"image": "fix.png"}}])
+    ctx = api.prepare(path, out=tmp_path / "runs", rows=True)                                # 列を作れなくても止めない（fit なし）
+    try:
+        assert "a.mp4" not in ctx.rows and "end.png" in ctx.rows
+        assert api.layers(ctx, 0.25).performer_info["body"] is None and api.layers(ctx, 1.5).performer_info["body"] is not None
+        assert any("a.mp4" in w and "足元" in w for w in ctx.warnings)
+    finally:
+        api.close(ctx)
