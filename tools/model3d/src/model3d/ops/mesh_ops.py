@@ -1,6 +1,6 @@
 """メッシュの操作: 読み込み、押し出し、結合、変形、面領域の切り出し、法線のならし、OBJ 書き出し。"""
 from ..io import ToolError, atomic_json, atomic_npz, read_json
-from ..mesh import (UNIT_FACTORS, Mesh, extrude_profile, face_edges, fill_holes, read_all_parts, read_parts,
+from ..mesh import (UNIT_FACTORS, Mesh, extrude_profile, face_edges, fill_holes, list_parts, read_all_parts, read_parts,
                     remap_rig_weights, smooth_normals, submesh, transform, weld)
 from . import StepResult, number, register, require, selected
 
@@ -138,6 +138,23 @@ def mesh_fill_holes(inputs, parameters, outputs, context):
     observation = {"kind": "fill_holes", **{k: v for k, v in report.items() if k != "loops"},
                    "loop_sizes": [r["edges"] for r in report["loops"]][:50]}
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+@register("mesh.list_parts", inputs=("parts", "normals"), outputs=("report",),
+          summary="部品ごとの npz（names と co{i}・f{i}・uv{i}）の部品の一覧: 名前・頂点と面と三角形の数・面の角の数・範囲・uv の範囲。"
+                  "normals（n{i} の npz）を渡すと、部品ごとに法線があるか・形が合うかも見る。見つけたこと（非有限の頂点・無い頂点を"
+                  "指す面・形の合わない uv や法線・どの部品にも当たらない法線）があれば要確認。pickle は読まない")
+def mesh_list_parts(inputs, parameters, outputs, context):
+    require(inputs, ("parts",), "mesh.list_parts")
+    if parameters:
+        raise ToolError(f"mesh.list_parts にパラメーターはありません: {sorted(parameters)}")
+    if "report" not in outputs:
+        raise ToolError("mesh.list_parts には outputs の report が要ります")
+    report = list_parts(inputs["parts"], inputs.get("normals"))
+    atomic_json(outputs["report"], report)
+    observation = {"kind": "list_parts", **report["totals"], "normals": inputs.get("normals") is not None,
+                   "problems": len(report["problems"])}
+    return StepResult(observations=[observation], unresolved=list(report["problems"]), review=bool(report["problems"]))
 
 
 @register("mesh.extrude_profile", inputs=("profile",), outputs=("mesh",),

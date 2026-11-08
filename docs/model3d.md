@@ -185,6 +185,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 |---|---|---|
 | `mesh.import` | file → mesh | JSON か OBJ を読んで `model3d-mesh/0.1` で書く |
 | `mesh.import_parts` | parts [, normals] → mesh | 部品ごとの配列を持つ npz（`names` と、i 番目の部品の `co{i}`・`f{i}`・`uv{i}`。法線は別の npz の `n{i}`）から `part` の部品を読む。法線は `x_normals`（部品の順で対応させる）、名前は部品の名前。形・整数・有限を確かめ、読めないファイルを名指す。pickle の入った配列は読まない |
+| `mesh.list_parts` | parts [, normals] → report | 部品ごとの npz の部品の一覧（[部品の一覧と uv の伸び](#部品の一覧と-uv-の伸び)）: 名前・頂点と面と三角形の数・面の角の数・範囲・uv の範囲。normals を渡すと、部品ごとに法線があるか・形が合うかも見る。見つけたこと（非有限の頂点・uv・法線、無い頂点を指す面、形の合わない uv や法線、どの部品にも当たらない法線）があれば要確認。CLI は `model3d mesh parts` |
 | `mesh.extrude_profile` | profile（`{"points": [[x, y], …]}`）→ mesh | 厳密に凸で反時計回りの断面を `height` だけ押し出す。`twist_deg` か `twist_rad`、`steps`、`offset`。高さが負なら先に断面の有向辺を反転する。ねじり 0 なら 1 段 |
 | `mesh.weld` | mesh [, rig] → mesh [, mapping, rig] | `distance` 以内の頂点を結合（`selection` か工程の `select`・`center: mean|first`）。退化面と包含面を除く（結合に関わった面と隣接面のみ）。uv・頂点色・法線（`x_normals`。長さは 1 に戻す）も同じ規則でまとめる。mapping は旧→新頂点番号、旧→新面番号（`face_old_to_new`。消えた面は -1）、双方の topology と部品の名前（`source_name`・`target_name`）。rig は入出力を対で指定し、同じ mean / first 規則でウェイトを移す |
 | `mesh.transform` | mesh → mesh | `to_units`（m / cm / mm の換算）→ `to_axes`（`{"up", "forward"}` の約束の換算）→ `scale` → `rotate_z_deg` → `translate`。頂点の法線（`x_normals`）も同じ向きへ回す |
@@ -197,6 +198,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `check.structure` | rig [, mesh] → report | 必須骨の欠落（`required_bone_roles`: 配列か `preset` か `humanoid`）・循環・非有限値、ウェイトの正規化（`tolerance`）。mesh があれば頂点数・topology も必須照合。使用する未確認の骨対応は needs_review |
 | `check.penetration` | mesh, collider → report | 中にある頂点の数・番号・深さ（工程の `select` があればその面の頂点だけを調べ、数を `checked` に残す。mesh と collider の単位か軸の約束が違えば止まる。`directions` は 1 本以上の有限で長さ 0 でない向き。奇数本を勧める） |
 | `check.continuity` | track → report | コマごとの点の列で前のコマからの移動が `max_jump` 以下 |
+| `check.uv_stretch` | mesh [, texture] → report | uv の伸び（三角形の、画素での周長 / 3D の周長を中央値で割った値）を測る（[部品の一覧と uv の伸び](#部品の一覧と-uv-の伸び)）。百分位・`threshold`（既定 8）を超える三角形・3D で潰れた三角形・uv の幅（画素）。テクスチャの大きさは入力 texture の画像か `texture_size`。しきい値（`max_over`・`max_degenerate`）を渡したときだけ合否を出す |
 | `check.motion` | points → report | `motion.prepare_keypoints` の points の動きを数で測る（[整えた点の動きを測る](#整えた点の動きを測る)）。膝とつま先の食い違い・接地中の足の滑り・床へのめり込み・1 コマの移動・骨の長さのぶれ。しきい値を渡したときだけ合否を出す。知らないパラメーターは止める |
 | `texture.extract_glb` | glb → image [, report] | GLB（glTF 2.0 のバイナリ）から、材質のテクスチャの画像を取り出す（[GLB からテクスチャを取り出す](#glb-からテクスチャを取り出す)）。`slot`（既定 baseColor）と `material`（省くと全部の材質が同じ画像のときだけ）。既定は埋め込まれたバイトをそのまま書き、`decode: true` で出力の拡張子の形式に書き直す。外のファイル・拡張にしか無い画像・壊れた GLB は止める |
 | `texture.render_view` | mesh, texture → image [, report] | uv のあるメッシュにテクスチャを貼り、座標軸に沿った正射影（`view`）で描く。照明なし（色の確認と目印を読むため） |
@@ -348,6 +350,29 @@ rig のない結合も従来どおり使えるが、メッシュとリグの整�
   - 色のテクスチャ（4096×4096 の JPEG、約 3.2 MB）をそのまま書くと、GLB の中のバイトと同じ。法線（PNG）も同じ。
   - PNG に書き直した画素は、試作の `basecolor.png`（OpenCV で開いて書いたもの）と全部同じだった。書いた PNG は、試作の作り直し（Pillow で書いたもの）とファイルまで同じ（sha256 が一致）。
 
+## 部品の一覧と uv の伸び
+
+`mesh.list_parts`（CLI は `model3d mesh parts`）は、部品ごとの npz（`names` と `co{i}`・`f{i}`・`uv{i}`。`mesh.import_parts` と同じ形）の中身を一覧にする。`check.uv_stretch` は、メッシュの uv がどれだけ伸びているかを測る。リポジトリ外の試作で、部品の一覧と 1 部品の uv の伸びを見た台本を移した（1 部品をメッシュに書き出す所は、`mesh.import_parts` に移してある）。
+
+**部品の一覧**（`mesh.list_parts`）:
+- 部品ごとに、番号・名前・頂点と面と三角形の数・面の角の数・範囲（3 軸）・uv の範囲。
+- `normals`（`n{i}` の npz）を渡すと、部品ごとに法線があるか・頂点と同じ形か・有限かも見る。どの部品にも当たらない法線の配列も並べる。
+- 見つけたこと（非有限の頂点・uv・法線、無い頂点を指す面、形の合わない uv や法線、法線の抜け）は `problems` に並べ、工程は要確認にする（CLI は終了コード 1）。止めはしない（一覧が目的なので）。
+  - 非有限の値がある頂点や uv の範囲は書かない（報告の JSON に NaN は書けない）。非有限の法線は `mesh.import_parts` が読まないので、見つけたことに入れる。
+- 報告は `model3d-parts/0.1`。pickle の入った配列は読まない。
+
+**uv の伸び**（`check.uv_stretch`）:
+- 三角形ごとに、テクスチャの画素での周長を 3D の周長で割り、その中央値で割った値（`texture.project_reference` の `max_stretch` と同じ値）。uv が島をまたいで引き伸ばされた三角形ほど大きい。
+- 百分位（50・99・99.9・最大）、`threshold`（既定 8）を超える三角形の数、3D で潰れた三角形の数（3 つの頂点が同じ位置で周長が 0。比からではなく 3D の形から数えて外す。全部の三角形が潰れていても数えそこなわない）、三角形の uv の幅（画素の 99 百分位と最大）を報告する。
+- テクスチャの大きさは、入力 `texture` の画像か、パラメーター `texture_size`（`[幅, 高さ]` か 1 つの数）。
+- しきい値（`max_over`: `threshold` を超えてよい三角形の数、`max_degenerate`: 潰れてよい三角形の数）を渡したときだけ合否を出す。渡さなければ測るだけ（`report_only` で要確認にしない）。uv の無いメッシュは未実施。
+
+**確かめたこと**:
+- CI では、部品の一覧（三角形と四角形の部品・uv・法線の形違いと抜けと余り・非有限の頂点・非有限の uv と法線（報告を書けること）・無い頂点を指す面・工程と CLI の終了コード）と、uv の伸び（そろった格子は全部 1、伸ばした三角形と潰れた三角形の数え方、全部の三角形が潰れたメッシュ、しきい値の合否、テクスチャの大きさの取り方、悪い設定）を確かめた。
+- 2026-11-08 に、リポジトリ外の試作の部品（11 部品）で確かめた。
+  - 一覧は、試作の記録（作り直しの照合）と、11 部品とも頂点と三角形の数・法線の形が同じ（合わせて 1,052,420 頂点、1,984,871 三角形）。
+  - 1 部品（約 68 万三角形）の uv の伸びは、試作の台本の出力と同じ（百分位 1.0・1.65・2.07・6.87、8 を超える三角形 0、uv の幅 12・26 画素）。
+
 ## 設定画をテクスチャへ写す
 
 設定画の描き込み（目・口・飾りなど）を、既にあるメッシュの uv テクスチャへ写す工程。形は変えない。
@@ -413,6 +438,7 @@ rig のない結合も従来どおり使えるが、メッシュとリグの整�
 uv run model3d generate prepare 設定画.png prepared.png            # 前処理だけ（人が見る）
 uv run model3d generate inspect initial_model.obj --out report.json  # 生成物の検査だけ
 uv run model3d mesh compare a.obj b.obj                            # 頂点番号と面の列挙順の違いを除いて同じか
+uv run model3d mesh parts parts.npz --normals normals.npz          # 部品ごとの npz の一覧と法線の確かめ（見つけたことがあれば終了コード 1）
 ```
 
 実証したのは正面 1 枚で、背面・側面は入力から拘束していない。記録の生成物は顔・指・衣装の模様が粗く、連結成分が複数で閉じていない

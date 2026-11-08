@@ -105,3 +105,36 @@ def check_motion(inputs, parameters, outputs, context):
                            floor_tolerance=number(parameters, "floor_tolerance", 0.005, minimum=0),
                            thresholds=thresholds, frames=frames, top=number(parameters, "top", 8, minimum=1, integer=True))
     return _finish(report, outputs, parameters, "動きの検査")
+
+
+UV_STRETCH_PARAMETERS = {"texture_size", "threshold", "max_over", "max_degenerate", "strict", "report_only"}
+
+
+@register("check.uv_stretch", inputs=("mesh", "texture"), outputs=("report",),
+          summary="uv の伸び（三角形の、テクスチャの画素での周長 / 3D の周長を中央値で割った値）を測る: 百分位・threshold（既定 8）を"
+                  "超える三角形の数・3D で潰れた三角形の数・三角形の uv の幅（画素）。テクスチャの大きさは入力 texture の画像か、"
+                  "パラメーター texture_size（[幅, 高さ] か 1 つの数）。しきい値（max_over・max_degenerate）を渡したときだけ合否を出す")
+def check_uv_stretch(inputs, parameters, outputs, context):
+    from . import number
+    require(inputs, ("mesh",), "check.uv_stretch")
+    unknown = set(parameters) - UV_STRETCH_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.uv_stretch の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(UV_STRETCH_PARAMETERS)}）")
+    size = parameters.get("texture_size")
+    if inputs.get("texture") is not None:
+        if size is not None:
+            raise ToolError("texture と texture_size は一緒に使えません（大きさはどちらか 1 つで決める）")
+        from PIL import Image
+        with Image.open(inputs["texture"]) as image:
+            width, height = image.size
+    elif size is None:
+        raise ToolError("check.uv_stretch には、テクスチャの大きさ（入力 texture か、パラメーター texture_size）が要ります")
+    else:
+        values = size if isinstance(size, list) else [size, size]
+        if (len(values) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in values)):
+            raise ToolError(f"texture_size は [幅, 高さ] か 1 つの正の整数にしてください: {size!r}")
+        width, height = values
+    threshold = number(parameters, "threshold", 8.0, minimum=0, exclusive=True)
+    thresholds = {key: number(parameters, key, minimum=0) for key in checks.UV_STRETCH_THRESHOLDS if parameters.get(key) is not None}
+    report = checks.uv_stretch(Mesh.load(inputs["mesh"]), width, height, threshold, thresholds)
+    return _finish(report, outputs, parameters, "uv の伸びの検査")

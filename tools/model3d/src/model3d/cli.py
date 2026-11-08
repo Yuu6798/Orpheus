@@ -140,6 +140,9 @@ def parser():
     compare.add_argument("left", type=Path)
     compare.add_argument("right", type=Path)
     compare.add_argument("--no-colors", action="store_true")
+    parts = obj_sub.add_parser("parts", help="list the parts of a parts npz (names, co{i}, f{i}, uv{i}) and check optional normals")
+    parts.add_argument("npz", type=Path)
+    parts.add_argument("--normals", type=Path, help="normals npz (n{i}) to check against the parts")
 
     gen = commands.add_parser("generate", help="initial model from a setting sheet: prepare the image or inspect a generated mesh")
     gen_sub = gen.add_subparsers(dest="generate_command", required=True)
@@ -385,6 +388,11 @@ def command(args):
         from .mesh import Mesh, compare_geometry
         if args.mesh_command == "compare":
             return compare_geometry(Mesh.load(args.left), Mesh.load(args.right), colors=not args.no_colors)
+        if args.mesh_command == "parts":
+            from .mesh import list_parts
+            report = list_parts(args.npz, args.normals)
+            args.failed = 1 if report["problems"] else 0
+            return report
         mesh = Mesh.load(args.src if args.mesh_command == "convert" else args.file)
         if args.mesh_command == "convert":
             mesh.save(args.dst)
