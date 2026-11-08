@@ -475,10 +475,49 @@ uv run mv overlay --base fx_runs/<run_id>/both.mp4 --layer lyrics_png/ --layer s
 ```
 
 - 重ね方は straight α を前提に、sRGB の 8 bit の値のまま `layer × α + under × (1 − α)`（線形化しない）。アルファ 0 の画素は色を持たない前提。
-- コマ数・fps・寸法が合わないものはエラー（勝手に合わせない）。土台が画像なら `--fps` が要り、コマ数はレイヤーから決まる。土台が動画なら fps とコマ数は動画から。
-- run（既定 `<土台のフォルダ>/overlay_runs/<run_id>/`）に `overlay.mp4`・`manifest.json`・`render.log` を残し、`index.json` に key → run_id を登録する。key は土台・各レイヤーの全コマ・音声の sha256 と設定から作り、同じ入力の成功 run は再利用する（`--force` で作り直す）。manifest の `overlay` の欄（土台・レイヤーごとの各コマの sha256・音声・設定）は `fx_overlay.schema.json`（fx-overlay/0.1。`contracts/` の外）で検証してから書く。
+- コマ数・fps・寸法が合わないものはエラー（勝手に合わせない）。土台が画像なら `--fps` が要り、コマ数はレイヤーから決まる（決まらなければ `--frames`）。土台が動画なら fps とコマ数は動画から。
+- run（既定 `<土台のフォルダ>/overlay_runs/<run_id>/`）に `overlay.mp4`・`manifest.json`・`render.log` を残し、`index.json` に key → run_id を登録する。key は土台・各レイヤーの使うコマ・音声の sha256 と設定から作り、同じ入力の成功 run は再利用する（`--force` で作り直す）。manifest の `overlay` の欄（土台・レイヤーごとの使うコマの sha256・音声・レイヤーごとの設定 `options`・書き出しの設定）は `fx_overlay.schema.json`（fx-overlay/0.2。`contracts/` の外）で検証してから書く。
 - 書き出しの後に `probe.check_video`（technical_pass。寸法・fps・コマ数・色タグ・音声の尺）を通す。通らなければ run は failed。
-- 重ね合わせ自体は Pillow・numpy・ffmpeg だけで行うが、書き出しは fx の render（cv2 を import する）なので fx extra が要る。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー。実験的。確かめたのは合成素材（numpy で描いた半透明の箱）だけで、Remotion の実際の連番ではまだ通していない。
+- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー。実験的。Remotion の実際の連番ではまだ通していない。
+
+**レイヤーごとの設定（`--layers`。fx-overlay-layers/0.1）** — `--layer` の代わりに、設定ファイル（`src/mv_pipeline/fx/fx_overlay_layers.schema.json`）で重ねる。
+
+```json
+{
+  "schema_version": "fx-overlay-layers/0.1",
+  "layers": [
+    {"path": "lyrics_png", "first_frame": 3066, "missing": "transparent",
+     "style": {"tint": [255, 250, 255], "shadow": {}, "glow": {"color": [150, 70, 230]}}},
+    {"image": "title.png", "start_s": 2.5, "end_s": 11.5, "fade_in_s": 1.5, "fade_out_s": 1.5,
+     "style": {"backdrop": {}, "glow": {"color": [235, 150, 60], "amount": 0.75, "sigma_px": 18}}}
+  ]
+}
+```
+
+```sh
+uv run mv overlay --base fx_runs/<run_id>/both.mp4 --layers layers.json --audio song.wav
+uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json      # 土台が画像で、コマ数を決めるレイヤーが無いとき
+```
+
+| 項目 | 既定 | 内容 |
+|---|---|---|
+| `path` / `image` | （どちらか） | 連番のフォルダかアルファつきの動画 / 1 枚の透過画像（`start_s`・`end_s` が要る） |
+| `first_frame` | なし | 出力の 0 コマ目に当たる、連番のコマ番号（ファイル名の最後の数字）か動画のコマ番号。曲全体の番号で書いた連番から区間を取り出す。無ければ 0.1 と同じ並びの順で、コマ数が出力と同じであること |
+| `missing` | error | `first_frame` のとき、無いコマを止めるか（`error`）、透明として飛ばすか（`transparent`）。飛ばした数は記録の `missing_frames` |
+| `alpha` | straight | `premultiplied` は色にアルファが掛かったもの（読むときに straight に直す） |
+| `resize` | false | 土台と大きさが違うときに縮尺する（縦横比は 1% 以内。縮めるなら INTER_AREA）。無ければ違いはエラー。連番は 1 枚目だけでなく、読む各コマの寸法を同じ規則で確かめる（途中のコマの寸法の違いを黙って縮尺しない） |
+| `resize_space` | straight | `resize` で縮尺するときの補間。`straight` は色とアルファを別々に補間する（実制作の重ねと同じ。透明な所の色が黒だと、字の縁が暗くなる）。`premultiplied` は色にアルファを掛けてから補間して戻す（縁が暗くならない）。`alpha: premultiplied` のレイヤーは、どちらでもそのまま補間する |
+| `opacity` | 1 | 不透明度 |
+| `start_s` / `end_s` / `fade_in_s` / `fade_out_s` | — / — / 0 / 0 | 1 枚の画像を重ねる時刻 `[start_s, end_s)` と、出入りの秒（smoothstep）。出たままにするなら `fade_out_s` 0 |
+| `style.tint` | なし | 本体の色 = tint × 輝度（白い単色の字に色をつける）。無ければレイヤーの色 |
+| `style.shadow` | amount 0.45・sigma_px 4・gain 1.5 | ぼかしたアルファ × gain（0..1 に切る）× amount の分だけ下を暗くする |
+| `style.glow` | color（必須）・amount 0.9・sigma_px 14 | color × ぼかしたアルファ × amount を足す |
+| `style.backdrop` | amount 0.55・dilate_px 5・iterations 3・sigma_px 26・gain 1.6 | アルファを dilate_px の正方形で iterations 回太らせてぼかした後光の分だけ下を暗くする（明るい所でも字が立つ） |
+
+- 仕上げは表示用の値（sRGB の 0..255）の float の上で、後光 → 影 → 光彩 → 本体（`下 × (1 − α) + 色 × α`）の順に掛け、どの項にも不透明度を掛ける。全部のレイヤーを重ねてから 1 回だけ四捨五入する。これは実制作の 2 つの重ねの式（歌詞の連番に掛けた式・最後のカードに掛けた式）と同じ式・同じ順で、既定値も実制作の値。書き写した式とは float32 の値まで同じ（試験で確認）。
+- 長さ（`sigma_px`・`dilate_px`）は出力の短い辺を 1080 としたときの画素（1920x1080 でも 1080x1920 でもそのままの画素。縮めた下見では一緒に縮む）。
+- 仕上げ・不透明度・`premultiplied`・1 枚の画像の無いレイヤーだけなら、0.1 と同じ式（レイヤーごとに 8 bit へ丸める）で、`--layer` と同じ絵になる。
+- 段階 1 の 0.2 の描画に、見本の字の連番を公開版の歌詞と同じ仕上げで重ね、公開版と並べて見た（白に近い桃の本体・紫の光彩・影）。
 
 ## accept
 
