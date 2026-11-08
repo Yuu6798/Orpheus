@@ -551,3 +551,75 @@ def parts_preview(owners, background=245.0):
     covered = owners >= 0
     image[covered] = PART_PALETTE[owners[covered] % len(PART_PALETTE)]
     return image
+
+
+# ---- 色合わせ（CIELAB） -----------------------------------------------------------------------
+
+SRGB_TO_XYZ = np.array([[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750], [0.0193339, 0.1191920, 0.9503041]])
+D65_WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+def rgb_to_lab(rgb):
+    """sRGB（0〜255、(...,3)）を CIELAB（D65。L は 0〜100、a と b は 0 が無彩色）へ。"""
+    c = np.asarray(rgb, dtype=np.float64) / 255.0
+    linear = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    t = (linear @ SRGB_TO_XYZ.T) / D65_WHITE
+    f = np.where(t > (6 / 29) ** 3, np.cbrt(t), t / (3 * (6 / 29) ** 2) + 4 / 29)
+    return np.stack([116 * f[..., 1] - 16, 500 * (f[..., 0] - f[..., 1]), 200 * (f[..., 1] - f[..., 2])], axis=-1)
+
+
+def lab_to_rgb(lab):
+    """CIELAB（D65）を sRGB（0〜255 の float。範囲の外は切らずに返す）へ。"""
+    lab = np.asarray(lab, dtype=np.float64)
+    fy = (lab[..., 0] + 16) / 116
+    f = np.stack([fy + lab[..., 1] / 500, fy, fy - lab[..., 2] / 200], axis=-1)
+    t = np.where(f > 6 / 29, f ** 3, 3 * (6 / 29) ** 2 * (f - 4 / 29))
+    linear = (t * D65_WHITE) @ np.linalg.inv(SRGB_TO_XYZ).T
+    c = np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * np.sign(linear) * np.abs(linear) ** (1 / 2.4) - 0.055)
+    return c * 255.0
+
+
+def lab_8bit(lab):
+    """CIELAB を OpenCV の 8 ビットの Lab の目盛り（L × 255/100、a と b に +128）へ（記録との見比べ用）。"""
+    lab = np.asarray(lab, dtype=np.float64)
+    return np.stack([lab[..., 0] * 255 / 100, lab[..., 1] + 128, lab[..., 2] + 128], axis=-1)
+
+
+def box_pixels(image, boxes, where):
+    """画像 (H,W,C) の枠 [x0, y0, x1, y1]（右と下は含まない）の画素の色 (N,3) を、全部の枠からつなげて返す。"""
+    height, width = image.shape[:2]
+    pixels = []
+    for box in boxes:
+        x0, y0, x1, y1 = box
+        if x0 < 0 or y0 < 0 or x1 > width or y1 > height or x1 <= x0 or y1 <= y0:
+            raise ToolError(f"{where} の枠 {list(box)} が画像（{width}x{height}）の外か、空です")
+        pixels.append(np.asarray(image[y0:y1, x0:x1, :3], dtype=np.float64).reshape(-1, 3))
+    return np.vstack(pixels)
+
+
+def color_match(reference, model_image, model_boxes, reference_boxes, keep=None):
+    """参照画像の色を、モデルの色に合わせる。モデルの描画（視点の画素）の枠と、参照画像の枠の色の CIELAB の中央値の差を、
+    参照画像の全部の画素の CIELAB に足して sRGB に戻す（0〜255 に切る。アルファは変えない）。keep（参照画像と同じ大きさの 0〜255）を
+    渡すと、keep の外はモデルの中央値の 1 色で塗る（keep の重みで混ぜる）。戻り: (合わせた参照画像, 報告)。"""
+    model_lab = np.median(rgb_to_lab(box_pixels(model_image, model_boxes, "color_match.model")), axis=0)
+    reference_lab = np.median(rgb_to_lab(box_pixels(reference, reference_boxes, "color_match.reference")), axis=0)
+    offset = model_lab - reference_lab
+    raw = lab_to_rgb(rgb_to_lab(reference[..., :3]) + offset)
+    clipped = float(((raw < 0) | (raw > 255)).any(axis=-1).mean())
+    corrected = np.clip(raw, 0, 255)
+    fill = np.clip(lab_to_rgb(model_lab), 0, 255)
+    if keep is not None:
+        if keep.shape[:2] != reference.shape[:2]:
+            raise ToolError(f"keep の大きさ {keep.shape[1]}x{keep.shape[0]} が参照画像と違います")
+        k = np.asarray(keep, dtype=np.float64)
+        k = (k[..., 0] if k.ndim == 3 else k)[..., None] / 255.0
+        corrected = corrected * k + fill * (1 - k)
+    out = np.array(reference, dtype=np.float64)
+    out[..., :3] = corrected
+    report = {"model_lab": [round(float(v), 4) for v in model_lab], "reference_lab": [round(float(v), 4) for v in reference_lab],
+              "offset": [round(float(v), 4) for v in offset], "model_lab_8bit": [round(float(v), 2) for v in lab_8bit(model_lab)],
+              "reference_lab_8bit": [round(float(v), 2) for v in lab_8bit(reference_lab)],
+              "model_pixels": int(sum((b[2] - b[0]) * (b[3] - b[1]) for b in model_boxes)),
+              "reference_pixels": int(sum((b[2] - b[0]) * (b[3] - b[1]) for b in reference_boxes)),
+              "clipped_fraction": round(clipped, 6), "fill_rgb": [round(float(v), 3) for v in fill], "keep": keep is not None}
+    return out, report

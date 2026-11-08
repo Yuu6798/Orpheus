@@ -13,7 +13,7 @@ APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "apply_
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
-                         "review_note", "occlusion_part")
+                         "review_note", "occlusion_part", "color_match")
 VIEW_PARTS_PARAMETERS = ("view", "parts", "margin", "background")
 ALIGNMENT_KEYS = ("model", "reference", "kind")
 MASK_PARAMETERS = ("size", "shapes", "feather")
@@ -49,7 +49,27 @@ def projection_settings(parameters):
     note = parameters.get("review_note")
     if note is not None and (not isinstance(note, str) or not note.strip()):
         raise ToolError("texture.project_reference の review_note は空でない文字列にしてください")
+    color_match_settings(parameters)
     return view, fitted, options, note
+
+
+def color_match_settings(parameters):
+    """texture.project_reference の color_match（{"model": [[x0, y0, x1, y1], …], "reference": […]}）を確かめて返す（無ければ None）。
+    model の枠はモデルの描画（視点の画素）、reference の枠は参照画像の画素。右と下は含まない。"""
+    value = parameters.get("color_match")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"model", "reference"}:
+        raise ToolError(f"color_match は {{\"model\": [[x0, y0, x1, y1], …], \"reference\": [[x0, y0, x1, y1], …]}} にしてください: {value!r}")
+    boxes = {}
+    for key in ("model", "reference"):
+        items = value[key]
+        if (not isinstance(items, list) or not items
+                or not all(isinstance(b, list) and len(b) == 4 and all(isinstance(v, int) and not isinstance(v, bool) for v in b)
+                           and b[2] > b[0] and b[3] > b[1] for b in items)):
+            raise ToolError(f"color_match.{key} は枠 [x0, y0, x1, y1]（整数、x1 > x0、y1 > y0）の並びにしてください: {items!r}")
+        boxes[key] = [list(b) for b in items]
+    return boxes
 
 
 def mask_from(parameters, size):
@@ -261,12 +281,14 @@ def view_parts(inputs, parameters, outputs, context):
                                      "front": {r["name"]: r["front_pixels"] for r in report["parts"] if r["front_pixels"]}}])
 
 
-@register("texture.project_reference", inputs=("mesh", "texture", "reference", "mask", "occlusion"),
+@register("texture.project_reference", inputs=("mesh", "texture", "reference", "mask", "occlusion", "keep"),
           outputs=("texture", "weights", "report", "overlay"),
           selectable=("mesh",),
           summary="参照画像を、目印で合わせた正射影の視点からテクスチャへ写す（z バッファで見え隠れ、面の向き・マスク・アルファで重み。"
                   "select で役割の面だけ）。occlusion（texture.view_parts の手前の部品の地図）を渡すと、ほかの部品に隠れた所へ写さない"
-                  "（自分の部品は occlusion_part、既定はメッシュの名前）。任意の review_note は unresolved に残して needs_review にする")
+                  "（自分の部品は occlusion_part、既定はメッシュの名前）。color_match（モデルの描画と参照画像の枠）で、参照画像の色を"
+                  "CIELAB の中央値の差でモデルの色に合わせてから写す（keep の外はモデルの 1 色）。任意の review_note は unresolved に"
+                  "残して needs_review にする")
 def project_reference(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "texture", "reference"), "texture.project_reference")
     if "texture" not in outputs:
@@ -289,11 +311,21 @@ def project_reference(inputs, parameters, outputs, context):
         occlusion = (owner, depth, names.index(own) if own in names else -1, names)
     elif part is not None:
         raise ToolError("occlusion_part は入力 occlusion（手前の部品の地図）と一緒に使ってください")
+    matching = color_match_settings(parameters)
+    matched = None
+    if matching is not None:                             # 参照画像の色を、モデルの描画の色に合わせてから写す
+        keep = texture.load_mask(inputs["keep"]) if inputs.get("keep") is not None else None
+        front, _ = texture.render_view(mesh, base, view)
+        reference, matched = texture.color_match(reference, front, matching["model"], matching["reference"], keep)
+    elif inputs.get("keep") is not None:
+        raise ToolError("入力 keep は color_match と一緒に使ってください")
     new, weights, report = texture.project_reference(
         mesh, base, reference, view, matrix, offset, faces=chosen["faces"] if chosen else None, mask=mask, occlusion=occlusion,
         **options)
     if occlusion is not None:
         report["occlusion"] = {"parts": occlusion[3], "self": occlusion[3][occlusion[2]] if occlusion[2] >= 0 else None}
+    if matched is not None:
+        report["color_match"] = matched
     report["alignment"] = fitted
     report["units"] = mesh.units
     if "overlay" in outputs:   # 位置合わせの確認: 元のテクスチャの描画に、合わせた参照画像を半分重ねる
