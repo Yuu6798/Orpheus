@@ -137,6 +137,26 @@ def test_an_attribute_that_moved_domain_or_changed_type_is_a_structural_differen
     assert inside["type"] == ["FLOAT", "INT"] and inside["domain"] == ["POINT", "POINT"]
 
 
+def test_named_meshes_that_are_missing_fail_instead_of_being_skipped(tmp_path):
+    left, right = _snapshot(tmp_path, "a"), _snapshot(tmp_path, "b")
+    report = blend_snapshot.compare(left, right, requested=["body", "ghost"])            # ghost はどちらにも無い（打ち間違いなど）
+    assert report["requested_objects_missing"] == {"left": ["ghost"], "right": ["ghost"]}
+    assert not report["exact"] and report["pass"] is False and any("名前を挙げたメッシュがありません" in f for f in report["failures"])
+    found = blend_snapshot.compare(left, right, requested=["body"])
+    assert found["exact"] and found["pass"] and found["requested_objects_missing"] == {"left": [], "right": []}
+
+
+def test_the_operation_checks_the_named_meshes(tmp_path):
+    from model3d import executor
+    blender = stand_in_executable(tmp_path, "blender", STAND_IN)
+    atomic_json(tmp_path / "left.blend", _description())
+    atomic_json(tmp_path / "right.blend", _description())
+    parameters = {"blender": str(blender), "frames": [1, 3], "pose_frames": "all", "evaluate": True, "attributes": ["inside"],
+                  "objects": ["ghost"]}
+    step = executor.run_recipe(_recipe(tmp_path, parameters), tmp_path / "runs")["steps"]["match"]
+    assert step["status"] == "needs_review" and any("名前を挙げたメッシュ" in u for u in step["unresolved"])
+
+
 def test_a_different_frame_rate_base_makes_the_scenes_differ(tmp_path):
     report = blend_snapshot.compare(_snapshot(tmp_path, "a"), _snapshot(tmp_path, "b", fps_base=1.001))
     assert not report["scene_identical"] and report["scene"]["right"]["fps_base"] == 1.001       # 再生の速さは fps / fps_base

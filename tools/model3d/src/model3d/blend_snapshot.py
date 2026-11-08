@@ -36,9 +36,10 @@ def _same(a, b):
     return a is not None and b is not None and a.shape == b.shape and a.dtype == b.dtype and bool(np.array_equal(a, b))
 
 
-def compare(left, right, tolerance=None):
+def compare(left, right, tolerance=None, requested=None):
     """2 つの書き出し（load の戻り）を比べた報告。tolerance（{"coordinate", "matrix", "value"}）を渡せば、その中で合否を出す。
-    渡さなければ、全部が同じ（exact）かで合否を出す。"""
+    渡さなければ、全部が同じ（exact）かで合否を出す。requested（名前を挙げて比べるメッシュの並び）を渡せば、その名前が両方の
+    書き出しにあるかも確かめる（無い名前は黙って外さず、形のつくりの違いにする）。"""
     (lmeta, larr), (rmeta, rarr) = left, right
     lobjects = {o["name"]: o for o in lmeta["objects"]}
     robjects = {o["name"]: o for o in rmeta["objects"]}
@@ -46,6 +47,10 @@ def compare(left, right, tolerance=None):
               "additional_objects": sorted(set(robjects) - set(lobjects)),
               "scene_identical": lmeta["scene"] == rmeta["scene"], "scene": {"left": lmeta["scene"], "right": rmeta["scene"]},
               "objects": []}
+    unfound = None
+    if requested is not None:
+        unfound = {"left": sorted(set(requested) - set(lobjects)), "right": sorted(set(requested) - set(robjects))}
+        report["requested_objects_missing"] = unfound
     for name in sorted(set(lobjects) & set(robjects)):
         lo, ro = lobjects[name], robjects[name]
         lk, rk = lo["key"], ro["key"]
@@ -99,6 +104,7 @@ def compare(left, right, tolerance=None):
                  and all(o["left_vertices"] == o["right_vertices"] and o["polygon_count_identical"] and o["loop_vertices_identical"]
                          and o["polygon_sizes_identical"] for o in report["objects"])
                  and all(info.get("kind_identical", True) for o in report["objects"] for info in o["attributes"].values())
+                 and not (unfound and (unfound["left"] or unfound["right"]))
                  and all(e["vertex_count_identical"] for e in evaluations))
     geometry = all(o["vertices_exact"] and o["uv_identical"] and o["attributes_identical"] and o["matrix_world_identical"]
                    for o in report["objects"])
@@ -109,6 +115,8 @@ def compare(left, right, tolerance=None):
     failures = []
     if not structure:
         failures.append("形のつくり（物体・シーン・頂点と面の数とつなぎ・属性の置き場所と型・骨の名前・姿勢のコマ）が同じではありません")
+    if unfound and (unfound["left"] or unfound["right"]):
+        failures.append(f"名前を挙げたメッシュがありません（左に無い: {unfound['left'][:10]}、右に無い: {unfound['right'][:10]}）")
     if tolerance is None:
         if structure and not report["exact"]:
             failures.append("全部が同じではありません（違いの大きさは max_* を見る。許す幅は tolerance で渡す）")
