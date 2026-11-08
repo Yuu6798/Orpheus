@@ -179,14 +179,19 @@ def rows_digest(key, scale, skip=()):
 
 
 def load_rows(source, clip_sha256, key, scale, out, skip=()):
-    """(毎フレームの測定, キャッシュのパス)。無ければ測って書く。"""
-    path = out / "analysis" / f"{clip_sha256}-rows-{rows_digest(key, scale, skip)}.json"
+    """(毎フレームの測定, キャッシュのパス)。無ければ測って書く。
+
+    名前は sha256 の頭 16 桁ずつにする（Windows のパスの長さの上限に掛かりにくく）。全桁は中に書き、読むときに照合する。"""
+    digest = rows_digest(key, scale, skip)
+    path = out / "analysis" / f"{clip_sha256[:16]}-rows-{digest[:16]}.json"
     if path.is_file():
         try:
-            return read_json(path), path
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            pass    # 壊れたキャッシュは作り直す
-    result = measure_rows(source, key, scale, skip)
+            cached = read_json(path)
+            if cached.get("clip_sha256") == clip_sha256 and cached.get("settings_sha256") == digest:
+                return cached, path
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+            pass    # 壊れたキャッシュや別の内容は作り直す
+    result = {**measure_rows(source, key, scale, skip), "clip_sha256": clip_sha256, "settings_sha256": digest}
     atomic_json(path, result)
     return result, path
 

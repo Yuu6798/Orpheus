@@ -171,6 +171,14 @@ def test_rows_are_cached_by_content_and_settings(shot, tmp_path):
     finally:
         api.close(second)
     assert fit.rows_digest(KEY, 0.5) != fit.rows_digest(KEY, 0.5, [[2, 3]]) != fit.rows_digest(KEY, 1.0)
+    assert len(path.name) == len("0123456789abcdef-rows-0123456789abcdef.json")
+    stale = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**stale, "settings_sha256": "0" * 64, "bottom": [1.0] * stale["frames"]}), encoding="utf-8")
+    third = api.prepare(shot, out=tmp_path / "runs", rows=True)                           # 名前が同じでも中身が違えば測り直す
+    try:
+        assert third.rows["a.mp4"]["bottom"][0] != 1.0 and json.loads(path.read_text(encoding="utf-8"))["settings_sha256"] != "0" * 64
+    finally:
+        api.close(third)
 
 
 def test_frames_the_shot_never_shows_do_not_pull_the_ground(tmp_path):
