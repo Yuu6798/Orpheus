@@ -90,6 +90,7 @@ def _refuse_extension_only(uses, slot):
 
 def choose(document, slot, material=None):
     """取り出す画像を決める。material（番号か名前）を選べば、その材質の画像（ほかの材質の、拡張にしか無い画像では止めない）。
+    同じ名前の材質が違う画像を指すなら、どれか決めずに止める（番号で選ぶ）。
     省くと、slot を使う全部の材質が同じ画像を指すときだけ、その画像（拡張にしか無い画像が 1 つでもあれば止める）。"""
     uses = slot_uses(document, slot)
     if material is not None:
@@ -98,6 +99,11 @@ def choose(document, slot, material=None):
         if not chosen:
             names = [(m, mat.get("name")) for m, mat in enumerate(document.get("materials") or [])]
             raise ToolError(f"材質 {material!r} に {slot} のテクスチャがありません（材質: {names}）")
+        if len({u["image"] for u in chosen}) > 1:             # 同じ名前の材質が、違う画像を指す（どれか決まらない）
+            detail = ", ".join(f"材質 {u['material']} → 画像 {u['image'] if u['image'] is not None else '（拡張だけ）'}"
+                               for u in chosen[:12])
+            raise ToolError(f"名前 {material!r} の材質が {len(chosen)} つあり、{slot} の画像が違います（{detail}）。"
+                            "material に材質の番号を書いてください")
         _refuse_extension_only(chosen[:1], slot)
         return chosen[0], chosen
     if not uses:
