@@ -61,6 +61,12 @@ def _source_tree(entry):
     return {p.relative_to(base).as_posix(): sha256(p) for p in files}
 
 
+def _repo_path(path):
+    """台帳に書くファイルの path。リポジトリの中ならリポジトリからの相対パス（OS によらず / 区切り。key も OS で変わらない）、
+    外ならファイル名だけ（個人のパスを書かない）。"""
+    return path.relative_to(REPO).as_posix() if path.is_relative_to(REPO) else path.name
+
+
 def _check_props(props_path, entry):
     data = read_json(props_path)
     if not isinstance(data, dict):
@@ -132,10 +138,14 @@ def _run_renderer(renderer, entry, composition, props, out_dir, public, concurre
     argv += ["--entry", str(entry), "--composition", composition, "--props", str(props), "--out", str(out_dir), "--concurrency", str(concurrency)]
     if public is not None:
         argv += ["--public", str(public)]
+    # 出力は UTF-8 で読む。Windows の Python の子はパイプへ ANSI コードページ（cp932 など）で書くので、
+    # 子の標準入出力を UTF-8 にそろえる（利用者が PYTHONIOENCODING を決めていればそれを使う。io.run と同じ）
+    env = {**os.environ}
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     with open(log_path, "a", encoding="utf-8", newline="\n") as log:
         log.write(f"$ {' '.join(argv)}\n")
         started = time.monotonic()
-        run = subprocess.run(argv, cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        run = subprocess.run(argv, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
         log.write(run.stdout)       # 標準出力も残す（Remotion の情報や代役の診断はこちらに出る）
         log.write(run.stderr)
         if run.returncode != 0:
@@ -168,12 +178,11 @@ def run_render(props, entry=None, composition=DEFAULT_COMPOSITION, public=None, 
     version = remotion_version()
     # key: 描く絵に効く入力だけ（エントリと import するコード・props・public・コンポジション・描画スクリプト・Remotion の版・
     # 指定したブラウザー）。concurrency は絵に効かないので入れない
-    inputs = {"entry": {"path": str(entry.relative_to(REPO)) if entry.is_relative_to(REPO) else entry.name, "sha256": sha256(entry),
-                        "sources": _source_tree(entry)},
+    inputs = {"entry": {"path": _repo_path(entry), "sha256": sha256(entry), "sources": _source_tree(entry)},
               "props": {"name": props.name, "sha256": sha256(props)},
               "public": None if public is None else {"name": public.name, "files": _files_record(public)},
               "composition": composition,
-              "renderer": {"path": str(renderer.relative_to(REPO)) if renderer.is_relative_to(REPO) else renderer.name, "sha256": sha256(renderer)},
+              "renderer": {"path": _repo_path(renderer), "sha256": sha256(renderer)},
               "remotion_version": version, "browser_executable": os.environ.get("ORPHEUS_BROWSER")}
     key = runs.content_key_for("layer-render", inputs)
     out = (Path(out) if out else props.parent / "layer_runs").resolve()

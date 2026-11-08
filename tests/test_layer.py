@@ -37,7 +37,8 @@ def test_render_is_recorded_with_hashes_versions_and_timing(tmp_path, monkeypatc
     rec = manifest["layer"]
     assert rec["inputs"]["entry"]["path"] == "renderer/src/layer-index.tsx" and rec["inputs"]["props"]["sha256"] == sha256(tmp_path / "props.json")
     assert rec["inputs"]["public"]["files"] == {"font.ttf": sha256(public / "font.ttf")} and rec["inputs"]["remotion_version"] == "4.0.532"
-    assert rec["inputs"]["renderer"]["sha256"] == sha256(STANDIN) and rec["inputs"]["composition"] == "LyricLayer"
+    assert rec["inputs"]["renderer"] == {"path": "tests/data/layer_standin.py", "sha256": sha256(STANDIN)}   # OS によらず / 区切り
+    assert rec["inputs"]["composition"] == "LyricLayer"
     assert "renderer/src/LyricLayer.tsx" in rec["inputs"]["entry"]["sources"] and "concurrency" not in rec["inputs"]
     assert rec["frames_manifest"] == {"path": "frames.json", "count": 6, "sha256": sha256(run_dir / "frames.json")}
     assert rec["browser"] == {"status": "no-browser", "path": None, "version": None} and rec["render_seconds"] > 0
@@ -92,11 +93,12 @@ def test_bad_inputs_and_a_failing_renderer(tmp_path, monkeypatch):
     with pytest.raises(PipelineError, match="--public"):
         layer.run_render(tmp_path / "props.json", public=tmp_path / "nope", out=tmp_path / "runs", renderer=STANDIN)
     broken = tmp_path / "broken.py"
-    broken.write_text("import sys; print('boom', file=sys.stderr); sys.exit(3)\n", encoding="utf-8")
+    broken.write_text("import sys; print('boom 描画に失敗', file=sys.stderr); sys.exit(3)\n", encoding="utf-8")
     with pytest.raises(PipelineError, match="終了コード 3"):
         layer.run_render(tmp_path / "props.json", out=tmp_path / "runs", renderer=broken)
     manifests = [read_json(p) for p in (tmp_path / "runs").glob("*/manifest.json")]
-    assert [m["status"] for m in manifests] == ["failed"] and "boom" in (Path(tmp_path / "runs") / manifests[0]["run_id"] / "render.log").read_text()
+    log = (Path(tmp_path / "runs") / manifests[0]["run_id"] / "render.log").read_text(encoding="utf-8")
+    assert [m["status"] for m in manifests] == ["failed"] and "boom 描画に失敗" in log      # 子の日本語も UTF-8 で残る（Windows でも）
     empty = tmp_path / "empty.py"
     empty.write_text("import sys, json; print(json.dumps({'frames': 0}))\n", encoding="utf-8")
     with pytest.raises(PipelineError, match="連番"):

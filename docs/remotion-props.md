@@ -32,9 +32,9 @@ uv run mv layer render --props props.json --entry my/lyrics.tsx --composition Ly
 
 - 既定のエントリ `renderer/src/layer-index.tsx` は、props（remotion-props/0.1）を読んで見えている行だけを透過で置く最小のコンポジション `LyricLayer`（`renderer/src/LyricLayer.tsx`。拍のコマで字を少し大きくする）。自分のコンポジションは `--entry` / `--composition` で差し替える。
 - 描画は `renderer/render-frames.mjs`（`renderFrames`、`imageFormat: png`）。連番は `<run>/frames/element-<コマ>.png`。
-- run の `manifest.json` に記録: Remotion の版、エントリ・props・public の各ファイルの sha256、コンポジション名、描画スクリプトの sha256、ブラウザーの実行ファイル（Remotion が用意したもの、または `ORPHEUS_BROWSER`）とその版、連番の manifest（`frames.json`。コマごとの sha256）の sha256、描画時間。
+- run の `manifest.json` に記録: Remotion の版、エントリ・props・public の各ファイルの sha256、コンポジション名、描画スクリプトの sha256、ブラウザーの実行ファイル（Remotion が用意したもの、または `ORPHEUS_BROWSER`）とその版、連番の manifest（`frames.json`。コマごとの sha256）の sha256、描画時間。エントリと描画スクリプトの `path` は、リポジトリの中ならリポジトリからの相対パス（OS によらず `/` 区切り）、外ならファイル名だけ。
 - `--twice` は同じ入力で 2 回描き、コマごとの sha256 が全部一致するかを `deterministic` に残す（2 回目の連番は消す）。一致しないことは記録であって合否ではない。
 - 台帳の鍵は入力（エントリ・props・public・コンポジション・Remotion の版・描画スクリプト）から作り、同じ入力の成功 run は再利用する（`--force`。`--twice` は常に描く）。
-- `--renderer` で描画スクリプトを差し替えられる（同じ引数と、標準出力の最後の行の JSON の決まり）。テストは Remotion を呼ばない代役で確かめる。
+- `--renderer` で描画スクリプトを差し替えられる（同じ引数と、標準出力の最後の行の JSON の決まり）。テストは Remotion を呼ばない代役で確かめる。描画スクリプトの標準出力と標準エラーは `render.log`（UTF-8）に残す。Python の描画スクリプトには `PYTHONIOENCODING=utf-8` を渡す（利用者が決めていればそれを使う）。
 - 連番の中身の良し悪しは判定しない。見るのは `mv sheet`、重ねるのは `mv overlay`、timeline を起こすのは `mv gate timeline`。
 - 2026-11-08 にこの環境（Linux、Remotion 4.0.532、Remotion が用意した Chromium）で、192×320・12 コマの `LyricLayer` を `--twice` で描き、全コマの sha256 が一致した。実作品の連番では未確認。
