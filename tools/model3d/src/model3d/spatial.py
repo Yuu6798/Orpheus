@@ -17,11 +17,21 @@ def _shell(radius):
 
 def default_cell(points, occupancy=3.0, rounds=4):
     """升目の大きさの既定: 点の入った升目に、平均で occupancy 個ほど入る大きさ。広がりの体積からの見積もりから始め、
-    点の入った升目の平均の数を数えて縮める（面の上の点は、1 升目の数が升目の大きさの 2 乗に比例するとして直す）。"""
+    点の入った升目の平均の数を数えて縮める（面の上の点は、1 升目の数が升目の大きさの 2 乗に比例するとして直す）。
+    見積もりには、升目より厚い軸だけを使う（平らな面は面積、線は長さから。厚み 0 の軸まで体積に入れると、升目が点の間隔より
+    ずっと小さくなり、ほとんどの問いが全部の点と比べることになる）。3 軸とも升目より厚い点は、体積からの見積もりのまま。"""
     points = np.asarray(points, dtype=np.float64)
     n = len(points)
-    extent = np.maximum(points.max(axis=0) - points.min(axis=0), 1e-12)
-    cell = float(2.0 * (np.prod(extent) / max(n, 1)) ** (1 / 3)) or 1.0
+    extent = points.max(axis=0) - points.min(axis=0)
+    keep = extent > 0
+    while keep.any():
+        cell = float(2.0 * (np.prod(extent[keep]) / max(n, 1)) ** (1 / int(keep.sum()))) or 1.0
+        thin = keep & (extent < cell)
+        if not thin.any():
+            break
+        keep &= ~thin                                      # 升目より薄い軸を外して、残りの軸で見積もり直す
+    else:
+        cell = 1.0                                         # 全部の点が同じ位置（どの大きさでも同じ）
     origin = points.min(axis=0)
     for _ in range(rounds):
         cells = np.floor((points - origin) / cell).astype(np.int64)

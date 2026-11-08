@@ -58,6 +58,19 @@ def test_the_default_cell_keeps_a_few_points_per_filled_cell():
     assert 1 <= occupancy <= 6
 
 
+def test_flat_and_line_points_get_a_cell_from_their_area_or_length():
+    xs, ys = np.meshgrid(np.linspace(0, 1, 60), np.linspace(0, 1, 60))
+    flat = np.c_[xs.ravel(), ys.ravel(), np.zeros(xs.size)]                         # z の厚みが 0 の格子
+    assert spatial.default_cell(flat) > 1 / 59                                       # 点の間隔より大きい（厚み 0 に引かれない）
+    queries = flat + [0.003, 0.002, 1e-4]                                            # 面から少し浮いた問い
+    index, _, info = spatial.nearest(flat, queries)
+    assert info["brute_force"] == 0 and np.array_equal(index, _brute(flat, queries)[0])   # 全部の点と比べずに同じ答え
+    line = np.c_[np.linspace(0, 1, 500), np.zeros(500), np.zeros(500)]               # 線の点
+    index, _, info = spatial.nearest(line, line + [0.0005, 1e-5, 0])
+    assert info["brute_force"] == 0 and np.array_equal(index, np.arange(500))
+    assert spatial.default_cell(np.zeros((4, 3))) == 1.0                             # 全部の点が同じ位置
+
+
 def test_centroids_keep_the_vertex_type_and_handle_mixed_faces():
     vertices = np.array([[0, 0, 0], [3, 0, 0], [0, 3, 0], [3, 3, 0]], dtype=np.float32)
     centroid = transfer.face_centroids(vertices, np.array([[0, 1, 2]]))
