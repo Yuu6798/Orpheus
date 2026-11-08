@@ -157,6 +157,58 @@ def mesh_list_parts(inputs, parameters, outputs, context):
     return StepResult(observations=[observation], unresolved=list(report["problems"]), review=bool(report["problems"]))
 
 
+TRANSFER_PARAMETERS = {"max_distance", "cell"}
+
+
+@register("mesh.transfer_parts", inputs=("source", "target"), outputs=("labels", "mesh", "report"),
+          summary="移し先（1 つのメッシュの npz の co と faces か、model3d のメッシュ）の面ごとに、重心がいちばん近い移し元（部品ごとの npz か、"
+                  "parts のあるメッシュ）の面の部品を付ける。labels は names と面ごとの番号（-1 は付けない面）の npz。移し先が model3d の"
+                  "メッシュなら、mesh に parts を書ける。max_distance より遠い面は付けずに要確認。最近傍は numpy だけで探す。2 つのメッシュは"
+                  "同じ座標にあるものとし、合わせ直さない")
+def mesh_transfer_parts(inputs, parameters, outputs, context):
+    import numpy as np
+    from .. import transfer
+    require(inputs, ("source", "target"), "mesh.transfer_parts")
+    unknown = set(parameters) - TRANSFER_PARAMETERS
+    if unknown:
+        raise ToolError(f"mesh.transfer_parts の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(TRANSFER_PARAMETERS)}）")
+    if "labels" not in outputs and "mesh" not in outputs:
+        raise ToolError("mesh.transfer_parts には outputs の labels（ラベルの npz）か mesh が要ります")
+    max_distance = None if parameters.get("max_distance") is None else float(number(parameters, "max_distance", minimum=0))
+    cell = None if parameters.get("cell") is None else float(number(parameters, "cell", minimum=0, exclusive=True))
+    names, labels, target_mesh, report = transfer.transfer_parts(inputs["source"], inputs["target"], max_distance, cell)
+    report["labels_sha256"] = transfer.labels_digest(names, labels)
+    if "mesh" in outputs:                                  # 書けるかを、何かを書く前に確かめる
+        if target_mesh is None:
+            raise ToolError("移し先が npz のときは mesh を書けません（大きなメッシュの JSON は重いので labels を使ってください）")
+        others = {name: set(faces) for name, faces in target_mesh.parts.items() if name not in names}
+        for i, name in enumerate(names):
+            target_mesh.parts[name] = np.flatnonzero(labels == i).tolist()
+        target_mesh.validate()
+        if str(outputs["mesh"]).lower().endswith(".obj"):  # OBJ は 1 つの面を 1 つのグループ（g）にしか書けない
+            labelled = set(np.flatnonzero(labels >= 0).tolist())
+            clash = sorted(name for name, faces in others.items() if faces & labelled)
+            if clash:
+                raise ToolError(f"移した部品の面が、移し先の今の parts {clash[:5]} にも入っています。OBJ は 1 つの面を 1 つのグループにしか"
+                                "書けないので、OBJ では移した部品が消えます。mesh の出力を .json にしてください")
+            owned = set().union(*(set(faces) for faces in target_mesh.parts.values()))
+            if "default" in target_mesh.parts and len(owned) < target_mesh.face_count:   # どの parts にも入らない面は g default になる
+                raise ToolError(f"どの parts にも入らない面が {target_mesh.face_count - len(owned)} 面あり（部品を付けなかった面など）、"
+                                "OBJ ではそれが部品 default のグループに書かれて、読み戻すと default にまざります。mesh の出力を .json にしてください")
+    if "labels" in outputs:
+        atomic_npz(outputs["labels"], names=np.array(names), labels=labels)
+    if "mesh" in outputs:
+        _save(target_mesh, outputs)
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    unresolved = ([f"重心が max_distance（{max_distance:g}）より遠い面が {report['unresolved']} 面（部品を付けていない）"]
+                  if report["unresolved"] else [])
+    observation = {"kind": "transfer_parts", "parts": len(names), "target_faces": report["target"]["faces"],
+                   "unresolved": report["unresolved"], "distance_max_mm": report["distance"]["max_mm"],
+                   "one_to_one": report["one_to_one"], "labels_sha256": report["labels_sha256"]}
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
 @register("mesh.extrude_profile", inputs=("profile",), outputs=("mesh",),
           summary="凸断面（{\"points\": [[x, y], …]}）を height だけ押し出す。twist_deg / twist_rad・steps・offset")
 def mesh_extrude(inputs, parameters, outputs, context):
