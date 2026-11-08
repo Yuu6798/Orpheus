@@ -46,6 +46,21 @@ def test_frames_are_read_from_a_folder_or_a_frames_list(tmp_path):
     assert checks.frame_files(tmp_path / "frames.json") == {7: folder.resolve() / "f0002.png"}
 
 
+def test_a_frames_list_whose_files_changed_or_vanished_is_refused(tmp_path):
+    folder = _frames(tmp_path / "a")
+    listing = {"schema_version": "model3d-frames/0.1", "directory": str(folder.resolve()), "fps": 10, "resolution": [8, 6],
+               "frames": [{"T": T, "f": T, "file": f"f{T:04d}.png", "sha256": sha256(folder / f"f{T:04d}.png"), "bytes": 1}
+                          for T in (1, 2, 3)], "missing": []}
+    atomic_json(tmp_path / "frames.json", listing)
+    assert sorted(checks.frame_files(tmp_path / "frames.json")) == [1, 2, 3]
+    _poke(folder / "f0002.png", (0, 0), (0, 0, 0))                                          # 一覧を作った後に描き直した
+    with pytest.raises(ToolError, match="今のファイルが違います"):
+        checks.frame_files(tmp_path / "frames.json")                                         # 古い一覧のまま比べない
+    (folder / "f0002.png").unlink()
+    with pytest.raises(ToolError, match="コマがありません"):
+        checks.frame_files(tmp_path / "frames.json")
+
+
 def test_pixel_differences_match_the_prototype_and_alpha_is_counted_apart(tmp_path):
     left, right = _frames(tmp_path / "l", mode="RGBA"), _frames(tmp_path / "r", mode="RGBA")
     _poke(right / "f0002.png", (3, 2), (10 * 2 + 40, 100, 200, 255))           # 色が 1 画素だけ 40 違う

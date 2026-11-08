@@ -381,9 +381,12 @@ FRAME_BANDS = (0, 2, 8, 16, 64, 128)
 
 
 def frame_files(source):
-    """コマのフォルダ（f<T>.png）か、描いたコマの一覧（model3d-frames/0.1 の JSON）から {T: ファイル}。"""
+    """コマのフォルダ（f<T>.png）か、描いたコマの一覧（model3d-frames/0.1 の JSON）から {T: ファイル}。
+    一覧なら、コマのファイルがあることと、一覧の sha256 が今のファイルと同じことを確かめる（一覧を作った後に描き直したフォルダを、
+    古い一覧のまま比べない。render.assemble と同じ決まり）。"""
     import re
     from pathlib import Path
+    from .io import sha256
     source = Path(source)
     if source.is_dir():
         found = {}
@@ -395,7 +398,18 @@ def frame_files(source):
     from . import contracts
     manifest = contracts.load("frames", source)
     directory = Path(manifest["directory"])
-    return {fr["T"]: directory / fr["file"] for fr in manifest["frames"]}
+    found, stale = {}, []
+    for fr in manifest["frames"]:
+        path = directory / fr["file"]
+        if not path.is_file():
+            raise ToolError(f"描いたコマの一覧のコマがありません（T {fr['T']}）: {path}")
+        if fr.get("sha256") and sha256(path) != fr["sha256"]:
+            stale.append(fr["T"])
+        found[fr["T"]] = path
+    if stale:
+        raise ToolError(f"描いたコマの一覧と、今のファイルが違います（{len(stale)} コマ。最初の T: {stale[:10]}）: {source}。"
+                        "描き直したなら、一覧も作り直してください")
+    return found
 
 
 def _frame_arrays(path):
