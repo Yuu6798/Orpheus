@@ -312,12 +312,55 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 |---|---|
 | `mv fx demo DIR [--width 960 --height 540 --duration 10 --fps 24] [--look]` | 合成素材と spec.json を作る（`--look` で夜向けの look の例を足す） |
 | `mv fx render SPEC [--variants base,layers,light,both] [--start S] [--duration D] [--out DIR] [--scale 1.0] [--no-grid] [--force] [--no-look]` | 版ごとの MP4 と 2×2 グリッドを run として出す |
-| `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし） |
+| `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look] [--guides [grid,lights,masks]] [--grid-step S] [--reference VIDEO] [--reference-offset S] [--reference-label TEXT]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし）。目盛りと基準の列は[見比べの補助](#見比べの補助目盛り基準の列比較動画) |
+| `mv fx guides IMAGE --out OUT.png [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
+| `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する |
 
 stdout は短い JSON、進捗は stderr に 1 版 1 行、詳細は run の `render.log`。エラーは `Error: …`（原因と直し方）で終了コード 1。
 `--scale` は出力寸法を偶数に丸めて縮尺する（下見用。key に入る）。`--start/--duration` はショットの長さに収まること。
+
+## 見比べの補助（目盛り・基準の列・比較動画）
+
+どれも**見るための道具**で、合否も、絵の差の数（PSNR・SSIM など）も出さない。エンジンをまたいで画素を比べない決まりは、ここでも同じ。
+
+**元画像の目盛り（`mv fx guides`）**
+
+```sh
+uv run mv fx guides base.png --out grid_full.png                              # 正規化座標（0..1）。0.05 ごと
+uv run mv fx guides base.png --out grid_sword.png --crop 0.45 0.1 0.75 0.4    # 範囲を幅 1600 に拡大。範囲の幅で 0.02 / 0.01 ごと
+uv run mv fx guides depth.png --out grid_depth.png --units px --step 100      # 画素の目盛り（深度は灰色で見せる）
+```
+
+- spec を書く前に、光の位置・`camera.pivot` の箱・`assets.depth.regions` の四隅を元画像から読むための絵。縦線と x の値が緑、横線と y の値が黄。
+- `--crop` の範囲を幅 `--width`（既定 1600）に縮尺してから線と値を描く。`--step` を省くと、正規化座標では範囲の幅で 0.05（半分より広い）・0.02・0.01（0.15 以下）、画素では 100。
+- 正規化座標の目盛りは、実制作の格子の台本と同じ式で、同じ画像と範囲なら画素まで同じ絵になる（段階 1 の静止画で、全体・中くらい・狭い範囲の 3 通りを確かめた）。
+- 16 bit の画像（深度）は 257 で割った灰色、float の画像は 0..1 を 255 倍した灰色で見せる。アルファは捨てる（cv2 で読むのと同じ）。
+
+**静止画シートの目盛り（`mv fx stills --guides`）**
+- 各版のマスに、元画像の正規化座標の格子を重ねる。cover の切り出しと、その時刻の camera（視差 1）で写すので、絵と一緒に動く。深度視差の変位は含めない。
+- `lights` は spec の光の位置（十字）・影響半径（円）・id を桃色で、`masks` は各マスクの 0.5 の輪郭と id を水色で描く。`--guides` だけなら `grid,lights`。
+- `--grid-step` で格子の間隔を決める（省けば、見えている幅から 0.05 / 0.02 / 0.01）。目盛りの有無と間隔は key に入るので、ファイル名が分かれる。
+
+**静止画シートの基準の列（`mv fx stills --reference`）**
+- 基準の動画（公開版の切り出しや `fx legacy` の `legacy.mp4`）の、時刻 `--reference-offset + t` に最も近いコマを、先頭の列に置く（`mv inspect`・`mv sheet` と同じ読み手。復号順のコマ番号）。
+  `--reference-offset` は「基準の動画の何秒目がショットの 0 秒か」。基準の列には目盛りを重ねない。
+- 動画の外の時刻は止める。縦横比が出力と違えば、引き伸ばして並べ、warnings に残す。基準の動画の sha256・offset・ラベル・使ったコマ番号は key と結果の JSON に入る。
+- ラベル（`--reference-label`）は ASCII だけにする（ラベルの字体に日本語が無いため）。
+
+**比較動画（`mv fx compare`）**
+
+```sh
+uv run mv fx compare fx_runs/<run_id> --reference reference.mp4 --reference-label published
+```
+
+- 上の段に基準の動画と `both`（W/2×H/2）、下の段に `base`・`layers`・`light`（W/3×H/3）、最下段にコマ番号・ショットの時刻・基準の動画の時刻を置く。
+  これは実制作の比較の台本と同じ並びで、段階 1 の run で作り直すと、5 つの枠がずれ 0 で重なった（下の段の y は、実制作の台本の 585 を ffmpeg が 4:2:0 の都合で置いた 584 と同じ偶数）。
+- 描き直さない。run の版の MP4（manifest の sha256 と同じであること。違えば止める）を復号して並べる。描いていない版の枠は背景のまま。
+- run の i コマ目の隣に、基準の動画のコマ `round((offset + 区間の開始 + i/fps)·fps)` を置く。コマを 1 対 1 に並べるので、基準の動画の fps は run と同じであること。区間の途中で基準の動画が終われば止める（途中までのファイルは残さない）。
+- 音声は run の版の音声（spec の音声の区間）。書式は版の MP4 と同じ（BT.709）で、書いた後に technical_pass を通す。
+- 出力の既定は `<run の親>/compare-<run_id>-<key8>.mp4`。隣に同じ名前の `.json`（`fx-compare/0.1`。run と各版の sha256、基準の動画の sha256・offset・最初のコマ、並び、技術検査）を書く。
 
 ## run と再現性
 

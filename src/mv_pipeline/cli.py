@@ -83,6 +83,25 @@ def _fx_parser(commands):
     stills.add_argument("--out", type=Path)
     stills.add_argument("--scale", type=float, default=1.0)
     stills.add_argument("--no-look", action="store_true", help="ignore spec.look (render without the look stage)")
+    stills.add_argument("--guides", nargs="?", const="grid,lights",
+                        help="draw guides on each cell: comma-separated grid,lights,masks (default when given: grid,lights)")
+    stills.add_argument("--grid-step", type=float, help="grid spacing in source-normalized units (default: from the visible span)")
+    stills.add_argument("--reference", type=Path, help="video whose nearest frames become the first column")
+    stills.add_argument("--reference-offset", type=float, default=0.0, help="time in the reference video at shot time 0 (seconds)")
+    stills.add_argument("--reference-label", default="reference", help="ASCII label of the reference column")
+    guides = sub.add_parser("guides", help="draw a coordinate grid on a source image (to read positions for a spec)")
+    guides.add_argument("image", type=Path)
+    guides.add_argument("--out", type=Path, required=True, help="PNG to write")
+    guides.add_argument("--crop", type=float, nargs=4, metavar=("X0", "Y0", "X1", "Y1"), help="region to enlarge (in --units)")
+    guides.add_argument("--units", choices=["norm", "px"], default="norm", help="norm: 0..1 of the image (default), px: image pixels")
+    guides.add_argument("--step", type=float, help="grid spacing in --units (default: 0.05/0.02/0.01 from the crop, or 100 px)")
+    guides.add_argument("--width", type=int, default=1600, help="output width in pixels (default 1600)")
+    compare = sub.add_parser("compare", help="one video: a reference next to the variants of a finished render run")
+    compare.add_argument("run_dir", type=Path)
+    compare.add_argument("--reference", type=Path, required=True, help="reference video (same fps as the run)")
+    compare.add_argument("--reference-offset", type=float, default=0.0, help="time in the reference video at shot time 0 (seconds)")
+    compare.add_argument("--reference-label", default="reference", help="ASCII label of the reference tile")
+    compare.add_argument("--out", type=Path, help="default: <run parent>/compare-<run_id>-<key8>.mp4")
     legacy = sub.add_parser("legacy", help="run an external production renderer and record it as a run")
     legacy.add_argument("--renderer", type=Path, required=True)
     legacy.add_argument("--config", type=Path, required=True)
@@ -290,7 +309,14 @@ def fx_command(args):
         return runs.render_run(args.spec, args.variants, args.start, args.duration, args.out, args.scale,
                                not args.no_grid, args.force, _progress, no_look=args.no_look)
     if command == "stills":
-        return runs.stills(args.spec, args.times, args.variants, args.out, args.scale, no_look=args.no_look)
+        return runs.stills(args.spec, args.times, args.variants, args.out, args.scale, no_look=args.no_look, guides=args.guides,
+                           grid_step=args.grid_step, reference=args.reference, reference_offset=args.reference_offset,
+                           reference_label=args.reference_label)
+    if command == "guides":
+        from .fx import guides
+        return guides.write_image_grid(args.image, args.out, args.crop, args.units, args.step, args.width)
+    if command == "compare":
+        return runs.compare_run(args.run_dir, args.reference, args.reference_offset, args.reference_label, args.out, _progress)
     raise PipelineError(f"Unsupported fx command: {command}")
 
 

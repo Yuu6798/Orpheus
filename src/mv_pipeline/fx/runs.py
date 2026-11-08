@@ -6,6 +6,7 @@
     <out>/index.json      キャッシュ key -> run_id（成功した run だけ。失敗しても過去の成功 run と index は壊れない）
     <out>/acceptance.jsonl  人間の判定（追記のみ。technical_pass とは別物）
     <out>/stills-<key8>.png   fx stills のシート
+    <out>/compare-<run_id>-<key8>.mp4 / .json   fx compare の比較動画と記録（--out を省いたとき。run の親に置く）
 
 run_id = `20261024T120000Z-<key 先頭 8>`。同じ入力は同じ key になり、出力が揃って技術検査を通っていれば再描画しない。
 key は**描画に影響する入力すべて**（正規化 spec・全素材の sha256・fx パッケージの指紋・版の集合・区間・出力寸法と scale・
@@ -381,11 +382,15 @@ def render_run(spec_path, variants=None, start=0.0, duration=None, out=None, sca
 
 # ---- stills ------------------------------------------------------------------
 
-def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False):
+def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False, guides=None, grid_step=None,
+           reference=None, reference_offset=0.0, reference_label="reference"):
     """行=時刻・列=版の静止画シートを <out>/stills-<key8>.png に書く（同じ入力は同じファイル名）。
-    no_look=True なら spec の look を外して描く（look の有無はファイル名＝key に出る）。"""
+    no_look=True なら spec の look を外して描く（look の有無はファイル名＝key に出る）。
+    guides: 各マスに重ねる印（"grid,lights,masks" の部分集合。guides.parse_kinds）。grid_step は格子の間隔（省けば見えている幅から）。
+    reference: 基準の動画。先頭の列に、時刻 reference_offset + t に最も近いコマを置く（印は重ねない）。"""
     from . import assets as fxassets
     from . import compare, render
+    from . import guides as fxguides
 
     began = time.monotonic()
     sp, look_state = resolve_look(fxspec.load_spec(spec_path), no_look)
@@ -393,14 +398,138 @@ def stills(spec_path, times, variants=None, out=None, scale=1.0, no_look=False):
     times = resolve_times(sp, times)
     size = render.scaled_size(sp, scale)
     assets = fxassets.describe(sp)
-    key = content_key("stills", sp, assets, {"variants": list(variants), "times": times, "size": list(size),
-                                              "scale": float(scale), "libraries": render.library_versions()})
+    kinds = fxguides.parse_kinds(guides)
+    if grid_step is not None and not 0 < grid_step <= 1:
+        raise PipelineError(f"--grid-step は 0 より大きく 1 以下（元画像の正規化座標）にしてください: {grid_step}")
+    extra = {"variants": list(variants), "times": times, "size": list(size), "scale": float(scale), "libraries": render.library_versions()}
+    if kinds:
+        extra["guides"] = {"kinds": list(kinds), "grid_step": grid_step}
+    ref = None
+    if reference is not None:
+        ref = reference_cells(reference, times, reference_offset, size, reference_label)
+        extra["reference"] = {key: ref[key] for key in ("sha256", "offset_s", "label", "frames_used")}
+    key = content_key("stills", sp, assets, extra)
     ctx = render.prepare(sp, scale)
-    sheet = compare.stills_sheet(ctx, times, variants, ctx.variant_notes())
+    sheet = compare.stills_sheet(ctx, times, variants, ctx.variant_notes(), kinds, grid_step, ref)
     path = (Path(out) if out else default_out(sp)).resolve() / f"stills-{key[:8]}.png"
     compare.save_png_atomic(sheet, path)
-    return {"path": str(path), "times": times, "variants": list(variants), "cell": list(size), "look": look_state,
-            "sheet": [sheet.shape[1], sheet.shape[0]], "warnings": list(ctx.warnings), "depth": ctx.depth_info,
+    result = {"path": str(path), "times": times, "variants": list(variants), "cell": list(size), "look": look_state,
+              "sheet": [sheet.shape[1], sheet.shape[0]], "warnings": list(ctx.warnings), "depth": ctx.depth_info}
+    if kinds:
+        result["guides"] = list(kinds)
+    if ref:
+        result["reference"] = {key: ref[key] for key in ("path", "sha256", "offset_s", "label", "fps", "frames_used", "warnings")}
+    return {**result, "seconds": round(time.monotonic() - began, 1)}
+
+
+def _ascii_label(label, option):
+    if not label or not all(32 <= ord(ch) < 127 for ch in label):
+        raise PipelineError(f"{option} は ASCII の文字で書いてください（ラベルの字体に日本語が無いため）: {label!r}")
+    return label
+
+
+def reference_cells(path, times, offset, size, label):
+    """stills の基準の列: 各時刻 offset + t に最も近いコマを size に縮めたもの（mv inspect と同じ読み手。復号順のコマ番号）。"""
+    import math
+
+    from .. import validate
+    from ..inspection import video
+    label = _ascii_label(label, "--reference-label")
+    path = Path(path).resolve()
+    info = video.describe(path)
+    indices = [validate.frame_at(offset + t, info["fps"]) for t in times]
+    if min(indices) < 0:
+        raise PipelineError(f"--reference-offset {offset:g} では基準の動画の 0 秒より前を指します（時刻 {min(times):g}）")
+    grabbed = video.grab(path, indices, info, size=tuple(size))
+    missing = [t for t, i in zip(times, indices) if i not in grabbed]
+    if missing:
+        raise PipelineError(f"基準の動画に、時刻 {missing} のコマがありません（offset {offset:g} 秒。--reference-offset と動画の長さを確かめてください）")
+    warnings = []
+    if not math.isclose(info["width"] / info["height"], size[0] / size[1], rel_tol=0.01):
+        warnings.append(f"基準の動画 {info['width']}x{info['height']} は出力 {size[0]}x{size[1]} と縦横比が違い、引き伸ばして並べています")
+    return {"label": label, "path": str(path), "sha256": sha256(path), "offset_s": float(offset), "fps": info["fps"],
+            "frames": [grabbed[i] for i in indices], "frames_used": indices, "times": [i / info["fps"] for i in indices],
+            "warnings": warnings}
+
+
+# ---- compare -------------------------------------------------------------------
+
+COMPARE_SCHEMA = "fx-compare/0.1"
+
+
+def compare_run(run_dir, reference, offset=0.0, label="reference", out=None, progress=None):
+    """成功した render の run の各版と基準の動画を 1 本に並べた比較動画を書く（再描画しない）。
+
+    基準の動画のコマ round((offset + 区間の開始 + i/fps)·fps) を、run の i コマ目と並べる（基準の動画と run の fps は同じであること）。
+    出力の既定は <run の親>/compare-<run_id>-<key8>.mp4 と、隣に同じ名前の .json（入力の sha256・並び・技術検査）。
+    """
+    from .. import validate
+    from ..inspection import video
+    from . import compare, render
+
+    began = time.monotonic()
+    say = progress or (lambda message: None)
+    label = _ascii_label(label, "--reference-label")
+    run_dir = Path(run_dir).resolve()
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise PipelineError(f"run の manifest.json が見つかりません: {run_dir}")
+    manifest = read_json(manifest_path)
+    if manifest.get("schema_version") != RUN_SCHEMA or manifest.get("status") != "succeeded" or "interval" not in manifest:
+        raise PipelineError(f"成功した fx render の run を指定してください（{manifest.get('schema_version')} / {manifest.get('status')}）")
+    sources, recorded = {}, {}
+    for name, item in manifest.get("variants", {}).items():
+        path = run_dir / item["path"]
+        if not path.is_file() or sha256(path) != item["sha256"]:
+            raise PipelineError(f"run の {item['path']} が manifest の記録と違います（消えたか、書き換わっています）")
+        sources[name], recorded[name] = path, {"path": item["path"], "sha256": item["sha256"], "empty": item.get("empty", False)}
+    if not sources:
+        raise PipelineError("run に版の動画がありません")
+    size = tuple(manifest["output"]["size"])
+    fps, n_frames, start = manifest["interval"]["fps"], manifest["interval"]["frames"], manifest["interval"]["start"]
+    reference = Path(reference).resolve()
+    info = video.describe(reference)
+    if abs(info["fps"] - fps) > 1e-3 * fps:
+        raise PipelineError(f"基準の動画の fps {info['fps']:g} が run の fps {fps:g} と違います（コマを 1 対 1 に並べるため、同じ fps の動画にしてください）")
+    first = validate.frame_at(offset + start, info["fps"])
+    if first < 0:
+        raise PipelineError(f"--reference-offset {offset:g} では基準の動画の 0 秒より前を指します")
+    reference_sha = sha256(reference)
+    key = content_key_for("compare", {"run_id": manifest["run_id"], "variants": {v: r["sha256"] for v, r in recorded.items()},
+                                      "reference": reference_sha, "offset": float(offset), "first_frame": first, "label": label,
+                                      "engine": fingerprint()})
+    out = Path(out).resolve() if out else run_dir.parent / f"compare-{manifest['run_id']}-{key[:8]}.mp4"
+    layout = compare.compare_layout(size)
+    top = layout["tiles"]["reference"][2:]
+    audio_source = next((path for path in sources.values() if probe.inspect(path)["audio"]), None)
+    audio = {"path": audio_source, "start": 0.0, "duration": n_frames / fps} if audio_source else None
+    notes = {v: {"empty": r["empty"]} for v, r in recorded.items()}
+
+    def footer(i):
+        return f"frame {i}   t={start + i / fps:.3f}s   {label} {(first + i) / info['fps']:.3f}s"
+
+    reader = video.frames(reference, top, info, start=first, end=first + n_frames)
+    say(f"[fx] compare: {', '.join(sources)} + {label}（{n_frames} フレーム）")
+    try:
+        written = compare.write_compare(out, (image for _, image in reader), sources, notes, size, fps,
+                                        manifest["output"].get("crf", 18), n_frames, label, footer, audio)
+    finally:
+        reader.close()          # 途中で止まっても、基準の動画の復号（ffmpeg）を止める
+    checks = probe.check_video(out, width=size[0], height=size[1], fps=fps, frames=n_frames, audio=audio is not None,
+                               audio_s=n_frames / fps if audio else None, bt709=True)
+    record = {"schema_version": COMPARE_SCHEMA, "created_at": now(), "key": key,
+              "run": {"run_id": manifest["run_id"], "dir": str(run_dir), "interval": manifest["interval"], "variants": recorded},
+              "reference": {"path": str(reference), "sha256": reference_sha, "label": label, "offset_s": float(offset),
+                            "fps": info["fps"], "first_frame": first, "frames": n_frames},
+              "layout": {name: list(tile) for name, tile in layout["tiles"].items()},
+              "output": {"path": str(out), "sha256": sha256(out), "frames": checks["frames"], "technical_pass": checks["pass"],
+                         "checks": checks, "render_seconds": written["seconds"]},
+              "engine": {"version": fx.VERSION, "fingerprint": fingerprint()}}
+    atomic_json(out.with_suffix(".json"), record)
+    if not checks["pass"]:
+        raise PipelineError(f"比較動画が技術検査に通りませんでした（{checks['failures']}）。詳細: {out.with_suffix('.json')}")
+    return {"path": str(out), "record": str(out.with_suffix(".json")), "frames": checks["frames"], "technical_pass": True,
+            "reference": {"first_frame": first, "offset_s": float(offset)}, "variants": list(sources),
             "seconds": round(time.monotonic() - began, 1)}
 
 

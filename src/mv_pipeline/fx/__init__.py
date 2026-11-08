@@ -17,10 +17,12 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
 版（variants）は VARIANTS。fingerprint() は fx パッケージの全ファイル（.py と schema）から作る
 エンジン指紋で、run の manifest とキャッシュ key に入れる。
 
-モジュールの構成（CLI は `mv fx demo|render|stills|legacy|accept`。詳細は docs/fx.md）:
+モジュールの構成（CLI は `mv fx demo|render|stills|guides|compare|legacy|accept`。詳細は docs/fx.md）:
   - spec / timeline / assets / camera / layers / light / color / render: 描画の中核（cv2 を使う。上の使い方）。
   - look: 最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式。spec に look があるときだけ、全版に同じものを掛ける）。
-  - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート。
+  - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート（基準の列つき）と、
+    基準の動画と並べた比較動画（`mv fx compare`）。
+  - guides: 元画像の目盛り（`mv fx guides`）と、描いたコマに重ねる格子・光・マスクの印（`mv fx stills --guides`）。
   - probe: ffmpeg だけで行う構造検査 check_video（technical_pass。ffprobe 不要）。
   - runs: run ディレクトリ・manifest・キャッシュ（index.json）・stills・accept。key は描画に影響する入力すべて
     （正規化 spec・素材の sha256・fingerprint()・版の集合・区間・出力寸法と scale・ライブラリ版）から作る。入力を足したら key にも足す。
