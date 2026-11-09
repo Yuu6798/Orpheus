@@ -128,6 +128,24 @@ def _fx_parser(commands):
     accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
     accept.add_argument("--by", required=True)
     accept.add_argument("--note")
+    timeline = sub.add_parser("timeline", help="fx-timeline: several fx shots joined by cut, xfade, black and flash")
+    steps = timeline.add_subparsers(dest="timeline_command", required=True)
+    demo = steps.add_parser("demo", help="write three demo shot specs and a timeline that uses every transition")
+    demo.add_argument("dir", type=Path)
+    demo.add_argument("--width", type=int, default=320)
+    demo.add_argument("--height", type=int, default=180)
+    demo.add_argument("--duration", type=float, default=6.0)
+    demo.add_argument("--fps", type=int, default=24)
+    render = steps.add_parser("render", help="render timeline.mp4 and timeline.json (for mv gate check) as a run")
+    render.add_argument("timeline", type=Path)
+    render.add_argument("--start", type=float, default=0.0)
+    render.add_argument("--duration", type=float)
+    render.add_argument("--out", type=Path, help="default: <timeline dir>/fx_runs")
+    render.add_argument("--scale", type=float, default=1.0)
+    render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    render.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
+    plan = steps.add_parser("plan", help="print the shots and transitions with their times and nearest beats")
+    plan.add_argument("timeline", type=Path)
 
 
 def _dance_parser(commands):
@@ -307,6 +325,14 @@ def fx_command(args):
         from .fx import legacy
         return legacy.run_legacy(args.renderer, args.config, args.start, args.duration, args.python, args.width,
                                  args.height, args.fps, args.out, args.timeout, args.cwd, _progress, args.units)
+    if command == "timeline":
+        from .fx import sequence
+        if args.timeline_command == "plan":                 # 描かないので cv2 は要らない
+            return sequence.plan_text(args.timeline)
+        _require_fx()
+        if args.timeline_command == "demo":
+            return sequence.demo(args.dir, args.width, args.height, args.duration, args.fps)
+        return sequence.render_run(args.timeline, args.out, args.start, args.duration, args.scale, args.force, _progress, args.quiet)
     _require_fx()
     from .fx import demo, runs
     if command == "demo":

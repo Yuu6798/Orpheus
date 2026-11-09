@@ -3,6 +3,7 @@
 1 枚絵（と任意の深度・マスク）から、**カメラ・空間レイヤー・局所光**で動画を作る。同じ素材・同じ区間で
 「現行版 / レイヤー / 局所光 / 両方」を並べて比べるための道具で、CLI と設定ファイルだけで動く。
 仕上げに、実制作と同じ式の**色調整・周辺減光・粒状感（look）**を全版に掛けられる（任意。[look](#look色調整周辺減光粒状感)）。
+いくつものショットは **fx-timeline** でカット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にできる（[timeline](#timeline複数のショットをつなぐfx-timeline01)）。
 
 - 決定論: 同じ spec・seed・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
 - **実験的**: 設定スキーマ `fx-shot/0.2`（`fx-shot/0.1` の spec もそのまま読める）は `contracts/` の外（`src/mv_pipeline/fx/`）にある。`contracts/` への昇格はユーザー承認が要る。
@@ -370,7 +371,10 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
-| `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する |
+| `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
+| `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | 3 つのショットの spec と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
+| `mv fx timeline plan TIMELINE` | ショット・つなぎ・秒・いちばん近い拍の表（描かない。fx extra なしで動く） |
+| `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す |
 
 stdout は短い JSON、進捗は stderr に 1 版 1 行、詳細は run の `render.log`。エラーは `Error: …`（原因と直し方）で終了コード 1。
 `--scale` は出力寸法を偶数に丸めて縮尺する（下見用。key に入る）。`--start/--duration` はショットの長さに収まること。
@@ -541,6 +545,85 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 - **見えるものが無い時刻は、overlays の無い spec とバイト単位で同じ**（重ねの経路を通らない）。見える時刻でも、重ねの届かない画素は同じ値になる。
 - run の key には、使うコマ（ショット全体）と画像の sha256 が入る。連番の 1 コマを描き直せば、作り直しになる。
 - 段階 1 の 0.2 の spec に見本の字の連番を overlays として重ねた描画は、書き出した版に `mv overlay` で重ねたものと平均 1.3〜2.6/255 の差だった（向こうは圧縮が 2 度掛かる分）。
+
+## timeline（複数のショットをつなぐ・fx-timeline/0.1）
+
+いくつもの fx ショット（fx-shot の spec）を時刻順に並べ、カット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にする。
+設定は `fx-timeline/0.1`（`src/mv_pipeline/fx/fx_timeline.schema.json`。実験的で、`contracts/` の外）。
+
+```sh
+uv run mv fx timeline demo projects/fxtimeline                     # 3 つのショットの spec と、つなぎを全部使う timeline.json
+uv run mv fx timeline plan projects/fxtimeline/timeline.json       # ショット・つなぎ・秒・いちばん近い拍の表（描かない）
+uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp4 と timeline.json を run として出す
+```
+
+```json
+{"schema_version": "fx-timeline/0.1", "output": {"width": 1080, "height": 1920, "fps": 30, "crf": 18}, "duration_s": 24.9,
+ "beats": {"path": "beats.json"}, "audio": {"path": "song.wav", "offset_s": 132.7},
+ "look": {"vignette": {}, "grain": {}},
+ "shots": [{"spec": "shots/a.json", "start": 0, "transition_in": {"type": "black", "duration_s": 0.5}},
+           {"spec": "shots/b.json", "start": {"beat": 4}, "offset_s": 0.5, "transition_in": {"type": "xfade", "duration_s": 0.4}},
+           {"spec": "shots/c.json", "start": 3.7, "snap": true, "transition_in": {"type": "flash", "strength": 0.6}}]}
+```
+
+- **ショット**は `start` の昇順に並べる。各ショットは、次のショットの `start` まで続く（最後のショットは `duration_s` まで）。最初のショットは 0 秒から始める。
+- 各ショットの描き方:
+  - spec の 1 コマを描く。版は `variant`（既定 both）で選ぶ。
+  - 大きさは timeline の出力の大きさ。
+  - 描く時刻はショットの中の時刻 `offset_s + (t − start)`。
+  - spec の look と overlays は、ショットの中で掛かる。
+  - spec の audio は使わない。音は timeline の `audio` を使い、`offset_s` は timeline の 0 秒に当てる音声の中の秒。
+    spec の audio のファイルは無くても止まらず、key にも入らない。
+- **時刻**は次のどれかで書ける。dance と同じ書き方で、拍は `beats` から引く。
+  - 秒
+  - `{"beat": n}`
+  - `{"bar": n, "beat": m}`
+  - `{"frame": n}`
+- **snap**: `snap: true` で、start をいちばん近い拍に寄せる。
+  - 0 秒以下は 0 秒にする。
+  - 終わりの 0.01 秒以内は終わりにする。
+  - 同じ距離なら前の拍を選ぶ。
+- **つなぎ**（`transition_in`。既定は cut）は実制作のレンダラと同じ式で、表示の値（0..255 の float）の上で計算する。
+
+| type | 式 |
+|---|---|
+| `cut` | そのまま |
+| `xfade` | `start` から `duration_s` の間、前のショットを描き続けて 前·(1 − a) + 今·a（a = smoothstep((t − start)/duration_s)） |
+| `black` | `start` から `duration_s` の間、今·smoothstep((t − start)/duration_s) |
+| `flash` | `start` から `window_s` の間、今 + (`color` − 今)·`strength`·exp(−(t − start)·`rate`)。既定は `strength` 0.75、`color` (235, 210, 255)、`window_s` 0.30 秒、`rate` 13 |
+
+- **look**: timeline の `look`（fx-shot と同じ書き方）は、つないだ後の全体に掛ける。
+  - 時刻は timeline の t を使う。
+  - 実制作と同じく、色調整・周辺減光・粒状感はつなぎの後に掛かる。そのため、黒から上げる頭のコマにも粒が乗る。
+  - ショットの spec の look は、つなぐ前に掛かる。全体で揃えたい仕上げは timeline の look に置く。
+  - 最後に 0..255 に切り、切り捨てる。
+- **止まるもの**:
+  - 最初のショットが 0 秒から始まらない。
+  - 長さが 0 以下のショットがある。snap で同じ拍に寄った場合もこれに当たる。
+  - 最初のショットに xfade を付けた。
+  - xfade や black がショットより長い。
+  - beats が無いのに snap を使った。
+- **注意（warnings）として残るもの**:
+  - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade なら、その間も前のショットを描くので、その分も数える。
+  - spec の fps が timeline の fps と違う。
+  - snap で start が 0.25 秒より大きく動いた。
+- **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
+  - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
+  - manifest の kind は timeline で、版は `timeline` の 1 つ。
+  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも。spec の audio は入らない）、timeline の音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
+  - 同じ入力なら描き直さない（`--force` で描き直す）。ショットの spec を 1 つ変えれば描き直しになる。
+- **`timeline.json`** は `mv gate check` が読む形。dance-timeline/0.1 に `beats`・`seam_info`・`flash_info` を足したもので、字幕は無い。
+  - 切れ目はショットの頭。kind はつなぎの種類。
+  - フラッシュは flash のつなぎ。mode は `lerp_display`。
+  - `beat_exempt` と `align`（beat / downbeat）はショットに書く。
+  - gate の設定に `beats` が無ければ、timeline の拍で照合する。
+- **字幕**は描かない。歌詞は書き出した `timeline.mp4` に `mv overlay` で重ねる（実制作と同じく、仕上げの後に字が来る）。
+- 前処理したショットはメモリに 2 つまで持つ。順に描くので、古いものから捨てる。同じ spec のショットは前処理を共有する。
+- **実制作との比較**: つなぎの式・snap・ショットの区切り・各コマのショットは、実制作の式を写した関数と合成の配列で比べ、全コマでバイト単位で同じだった（`tests/test_fx_sequence.py`）。
+  - さらに、実制作の 2 つのレンダラのファイルから snap・ショットの組み立て・`shot_index`・`render_frame` をそのまま抜き出して実行した。描画の部品はスタブに置き換え、合成の画で比べた。
+  - 横の MV の 46 ショットの設定（cut 23・xfade 13・black 1・flash 9。拍は合成の 2 通り。設定の拍の記録が手元に無いため）では、次のとおりだった。ショットの区切りは一致し、5760 コマすべてでショットが同じ、つないだ画は比べた 5689 コマすべてで同じ。最後の 3 秒は実制作だけが暗転するので比べていない。
+  - 縦の Shorts の 9 ショットの設定（cut だけ）でも、747 コマすべてでショットと画が同じだった。
+  - 区間の頭からの秒に直すときは、丸めた値で書く。例えば `round(t − 頭, 9)`、またはコマ番号 `{"frame": n}`。引き算のままだと、コマの時刻ちょうどに始まるショットが 1 コマずれる。
 
 ## accept
 
