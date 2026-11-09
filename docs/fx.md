@@ -372,7 +372,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
-| `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | 3 つのショットの spec と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
+| `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
 | `mv fx timeline plan TIMELINE` | ショット・つなぎ・秒・いちばん近い拍の表（描かない。fx extra なしで動く） |
 | `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す |
 
@@ -548,11 +548,11 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 
 ## timeline（複数のショットをつなぐ・fx-timeline/0.1）
 
-いくつもの fx ショット（fx-shot の spec）を時刻順に並べ、カット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にする。
+いくつものショット（fx-shot の spec か、動画）を時刻順に並べ、カット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にする。
 設定は `fx-timeline/0.1`（`src/mv_pipeline/fx/fx_timeline.schema.json`。実験的で、`contracts/` の外）。
 
 ```sh
-uv run mv fx timeline demo projects/fxtimeline                     # 3 つのショットの spec と、つなぎを全部使う timeline.json
+uv run mv fx timeline demo projects/fxtimeline                     # spec のショット 3 つと動画のショット 1 つ、つなぎを全部使う timeline.json
 uv run mv fx timeline plan projects/fxtimeline/timeline.json       # ショット・つなぎ・秒・いちばん近い拍の表（描かない）
 uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp4 と timeline.json を run として出す
 ```
@@ -563,17 +563,37 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
  "look": {"vignette": {}, "grain": {}},
  "shots": [{"spec": "shots/a.json", "start": 0, "transition_in": {"type": "black", "duration_s": 0.5}},
            {"spec": "shots/b.json", "start": {"beat": 4}, "offset_s": 0.5, "transition_in": {"type": "xfade", "duration_s": 0.4}},
-           {"spec": "shots/c.json", "start": 3.7, "snap": true, "transition_in": {"type": "flash", "strength": 0.6}}]}
+           {"spec": "shots/c.json", "start": 3.7, "snap": true, "transition_in": {"type": "flash", "strength": 0.6}},
+           {"video": {"path": "clips/walk.mp4", "speed": 0.9, "offset_s": 0.5},
+            "camera": {"keys": [{"t": 0, "zoom": 1.0, "center": [0.55, 0.5]}, {"t": 2.7, "zoom": 1.04, "ease": "in_out"}]}, "start": 6.4},
+           {"video": {"path": "clips/fire.mp4", "speed": 0.8, "loop": {"frames": [6, 24], "mix": 0.5}}, "start": 9.1}]}
 ```
 
 - **ショット**は `start` の昇順に並べる。各ショットは、次のショットの `start` まで続く（最後のショットは `duration_s` まで）。最初のショットは 0 秒から始める。
-- 各ショットの描き方:
+  ショットは `spec`（fx-shot の spec）か `video`（動画）のどちらか一方を持つ。
+- **spec のショット**の描き方:
   - spec の 1 コマを描く。版は `variant`（既定 both）で選ぶ。
   - 大きさは timeline の出力の大きさ。
   - 描く時刻はショットの中の時刻 `offset_s + (t − start)`。
   - spec の look と overlays は、ショットの中で掛かる。
   - spec の audio は使わない。音は timeline の `audio` を使い、`offset_s` は timeline の 0 秒に当てる音声の中の秒。
     spec の audio のファイルは無くても止まらず、key にも入らない。
+- **動画のショット**の描き方:
+  - 動画のコマを、fx の静止画と同じ道筋で描く。出力の縦横比で中央を切り出し（cover）、出力の大きさに縮め、線形にしてカメラを掛け、sRGB に戻す。
+    同じコマが続く動画のショットは、そのコマを絵にした fx の静止画のショット（深度・layers・lights なし）とバイト単位で同じになる。
+  - カメラは `camera.keys`（fx-shot の keys と同じ書き方で、`t`・`zoom`・`center`・`ease`）。時刻はショットの中の秒 `t − start`、`center` は動画の正規化座標。既定は寄りなし・中央。
+  - 動画のコマ位置は、実制作のレンダラと同じ式で決める。
+    - 既定: 位置 = (`offset_s` + (t − start)·`speed`)·`fps`。`fps` は既定でファイルの fps で、書けば上書きできる（実制作の縦のレンダラは 16 に決めていた）。
+    - `loop`: コマ `frames[0]`〜`frames[1]` を繰り返す。τ = (t − start) + `start_s`、p = (τ·fps·`speed`) mod (区間 − `crossfade_frames`) で、
+      位置は `frames[0]` + p。p が `crossfade_frames`（既定 6）より小さい間は、区間の頭（重み p/crossfade_frames）と尻尾（残りの重み）を重ねる。
+      `crossfade_frames` は区間の半分まで（それより長いと、重ねが終わる前に折り返して境目で絵が飛ぶ）。
+      `mix` > 0 なら、時刻 τ·`mix_speed` + `mix_offset_s`（既定 0.77・0.41）のもう 1 本を重み `mix` で重ねる（同じ繰り返しを目立たなくする。既定 0。実制作は 0.5）。
+      `loop` と `offset_s` は一緒に使えない（ループの中の位置は `loop.start_s`）。
+  - 小数の位置は前後のコマを `cv2.addWeighted` で混ぜる。位置は 0〜コマ数 − 1.001 に止めるので、動画の終わりを越えると最後のコマのままになる。
+    loop の重ねは float で足して切り捨てる。どれも実制作と同じ。
+  - 読み方: タグが bt709 の動画は ffmpeg で行列を指定して読み、タグの無い動画は OpenCV で読む（dance と同じ読み手）。
+    復号したコマは、動画のショットごとに 8 コマ（loop は区間 + 2 コマ）まで持つ。
+  - 実制作の縦のレンダラの `breath`（ループの炎の明るさの揺れ）は演出なので、ここには無い。
 - **時刻**は次のどれかで書ける。dance と同じ書き方で、拍は `beats` から引く。
   - 秒
   - `{"beat": n}`
@@ -603,16 +623,21 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 最初のショットに xfade を付けた。
   - xfade や black がショットより長い。
   - beats が無いのに snap を使った。
+  - ショットに `spec` と `video` の両方がある、またはどちらも無い。動画のショットに `offset_s`・`variant` を、spec のショットに `camera` を書いた。
+  - 動画が見つからない。`loop` と `offset_s` を一緒に書いた。ループの区間が `crossfade_frames` より長くない、または `crossfade_frames` が区間の半分より長い。カメラのキーの `t` が昇順でない。
+  - 描くとき: ループの終わりのコマが動画の最後のコマを越えている。
 - **注意（warnings）として残るもの**:
   - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade なら、その間も前のショットを描くので、その分も数える。
   - spec の fps が timeline の fps と違う。
   - snap で start が 0.25 秒より大きく動いた。
+  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る（これも次のショットの xfade の間まで見る）。
 - **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
   - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
   - manifest の kind は timeline で、版は `timeline` の 1 つ。
-  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも。spec の audio は入らない）、timeline の音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
-  - 同じ入力なら描き直さない（`--force` で描き直す）。ショットの spec を 1 つ変えれば描き直しになる。
+  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも。spec の audio は入らない）か動画の sha256、timeline の音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
+  - 同じ入力なら描き直さない（`--force` で描き直す）。ショットの spec や動画を 1 つ変えれば描き直しになる。
 - **`timeline.json`** は `mv gate check` が読む形。dance-timeline/0.1 に `beats`・`seam_info`・`flash_info` を足したもので、字幕は無い。
+  - `clips` の kind は、spec のショットが `fx-shot`、動画のショットが `video`。
   - 切れ目はショットの頭。kind はつなぎの種類。
   - フラッシュは flash のつなぎ。mode は `lerp_display`。
   - `beat_exempt` と `align`（beat / downbeat）はショットに書く。
@@ -624,6 +649,12 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 横の MV の 46 ショットの設定（cut 23・xfade 13・black 1・flash 9。拍は合成の 2 通り。設定の拍の記録が手元に無いため）では、次のとおりだった。ショットの区切りは一致し、5760 コマすべてでショットが同じ、つないだ画は比べた 5689 コマすべてで同じ。最後の 3 秒は実制作だけが暗転するので比べていない。
   - 縦の Shorts の 9 ショットの設定（cut だけ）でも、747 コマすべてでショットと画が同じだった。
   - 区間の頭からの秒に直すときは、丸めた値で書く。例えば `round(t − 頭, 9)`、またはコマ番号 `{"frame": n}`。引き算のままだと、コマの時刻ちょうどに始まるショットが 1 コマずれる。
+  - 動画のショットのコマ位置・前後のコマの混ぜ方・ループも、実制作のコード（横の MV の `render_shot`、縦の Shorts の `render_img`・`video_frame` と、ループの部品）をそのまま抜き出して実行して比べた。
+    切り出しとカメラはスタブで素通しにし、動画から選んで混ぜたコマを比べた。
+    - 横の MV の動画の 11 ショット（速さ・offset。動画の素材が手元に無いので合成のコマ）では、比べた 1335 コマすべてで同じだった。
+    - 縦の Shorts の 1 本の 2 ショットも、合成のコマと実際の動画の両方で、すべてのコマが同じだった。2 ショットの内訳は、offset 0.5・速さ 0.9894 の 98 コマと、ループ [6, 24]・速さ 0.8・重ね 6・もう 1 本 0.5 の 118 コマ。
+    - その実際の 2 本（1920×1080・16fps・81 コマ・タグなし）は、公開の読み手でも OpenCV と同じ値に読めた（差 0）。
+    - 実制作の縦のレンダラの `vstart`（動画の時刻の頭を start と別にする）は使っていない。設定では start と同じだった。違うときは `offset_s` に (start − vstart)·speed を足す。
 
 ## accept
 
