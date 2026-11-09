@@ -271,7 +271,7 @@ def review_copy(master, out, limit=REVIEW_LIMIT, target=REVIEW_TARGET, maxrate="
         raise PipelineError(f"元データが見つかりません: {master}")
     if out.suffix.lower() != ".mp4":
         raise PipelineError(f"--out は .mp4 にしてください: {out.name}")
-    if out.resolve() == master.resolve():
+    if _same_file(out) == _same_file(master):
         raise PipelineError("--out が元データと同じファイルです")
     if not target > 0 or not limit > 0:
         raise PipelineError(f"--target-bytes と --limit-bytes は 0 より大きくしてください: {target}, {limit}")
@@ -282,7 +282,7 @@ def review_copy(master, out, limit=REVIEW_LIMIT, target=REVIEW_TARGET, maxrate="
     if not fps:
         raise PipelineError(f"{master.name} の fps を読み取れません")
     frames = probe.decode(master, "v")["frames"]
-    duration = frames / fps
+    duration = float(video_seconds(master))        # 表示の fps（丸めてある）では割らない。整数の fps ならコマ数 / fps と同じ
     size = master.stat().st_size
     out.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".deliver-", dir=out.parent))
