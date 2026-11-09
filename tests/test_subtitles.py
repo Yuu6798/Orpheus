@@ -155,6 +155,60 @@ def test_bad_lines_stop_with_the_cause(tmp_path, rows, message):
         subtitles.export(write_lines(tmp_path, rows), tmp_path / "out", formats=("srt",))
 
 
+@pytest.mark.parametrize("name", [pytest.param("../escaped", id="parent"), pytest.param("sub/escaped", id="subfolder"),
+                                  pytest.param("C:escaped", id="drive"), pytest.param("/escaped", id="absolute"),
+                                  pytest.param("..", id="dotdot"), pytest.param("a\\b", id="backslash")])
+def test_name_must_be_a_plain_file_stem(tmp_path, monkeypatch, name):
+    # --name に .. やフォルダがあると、--out の外に書いてしまう（../escaped なら --out の 1 つ上に escaped.srt と記録）
+    monkeypatch.chdir(tmp_path)                    # ドライブだけの名前（C:escaped）は、今いるフォルダからの位置になる
+    source = write_lines(tmp_path)
+    (tmp_path / "out").mkdir()
+    with pytest.raises(PipelineError, match="--name"):
+        subtitles.export(source, tmp_path / "out", name=name)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["lines.json", "out"] and not any((tmp_path / "out").iterdir())
+
+
+def test_a_project_given_as_dot_is_named_after_its_folder(tmp_path, monkeypatch):
+    # "." のままでは親の名前が空になり、".srt" と "_subtitles.json" ができていた
+    project = tmp_path / "song-a"
+    project.mkdir()
+    atomic_json(project / "analysis.json", {"lyrics": [{"id": "L1", "text": "a", "start_s": 1.0, "end_s": 2.0}]})
+    monkeypatch.chdir(project)
+    result = subtitles.export(".", "subs", formats=("srt",))
+    assert sorted(p.name for p in (project / "subs").iterdir()) == ["song-a.srt", "song-a_subtitles.json"]
+    assert result["outputs"]["srt"].endswith("song-a.srt")
+
+
+def test_lines_that_collapse_at_the_written_precision_stop(tmp_path):
+    # 歌い出しが違っても、書く時刻（SRT・WebVTT はミリ秒、LRC は 1/100 秒）に丸めて潰れる行は止める
+    def rows(second):
+        return [{"start": 1.0, "end": 1.5, "text": "a"}, {"start": second, "end": 3.0, "text": "b"}]
+    for formats in (("srt",), ("vtt",)):           # 1 行目が 00:00:00.850 --> 00:00:00.850（出ている時間が 0）になっていた
+        with pytest.raises(PipelineError, match="近すぎ"):
+            subtitles.export(write_lines(tmp_path, rows(1.0001)), tmp_path / "out", formats=formats)
+    with pytest.raises(PipelineError, match="1/100"):        # LRC では 2 行とも [00:01.00] になっていた
+        subtitles.export(write_lines(tmp_path, rows(1.003)), tmp_path / "out", formats=("lrc",))
+    assert not (tmp_path / "out").exists()
+    subtitles.export(write_lines(tmp_path, rows(1.003)), tmp_path / "ok", formats=("srt",))   # ミリ秒なら 3 ミリ秒の長さが残る
+    assert "1\n00:00:00,850 --> 00:00:00,853\na\n" in (tmp_path / "ok" / "lines.srt").read_text(encoding="utf-8")
+
+
+def test_outputs_never_overwrite_the_inputs_even_with_force(tmp_path):
+    # LRC をそのフォルダへ書き出すと、出力の .lrc が入力そのものになる（--force で入力が書き換わって消えていた）
+    original = "[ar:Someone]\n[00:01.00]first line\n[00:03.50]second line\n[00:05.00]\n"
+    (tmp_path / "song.lrc").write_text(original, encoding="utf-8")
+    for force in (True, False):
+        with pytest.raises(PipelineError, match="入力"):
+            subtitles.export(tmp_path / "song.lrc", tmp_path, force=force)
+    assert (tmp_path / "song.lrc").read_text(encoding="utf-8") == original and sorted(p.name for p in tmp_path.iterdir()) == ["song.lrc"]
+    body = tmp_path / "out" / "lines_description.txt"          # 概要欄の本文を、書き出す歌詞と同じ名前で置いた
+    body.parent.mkdir()
+    body.write_text("概要", encoding="utf-8")
+    with pytest.raises(PipelineError, match="入力"):
+        subtitles.export(write_lines(tmp_path), tmp_path / "out", formats=("description",), description_body=body, force=True)
+    assert body.read_text(encoding="utf-8") == "概要"
+
+
 def test_cues_are_kept_inside_the_video_and_after_zero(tmp_path):
     rows = [{"start": 0.05, "end": 1.0, "text": "a"}, {"start": 9.0, "end": 11.0, "text": "b"}]
     result = subtitles.export(write_lines(tmp_path, rows), tmp_path / "out", formats=("srt",), duration=10.0)

@@ -23,15 +23,17 @@ SOURCE（行の本文と、歌い出し・歌い終わりの秒）:
     <STEM>.lrc              [mm:ss.xx]本文（歌い出しの時刻。lead を引かない）。次の行まで間があれば、歌い終わりに空の行（終わりの印）
     <STEM>_description.txt  見出しと、区間（section）ごとに空行で分けた本文（時刻の無い行も入れる）。動画の概要欄に貼る形
     <STEM>_subtitles.json   記録（入力の sha256・設定・行の数・時刻の出所・書いたファイルの sha256・注意）
-時刻は秒をミリ秒（LRC は 1/100 秒）に丸める（Python の round）。行の時刻の出所（推定か確認済みか）は記録と結果に数で残し、確定扱いにしない。
-既にあるファイルと中身が違えば、--force を付けない限り何も書かない。
+時刻は秒をミリ秒（LRC は 1/100 秒）に丸める（Python の round）。丸めた時刻で字幕の長さが無くなる行（SRT・WebVTT）と、歌い出しが
+同じになる行（LRC）は止める。行の時刻の出所（推定か確認済みか）は記録と結果に数で残し、確定扱いにしない。
+--name はフォルダを含まないファイル名の頭（フォルダの区切り・..・ドライブは止める）。既にあるファイルと中身が違えば、--force を付けない限り
+何も書かない。出力が入力（SOURCE・--description-body）と同じファイルになるときは、--force でも書かない。
 
 形式 subtitles-export/0.1 の記録は contracts/ の外（この module が正）。
 """
 import os
 import re
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .io import PipelineError, atomic_json, read_json, sha256
 
@@ -171,7 +173,7 @@ def cues(rows, lead=LEAD_S, tail=TAIL_S, duration=None):
             if e > duration:
                 warnings.append(f"行 {row['id']}: 消える時刻 {e:g} 秒を --duration {duration:g} 秒で切りました")
                 e = duration
-        if not e > a:
+        if not e > a or _milliseconds(e) <= _milliseconds(a):     # 書く時刻（ミリ秒）に丸めて長さが無くなる字幕も止める
             raise PipelineError(f"行 {row['id']} の字幕が出ている時間がありません（出る {a:.3f} 秒、消える {e:.3f} 秒）。"
                                 "次の行の歌い出しが近すぎます。行を 1 つにまとめるか、--lead を小さくしてください")
         out.append((a, e, row["text"]))
@@ -180,8 +182,12 @@ def cues(rows, lead=LEAD_S, tail=TAIL_S, duration=None):
 
 # ---- 書き出しの形 ---------------------------------------------------------------------------------
 
+def _milliseconds(t):
+    return int(round(t * 1000))
+
+
 def srt_time(t):
-    ms = int(round(t * 1000))
+    ms = _milliseconds(t)
     h, ms = divmod(ms, 3600_000)
     m, ms = divmod(ms, 60_000)
     s, ms = divmod(ms, 1000)
@@ -215,6 +221,10 @@ def lrc(rows):
     """歌い出しの時刻の行と、次の行まで間があるときの終わりの印。複数行の本文は " / " でつなぐ（LRC は 1 行 1 時刻）。"""
     out = []
     for index, row in enumerate(rows):
+        if index and _centiseconds(row["start"]) <= _centiseconds(rows[index - 1]["start"]):
+            raise PipelineError(f"行 {rows[index - 1]['id']} と {row['id']} の歌い出しが、LRC の 1/100 秒に丸めると同じ "
+                                f"{lrc_time(row['start'])} になります（LRC では 2 行の順と時刻を分けられません）。"
+                                "行を 1 つにまとめるか、--formats から lrc を外してください")
         out.append(f"{lrc_time(row['start'])}{row['text'].replace(chr(10), ' / ')}")
         following = rows[index + 1]["start"] if index + 1 < len(rows) else None
         if following is None or _centiseconds(row["end"]) < _centiseconds(following):     # 次の行の頭と同じ印にはしない
@@ -254,6 +264,19 @@ def _write_bytes(path, data):
             os.unlink(tmp)
 
 
+def _stem(name, path, kind):
+    """出力の名前の頭。--name が無ければ、プロジェクトならフォルダの名前、ファイルならその名前（"." で渡されても絶対パスで取る）。
+    フォルダ・..・ドライブを含む名前は、--out の外に書いてしまうので止める。"""
+    stem = name or (path.resolve().parent.name if kind == "analysis" else path.stem)
+    if stem in ("", ".", "..") or PurePosixPath(stem).name != stem or PureWindowsPath(stem).name != stem:
+        raise PipelineError(f"--name はフォルダを含まないファイル名の頭にしてください（フォルダの区切り・..・ドライブは使えません）: {stem!r}")
+    return stem
+
+
+def _same_file(path):
+    return os.path.normcase(str(Path(path).resolve()))
+
+
 def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", lead=LEAD_S, tail=TAIL_S, duration=None,
            vtt_settings="", description_heading=DESCRIPTION_HEADING, description_body=None, force=False):
     """字幕ファイルを書き、結果の辞書を返す。"""
@@ -272,7 +295,7 @@ def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", 
     empty = [line["id"] for line in lines if not line["text"]]
     if empty:
         warnings.append(f"本文の無い行 {len(empty)} 行は飛ばしました: {', '.join(empty)}")
-    stem = name or (path.parent.name if kind == "analysis" else path.stem)
+    stem = _stem(name, path, kind)
     out = Path(out)
     texts = {}
     if "srt" in formats:
@@ -294,6 +317,14 @@ def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", 
             if total > DESCRIPTION_LIMIT:
                 raise PipelineError(f"概要欄の本文と歌詞を合わせると {total} バイトで、上限 {DESCRIPTION_LIMIT} バイトを超えます")
     data = {key: (target, text.encode("utf-8")) for key, (target, text) in texts.items()}
+    record_path = out / f"{stem}_subtitles.json"
+    inputs = {_same_file(path): str(path)}
+    if description_body is not None:
+        inputs[_same_file(description_body)] = str(description_body)
+    for target in [target for target, _ in data.values()] + [record_path]:
+        if _same_file(target) in inputs:
+            raise PipelineError(f"{target.name} は入力（{inputs[_same_file(target)]}）と同じファイルです。入力は --force でも上書きしません。"
+                                "--out か --name を変えてください")
     changed = [str(target) for target, payload in data.values() if target.is_file() and target.read_bytes() != payload]
     if changed and not force:
         raise PipelineError("中身の違うファイルが既にあります（上書きするなら --force）: " + ", ".join(changed))
@@ -313,7 +344,6 @@ def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", 
               "lines": len(lines), "cues": len(cue_list), "untimed": untimed, "timing": timing,
               "first": srt_time(cue_list[0][0]), "last": srt_time(cue_list[-1][1]), "description": fit,
               "outputs": outputs, "warnings": warnings}
-    record_path = out / f"{stem}_subtitles.json"
     atomic_json(record_path, record)
     return {"record": str(record_path), "outputs": {key: str(out / value["path"]) for key, value in outputs.items()},
             "cues": len(cue_list), "untimed": len(untimed), "timing": timing, "first": record["first"], "last": record["last"],
