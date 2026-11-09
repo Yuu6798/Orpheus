@@ -368,6 +368,33 @@ def test_blade_fire_and_candle_equal_the_private_parts(t):
         assert np.array_equal(mine, theirs)
 
 
+def burning_columns(blade, cov, P=None):
+    image, base = night(), night()
+    fire.blade_fire(image, blade, 0.7, {"h": 30, "cov": cov, "seed": 3, **(P or {})})
+    xs = np.nonzero((np.abs(image - base).max(axis=2) > 8).any(axis=0))[0]
+    return (int(xs.min()), int(xs.max())) if len(xs) else None
+
+
+def straight_blade(n):
+    s = np.linspace(0, 1, n)
+    return fire.Blade(points=np.stack([40 + 160 * s, 120 - 40 * s], 1).astype(np.float32), s=s, widths=10 + (5 - 10) * s, k=1.0)
+
+
+def test_resample_makes_the_burning_range_independent_of_the_blade_points():
+    # 既定は実制作と同じく刃の点の上で cov を数えるので、点の数で燃える範囲が変わる（点が 2 つだと [0.2, 0.8] は燃えない）。
+    # resample を書くと、細かく分けてから数えるので、同じ刃なら点の数によらず同じ範囲が燃える
+    assert burning_columns(straight_blade(2), [0.2, 0.8]) is None and burning_columns(straight_blade(3), [0.2, 0.8]) is not None
+    for cov in ([0.2, 0.8], [0.6, 1.0], [0.0, 0.3]):
+        dense = burning_columns(straight_blade(65), cov, {"resample": 1.0})
+        for n in (2, 3, 5, 9):
+            sparse = burning_columns(straight_blade(n), cov, {"resample": 1.0})
+            assert sparse is not None and abs(sparse[0] - dense[0]) <= 3 and abs(sparse[1] - dense[1]) <= 3, (cov, n, sparse, dense)
+    points, s, widths = fire.resample(straight_blade(3).points, np.linspace(0, 1, 3), np.array([10.0, 7.5, 5.0]), 2.0)
+    assert len(points) == 2 * 42 + 1 and s[42] == 0.5 and widths[42] == 7.5 and np.allclose(points[42], straight_blade(3).points[1])
+    with pytest.raises(ValueError, match="resample"):
+        fire.resample(points, s, widths, 0)
+
+
 def test_keys_follow_the_private_interpolation():
     entry = {"amt": 1.0, "h": 56, "keys": {"amt": [[143.83, 1.0], [145.1, 0.95], [145.3, 0.3], [145.7, 0.0]], "c": [[0, [0, 10]], [2, [10, 30]]]}}
     assert fire.params_at(entry, 140)["amt"] == 1.0 and fire.params_at(entry, 146)["amt"] == 0.0
@@ -397,6 +424,26 @@ def test_view_points_follow_the_camera_and_base_coordinates(tmp_path):
     source = np.tile(np.linspace(0, 1, 320, dtype=np.float32), (180, 1))
     warped = view.warp(source)
     assert warped.shape == (160, 90) and np.all(np.diff(warped[80]) >= -1e-6)          # 横の勾配が写って、左から右へ増える
+
+
+def test_a_normalized_blade_burns_like_the_same_blade_in_1920_wide_coordinates():
+    # 正規化座標で書いた刃も、素材の幅を 1920 とした基準座標で書いた同じ刃と同じ火になる（火の粉の速さ・大きさも）。
+    # 正規化座標の刃の k は素材の幅 1 の画素数なので、それをそのまま火の粉に掛けると、数百倍の火の粉が一瞬で画面の外へ飛んでいた
+    from mv_pipeline.fx import spec as fxspec
+    from mv_pipeline.fx.view import View
+    raw = {"schema_version": "fx-shot/0.3", "output": {"width": 240, "height": 160, "fps": 12}, "duration_s": 2.0, "assets": {"base": "b.png"},
+           "camera": {"keys": [{"t": 0, "zoom": 1.2, "center": [0.5, 0.5]}]}}
+    path = camera.CameraPath(fxspec.parse_spec(raw, ".").data["camera"], 2.0, (240, 160), (0.0, 0.0, 1.0, 1.0))
+    view = View(path, (0.0, 0.0, 1.0, 1.0), None, (240, 160), 0.5)
+    points = [(0.25, 0.75), (0.375, 0.6875), (0.5, 0.625), (0.625, 0.59375)]
+    normalized = view.blade(points, 1 / 128, 1 / 256)                       # 幅と高さは素材の幅の割合
+    reference = view.blade([(u * 1920, v * 1024) for u, v in points], 15, 7.5, base=(1920, 1024))
+    for t in (0.4, 1.3):
+        a, b = night(), night()
+        fire.blade_fire(a, normalized, t, {"h": 0.05, "cov": [0.0, 1.0], "embers": 16, "seed": 3})
+        fire.blade_fire(b, reference, t, {"h": 0.05 * 1920, "cov": [0.0, 1.0], "embers": 16, "seed": 3})
+        assert np.abs(a - b).max() < 0.5, (t, float(np.abs(a - b).max()))
+    assert normalized.px == pytest.approx(view.scale / 1920) == pytest.approx(reference.k) and reference.px == reference.k
 
 
 # ---- hooks ----------------------------------------------------------------------------------

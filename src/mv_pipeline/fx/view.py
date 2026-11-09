@@ -3,7 +3,8 @@
 View はショットのその時刻の camera（parallax 1 の層。深度視差は入れない）で写す。座標は画面の画素で、画素の中心が整数
 （cv2 の描画と同じ）。素材の座標は 2 通りで書ける:
 
-- 正規化座標（0..1）: view.point(u, v)。view.scale は素材の幅 1 が画面の何画素か。
+- 正規化座標（0..1）: view.point(u, v)。view.scale は素材の幅 1 が画面の何画素か。view.px は素材の幅を 1920 とした
+  1 画素が画面の何画素か（決まった画素の既定値を持つ部品（火の粉の速さ・大きさなど）に渡す倍率。fx の「1920 幅換算」と同じ考え）。
 - 基準座標（実制作の素材の座標系。例えば 1672×941）: geo = view.base(1672, 941) で geo.pt(x, y)・geo.pts(P)・geo.k（基準の 1 が
   画面の何画素か）。実制作の演出の設定（位置と長さが基準座標の画素）をそのまま写せる。
 
@@ -20,6 +21,8 @@ import numpy as np
 
 from .assets import to_screen
 
+NOMINAL_WIDTH = 1920.0      # 正規化座標で書くときに、素材の幅を何画素とみなすか（view.px。決まった画素の既定値の基準）
+
 
 class View:
     """ショット index の、ショットの中の時刻 t の見え方。kind は spec か video、name は spec か動画のパス。
@@ -31,6 +34,7 @@ class View:
         self.index, self.kind, self.name = index, kind, name
         self.matrix = path.matrix(t, 1.0).astype(np.float64)        # 板の画素 → 画面の画素
         self.scale = float(self.matrix[0, 0] * self.plate[0] / (self.box[2] - self.box[0]))
+        self.px = self.scale / NOMINAL_WIDTH                        # 素材の幅を 1920 とした 1 画素 → 画面の画素
         self._depth, self._screen_depth = depth, None
 
     def point(self, u, v):
@@ -59,15 +63,16 @@ class View:
 
     def blade(self, points, w0, w1, base=None):
         """刃（根元 → 切っ先の点列と、根元・切っ先の幅）を画面の fire.Blade にする。base = (幅, 高さ) なら点・幅・炎の高さは
-        基準座標の画素、無ければ点は正規化座標で幅と高さは素材の幅の割合。"""
+        基準座標の画素、無ければ点は正規化座標で幅と高さは素材の幅の割合。火の粉の速さ・大きさ（Blade.px）は、基準座標の刃なら
+        基準座標の画素（実制作と同じ）、正規化座標の刃なら素材の幅を 1920 とした画素（view.px）で数える。"""
         from .fire import Blade
         if base is not None:
             geo = self.base(*base)
-            screen_points, k = geo.pts(points), geo.k
+            screen_points, k, px = geo.pts(points), geo.k, geo.k
         else:
-            screen_points, k = self.points(points), self.scale
+            screen_points, k, px = self.points(points), self.scale, self.px
         s = np.linspace(0, 1, len(screen_points))
-        return Blade(points=screen_points, s=s, widths=(w0 + (w1 - w0) * s) * k, k=k)
+        return Blade(points=screen_points, s=s, widths=(w0 + (w1 - w0) * s) * k, k=k, px=px)
 
     def warp(self, array):
         """素材の座標の配列（元画像の全体。大きさは問わない）を、camera で画面へ写した float32（端の画素を伸ばす）。"""

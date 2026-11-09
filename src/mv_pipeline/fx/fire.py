@@ -270,11 +270,30 @@ def embers(f, at, t, seed, n, cycle, life=(0.6, 1.4), vy=(60, 160), vx=(-25, 25)
 @dataclass(frozen=True)
 class Blade:
     """画面の上の刃。points は根元 → 切っ先の点列 (n, 2)（画素）、s は 0..1 の位置、widths は幅（画素）、
-    k は素材の長さ 1 が画面の何画素か（炎の高さ h と火の粉の速さに掛ける）。view.blade(...) が作る。"""
+    k は刃を書いた座標の長さ 1 が画面の何画素か（炎の高さ h に掛ける）。view.blade(...) が作る。
+
+    px は決まった画素の既定値（火の粉の速さ・大きさ）に掛ける倍率で、基準座標の 1 画素が画面の何画素か。None なら k
+    （基準座標で書いた刃は k と同じ。実制作と同じ）。正規化座標で書いた刃の k は元画像の幅 1 の画素数なので、view.px を入れる。"""
     points: np.ndarray
     s: np.ndarray
     widths: np.ndarray
     k: float
+    px: float | None = None
+
+
+def resample(points, s, widths, step):
+    """刃の点列を、どの区間も画面で step 画素以下になるよう細かく分ける（s と幅は直線で補う）。(points, s, widths) を返す。
+    どの区間も同じ数に分けるので、点の番号で位置を決めるもの（火の粉の生まれる場所・刃の上の炎の位置）は変わらない。"""
+    if not step > 0:
+        raise ValueError(f"resample は 0 より大きい画素にしてください: {step}")
+    points = np.asarray(points, np.float32)
+    if len(points) < 2:
+        return points, np.asarray(s, np.float64), np.asarray(widths, np.float64)
+    pieces = max(1, int(np.ceil(float(np.hypot(*np.diff(points, axis=0).T).max()) / step)))
+    index = np.arange(len(points), dtype=np.float64)
+    u = np.linspace(0.0, len(points) - 1.0, (len(points) - 1) * pieces + 1)
+    fine = np.stack([np.interp(u, index, points[:, 0]), np.interp(u, index, points[:, 1])], 1).astype(np.float32)
+    return fine, np.interp(u, index, np.asarray(s, np.float64)), np.interp(u, index, np.asarray(widths, np.float64))
 
 
 def coverage(s, cov, feather=0.05):
@@ -285,12 +304,18 @@ def coverage(s, cov, feather=0.05):
 
 def blade_fire(f, blade, t, P):
     """刃に沿って燃える火。P: amt・h（炎の高さ。素材の長さ）・cov・white・heat・patch・seed・embers・glow・glow_col・hot・
-    rise・wob・gain・thr・gam・feather。"""
+    rise・wob・gain・thr・gam・feather・resample。
+
+    燃える範囲 cov は、既定では刃の点の上で数える（実制作と同じ。区間の重みは両端の点の平均）。点が粗いと、範囲が点の間に
+    落ちて燃えなかったり、区間の全体が燃えたりする。resample（画面の画素）を書くと、刃をどの区間もその長さ以下に細かく
+    分けてから数えるので、点の数に左右されない。"""
     amt = float(P.get("amt", 1.0))
     if amt <= 0.01:
         return f
     H, W = f.shape[:2]
     S, s, w = blade.points, blade.s, blade.widths
+    if P.get("resample"):
+        S, s, w = resample(S, s, w, float(P["resample"]))
     cov = P.get("cov", [0.0, 1.0])
     c = coverage(s, cov, P.get("feather", 0.06))
     if c.max() <= 0.01:
@@ -343,7 +368,8 @@ def blade_fire(f, blade, t, P):
             a = i - i0
             return S[i0, 0] * (1 - a) + S[i0 + 1, 0] * a, S[i0, 1] * (1 - a) + S[i0 + 1, 1] * a - w[i0] * 0.5
 
-        f = embers(f, at, t, seed + 99, count, 1.6, k=blade.k * 1.4, amt=amt, vy=(50, 140), size=(0.8, 1.8))
+        px = blade.k if blade.px is None else blade.px      # 火の粉の速さ・大きさは基準座標の画素（刃を書いた座標の単位ではない）
+        f = embers(f, at, t, seed + 99, count, 1.6, k=px * 1.4, amt=amt, vy=(50, 140), size=(0.8, 1.8))
     return f
 
 

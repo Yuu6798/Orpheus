@@ -707,9 +707,12 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
 - `view`（`mv_pipeline.fx.view.View`。実制作の演出の部品の `Geo` に当たる）は、ショットの camera（層の視差 1。深度視差は入れない）で素材の座標を画面の画素へ写す。
   画素の中心が整数（cv2 の描画と同じ）。点と倍率は Python の float（実制作の `Geo` と同じ型）。
   - `view.point(u, v)`・`view.points(...)`: 元画像の正規化座標 → 画面の画素。`view.scale` は元画像の幅 1 が画面の何画素か。
+    `view.px` は元画像の幅を 1920 とした 1 画素が画面の何画素か（決まった画素の既定値を持つ部品、例えば `embers` の `k` に渡す）。
   - `view.base(幅, 高さ)`: 基準座標（実制作の素材の座標系。例えば 1672×941 の画素）で書いた位置と長さを写す。`.pt(x, y)`・`.pts(...)`・`.k`（基準の 1 が画面の何画素か）は
     実制作の `Geo` と同じ使い方なので、実制作の演出の設定をそのまま写せる。部品の中の決まった長さ（ぼかしや余白の画素）も、この大きさの画素を前提にしている。
   - `view.blade(点列, w0, w1, base=None)`: 刃（根元 → 切っ先）を画面の `fire.Blade` にする。
+    `base` があれば点・幅・炎の高さ `h` は基準座標の画素、無ければ点は正規化座標で、幅と `h` は元画像の幅の割合。
+    刃の火の粉の速さと大きさは、基準座標の刃なら基準座標の画素（実制作と同じ）、正規化座標の刃なら元画像の幅を 1920 とした画素（`view.px`）で数える。
   - `view.warp(配列)`: 元画像の全体の大きさの配列（マスクなど）を画面へ写す。
   - `view.depth()`: spec の深度（`assets.depth`。fx の前処理の後で 1 = 手前）を同じ camera で画面へ写したもの。深度の無い spec と動画のショットは None。
   - `view.index`・`view.kind`（spec / video）・`view.name`・`view.t`（ショットの中の時刻）。
@@ -717,6 +720,9 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
   - `flame_field`（炎の出どころから立ち上がる炎の舌の場）・`add_fire`（炎の色と光で重ねる）
   - `candle`（小さな炎）・`embers`（火の粉。周期で生まれ直す）
   - `blade_fire`（刃に沿って燃える火。むら・熱・火の粉つき）・`blade_candle`（刃の上の小さな炎。強拍で揺れる `kick`）
+    - `blade_fire` の燃える範囲 `cov` は、既定では刃の点の上で数える（実制作と同じ。区間の重みは両端の点の平均）。点が粗いと、
+      範囲が点の間に落ちて燃えなかったり（点が 2 つの刃に `cov: [0.2, 0.8]`）、区間の全体が燃えたりする。
+      `resample`（画面の画素。例えば 1）を書くと、刃をどの区間もその長さ以下に細かく分けてから数えるので、点の数によらず同じ範囲が燃える。
   - `params_at`（`keys` の時刻のキーで値を補間する。実制作の演出の設定と同じ書き方）、`screen`・`blur`・`tex`・`ramp_fire` などの小道具。
 - 空と天気の部品（`mv_pipeline.fx.sky`）。位置と長さは基準座標で、`view.base(...)` で写す。
   - `lamps(f, geo, t, P)`: 灯（灯籠の火袋・窓・遠い点）。灯ごとに点く時刻 `on`（`ramp` 秒で上がり少し揺れて落ち着く）・消える時刻 `off`・揺らぎ `flick`。
