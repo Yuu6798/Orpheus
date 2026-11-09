@@ -3,7 +3,8 @@
 ショットは start の昇順で、次のショットの start（最後は duration_s）まで。ショットは 2 種類:
 
 - spec のショット: fx render の 1 コマ（出力の大きさで描く。spec の look と overlays 込みの 8 ビットの RGB）を、
-  ショットの中の時刻 offset_s + (t − start) で描く。
+  ショットの中の時刻 offset_s + (t − start) で描く。spec の audio は使わない（音は timeline の audio。読み込みで外すので、
+  素材の確かめ・記録・key にも入らない）。
 - 動画のショット（video）: 動画のコマを、fx の静止画と同じ道筋（cover で中央を切り出して出力の大きさに → 線形 → camera →
   sRGB）で描く。camera は fx-shot の keys と同じ書き方で、時刻はショットの中の秒 t − start。コマ位置は実制作のレンダラと同じ式:
 
@@ -31,7 +32,7 @@ import math
 import shutil
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import jsonschema
@@ -138,7 +139,7 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
             shots.append({"kind": "video", "video": video, "camera": _camera(shot.get("camera"), index), "offset_s": 0.0, **common})
     for index, shot in enumerate(shots):
         shot["end"] = shots[index + 1]["start"] if index + 1 < len(shots) else duration
-    specs = tuple(fxspec.load_spec(safe_path(base_dir, shot["spec"])) if shot["kind"] == "spec" else None for shot in shots)
+    specs = tuple(_without_audio(fxspec.load_spec(safe_path(base_dir, shot["spec"]))) if shot["kind"] == "spec" else None for shot in shots)
     look = None if raw.get("look") is None else fxspec.normalize_look(raw["look"])
     data = {"schema_version": SCHEMA_VERSION,
             "output": {"width": int(out["width"]), "height": int(out["height"]), "fps": fps, "crf": int(out.get("crf", 18))},
@@ -149,6 +150,12 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
     if data["audio"]:
         safe_path(base_dir, data["audio"]["path"])
     return Timeline(data=data, base_dir=base_dir, path=path, sha256=digest, warnings=tuple(warnings), specs=specs)
+
+
+def _without_audio(sp):
+    """ショットの spec の audio は使わない（音は timeline の audio）。外しておけば、素材の確かめ・記録・key にも入らない
+    （ファイルが無くても止まらず、中身を変えても描き直さない）。path・sha256 は元のファイルのまま。"""
+    return replace(sp, data={**sp.data, "audio": None}) if sp.data["audio"] else sp
 
 
 def _transition(raw):
@@ -201,6 +208,12 @@ def shot_name(shot):
     return shot["spec"] if shot["kind"] == "spec" else shot["video"]["path"]
 
 
+def _xfade_tail(shots, index):
+    """次のショットが xfade なら、その長さ（その間もショット index を描き続ける）。それ以外は 0。"""
+    following = shots[index + 1]["transition_in"] if index + 1 < len(shots) else {"type": "cut"}
+    return following["duration_s"] if following["type"] == "xfade" else 0.0
+
+
 def _validate(data, specs):
     shots, duration, fps = data["shots"], data["duration_s"], data["output"]["fps"]
     if shots[0]["start"] > 1e-9:
@@ -222,10 +235,11 @@ def _validate(data, specs):
             warnings.append(f"shots[{index}]: snap で start が {shot['requested']:g} → {shot['start']:g} 秒に動きました")
         if sp is None:
             continue
-        local_end = shot["offset_s"] + length
+        tail = _xfade_tail(shots, index)            # 次の xfade の間も、このショットを描き続ける
+        local_end = shot["offset_s"] + length + tail
         if local_end > sp.data["duration_s"] + 1e-6:
             warnings.append(f"{where}: spec の長さ {sp.data['duration_s']:g} 秒を超えて {local_end:g} 秒まで描きます"
-                            "（カメラのキーなどは spec の終わりの値のまま）")
+                            f"（{'次のショットの xfade の間も描くため。' if tail else ''}カメラのキーなどは spec の終わりの値のまま）")
         if abs(sp.data["output"]["fps"] - fps) > 1e-9:
             warnings.append(f"{where}: spec の fps {sp.data['output']['fps']:g} が timeline の fps {fps:g} と違います"
                             "（spec の look の粒状感のコマなど、spec の fps で数えるものがあります）")
@@ -379,11 +393,13 @@ class VideoShot:
         if loop is not None and loop["frames"][1] > last:
             self.close()
             raise PipelineError(f"fx timeline: shots[{index}].video.loop の終わり {loop['frames'][1]} が、動画の最後のコマ {last} を越えています")
+        tail = _xfade_tail(timeline.data["shots"], index)        # 次の xfade の間も、このショットを描き続ける
         if loop is None:
-            end = (video["offset_s"] + length * video["speed"]) * self.fps
+            end = (video["offset_s"] + (length + tail) * video["speed"]) * self.fps
             if end > last:
                 held = (last / self.fps - video["offset_s"]) / video["speed"]
-                self.warnings.append(f"動画の最後のコマ {last} を越えて描くため、ショットの {max(held, 0.0):.2f} 秒から後は最後のコマのままです")
+                self.warnings.append(f"動画の最後のコマ {last} を越えて描くため、ショットの {max(held, 0.0):.2f} 秒から後は最後のコマのままです"
+                                     + ("（次のショットの xfade の間も描く分を含む）" if tail else ""))
         bounds = self.path.out_of_bounds()
         if bounds:
             self.warnings.append(bounds)

@@ -577,6 +577,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 描く時刻はショットの中の時刻 `offset_s + (t − start)`。
   - spec の look と overlays は、ショットの中で掛かる。
   - spec の audio は使わない。音は timeline の `audio` を使い、`offset_s` は timeline の 0 秒に当てる音声の中の秒。
+    spec の audio のファイルは無くても止まらず、key にも入らない。
 - **動画のショット**の描き方:
   - 動画のコマを、fx の静止画と同じ道筋で描く。出力の縦横比で中央を切り出し（cover）、出力の大きさに縮め、線形にしてカメラを掛け、sRGB に戻す。
     同じコマが続く動画のショットは、そのコマを絵にした fx の静止画のショット（深度・layers・lights なし）とバイト単位で同じになる。
@@ -625,14 +626,14 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 動画が見つからない。`loop` と `offset_s` を一緒に書いた。ループの区間が `crossfade_frames` より長くない。カメラのキーの `t` が昇順でない。
   - 描くとき: ループの終わりのコマが動画の最後のコマを越えている。
 - **注意（warnings）として残るもの**:
-  - spec の長さを超えて描く。カメラは終わりの値のままになる。
+  - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade なら、その間も前のショットを描くので、その分も数える。
   - spec の fps が timeline の fps と違う。
   - snap で start が 0.25 秒より大きく動いた。
-  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る。
+  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る。
 - **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
   - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
   - manifest の kind は timeline で、版は `timeline` の 1 つ。
-  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも）か動画の sha256、音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
+  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも。spec の audio は入らない）か動画の sha256、timeline の音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
   - 同じ入力なら描き直さない（`--force` で描き直す）。ショットの spec や動画を 1 つ変えれば描き直しになる。
 - **`timeline.json`** は `mv gate check` が読む形。dance-timeline/0.1 に `beats`・`seam_info`・`flash_info` を足したもので、字幕は無い。
   - `clips` の kind は、spec のショットが `fx-shot`、動画のショットが `video`。
