@@ -4,7 +4,8 @@
 （assets.Assets.plate_size）で、center は元画像の正規化座標のまま、視野の大きさは zoom 1 で元画像に収まる出力の縦横比の
 いちばん大きい範囲（実制作の縦のレンダラの crop と同じ取り方。実制作は出力の画素の番号をそのまま元画像の画素の番号へ写すので、
 画素の端の座標で写すこちらとは最大で半画素ずれる）。clamp なら視野を画像の中に止めるよう center を寄せる。punch は 0〜duration_s 秒の zoom に
-1 − amount·(1 − ease_out(t/duration_s)) を掛け、zoom は 1 より小さくしない。
+1 − amount·(1 − ease_out(t/duration_s)) を掛け、zoom は 1 より小さくしない。fx-timeline の pulse（拍の脈）は zoom に (1 + 脈) を
+掛ける（punch があれば (1 + 脈)·押し込み を掛けてから 1 で止める）。
 
 座標系: spec の camera.center は**元画像**の正規化座標（0..1）。出力の縦横比が元画像と違うときは cover で
 中央に合わせて切るので、CameraPath が box（assets.Assets.box）を使って「切った後の画面」の正規化座標
@@ -28,6 +29,7 @@ center は画面上の位置（符号つきの移動）なので線形のまま�
 画面の中心は (W/2, H/2)（画素の番号で数える。実制作の 2.5D と同じ）。0.1 の parallax_px は shift の省略形で、
 振幅 parallax_px × (W/1920) × in_out(t/尺) と向き parallax_dir に分けた 0.1 の式のまま計算する（pivot 0.5 で 0.1 とビット一致）。
 """
+import copy
 import functools
 from dataclasses import dataclass
 
@@ -66,9 +68,13 @@ class CameraPath:
     """camera の時間変化。plate は板の大きさ（camera.frame: source の元画像の全体。None なら板は描画サイズ = cover）。
 
     source では、zoom 1 の視野が元画像に収まる出力の縦横比のいちばん大きい範囲になるよう、板の 1 画素を cover 倍
-    （= max(W/板の幅, H/板の高さ)）して写す。center は元画像（= 板）の正規化座標。"""
+    （= max(W/板の幅, H/板の高さ)）して写す。center は元画像（= 板）の正規化座標。
 
-    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0), pivot=0.5, plate=None):
+    pulse は拍の脈（時刻 → zoom に足す割合。fx-timeline の pulse が with_pulse で付ける）。zoom に (1 + 脈) を掛け、punch が
+    あれば (1 + 脈)·押し込み を掛けて 1 で止める（実制作の縦のレンダラと同じ順。脈だけなら止めない。本編のレンダラと同じ）。
+    層の視差の基準 z0・c0 は脈を入れない最初の状態なので、脈が 0 の時刻の画は脈が無いときと同じ。"""
+
+    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0), pivot=0.5, plate=None, pulse=None):
         self.keys = camera["keys"]
         self.box = tuple(box)
         self.parallax_px = camera["parallax_px"]
@@ -85,19 +91,32 @@ class CameraPath:
         self.cover = 1.0 if plate is None else max(size[0] / plate[0], size[1] / plate[1])
         self.clamp = bool(camera.get("clamp", False))
         self.punch = camera.get("punch")
+        self.pulse = pulse
         first = self.keys[0]
         if self.clamp or self.punch is not None or self.plate is not None:
-            self.z0, cx, cy = self.at(0.0)          # 押し込み・止めた後の最初の状態（層が最初のコマで重なるように）
+            # 押し込み・止めた後の最初の状態（層が最初のコマで重なるように）。拍の脈は入れない（脈の無い時刻は脈が無いときと同じ画）
+            self.z0, cx, cy = self.at(0.0, pulsed=False)
             self.c0 = (cx, cy)
         else:
             self.z0, self.c0 = first["zoom"], to_screen(self.box, *first["center"])
 
-    def at(self, t):
-        """時刻 t のカメラ (zoom, cx, cy)。cx, cy は切った後の画面の正規化座標（keys は元画像の座標）。"""
+    def with_pulse(self, pulse):
+        """拍の脈 pulse（この camera の時刻 → zoom に足す割合）を付けた写し。層の基準 z0・c0 は変えない。"""
+        path = copy.copy(self)
+        path.pulse = pulse
+        return path
+
+    def at(self, t, pulsed=True):
+        """時刻 t のカメラ (zoom, cx, cy)。cx, cy は切った後の画面の正規化座標（keys は元画像の座標）。pulsed=False なら拍の脈を入れない。"""
         state = timeline.interp(self.keys, t, ["zoom", "center"])
         zoom = state["zoom"]
-        if self.punch is not None:              # 実制作と同じ: zoom·倍率 を 1 で止める
-            zoom = max(1.0, zoom * punch_factor(self.punch, t))
+        pulse = self.pulse if pulsed else None
+        factor = 1.0 if pulse is None else 1.0 + pulse(t)
+        if self.punch is not None:              # 実制作と同じ: zoom·(1 + 脈)·押し込み を 1 で止める
+            factor *= punch_factor(self.punch, t)
+            zoom = max(1.0, zoom * factor)
+        elif pulse is not None:
+            zoom = zoom * factor
         cx, cy = to_screen(self.box, *state["center"])
         if self.clamp:
             half_w, half_h = self.half_view(zoom)

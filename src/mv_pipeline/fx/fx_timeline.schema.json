@@ -116,6 +116,43 @@
         }
       }
     },
+    "pulse": {
+      "description": "拍の脈: 拍ごとに全部のショットの camera の zoom に (1 + amount·exp(−(t − 直前の拍)·decay)) を掛ける（実制作のレンダラの beat_pulse。beats が要る）",
+      "type": "object",
+      "required": [
+        "amount"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.2,
+          "description": "拍の瞬間に zoom に足す割合（実制作は Shorts 0.006・本編 0.010）"
+        },
+        "decay": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "減り方（1/秒。既定 9）"
+        },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "description": "脈を掛ける区間 [始め, 終わり)（timeline の秒か拍の参照）。無ければ全体",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/$defs/time"
+            }
+          }
+        }
+      }
+    },
     "shots": {
       "type": "array",
       "minItems": 1,

@@ -49,6 +49,7 @@ FLASH = {"strength": 0.75, "color": [235.0, 210.0, 255.0], "window_s": 0.30, "ra
 LOOP = {"crossfade_frames": 6.0, "start_s": 0.0, "mix": 0.0, "mix_speed": 0.77, "mix_offset_s": 0.41}
 KEEP_SHOTS = 2          # 前処理済みのショットを持つ数（xfade は前と今の 2 つ）。順に描くので、古いものから捨てる
 KEEP_FRAMES = 8         # 動画のショットが持つ復号済みのコマの数（loop はループの区間 + 2 コマ）
+PULSE_DECAY = 9.0       # 拍の脈の減り方（1/秒。実制作の 2 つのレンダラと同じ）
 
 
 def ease(x):
@@ -150,7 +151,7 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
             "output": {"width": int(out["width"]), "height": int(out["height"]), "fps": fps, "crf": int(out.get("crf", 18))},
             "duration_s": duration, "beats": None if grid is None else {"path": grid.path, **grid.record()},
             "audio": None if "audio" not in raw else {"path": raw["audio"]["path"], "offset_s": float(raw["audio"].get("offset_s", 0.0))},
-            "look": look, "shots": shots}
+            "look": look, "pulse": _pulse(raw.get("pulse"), grid, fps), "shots": shots}
     warnings = _validate(data, specs) + fxspec.look_warnings(look)
     if data["audio"]:
         safe_path(base_dir, data["audio"]["path"])
@@ -203,6 +204,43 @@ def _camera(raw, index):
     punch = raw.get("punch")
     return {"keys": keys, "parallax_px": 0.0, "parallax_dir": [1.0, 0.0], "frame": raw.get("frame", "cover"), "clamp": bool(raw.get("clamp", False)),
             "punch": None if punch is None else {"amount": float(punch["amount"]), "duration_s": float(punch["duration_s"])}}
+
+
+def _pulse(raw, grid, fps):
+    """pulse（拍の脈）を {amount, decay, sections}（sections は秒の [始め, 終わり) の並びか None = 全体）にする。"""
+    from ..dance import beats as dancebeats
+    if raw is None:
+        return None
+    if grid is None:
+        raise PipelineError("fx timeline: pulse には beats が必要です")
+    sections = None
+    if "sections" in raw:
+        sections = []
+        for number, (a, b) in enumerate(raw["sections"]):
+            start = dancebeats.resolve_time(a, grid, f"pulse.sections[{number}] の始め", fps)
+            end = dancebeats.resolve_time(b, grid, f"pulse.sections[{number}] の終わり", fps)
+            if end <= start:
+                raise PipelineError(f"fx timeline: pulse.sections[{number}] は始め < 終わりにしてください（{start:g} → {end:g} 秒）")
+            sections.append([start, end])
+    return {"amount": float(raw["amount"]), "decay": float(raw.get("decay", PULSE_DECAY)), "sections": sections}
+
+
+def pulse_at(pulse, beats, t):
+    """timeline の時刻 t の拍の脈（zoom に足す割合）。実制作のレンダラの beat_pulse と同じ式:
+    amount·exp(−(t − 直前の拍)·decay)。直前の拍は t より前の最後の拍（t がちょうど拍なら 1 つ前の拍）。区間の外と最初の拍の前は 0。"""
+    if pulse["sections"] is not None and not any(a <= t < b for a, b in pulse["sections"]):
+        return 0.0
+    i = bisect.bisect_left(beats, t) - 1
+    return 0.0 if i < 0 else pulse["amount"] * math.exp(-(t - beats[i]) * pulse["decay"])
+
+
+def shot_pulse(data, index):
+    """ショット index の camera に付ける拍の脈（ショットの中の時刻 → 割合）。timeline に pulse が無ければ None。"""
+    if data["pulse"] is None:
+        return None
+    pulse, beats, shot = data["pulse"], data["beats"]["beats"], data["shots"][index]
+    start, offset = shot["start"], shot["offset_s"]
+    return lambda local: pulse_at(pulse, beats, start + (local - offset))
 
 
 def snap(t, beats, duration):
@@ -409,7 +447,8 @@ class VideoShot:
             if cut > CROP_WARN_FRACTION:
                 axis = "左右" if self.box[0] > 0 else "上下"
                 self.warnings.append(f"動画 {width}x{height} は出力 {size[0]}x{size[1]} と縦横比が違うため、cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
-        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box, plate=self.plate_size)   # 視野の確かめも、次の xfade の間まで見る
+        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box, plate=self.plate_size,   # 視野の確かめも、次の xfade の間まで見る
+                                      pulse=shot_pulse(timeline.data, index))
         last = self.frames.count - 1
         if loop is not None and loop["frames"][1] > last:
             self.close()
@@ -459,11 +498,26 @@ class Context:
         self.look = None if self.data["look"] is None else fxlook.prepare(self.data["look"], self.size, self.fps)
         self.warnings = list(timeline.warnings)
         self._render, self._contexts, self._warned = render, OrderedDict(), set()
+        self._pulsed = OrderedDict()           # 拍の脈があるとき、spec のショットごとの写し（camera だけ違い、素材は共有）
         self.hooks = hooks                     # fx/hooks.py の Hooks か None（--hooks を渡したときだけ）
         if hooks is not None:
             hooks.prepare(self)
 
     def shot(self, index):
+        shot = self.data["shots"][index]
+        if shot["kind"] == "spec" and self.data["pulse"] is not None:
+            # 脈はショットの時刻で決まるので、同じ spec のショットも camera だけショットごとに分ける
+            if index in self._pulsed:
+                self._pulsed.move_to_end(index)
+                return self._pulsed[index]
+            ctx = self._shared(index)
+            self._pulsed[index] = replace(ctx, path=ctx.path.with_pulse(shot_pulse(self.data, index)))
+            while len(self._pulsed) > KEEP_SHOTS:
+                self._pulsed.popitem(last=False)
+            return self._pulsed[index]
+        return self._shared(index)
+
+    def _shared(self, index):
         shot = self.data["shots"][index]
         name = shot["spec"] if shot["kind"] == "spec" else f"video:{index}"
         if name in self._contexts:
@@ -501,7 +555,14 @@ class Context:
         shot, ctx = self.data["shots"][index], self.shot(index)
         if shot["kind"] == "video":
             return View(ctx.path, ctx.box, ctx.plate_size, self.size, local, index, "video", shot["video"]["path"])
-        return View(ctx.path, ctx.assets.box, ctx.assets.plate_size, self.size, local, index, "spec", shot["spec"])
+        return View(ctx.path, ctx.assets.box, ctx.assets.plate_size, self.size, local, index, "spec", shot["spec"], ctx.assets.depth)
+
+    def view_at(self, t):
+        """timeline の時刻 t のショット（xfade の間は入ってくるショット）の見え方。hooks の final で、つないだ後の画に掛ける
+        演出（空の奥の色の深度など）に使う。"""
+        index = shot_index(self.data, t)
+        shot = self.data["shots"][index]
+        return self.view(index, shot["offset_s"] + (t - shot["start"]))
 
     def frame(self, t):
         layers, dim, flash = plan_frame(self.data, t)
@@ -531,6 +592,7 @@ class Context:
             if isinstance(ctx, VideoShot):
                 ctx.close()
         self._contexts.clear()
+        self._pulsed.clear()
 
 
 def timeline_record(timeline, size, start=0.0, duration=None, frames=None):
@@ -576,10 +638,13 @@ def plan_text(path):
         index = int(np.argmin(np.abs(np.asarray(beats) - t)))
         return f"{index}{t - beats[index]:+.3f}"
 
-    out = data["output"]
+    out, pulse = data["output"], data["pulse"]
     lines = [f"# {SCHEMA_VERSION}  {out['width']}x{out['height']} {out['fps']:g}fps {data['duration_s']:g} 秒  ショット {len(data['shots'])}"
-             f"  look {'あり' if data['look'] else 'なし'}  音声 {data['audio']['path'] if data['audio'] else 'なし'}", "",
-             f"{'#':<3} {'start':>8} {'end':>8} {'拍':>10}  {'つなぎ':<18} {'offset':>7}  ショット"]
+             f"  look {'あり' if data['look'] else 'なし'}  音声 {data['audio']['path'] if data['audio'] else 'なし'}"]
+    if pulse is not None:
+        where = "全体" if pulse["sections"] is None else "、".join(f"{a:.3f}-{b:.3f}" for a, b in pulse["sections"])
+        lines.append(f"拍の脈: zoom +{pulse['amount'] * 100:g}%（減り方 {pulse['decay']:g}/秒）  区間 {where}")
+    lines += ["", f"{'#':<3} {'start':>8} {'end':>8} {'拍':>10}  {'つなぎ':<18} {'offset':>7}  ショット"]
     for index, shot in enumerate(data["shots"]):
         transition = shot["transition_in"]
         text = transition["type"] + (f" {transition['duration_s']:g}s" if "duration_s" in transition else "") \
