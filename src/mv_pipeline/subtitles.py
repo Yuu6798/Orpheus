@@ -15,11 +15,13 @@ SOURCE（行の本文と、歌い出し・歌い終わりの秒）:
     出る   = 歌い出し − lead（既定 0.15 秒。0 秒より前にはしない）
     消える = min(歌い終わり + tail（既定 0.40 秒）, 次の字幕の出る時刻)。字幕は重ねない。--duration があればそこで切る
 行は歌い出しの順に並べる。歌い出しが同じ行、歌い終わりが歌い出しより前の行、字幕が出ている時間が無くなる行（0 秒に寄せた
-字幕のすぐ後に次の行が来る、--duration の後に出る）があれば止める。
+字幕のすぐ後に次の行が来る、--duration の後に出る）があれば止める。時刻は字幕（srt・vtt・lrc）を書くときだけ確かめる
+（--formats description だけなら、時刻の無い行ばかりでも概要欄の歌詞を書ける）。
 
 書き出すもの（UTF-8、BOM なし、改行は LF）:
     <STEM>.srt              番号・"HH:MM:SS,mmm --> HH:MM:SS,mmm"・本文を空行で区切る
-    <STEM>.vtt              "WEBVTT" と同じ字幕（時刻の小数点は "."）。--vtt-settings を時刻の後ろに付ける（例: 画面の上 8% に置く）
+    <STEM>.vtt              "WEBVTT" と同じ字幕（時刻の小数点は "."）。--vtt-settings を時刻の後ろに付ける（例: 画面の上 8% に置く）。
+                            本文の & < > は文字参照（&amp; &lt; &gt;）にする（WebVTT のタグや文字参照として読まれないように）
     <STEM>.lrc              [mm:ss.xx]本文（歌い出しの時刻。lead を引かない）。次の行まで間があれば、歌い終わりに空の行（終わりの印）
     <STEM>_description.txt  見出しと、区間（section）ごとに空行で分けた本文（時刻の無い行も入れる）。動画の概要欄に貼る形
     <STEM>_subtitles.json   記録（入力の sha256・設定・行の数・時刻の出所・書いたファイルの sha256・注意）
@@ -212,9 +214,16 @@ def srt(cue_list):
     return "\n".join(f"{k}\n{srt_time(a)} --> {srt_time(e)}\n{t}\n" for k, (a, e, t) in enumerate(cue_list, 1))
 
 
+def vtt_text(text):
+    """WebVTT の本文の & < > を文字参照にする。歌詞はただの文字なので、WebVTT のタグ（<i> など）や文字参照（&amp; など）として
+    読まれて字が消えたり変わったりしないように（Love <forever> の <forever> はタグとして消える）。SRT と LRC はそのまま書く。"""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def vtt(cue_list, settings=""):
     tail = f" {settings.strip()}" if settings and settings.strip() else ""
-    return "WEBVTT\n\n" + "\n".join(f"{k}\n{vtt_time(a)} --> {vtt_time(e)}{tail}\n{t}\n" for k, (a, e, t) in enumerate(cue_list, 1))
+    return "WEBVTT\n\n" + "\n".join(f"{k}\n{vtt_time(a)} --> {vtt_time(e)}{tail}\n{vtt_text(t)}\n"
+                                    for k, (a, e, t) in enumerate(cue_list, 1))
 
 
 def lrc(rows):
@@ -286,12 +295,14 @@ def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", 
     if duration is not None and not duration > 0:
         raise PipelineError(f"--duration は 0 より大きい秒にしてください: {duration}")
     lines, kind, path = read_source(source, field)
-    rows, untimed = timed(lines, duration)
-    if not rows:
-        raise PipelineError(f"時刻のある歌詞の行がありません（{path.name}）")
-    cue_list, warnings = cues(rows, lead, tail, duration)
-    if untimed:
-        warnings.append(f"時刻の無い行 {len(untimed)} 行は字幕に入れていません: {', '.join(untimed)}")
+    rows, untimed, cue_list, warnings = [], [], [], []
+    if any(f in formats for f in ("srt", "vtt", "lrc")):       # 時刻は字幕を書くときだけ確かめる（概要欄の歌詞は本文と区間だけ）
+        rows, untimed = timed(lines, duration)
+        if not rows:
+            raise PipelineError(f"時刻のある歌詞の行がありません（{path.name}）")
+        cue_list, warnings = cues(rows, lead, tail, duration)
+        if untimed:
+            warnings.append(f"時刻の無い行 {len(untimed)} 行は字幕に入れていません: {', '.join(untimed)}")
     empty = [line["id"] for line in lines if not line["text"]]
     if empty:
         warnings.append(f"本文の無い行 {len(empty)} 行は飛ばしました: {', '.join(empty)}")
@@ -342,7 +353,8 @@ def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", 
               "settings": {"lead_s": lead, "tail_s": tail, "duration_s": duration, "vtt_settings": vtt_settings.strip(),
                            "description_heading": description_heading if "description" in formats else None},
               "lines": len(lines), "cues": len(cue_list), "untimed": untimed, "timing": timing,
-              "first": srt_time(cue_list[0][0]), "last": srt_time(cue_list[-1][1]), "description": fit,
+              "first": srt_time(cue_list[0][0]) if cue_list else None, "last": srt_time(cue_list[-1][1]) if cue_list else None,
+              "description": fit,
               "outputs": outputs, "warnings": warnings}
     atomic_json(record_path, record)
     return {"record": str(record_path), "outputs": {key: str(out / value["path"]) for key, value in outputs.items()},

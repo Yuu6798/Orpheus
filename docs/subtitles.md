@@ -33,6 +33,8 @@ uv run mv export subtitles song.lrc --out subs --duration 231.583               
 ```
 
 - 行は歌い出しの順に並べる。歌が重なる行も、前の字幕は次の字幕が出る時刻で消える。
+- 時刻は字幕（`srt`・`vtt`・`lrc`）を書くときだけ確かめる。`--formats description` だけなら、時刻の無い行ばかりでも、歌い出しが同じ行が
+  あっても、概要欄の歌詞を書ける（概要欄の歌詞は本文と `section` だけを使う）。
 - `--duration`（動画の長さ）があれば、消える時刻をそこで切る。その後に出る行があれば止める。
 - 時刻はミリ秒（LRC は 1/100 秒）に丸める（Python の `round`）。1 時間を越えても `HH:MM:SS,mmm` で書く。
 - 丸めた時刻で字幕の長さが無くなる行（SRT・WebVTT。歌い出しが 1 ミリ秒も離れていない 2 行など）と、歌い出しが同じ 1/100 秒になる行（LRC）は止める。
@@ -45,10 +47,10 @@ UTF-8（BOM なし）、改行は LF。名前の頭は `--name`（既定は、�
 | 形式（`--formats`） | ファイル | 中身 |
 |---|---|---|
 | `srt`（既定） | `<名前>.srt` | 番号・`HH:MM:SS,mmm --> HH:MM:SS,mmm`・本文を空行で区切る |
-| `vtt`（既定） | `<名前>.vtt` | `WEBVTT` と同じ字幕（時刻の小数点は `.`）。`--vtt-settings` を時刻の後ろに付ける。例えば `line:8% position:50% align:center` で画面の上 8% に置く（下の焼き込みの歌詞と重ねない） |
+| `vtt`（既定） | `<名前>.vtt` | `WEBVTT` と同じ字幕（時刻の小数点は `.`）。`--vtt-settings` を時刻の後ろに付ける。例えば `line:8% position:50% align:center` で画面の上 8% に置く（下の焼き込みの歌詞と重ねない）。本文の `&` `<` `>` は文字参照（`&amp;` `&lt;` `&gt;`）にする（そのままだと WebVTT のタグや文字参照として読まれ、`Love <forever>` の `<forever>` が消える）。SRT と LRC は本文をそのまま書く |
 | `lrc`（既定） | `<名前>.lrc` | `[mm:ss.xx]本文`（歌い出しの時刻。lead を引かない）。次の行まで間があれば、歌い終わりに空の行（終わりの印）。`mv gate lines` でそのまま読める |
 | `description` | `<名前>_description.txt` | `--description-heading`（既定 `■ Lyrics`。空にすると無し）と、`section` ごとに空行で分けた本文。動画の概要欄に貼る形 |
-| （いつも） | `<名前>_subtitles.json` | 記録 `subtitles-export/0.1`（`contracts/` の外）。入力のパス・種類・sha256、設定、行と字幕の数、`untimed`、時刻の出所の数、最初と最後の時刻、書いたファイルの sha256、注意 |
+| （いつも） | `<名前>_subtitles.json` | 記録 `subtitles-export/0.1`（`contracts/` の外）。入力のパス・種類・sha256、設定、行と字幕の数、`untimed`、時刻の出所の数、最初と最後の時刻（字幕を書かないときは null）、書いたファイルの sha256、注意 |
 
 - 既にあるファイルと中身が違えば、`--force` を付けない限り何も書かない（手で直した字幕を消さない）。同じ中身なら書かずに `unchanged` と記録する。
 - 出力が入力（SOURCE・`--description-body`）と同じファイルになるときは、`--force` でも何も書かない（LRC をそのフォルダへ書き出すと、

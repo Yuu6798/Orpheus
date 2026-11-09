@@ -209,6 +209,37 @@ def test_outputs_never_overwrite_the_inputs_even_with_force(tmp_path):
     assert body.read_text(encoding="utf-8") == "概要"
 
 
+def test_description_only_needs_no_cue_timing(tmp_path):
+    # 概要欄の歌詞は本文と区間だけを使う。字幕の時刻の確かめ（時刻のある行が無い・歌い出しが同じ・終わりがわからない）で止めない
+    project = tmp_path / "song-b"
+    project.mkdir()
+    atomic_json(project / "analysis.json", {"lyrics": [{"id": "L1", "text": "one", "start_s": None, "end_s": None},
+                                                       {"id": "L2", "text": "two", "start_s": None, "end_s": None}]})
+    result = subtitles.export(project, tmp_path / "desc", formats=("description",))
+    assert (tmp_path / "desc" / "song-b_description.txt").read_text(encoding="utf-8") == "■ Lyrics\none\ntwo\n"
+    assert result["cues"] == 0 and result["first"] is None and result["untimed"] == 0
+    assert read_json(tmp_path / "desc" / "song-b_subtitles.json")["last"] is None
+    with pytest.raises(PipelineError, match="時刻のある歌詞の行がありません"):
+        subtitles.export(project, tmp_path / "srt", formats=("srt",))
+    same = [{"start": 1.0, "end": 2.0, "text": "a"}, {"start": 1.0, "end": 2.5, "text": "b"}]
+    open_end = [{"start": 1.0, "end": 2.0, "text": "a"}, {"start": 3.0, "text": "b"}]
+    for rows, message in ((same, "同じ"), (open_end, "歌い終わり")):
+        subtitles.export(write_lines(tmp_path, rows, "rows.json"), tmp_path / "rows", formats=("description",), force=True)
+        assert (tmp_path / "rows" / "rows_description.txt").read_text(encoding="utf-8") == "■ Lyrics\na\nb\n"
+        with pytest.raises(PipelineError, match=message):
+            subtitles.export(write_lines(tmp_path, rows, "rows.json"), tmp_path / "rows_srt", formats=("srt",))
+
+
+def test_vtt_escapes_markup_characters_in_lyrics(tmp_path):
+    # 歌詞はただの文字。WebVTT ではそのままだと <forever> がタグ、&amp; が文字参照として読まれて、出る字が変わる
+    rows = [{"start": 1.0, "end": 2.0, "text": "Love <forever> & you &amp; me"}]
+    subtitles.export(write_lines(tmp_path, rows), tmp_path / "out", formats=("srt", "vtt", "lrc"))
+    vtt = (tmp_path / "out" / "lines.vtt").read_text(encoding="utf-8")
+    assert "\nLove &lt;forever&gt; &amp; you &amp;amp; me\n" in vtt
+    assert "\nLove <forever> & you &amp; me\n" in (tmp_path / "out" / "lines.srt").read_text(encoding="utf-8")
+    assert "]Love <forever> & you &amp; me\n" in (tmp_path / "out" / "lines.lrc").read_text(encoding="utf-8")
+
+
 def test_cues_are_kept_inside_the_video_and_after_zero(tmp_path):
     rows = [{"start": 0.05, "end": 1.0, "text": "a"}, {"start": 9.0, "end": 11.0, "text": "b"}]
     result = subtitles.export(write_lines(tmp_path, rows), tmp_path / "out", formats=("srt",), duration=10.0)
@@ -231,7 +262,8 @@ def test_description_rejects_angle_brackets_and_checks_the_total_size(tmp_path):
     fit = subtitles.export(write_lines(tmp_path), tmp_path / "ok", formats=("description",), description_body=body)["description"]
     assert fit["total_bytes"] == len(("概要\n" + (tmp_path / "ok" / "lines_description.txt").read_text(encoding="utf-8")).encode())
     plain = subtitles.export(write_lines(tmp_path), tmp_path / "plain", formats=("description",), description_heading="")
-    assert (tmp_path / "plain" / "lines_description.txt").read_text(encoding="utf-8").startswith("The first line") and plain["cues"] == 7
+    assert (tmp_path / "plain" / "lines_description.txt").read_text(encoding="utf-8").startswith("The first line")
+    assert plain["cues"] == 0                      # 概要欄の歌詞だけなら字幕は作らない（時刻も確かめない）
 
 
 def test_existing_files_are_not_overwritten_without_force(tmp_path):
