@@ -840,6 +840,8 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
 Windows で PATH に ffmpeg が無いと使われる imageio-ffmpeg 同梱版がこれに当たる）。音声は AAC 192k・48kHz・ステレオ、頭 0.02 秒・終わり 0.25 秒のフェード、`offset_s + start` から区間の長さだけ切る。
 フレーム数は `round(duration×fps)` ちょうど（`-shortest` は使わない）。グリッドは版の MP4 を同じ書式で復号して並べ直したもので、
 タイルは W/2×H/2（版ごとに枠が固定: base=左上 / layers=右上 / light=左下 / both=右下）。
+この書き出しの本体は cv2 を使わない共通の部品 `src/mv_pipeline/encode.py`（`write_video`・`ffmpeg_command`）で、fx・dance・overlay・
+timeline・clips が同じものを使う（`fx/render.py` からも同じ名前で使える）。fx の指紋（`fx.fingerprint`）はこのファイルも含む。
 
 ## CI
 

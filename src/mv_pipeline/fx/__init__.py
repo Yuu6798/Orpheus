@@ -53,11 +53,14 @@ _PACKAGE = Path(__file__).resolve().parent
 
 
 def fingerprint():
-    """fx パッケージの .py と .schema.json の（相対パス, sha256）から作る 16 進 64 桁の指紋。
+    """fx パッケージの .py と .schema.json の（相対パス, sha256）と、共通の書き出し（../encode.py）から作る 16 進 64 桁の指紋。
 
     描画に影響しうるコードを 1 文字でも変えると値が変わる。__pycache__ は含めない。
     """
     digest = hashlib.sha256()
+    shared = _PACKAGE.parent / "encode.py"          # fx の書き出し（write_video）の本体
+    digest.update(b"../encode.py\0")
+    digest.update(hashlib.sha256(shared.read_bytes()).digest())
     files = sorted(p for p in _PACKAGE.rglob("*") if p.is_file()
                    and p.suffix in {".py", ".json"} and "__pycache__" not in p.parts)
     for path in files:
