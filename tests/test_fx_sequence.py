@@ -355,7 +355,8 @@ def test_cli_demo_render_plan_and_reuse(tmp_path):
     assert code == 0
     path = tmp_path / "timeline.json"
     code, text, _ = run_cli("fx", "timeline", "plan", path)
-    assert code == 0 and "black 0.5s" in text and "xfade 0.4s" in text and "flash 0.75" in text and "loop 4–40 mix 0.5" in text
+    assert code == 0 and "black 0.5s" in text and "xfade 0.4s" in text and "flash 0.75" in text and "loop 4〜40 mix 0.5" in text
+    text.encode("cp932")        # Windows でパイプやファイルへ出す既定の符号化でも書ける（書けない文字があると plan が止まる）
     code, out, err = run_cli("fx", "timeline", "render", path, "--quiet")
     summary = json.loads(out)
     assert code == 0 and summary["technical_pass"] and not summary["reused"] and summary["warnings"] == []
@@ -488,6 +489,7 @@ VIDEO_SHOT = {"video": {"path": "clip.mp4"}, "start": 0}
     (lambda s: s["video"].update(offset_s=1.0, loop={"frames": [2, 20]}), "loop と offset_s"),
     (lambda s: s["video"].update(loop={"frames": [2, 8]}), "crossfade_frames 6 コマより長くありません"),
     (lambda s: s["video"].update(loop={"frames": [9, 3], "crossfade_frames": 0}), "より長くありません"),
+    (lambda s: s["video"].update(loop={"frames": [0, 10]}), "crossfade_frames 6 コマが、区間 0〜10（10 コマ）の半分より長いです"),
     (lambda s: s["video"].update(path="missing.mp4"), "動画が見つかりません"),
     (lambda s: s.update(camera={"keys": [{"t": 1.0}, {"t": 0.5}]}), "厳密な昇順"),
     (lambda s: s["video"].update(speed=0), "invalid"),
@@ -498,6 +500,23 @@ def test_video_shot_errors_name_the_cause(tmp_path, change, message):
     change(shot)
     with pytest.raises(PipelineError, match=message):
         parse(tmp_path, timeline_dict([shot]))
+
+
+def test_a_loop_crossfade_must_end_before_the_loop_wraps(tmp_path):
+    """重ねは区間の半分まで。周期（区間 − 重ね）より長い重ねは終わる前に折り返し、境目で絵が飛ぶので止める。ちょうど半分なら途切れない。"""
+    def ramp(frames, local_t):              # コマ k の値が k の動画を描いたときの値（重みつきのコマ位置）
+        return sum(p * w for p, w in sequence.video_positions(video(frames=frames), local_t, 10.0))
+
+    def jump(frames):                       # 折り返し（周期 = 区間 − 6 コマ、10 fps）の直前と直後の差
+        wrap = (frames[1] - frames[0] - 6) / 10.0
+        return ramp(frames, wrap - 1e-9) - ramp(frames, wrap + 1e-9)
+
+    assert jump([0, 10]) == pytest.approx(4 / 3, abs=1e-6)       # 4 と 8 を 2/3 : 1/3 で混ぜた絵から、4 だけの絵へ飛ぶ
+    assert jump([0, 12]) == pytest.approx(0.0, abs=1e-6)
+    (tmp_path / "clip.mp4").write_bytes(b"")
+    with pytest.raises(PipelineError, match="半分より長い"):
+        parse(tmp_path, timeline_dict([{"video": {"path": "clip.mp4", "loop": {"frames": [0, 10]}}, "start": 0}]))
+    assert parse(tmp_path, timeline_dict([{"video": {"path": "clip.mp4", "loop": {"frames": [0, 12]}}, "start": 0}])).data["shots"][0]["video"]["loop"]
 
 
 def test_spec_shots_refuse_a_camera(tmp_path):
@@ -608,3 +627,21 @@ def test_the_video_end_warning_counts_the_next_xfade(tmp_path):
             ctx.close()
         assert any("最後のコマ 11 を越えて描く" in w and "xfade の間も描く分を含む" in w for w in notes) == warned, notes
         assert any("最後のコマ" in w for w in notes) == warned
+
+
+def test_the_video_camera_check_covers_the_next_xfade(tmp_path):
+    """次のショットが xfade なら、動画のショットのカメラはその間も動くので、視野が動画の外へ出る確かめもその間まで見る。"""
+    pytest.importorskip("cv2")
+    write_clip(tmp_path / "clip.mp4", [np.full((36, 64, 3), 100, np.uint8) for _ in range(30)], fps=10)   # 3 秒（最後のコマは越えない）
+    write_shots(tmp_path, names=("a",))
+    keys = [{"t": 0, "center": [0.5, 0.5]}, {"t": 1.0, "center": [0.5, 0.5]}, {"t": 1.4, "center": [0.9, 0.5]}]   # 1 秒の後だけ右の外へ
+    for transition, warned in (({"type": "xfade", "duration_s": 0.4}, True), ({"type": "cut"}, False)):
+        raw = timeline_dict([{"video": {"path": "clip.mp4"}, "start": 0, "camera": {"keys": keys}},
+                             {"spec": "a.json", "start": 1.0, "transition_in": transition}],
+                            duration_s=2.0, output={"width": 64, "height": 36, "fps": 10})
+        ctx = sequence.Context(parse(tmp_path, raw))
+        try:
+            notes = ctx.shot(0).warnings
+        finally:
+            ctx.close()
+        assert any("camera の視野が画像の外へ" in w for w in notes) == warned, notes

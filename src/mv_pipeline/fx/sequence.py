@@ -179,6 +179,10 @@ def _video(raw, index):
         if last - first - crossfade <= 0:
             raise PipelineError(f"fx timeline: shots[{index}].video.loop の区間 {first}〜{last} コマが、"
                                 f"つなぎ目の crossfade_frames {crossfade:g} コマより長くありません")
+        if crossfade > last - first - crossfade:   # 周期（区間 − 重ね）より長い重ねは、終わる前に折り返して境目で絵が飛ぶ
+            raise PipelineError(f"fx timeline: shots[{index}].video.loop の crossfade_frames {crossfade:g} コマが、区間 {first}〜{last}"
+                                f"（{last - first} コマ）の半分より長いです。重ねが終わる前に折り返し、ループの境目で絵が飛びます"
+                                f"（crossfade_frames は {(last - first) / 2:g} コマ以下にしてください）")
         loop = {"frames": [first, last], "crossfade_frames": crossfade,
                 **{key: float(loop.get(key, LOOP[key])) for key in ("start_s", "mix", "mix_speed", "mix_offset_s")}}
     return {"path": raw["path"], "fps": None if raw.get("fps") is None else float(raw["fps"]), "speed": float(raw.get("speed", 1.0)),
@@ -383,7 +387,8 @@ class VideoShot:
         width, height = self.frames.width, self.frames.height
         self.box = _pixel_box(cover_box(width, height, *size), (width, height))
         length = shot["end"] - shot["start"]
-        self.path = camera.CameraPath(shot["camera"], length, size, self.box)
+        tail = _xfade_tail(timeline.data["shots"], index)        # 次の xfade の間も、このショットを描き続ける
+        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box)   # 視野の確かめも、その間まで見る
         self.warnings = []
         cut = 1.0 - (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
         if cut > CROP_WARN_FRACTION:
@@ -393,7 +398,6 @@ class VideoShot:
         if loop is not None and loop["frames"][1] > last:
             self.close()
             raise PipelineError(f"fx timeline: shots[{index}].video.loop の終わり {loop['frames'][1]} が、動画の最後のコマ {last} を越えています")
-        tail = _xfade_tail(timeline.data["shots"], index)        # 次の xfade の間も、このショットを描き続ける
         if loop is None:
             end = (video["offset_s"] + (length + tail) * video["speed"]) * self.fps
             if end > last:
@@ -505,7 +509,8 @@ def _describe_video(video):
     text = f"video ×{video['speed']:g}" + (f" {video['fps']:g}fps" if video["fps"] else "")
     if loop is None:
         return text + (f" +{video['offset_s']:g}s" if video["offset_s"] else "")
-    return text + f" loop {loop['frames'][0]}–{loop['frames'][1]}" + (f" mix {loop['mix']:g}" if loop["mix"] > 0 else "")
+    # 「〜」は cp932 でも書ける（Windows でパイプやファイルへ出すときの既定の符号化。「–」は書けずに止まる）
+    return text + f" loop {loop['frames'][0]}〜{loop['frames'][1]}" + (f" mix {loop['mix']:g}" if loop["mix"] > 0 else "")
 
 
 def plan_text(path):

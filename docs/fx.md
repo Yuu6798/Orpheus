@@ -586,6 +586,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
     - 既定: 位置 = (`offset_s` + (t − start)·`speed`)·`fps`。`fps` は既定でファイルの fps で、書けば上書きできる（実制作の縦のレンダラは 16 に決めていた）。
     - `loop`: コマ `frames[0]`〜`frames[1]` を繰り返す。τ = (t − start) + `start_s`、p = (τ·fps·`speed`) mod (区間 − `crossfade_frames`) で、
       位置は `frames[0]` + p。p が `crossfade_frames`（既定 6）より小さい間は、区間の頭（重み p/crossfade_frames）と尻尾（残りの重み）を重ねる。
+      `crossfade_frames` は区間の半分まで（それより長いと、重ねが終わる前に折り返して境目で絵が飛ぶ）。
       `mix` > 0 なら、時刻 τ·`mix_speed` + `mix_offset_s`（既定 0.77・0.41）のもう 1 本を重み `mix` で重ねる（同じ繰り返しを目立たなくする。既定 0。実制作は 0.5）。
       `loop` と `offset_s` は一緒に使えない（ループの中の位置は `loop.start_s`）。
   - 小数の位置は前後のコマを `cv2.addWeighted` で混ぜる。位置は 0〜コマ数 − 1.001 に止めるので、動画の終わりを越えると最後のコマのままになる。
@@ -623,13 +624,13 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - xfade や black がショットより長い。
   - beats が無いのに snap を使った。
   - ショットに `spec` と `video` の両方がある、またはどちらも無い。動画のショットに `offset_s`・`variant` を、spec のショットに `camera` を書いた。
-  - 動画が見つからない。`loop` と `offset_s` を一緒に書いた。ループの区間が `crossfade_frames` より長くない。カメラのキーの `t` が昇順でない。
+  - 動画が見つからない。`loop` と `offset_s` を一緒に書いた。ループの区間が `crossfade_frames` より長くない、または `crossfade_frames` が区間の半分より長い。カメラのキーの `t` が昇順でない。
   - 描くとき: ループの終わりのコマが動画の最後のコマを越えている。
 - **注意（warnings）として残るもの**:
   - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade なら、その間も前のショットを描くので、その分も数える。
   - spec の fps が timeline の fps と違う。
   - snap で start が 0.25 秒より大きく動いた。
-  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る。
+  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る（これも次のショットの xfade の間まで見る）。
 - **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
   - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
   - manifest の kind は timeline で、版は `timeline` の 1 つ。

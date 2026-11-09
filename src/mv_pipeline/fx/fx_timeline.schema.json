@@ -438,7 +438,7 @@
             "crossfade_frames": {
               "type": "number",
               "minimum": 0,
-              "description": "つなぎ目で重ねるコマ数（既定 6）"
+              "description": "つなぎ目で重ねるコマ数（既定 6。区間の半分まで。それより長いと重ねが終わる前に折り返す）"
             },
             "start_s": {
               "type": "number",
