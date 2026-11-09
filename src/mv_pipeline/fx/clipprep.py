@@ -426,7 +426,7 @@ def make_clips(plan_path, out=None, force=False, only=None, progress=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     ids = {clip["id"] for clip in plan["clips"]}
     results = {key: value for key, value in previous_clips.items() if key in ids}     # 計画から消えたクリップの記録は残さない
-    warnings, written = [], []
+    written = []
     for clip in chosen:
         target = targets[clip["id"]]
         key = _clip_key(clip, base_dir, plan["crf"], libraries)
@@ -441,19 +441,30 @@ def make_clips(plan_path, out=None, force=False, only=None, progress=None):
         say(f"[fx clips] {clip['id']}: {clip['source']} → {clip['out']}")
         record, notes = prepare_clip(clip, base_dir, target, plan["crf"], log_path=out_dir / LOG_NAME)
         record["key"] = key
+        record["warnings"] = notes          # クリップごとに残す（作り直さない次の実行でも、記録と結果に同じ注意を出す）
         results[clip["id"]] = record
-        warnings += notes
         written.append(clip["id"])
-        atomic_json(record_path, _record(plan_path, plan, results, warnings, libraries))
-    atomic_json(record_path, _record(plan_path, plan, results, warnings, libraries))
-    return {"clips": {k: v["out"]["path"] for k, v in results.items() if k in {c["id"] for c in chosen}}, "written": written,
-            "record": str(record_path), "warnings": warnings}
+        atomic_json(record_path, _record(plan_path, plan, results, libraries))
+    atomic_json(record_path, _record(plan_path, plan, results, libraries))
+    picked = {clip["id"] for clip in chosen}
+    return {"clips": {k: v["out"]["path"] for k, v in results.items() if k in picked}, "written": written,
+            "record": str(record_path), "warnings": _clip_warnings(plan, results, picked)}
 
 
-def _record(plan_path, plan, clips, warnings, libraries):
+def _clip_warnings(plan, clips, ids=None):
+    """記録のクリップごとの注意を、計画の順に集める（作り直さなかったクリップの注意も、作ったときのまま）。ids で絞る。"""
+    notes = []
+    for clip in plan["clips"]:
+        record = clips.get(clip["id"])
+        if isinstance(record, dict) and (ids is None or clip["id"] in ids):
+            notes += record.get("warnings", [])
+    return notes
+
+
+def _record(plan_path, plan, clips, libraries):
     return {"schema_version": RECORD_VERSION, "created_at": now(),
             "plan": {"path": str(Path(plan_path).resolve()), "sha256": sha256(plan_path), "normalized": plan},
-            "clips": clips, "warnings": warnings,
+            "clips": clips, "warnings": _clip_warnings(plan, clips),
             "engine": {"version": VERSION, "fingerprint": fingerprint(), "libraries": libraries,
                        "ecc": {"iterations": ECC_ITERATIONS, "eps": ECC_EPS, "gauss": ECC_GAUSS, "blur": MEASURE_BLUR},
                        "color_width": COLOR_WIDTH}}

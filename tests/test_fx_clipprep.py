@@ -298,6 +298,29 @@ def test_cli_prepares_records_reuses_and_protects(tmp_path):
     assert code == 1 and "計画に無いクリップ" in err
 
 
+def test_reused_clips_keep_their_warnings(tmp_path):
+    # 作り直さなかったクリップの注意（ここでは内側の矩形が 90% を切る）も、記録と結果に残す。--only で一部だけ作るときも記録から消さない
+    write_clip(tmp_path / "a.mp4", shaky_frames(12, amplitude=20))
+    write_clip(tmp_path / "b.mp4", shaky_frames(12))
+    plan = {"schema_version": "fx-clips/0.1", "clips": [
+        {"id": "a", "source": "a.mp4", "out": "out/a.mp4", "stabilize": {"smooth_frames": 0}},
+        {"id": "b", "source": "b.mp4", "out": "out/b.mp4", "stabilize": {}}]}
+    (tmp_path / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+
+    def record():
+        return json.loads((tmp_path / "clips_record.json").read_text(encoding="utf-8"))
+
+    first = clipprep.make_clips(tmp_path / "plan.json")
+    notes = first["warnings"]
+    assert first["written"] == ["a", "b"] and notes and all(note.startswith("a: ") for note in notes) and record()["warnings"] == notes
+    again = clipprep.make_clips(tmp_path / "plan.json")
+    assert again["written"] == [] and again["warnings"] == notes and record()["warnings"] == notes
+    (tmp_path / "out" / "b.mp4").unlink()
+    only_b = clipprep.make_clips(tmp_path / "plan.json", only=["b"])
+    assert only_b["written"] == ["b"] and only_b["warnings"] == [] and record()["warnings"] == notes
+    assert record()["clips"]["a"]["warnings"] == notes and record()["clips"]["b"]["warnings"] == []
+
+
 def test_measure_from_needs_the_same_frame_count(tmp_path):
     frames = shaky_frames(10)
     write_clip(tmp_path / "clip.mp4", frames)
