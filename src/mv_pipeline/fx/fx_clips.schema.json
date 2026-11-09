@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fx-clips/0.1",
+  "description": "生成した動画の下ごしらえ（揺れ止め・色のゲイン）。clips の順に source を読んで out に書き、clips_record.json に記録する。パスは計画のファイルからの相対パス（out は --out のフォルダーから）",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "clips"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x_": {}
+  },
+  "properties": {
+    "schema_version": {
+      "const": "fx-clips/0.1"
+    },
+    "crf": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 51,
+      "description": "書き出しの crf（既定 12）"
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "source",
+          "out"
+        ],
+        "additionalProperties": false,
+        "patternProperties": {
+          "^x_": {}
+        },
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "source": {
+            "type": "string",
+            "description": "下ごしらえする動画"
+          },
+          "out": {
+            "type": "string",
+            "description": "書き出す動画"
+          },
+          "measure_from": {
+            "type": "string",
+            "description": "揺れを測る動画（source と同じコマ数。例えば超解像の前の元の動画）。既定は source"
+          },
+          "stabilize": {
+            "description": "1 コマ目に合わせてカメラの流れを打ち消す（背景で ECC を測り、ならして逆に掛ける）",
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "mask": {
+                "type": "string",
+                "description": "白 = 人物など動くもの（測るときに除く）。8 bit の灰色の画像。動画と同じ縦横比"
+              },
+              "dilate_px": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "マスクの白を太らせる楕円の大きさ（測る大きさの画素。既定 25）"
+              },
+              "smooth_frames": {
+                "type": "number",
+                "minimum": 0,
+                "description": "動きをならすガウスの σ（コマ。既定 1.5。0 でならさない）"
+              },
+              "measure_width": {
+                "type": "integer",
+                "minimum": 64,
+                "description": "測る大きさの幅（既定 640）"
+              }
+            }
+          },
+          "color": {
+            "description": "1 コマ目を reference に合わせる色ごとの倍率と足し算を、条件を満たすときだけ全コマに掛ける",
+            "type": "object",
+            "required": [
+              "reference"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x_": {}
+            },
+            "properties": {
+              "reference": {
+                "type": "string",
+                "description": "合わせる先の静止画（動画の元の絵）"
+              },
+              "gain_range": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "使う倍率の範囲（既定 [0.85, 1.15]）"
+              },
+              "min_improvement": {
+                "type": "number",
+                "minimum": 0,
+                "description": "合わせた後の平均の差が、これより縮むときだけ使う（既定 0.5）"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

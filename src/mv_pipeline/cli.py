@@ -108,6 +108,11 @@ def _fx_parser(commands):
     masks.add_argument("plan", type=Path, help="fx-masks/0.1 plan (JSON)")
     masks.add_argument("--out", type=Path, help="output folder (default: the plan's folder)")
     masks.add_argument("--force", action="store_true", help="overwrite existing mask files whose content differs")
+    clips = sub.add_parser("clips", help="prepare generated clips from a plan (stabilise to the first frame, match colour to a still)")
+    clips.add_argument("plan", type=Path, help="fx-clips/0.1 plan (JSON)")
+    clips.add_argument("--out", type=Path, help="output folder (default: the plan's folder)")
+    clips.add_argument("--only", help="comma-separated clip ids to prepare (default: all)")
+    clips.add_argument("--force", action="store_true", help="overwrite existing outputs that are not in the record")
     legacy = sub.add_parser("legacy", help="run an external production renderer and record it as a run")
     legacy.add_argument("--renderer", type=Path, required=True)
     legacy.add_argument("--config", type=Path, required=True)
@@ -352,6 +357,10 @@ def fx_command(args):
     if command == "masks":
         from .fx import masks
         return masks.make_masks(args.plan, args.out, args.force)
+    if command == "clips":
+        from .fx import clipprep
+        only = [value.strip() for value in args.only.split(",") if value.strip()] if args.only else None
+        return clipprep.make_clips(args.plan, args.out, args.force, only, _progress)
     raise PipelineError(f"Unsupported fx command: {command}")
 
 

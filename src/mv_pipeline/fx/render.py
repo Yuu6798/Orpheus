@@ -268,6 +268,12 @@ def _close(stream):
         pass
 
 
+def partial_path(out_path):
+    """write_video が書き出しの間に使う一時ファイル（<stem>.part<suffix>）。書き終えると out_path へ移し、失敗すると消す。"""
+    out_path = Path(out_path)
+    return out_path.with_name(f"{out_path.stem}.part{out_path.suffix}")
+
+
 def write_video(out_path, frames, size, fps, crf, n_frames, audio=None, log_path=None):
     """フレーム列 (uint8 H×W×3) を n_frames ちょうど書く。-shortest は使わない。
 
@@ -277,7 +283,7 @@ def write_video(out_path, frames, size, fps, crf, n_frames, audio=None, log_path
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    partial = out_path.with_name(f"{out_path.stem}.part{out_path.suffix}")
+    partial = partial_path(out_path)
     command = ffmpeg_command(partial, size, fps, crf, n_frames, audio)
     if log_path:
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
