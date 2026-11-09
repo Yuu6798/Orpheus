@@ -19,10 +19,11 @@ from .compose import FrameLayers  # noqa: F401
 from .hooks import Hooks
 
 
-def prepare(spec, scale=1.0, hooks=None, out=None):
-    """spec は spec.json のパスか Spec。hooks は hooks ファイルのパス。out は fit の解析のキャッシュを置く場所。"""
+def prepare(spec, scale=1.0, hooks=None, out=None, rows=False):
+    """spec は spec.json のパスか Spec。hooks は hooks ファイルのパス。out は fit の解析のキャッシュを置く場所。
+    rows=True なら hooks が無くても足元と中心の列を作る（L.performer_info["body"]。hooks を使うときはいつも作る）。"""
     loaded = _spec.load_spec(spec) if isinstance(spec, (str, Path)) else spec
-    return _compose.prepare(loaded, scale, out, None if hooks is None else Hooks(hooks))
+    return _compose.prepare(loaded, scale, out, None if hooks is None else Hooks(hooks), rows=True if rows else None)
 
 
 def layers(ctx, t):

@@ -237,7 +237,7 @@ uv run mv dance accept projects/dancedemo/dance_runs/<run_id> --decision accepte
 
 ```python
 from mv_pipeline.dance import api
-ctx = api.prepare("spec.json", scale=1.0, hooks=None)   # Spec も可
+ctx = api.prepare("spec.json", scale=1.0, hooks=None)   # Spec も可。rows=True で hooks なしでも足元と中心の列を作る
 L = api.layers(ctx, t)              # FrameLayers（hooks を掛ける前の層）
 img = api.compose(ctx, L, t)        # uint8 RGB。api.frame(ctx, t) と同じバイト列
 rng = api.rng(ctx, "名前")           # spec の seed と名前から決まる乱数
@@ -251,7 +251,7 @@ FrameLayers の中身はすべて float32・線形・出力の大きさで、色
 | `stage` | カメラ・視差・ブレを掛けた後のステージ。書き換えない |
 | `behind` / `front` | `[(層名, 色, アルファ)]`。その時刻に見えている層だけ。全画面の色とアルファは展開したときに作る |
 | `performer` | `(色, アルファ)`。人物のいない時刻は None |
-| `performer_info` | `clip`・`source_frame`・`placement`（元→画面、カメラの前の 2×3）・`camera`（2×3）・`blend`（重み） |
+| `performer_info` | `clip`・`source_frame`・`placement`（元→画面、カメラの前の 2×3）・`camera`（2×3）・`blend`（重み）・`body`（足元と中心。下の「足元と中心の列」。列を作らないときは None） |
 | `flashes` | `[(強さ, 色, mode)]`。色は `lerp_linear` なら線形、`add_display` なら表示用の値 0..1 |
 | `camera` | `zoom`・`center`・`rotate`・`shake`・`seams`・`matrix` |
 | `t`・`frame_index` | 時刻とコマ番号 |
@@ -287,6 +287,26 @@ def behind(img, t, ctx, L):
 - timeline は spec だけから作る。hooks では時刻と構造が変わらない。timeline に `finished: {hooks: {path, sha256}}` を残す。
 - hooks で例外が出たら run を失敗にし、render.log にトレースバックを残す。
 - 例外は特定のカメラ位置でしか起きないことがある（寄りで足元が画面の外に出て、配列が空になるなど）。本番の前に `--scale 0.25 --out <別の場所>` で全コマを流すと、途中で止まる描き直しを避けられる。
+
+### 足元と中心の列（performer.rows。0.3）
+
+hooks を使うとき（`api.prepare(..., rows=True)` でも）、fit の有無にかかわらず全クリップで人物の足元と中心の列を作り、`L.performer_info["body"]` に出力の画素で渡す（DANCE-HOOK-1）。足元の影・床の反射・後光などを、hooks がアルファから探さずに置ける。列を作らないときの絵と timeline は変わらない。
+
+- 測り方: 元のコマを `analysis_scale`（既定 0.5）に縮め、アルファ 0.5 超の画素の「最下の画素の行」（`bottom`）と「x の中央値」（`cx`）を元動画の画素で取る。写っていないコマと `replace_frames` で差し替えるコマは前後の値で埋める。
+- 足元の列 `ground`: 使う範囲（spec のどこかで出る元のコマの最小〜最大）の外は端の値で止め、前後 `hold_frames`（既定 10）コマの最大で接地している足の位置を取り、`box_frames`（既定 9。奇数）コマの平均でならす。跳んでいる間も床に残る。`cx_med` は使う範囲の写ったコマの `cx` の中央値（使う範囲に写ったコマが 1 つも無い、たとえば全部を `replace_frames` の画像で差し替えたときは、前後の値で埋めた `cx` の中央値。NaN を hooks に渡さない）。
+- `body`:
+  - `feet`: 足元の列と `cx_med` の点。
+  - `bottom`: このコマの最下の行と `cx` の点。
+  - `scale`: 元動画の 1 画素が出力の何画素か（配置の縮尺 × カメラの倍率）。
+  - `source`: 元動画の画素での `frame`・`ground`・`bottom`・`cx`・`cx_med`。
+  - 点の座標はカメラの後の出力の画素の番号（画素の中心が整数。`img[y, x]` で塗れる）で、人物の描き方と同じ対応にしてある（合成の人物で、描いたアルファとの差は横 0.5・縦 1.2 画素以内）。blend の窓では新しい側。
+- `ctx.rows`: 動画のパスごとの列（`bottom`・`cx`・`ground` の配列、`cx_med`、`used`、キャッシュの `file`）。測った値は `<out>/analysis/<clip の sha256 の頭 16 桁>-rows-<設定の sha256 の頭 16 桁>.json` にキャッシュする（素材の中身・key・縮尺・差し替えの区間で決まる。名前は Windows のパスの長さの上限に掛かりにくいよう縮め、全桁は中に書いて読むときに照合する）。
+- どのコマにも人物を測れない動画（全部を `replace_frames` で差し替えた・key が合わない）は列を作らない。その clip の `body` は None で、warnings に残す（列は hooks の手がかりなので、作れなくても描画は止めない）。
+- 測るのに各動画を 1 回読むので、hooks を使う描画はその分遅くなる。
+
+非公開の制作の `stats()`（各クリップの足元と中心）と比べた（2026-11-09）。
+- 同じ測定を入れたときの式: 制作の読み手とキーで測った毎コマの値を公開版の式に入れると、制作の結果と同じになった（制作が 0.1 画素に丸めた分の差だけ）。合成の配列でも、テストで写した制作の式と同じ。
+- 通しの差: ユーザーの緑背景の実素材（1080×1920、960 コマ）を公開版の読み手とキー（spec の既定）で測ると、足元の列の差は平均 3.4・最大 6.0 画素、`cx_med` は 2 画素だった。キー（制作のキーは小さな塊を消す）と、BT.709 の読み方の違いによる。
 
 ### 層の静止画
 
