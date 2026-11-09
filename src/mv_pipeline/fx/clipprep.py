@@ -39,6 +39,7 @@ from . import VERSION, fingerprint, spec as fxspec
 SCHEMA_VERSION = "fx-clips/0.1"
 RECORD_VERSION = "fx-clips-record/0.1"
 RECORD_NAME = "clips_record.json"
+LOG_NAME = "clips.log"          # ffmpeg の警告と実行行（書き足す）
 _SCHEMA_PATH = Path(__file__).with_name("fx_clips.schema.json")
 STABILIZE = {"mask": None, "dilate_px": 25, "smooth_frames": 1.5, "measure_width": 640}
 COLOR = {"gain_range": [0.85, 1.15], "min_improvement": 0.5}
@@ -115,8 +116,14 @@ def _inputs(clip):
 
 
 def output_targets(plan, out_dir, plan_path, base_dir):
-    """クリップごとの書き出し先。何も書く前に、入力（計画・source・measure_from・mask・reference）や記録と同じファイル、
-    ほかのクリップと同じ書き出し先を止める（綴りが違っても同じファイルなら同じ）。"""
+    """クリップごとの書き出し先。何も書く前に、書くファイルが入力（計画・source・measure_from・mask・reference）と同じファイルか、
+    書くファイルどうしが同じファイルなら止める（綴りが違っても同じファイルなら同じ）。
+
+    書くファイルは、記録・ログ（書き足す）と、クリップごとの書き出し先とその一時ファイル（<名前>.part<拡張子>）。
+    一時ファイルには書き出しの間に上書きで書き、書き終えると書き出し先へ移す（失敗すると消す）ので、入力やほかの出力と
+    重なると、そのファイルが消える。"""
+    from .render import partial_path
+
     def key(path):
         return os.path.normcase(str(Path(path).resolve()))
 
@@ -124,19 +131,24 @@ def output_targets(plan, out_dir, plan_path, base_dir):
     for clip in plan["clips"]:
         for rel in _inputs(clip):
             inputs.setdefault(key(safe_path(base_dir, rel)), rel)
-    record = key(Path(out_dir) / RECORD_NAME)
+    record, log = key(Path(out_dir) / RECORD_NAME), key(Path(out_dir) / LOG_NAME)
     if record in inputs:
         raise PipelineError(f"{RECORD_NAME} を書くと、入力（{inputs[record]}）を上書きします。--out で別のフォルダーに書いてください")
-    targets, seen = {}, {}
+    if log in inputs:
+        raise PipelineError(f"{LOG_NAME} に書き足すと、入力（{inputs[log]}）が変わります。--out で別のフォルダーに書いてください")
+    written = {record: f"記録 {RECORD_NAME!r}", log: f"ログ {LOG_NAME!r}"}
+    targets = {}
     for clip in plan["clips"]:
         target = safe_path(out_dir, clip["out"])
-        if key(target) == record:
-            raise PipelineError(f"クリップ {clip['id']!r} の書き出し先は記録（{RECORD_NAME}）と同じです。別の名前にしてください")
-        if key(target) in inputs:
-            raise PipelineError(f"クリップ {clip['id']!r} の書き出し先 {clip['out']!r} は、入力（{inputs[key(target)]}）と同じファイルです")
-        if key(target) in seen:
-            raise PipelineError(f"クリップ {clip['id']!r} と {seen[key(target)]!r} の書き出し先が同じファイルです: {clip['out']!r}")
-        seen[key(target)] = clip["id"]
+        partial = partial_path(target)
+        moved = "。書き出しの間はこの名前に書き、書き終えると書き出し先へ移すので、そのファイルは消えます。out の名前を変えてください"
+        for path, label, hint in ((target, f"クリップ {clip['id']!r} の書き出し先 {clip['out']!r}", "。別の名前にしてください"),
+                                  (partial, f"クリップ {clip['id']!r} の書き出しの一時ファイル {partial.name!r}", moved)):
+            if key(path) in inputs:
+                raise PipelineError(f"{label} は、入力（{inputs[key(path)]}）と同じファイルです{hint}")
+            if key(path) in written:
+                raise PipelineError(f"{label} は、{written[key(path)]} と同じファイルです{hint}")
+            written[key(path)] = label
         targets[clip["id"]] = target
     return targets
 
@@ -427,7 +439,7 @@ def make_clips(plan_path, out=None, force=False, only=None, progress=None):
             raise PipelineError(f"{target.name} が既にあり、記録に無いか中身が違います（手で直したクリップかもしれません）。"
                                 "上書きするなら --force を付けてください")
         say(f"[fx clips] {clip['id']}: {clip['source']} → {clip['out']}")
-        record, notes = prepare_clip(clip, base_dir, target, plan["crf"], log_path=out_dir / "clips.log")
+        record, notes = prepare_clip(clip, base_dir, target, plan["crf"], log_path=out_dir / LOG_NAME)
         record["key"] = key
         results[clip["id"]] = record
         warnings += notes

@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import math
+import re
 
 import numpy as np
 import pytest
@@ -216,6 +217,37 @@ def test_outputs_never_overwrite_inputs(tmp_path, out, message):
     path.write_text(json.dumps(plan), encoding="utf-8")
     with pytest.raises(PipelineError, match=message):
         clipprep.output_targets(clipprep.parse_plan(plan, tmp_path), tmp_path, path, tmp_path)
+
+
+@pytest.mark.parametrize("clips, message", [
+    ([{"id": "a", "source": "x.part.mp4", "out": "x.mp4"}], "クリップ 'a' の書き出しの一時ファイル 'x.part.mp4' は、入力（x.part.mp4）と同じ"),
+    ([{"id": "a", "source": "s.mp4", "out": "a.mp4"}, {"id": "b", "source": "a.part.mp4", "out": "b.mp4"}],
+     "クリップ 'a' の書き出しの一時ファイル 'a.part.mp4' は、入力（a.part.mp4）と同じ"),
+    ([{"id": "b", "source": "s.mp4", "out": "x.part.mp4"}, {"id": "a", "source": "s.mp4", "out": "x.mp4"}],
+     "クリップ 'a' の書き出しの一時ファイル 'x.part.mp4' は、クリップ 'b' の書き出し先 'x.part.mp4' と同じ"),
+    ([{"id": "a", "source": "s.mp4", "out": "x.mp4"}, {"id": "b", "source": "s.mp4", "out": "x.part.mp4"}],
+     "クリップ 'b' の書き出し先 'x.part.mp4' は、クリップ 'a' の書き出しの一時ファイル 'x.part.mp4' と同じ"),
+    ([{"id": "a", "source": "s.mp4", "out": "x.mp4"}, {"id": "b", "source": "s.mp4", "out": "./x.mp4"}],
+     "クリップ 'b' の書き出し先 './x.mp4' は、クリップ 'a' の書き出し先 'x.mp4' と同じ"),
+    ([{"id": "a", "source": "s.mp4", "out": "clips.log"}], "ログ 'clips.log' と同じ"),
+    ([{"id": "a", "source": "s.mp4", "out": "x.mp4", "color": {"reference": "clips.log"}}], "clips.log に書き足すと、入力（clips.log）"),
+])
+def test_the_writers_temporary_file_and_log_never_hit_an_input_or_another_output(tmp_path, clips, message):
+    # write_video は <名前>.part<拡張子> に上書きで書き、書き終えると書き出し先へ移す。それが入力やほかの出力と重なると、そのファイルが消える
+    plan = {"schema_version": "fx-clips/0.1", "clips": [{"stabilize": {}, **clip} for clip in clips]}
+    with pytest.raises(PipelineError, match=re.escape(message)):
+        clipprep.output_targets(clipprep.parse_plan(plan, tmp_path), tmp_path, tmp_path / "plan.json", tmp_path)
+
+
+def test_an_input_named_like_the_temporary_file_survives(tmp_path):
+    frames = shaky_frames(6)
+    write_clip(tmp_path / "x.part.mp4", frames)
+    before = (tmp_path / "x.part.mp4").read_bytes()
+    (tmp_path / "plan.json").write_text(json.dumps(plan_dict(source="x.part.mp4", out="x.mp4")), encoding="utf-8")
+    with pytest.raises(PipelineError, match="書き出しの一時ファイル 'x.part.mp4'"):
+        clipprep.make_clips(tmp_path / "plan.json", force=True)                      # --force でも書かない（何も書く前に止める）
+    assert (tmp_path / "x.part.mp4").read_bytes() == before and not (tmp_path / "x.mp4").exists()
+    assert not (tmp_path / "clips_record.json").exists()
 
 
 def run_cli(*argv):
