@@ -402,13 +402,21 @@ def _dissolve_half(clip, fps):
 
 def _validate_seam_shapes(clips, fps):
     """dissolve の窓（切れ目の前後 frames/2 コマ）が前後のクリップに収まり、隣の窓と重ならないこと。shift の ease は t と違う時刻。
-    1 つのクリップの中に入る窓は、頭の dissolve の後半と、次のクリップの dissolve の前半なので、その和がクリップの長さ以下ならよい。"""
+    1 つのクリップの中に入る窓は、頭の dissolve の後半と、次のクリップの dissolve の前半なので、その和がクリップの長さ以下ならよい。
+    頭が blend なら、その窓（start から frames コマ）も次の dissolve の前半と重ならないこと（重なると、mapping が次の dissolve を
+    先に見るので、blend の途中の前のクリップが急に消える）。次が dissolve でなければ、blend の長さは今までどおり（0.2 と同じ）見ない。"""
     for index, clip in enumerate(clips):
         half_in = _dissolve_half(clip, fps)
         half_out = _dissolve_half(clips[index + 1], fps) if index + 1 < len(clips) else 0.0
-        if half_in + half_out > clip["end"] - clip["start"] + 1e-9:
-            raise PipelineError(f"dance spec: clip {clip['path']!r}（{clip['end'] - clip['start']:g} 秒）に dissolve の窓が収まりません"
+        length = clip["end"] - clip["start"]
+        if half_in + half_out > length + 1e-9:
+            raise PipelineError(f"dance spec: clip {clip['path']!r}（{length:g} 秒）に dissolve の窓が収まりません"
                                 f"（頭の後半 {half_in:g} 秒 + 次の前半 {half_out:g} 秒。frames を減らしてください）")
+        if clip["transition_in"]["type"] == "blend" and half_out > 0:
+            blend = clip["transition_in"]["frames"] / fps
+            if blend + half_out > length + 1e-9:
+                raise PipelineError(f"dance spec: clip {clip['path']!r}（{length:g} 秒）で、頭の blend の窓 {blend:g} 秒と次の dissolve の前半 "
+                                    f"{half_out:g} 秒が重なります（前のクリップが blend の途中で消えるので、どちらかの frames を減らしてください）")
         for shift in clip["shift"]:
             if abs(shift["ease"] - shift["t"]) < 1e-9:
                 raise PipelineError(f"dance spec: clip {clip['path']!r} の shift の ease は t と違う時刻にしてください（{shift['t']:g} 秒）")

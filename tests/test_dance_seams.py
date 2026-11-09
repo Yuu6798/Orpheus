@@ -53,6 +53,19 @@ def test_dissolves_and_shifts_are_checked(tmp_path, clips_, message):
         dancespec.parse_spec(base(clips_), tmp_path)
 
 
+def test_a_blend_window_and_the_next_dissolve_must_not_overlap(tmp_path):
+    def clips_(blend):
+        return [{"path": "a.mp4", "start": 0, "end": 0.8},
+                {"path": "b.mp4", "start": 0.8, "end": 1.4, "transition_in": {"type": "blend", "frames": blend}},
+                {"path": "c.mp4", "start": 1.4, "end": 2.0, "transition_in": {"type": "dissolve", "frames": 8}}]
+    with pytest.raises(PipelineError, match="blend の窓"):
+        dancespec.parse_spec(base(clips_(15)), tmp_path)          # 0.5 秒 + 次の前半 0.13 秒 > 0.6 秒（前のクリップが途中で消える）
+    assert dancespec.parse_spec(base(clips_(12)), tmp_path)      # 0.4 秒 + 0.13 秒 は収まる
+    long_blend = [{"path": "a.mp4", "start": 0, "end": 1.0},
+                  {"path": "b.mp4", "start": 1.0, "end": 1.2, "transition_in": {"type": "blend", "frames": 12}}]
+    assert dancespec.parse_spec(base(long_blend), tmp_path)       # 次に dissolve が無ければ今までどおり（0.2 と同じ）
+
+
 @pytest.mark.parametrize("clips_", [two({"type": "dissolve", "frames": 4}), two(a=[{"t": 1.0, "ease": 0.5}])])
 def test_a_02_spec_cannot_dissolve_or_shift(tmp_path, clips_):
     with pytest.raises(PipelineError, match="invalid"):
