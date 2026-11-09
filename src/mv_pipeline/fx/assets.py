@@ -1,6 +1,8 @@
 """素材（基準画像・深度・マスク）の読み込みと前処理。描画サイズごとに 1 回だけ行う。
 
 - 基準画像: 出力の縦横比に cover で中央合わせし（余る側を切る）、描画サイズへ縮尺して線形 float32 に。
+  camera.frame: source（fx-shot/0.3）なら切らずに元画像の全体を板にする（Assets.plate_size。出力より大きい元画像は、zoom 1 の
+  視野が出力と同じ画素になるまで縮める）。マスクと深度も同じ大きさにそろえる。
   切った割合は warnings に残す（黙って切らない）。切り出し範囲は Assets.box（元画像の正規化座標）。
   spec の座標（light.position・radius・emitter.size・camera.center）は**元画像**の正規化座標で、
   to_screen() / width_scale() が box を使って出力画素へ写す（出力の縦横比が変わっても対象に付いてくる）。
@@ -36,6 +38,7 @@ class Assets:
     depth: np.ndarray | None         # float32 (H, W) 0..1（1 = 手前）
     warnings: list = field(default_factory=list)
     box: tuple = (0.0, 0.0, 1.0, 1.0)   # cover の切り出し (x0, y0, x1, y1)。元画像の正規化座標
+    plate_size: tuple | None = None     # camera.frame: source の板の大きさ（元画像の全体）。cover なら None（板は描画サイズ）
 
 
 def _open(path, role):
@@ -257,21 +260,33 @@ def load_assets(spec, size):
     warnings = []
     base_image = _open(spec.resolve(data["assets"]["base"]), "base")
     base_size = base_image.size
-    box = _pixel_box(cover_box(base_size[0], base_size[1], width, height), base_size)
-    cut = 1.0 - (box[2] - box[0]) * (box[3] - box[1])
-    if cut > CROP_WARN_FRACTION:
-        axis = "左右" if box[0] > 0 else "上下"
-        warnings.append(f"基準画像 {base_size[0]}x{base_size[1]} は出力 {width}x{height} と縦横比が違うため、"
-                        f"cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
-    if base_size[0] < width or base_size[1] < height:
-        warnings.append(f"基準画像 {base_size[0]}x{base_size[1]} は描画サイズ {width}x{height} より小さく、拡大されます")
+    plate_size = None
+    if data["camera"]["frame"] == "source":
+        # 元画像の全体が板。出力より大きい元画像は、zoom 1 の視野が出力と同じ画素になるまで縮める（縮める warp で荒れないように）
+        box = (0.0, 0.0, 1.0, 1.0)
+        cover = max(width / base_size[0], height / base_size[1])
+        plate_size = tuple(base_size) if cover >= 1 else (max(1, int(round(base_size[0] * cover))), max(1, int(round(base_size[1] * cover))))
+        kpx = kpx / max(width / plate_size[0], height / plate_size[1])        # 出力幅 1920 換算 px → 板の画素
+        if cover > 1:
+            warnings.append(f"基準画像 {base_size[0]}x{base_size[1]} は、zoom 1 の視野（出力 {width}x{height} の縦横比）でも"
+                            f"出力より小さく、{cover:.2f} 倍に拡大されます")
+    else:
+        box = _pixel_box(cover_box(base_size[0], base_size[1], width, height), base_size)
+        cut = 1.0 - (box[2] - box[0]) * (box[3] - box[1])
+        if cut > CROP_WARN_FRACTION:
+            axis = "左右" if box[0] > 0 else "上下"
+            warnings.append(f"基準画像 {base_size[0]}x{base_size[1]} は出力 {width}x{height} と縦横比が違うため、"
+                            f"cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
+        if base_size[0] < width or base_size[1] < height:
+            warnings.append(f"基準画像 {base_size[0]}x{base_size[1]} は描画サイズ {width}x{height} より小さく、拡大されます")
+    target = plate_size or size
     rgb = np.asarray(base_image.convert("RGB"))
-    plate_u8 = _crop_resize(rgb, box, size)
+    plate_u8 = _crop_resize(rgb, box, target)
     masks = {}
     for mask_id, mask in data["assets"]["masks"].items():
         image = _open(spec.resolve(mask["path"]), f"mask:{mask_id}")
         _check_aspect(f"mask:{mask_id}", image, base_size)
-        values = np.clip(_crop_resize(_gray01(image), box, size), 0.0, 1.0)
+        values = np.clip(_crop_resize(_gray01(image), box, target), 0.0, 1.0)
         sigma = mask["feather_px"] * kpx / 2.0
         if sigma >= 0.3:
             values = cv2.GaussianBlur(values, (0, 0), sigma, borderType=cv2.BORDER_REPLICATE)
@@ -282,17 +297,17 @@ def load_assets(spec, size):
         image = _open(spec.resolve(depth_spec["path"]), "depth")
         _check_aspect("depth", image, base_size)
         if _plain_depth(depth_spec):
-            values = _crop_resize(_raw_values(image), box, size)
+            values = _crop_resize(_raw_values(image), box, target)
             depth, informative = normalize_depth(values, depth_spec["near"])
         else:
             values, informative = prepare_depth(image, depth_spec, base_size, box)
             # 描画より小さい深度は 3 次補間で拡大するので、段差で 0..1 を行き過ぎる。0.1 の経路（normalize_depth）と同じく切る
-            depth = np.ascontiguousarray(np.clip(_crop_resize(values, box, size), 0.0, 1.0), dtype=np.float32) if informative else None
+            depth = np.ascontiguousarray(np.clip(_crop_resize(values, box, target), 0.0, 1.0), dtype=np.float32) if informative else None
         if not informative:
             depth = None  # 警告と描画を一致させる: 深度視差も light の depth ゲートも無効にする
             warnings.append("深度画像がほぼ一定のため、深度は使いません（深度視差と light の depth 指定も無効）")
     return Assets(size=size, plate_u8=plate_u8, plate=to_linear(plate_u8), masks=masks, depth=depth, warnings=warnings,
-                  box=box)
+                  box=box, plate_size=plate_size)
 
 
 def describe(spec):

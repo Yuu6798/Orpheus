@@ -6,7 +6,7 @@
 いくつものショットは **fx-timeline** でカット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にできる（[timeline](#timeline複数のショットをつなぐfx-timeline01)）。
 
 - 決定論: 同じ spec・seed・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
-- **実験的**: 設定スキーマ `fx-shot/0.2`（`fx-shot/0.1` の spec もそのまま読める）は `contracts/` の外（`src/mv_pipeline/fx/`）にある。`contracts/` への昇格はユーザー承認が要る。
+- **実験的**: 設定スキーマ `fx-shot/0.3`（`fx-shot/0.2`・`fx-shot/0.1` の spec もそのまま読める）は `contracts/` の外（`src/mv_pipeline/fx/`）にある。`contracts/` への昇格はユーザー承認が要る。
 - **採点しない**: `technical_pass` は構造検査、`accept` は人間の判定。fx は絵の良し悪しを自動判定しない。
 - 既存の `mv init / render / verify …`（Remotion 経路）は変えない。fx は別系統で、`project` 引数も `project_lock` も持たない。
 
@@ -49,18 +49,20 @@ spec に `layers`（plane も effects も空）や `lights` が無ければ、�
 manifest に `"empty": true` と理由が記録され、グリッドのラベルに `[no-op]` が付く（base と同じ映像であることを読み違えないため）。
 spec に `look` があれば**全 4 版に同じ look が掛かる**（版は増えない）。base は「カメラ + 実制作の調色」に近づき、`features` に `look` が載る。
 
-## spec（fx-shot/0.2）
+## spec（fx-shot/0.3）
 
 素材パスは **spec ファイルのあるディレクトリ基準の相対パス**（`io.safe_path` で逸脱を拒否）。検証は JSON Schema 2020-12
 （`src/mv_pipeline/fx/fx_shot.schema.json`）。トップレベルは未知の鍵を拒否するが、**`x_` で始まる鍵はどの階層でも許す**（作品ごとの試行用。描画には使われない）。
 
-0.2 は 0.1 に深度視差の項目（[深度視差](#深度視差fx-shot02)）を足した版。`"schema_version": "fx-shot/0.1"` の spec は 0.1 の schema（`fx_shot_0_1.schema.json`）で検証してから
-0.2 の正規形にそろえ、新しい項目は既定値（0.1 と同じ絵になる値）で埋める。0.1 の spec の絵は 0.2 の実装でもバイト単位で同じ（合成素材と段階 1 の実素材の 80 コマで確認）。
-0.2 の項目を 0.1 の spec に書くと、未知の鍵として拒否する。
+0.3 は 0.2 にカメラの視野の取り方（`camera.frame`・`clamp`・`punch`）と顔の枠（`faces`）を足した版（[カメラの視野と顔の枠](#カメラの視野と顔の枠fx-shot03)）。
+0.2 は 0.1 に深度視差の項目（[深度視差](#深度視差fx-shot02)）を足した版。`"schema_version": "fx-shot/0.2"`・`"fx-shot/0.1"` の spec はその版の schema
+（`fx_shot_0_2.schema.json`・`fx_shot_0_1.schema.json`）で検証してから 0.3 の正規形にそろえ、新しい項目は既定値（元の版と同じ絵になる値）で埋める。
+0.1 の spec の絵は 0.2 の実装でもバイト単位で同じ（合成素材と段階 1 の実素材の 80 コマで確認）。0.2 と 0.1 の spec とデモの絵は、0.3 の実装でもバイト単位で同じ
+（合成素材 4 つと段階 1 の実素材の 0.1・0.2 の spec の 96 コマ、fx-timeline のデモの 29 コマで確認）。新しい版の項目を古い版の spec に書くと、未知の鍵として拒否する。
 
 ```json
 {
-  "schema_version": "fx-shot/0.2",
+  "schema_version": "fx-shot/0.3",
   "output": {"width": 1920, "height": 1080, "fps": 24, "crf": 18},
   "duration_s": 10.0, "seed": 7,
   "audio": {"path": "audio.wav", "offset_s": 0.0},
@@ -128,6 +130,32 @@ z の小さい順に背面から合成し、effects も z で挟む（霧 z=1 �
 （人物の形の光が、視差でのぞいた背景に残らない）。このため、**受光マスクどうしが重なる画素は両方の受光が足される**
 （例: 地面マスクが人物の足元に重なると、光の版では人物の足元が二重に照らされる）。マスクは重ねない作り方を勧める
 （デモの地面マスクは人物の輪郭の内側で 1→0 に落としてある）。
+
+## カメラの視野と顔の枠（fx-shot/0.3）
+
+```json
+"camera": {"keys": [{"t": 0, "zoom": 1.66, "center": [0.5, 0.9]}, {"t": 1.46, "zoom": 1.7, "center": [0.5, 0.9], "ease": "in_out"}],
+           "frame": "source", "clamp": true, "punch": {"amount": 0.1, "duration_s": 0.4}},
+"faces": [{"box": [0.455, 0.574, 0.553, 0.744]}]
+```
+
+- `camera.frame`（既定 `cover`）: 視野をどこから取るか。
+  - `cover` は 0.2 までと同じで、出力の縦横比で元画像の中央を切った範囲の上をカメラが動く。縦の出力に横の絵を使うと、左右は中央の帯の外へ出られない。
+  - `source` は元画像の全体が板で、`center`（元画像の正規化座標）を縦にも横にも端まで動かせる。縦の出力で横の絵を左右に追うときに使う。
+  - zoom 1 はどちらも「元画像に収まる、出力の縦横比のいちばん大きい視野」。`source` は実制作の縦のレンダラの視野の取り方と同じ。
+  - `source` の板は元画像そのもの。出力より大きい元画像は、zoom 1 の視野が出力と同じ画素になるまで先に縮める（縮める warp で荒れないように）。zoom 1 でも出力より小さい元画像は、拡大の注意を出す。
+  - `source` は `layers`（planes・effects）と `lights` とは一緒に使えない（今は。平らな描画と深度視差だけ）。
+- `camera.clamp`（既定 false）: 視野を画像の中に止める（`center` を内側へ寄せる。実制作と同じ）。止めないと外は端の画素を伸ばして埋め、注意を出す（0.2 まで）。
+- `camera.punch`: 入りの押し込み。0 秒から `duration_s` の間、zoom に `1 − amount·(1 − ease_out(t/duration_s))` を掛ける（`ease_out(x) = 1 − (1 − x)³`）。少し引いた所から ease-out で keys の寄りへ戻る。zoom は 1 より小さくしない（実制作と同じ）。
+- `clamp`・`punch` があるときは、層の視差の基準（最初のキーの状態）も、止めた・押し込んだ後の 0 秒の状態にする（どの層も最初のコマで重なる）。
+- `faces`（任意）: 顔の枠。元画像の正規化座標 `[x0, y0, x1, y1]`、`role`（`main`・`other`。既定 main）、`estimated`（既定 true。目で測った推定）。
+  - 描画には使わない。fx-timeline の run が、カメラで画面へ写して `faces.json` に書く（[timeline](#timeline複数のショットをつなぐfx-timeline01)）。
+  - 写し方は camera の層（深度視差は入れない。実制作と同じ）で、画面の外に出た所は切る。
+- 実制作との比較: 実制作の縦のレンダラの視野（`cam` と `crop_M`。拍の脈は除く）と顔の写し方（`Geo.pt`）を写した関数と比べた（`tests/test_fx_camera_frame.py`）。
+  - 縦 1080×1920 に横 1672×941 を写す 5 つのショット（実制作の設定の寄り・中心・押し込みの 4 つと、左右の端まで動かす 1 つ）で、全コマの視野が 1e-6 画素以内、zoom が 1e-12 以内で同じだった。
+  - 顔の枠の画面の位置も 0.02 画素以内で同じだった。
+  - 実制作は出力の画素の番号をそのまま元画像の画素の番号へ写すので、画素の端の座標で写すこちらとは、絵の画素の取り方が最大で半画素ずれる。視野と顔の枠は端の座標なので、このずれは無い。
+  - 実制作の縦のレンダラは、山場の区間で拍ごとに寄りを 0.6% 脈打たせていた（拍の脈）。これはまだ入れていない。
 
 ## 深度視差（fx-shot/0.2）
 
@@ -552,7 +580,7 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 設定は `fx-timeline/0.1`（`src/mv_pipeline/fx/fx_timeline.schema.json`。実験的で、`contracts/` の外）。
 
 ```sh
-uv run mv fx timeline demo projects/fxtimeline                     # spec のショット 3 つと動画のショット 1 つ、つなぎを全部使う timeline.json
+uv run mv fx timeline demo projects/fxtimeline                     # spec のショット 3 つと動画のショット 1 つ、つなぎを全部使う timeline.json（頭の枠つき）
 uv run mv fx timeline plan projects/fxtimeline/timeline.json       # ショット・つなぎ・秒・いちばん近い拍の表（描かない）
 uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp4 と timeline.json を run として出す
 ```
@@ -582,6 +610,8 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 動画のコマを、fx の静止画と同じ道筋で描く。出力の縦横比で中央を切り出し（cover）、出力の大きさに縮め、線形にしてカメラを掛け、sRGB に戻す。
     同じコマが続く動画のショットは、そのコマを絵にした fx の静止画のショット（深度・layers・lights なし）とバイト単位で同じになる。
   - カメラは `camera.keys`（fx-shot の keys と同じ書き方で、`t`・`zoom`・`center`・`ease`）。時刻はショットの中の秒 `t − start`、`center` は動画の正規化座標。既定は寄りなし・中央。
+    `frame`・`clamp`・`punch` も fx-shot と同じ（[カメラの視野と顔の枠](#カメラの視野と顔の枠fx-shot03)）。`frame: "source"` なら動画の全体が板になり、縦の出力で横の動画を左右に追える。
+  - 顔の枠は動画のショットに `faces` で書く（fx-shot の `faces` と同じ形。座標は動画の正規化座標）。spec のショットは spec の `faces` を使い、timeline には書けない。
   - 動画のコマ位置は、実制作のレンダラと同じ式で決める。
     - 既定: 位置 = (`offset_s` + (t − start)·`speed`)·`fps`。`fps` は既定でファイルの fps で、書けば上書きできる（実制作の縦のレンダラは 16 に決めていた）。
     - `loop`: コマ `frames[0]`〜`frames[1]` を繰り返す。τ = (t − start) + `start_s`、p = (τ·fps·`speed`) mod (区間 − `crossfade_frames`) で、
@@ -633,6 +663,9 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る（これも次のショットの xfade の間まで見る）。
 - **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
   - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
+  - 顔の枠を持つショットがあれば `faces.json` も書く。コマごとに、そのコマのショット（xfade の間は入ってくるショット）の顔の枠をカメラで画面へ写したもの。
+    形は `mv gate check` の `faces` と同じ `[{"start", "end", "box", "role", "estimated"}]`（box は画面の正規化座標）で、gate の設定の `faces` にそのまま渡せる。
+    推定の枠（`estimated: true`）との重なりは、gate では不合格にせず要確認になる。
   - manifest の kind は timeline で、版は `timeline` の 1 つ。
   - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも。spec の audio は入らない）か動画の sha256、timeline の音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
   - 同じ入力なら描き直さない（`--force` で描き直す）。ショットの spec や動画を 1 つ変えれば描き直しになる。

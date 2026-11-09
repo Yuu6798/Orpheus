@@ -364,6 +364,8 @@ def test_cli_demo_render_plan_and_reuse(tmp_path):
     manifest = json.loads((tmp_path / "fx_runs" / summary["run_id"] / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["kind"] == "timeline" and set(manifest["variants"]) == {"timeline"} and len(manifest["shots"]) == 4
     assert manifest["shots"][3]["video"] == "shots/clip.mp4" and len(manifest["shots"][3]["sha256"]) == 64
+    faces = json.loads(open(summary["faces"], encoding="utf-8").read())             # shot_a と動画のショットの頭の枠
+    assert manifest["faces"] == "faces.json" and faces and all(face["estimated"] and face["role"] == "main" for face in faces)
     record = json.loads((tmp_path / "fx_runs" / summary["run_id"] / "timeline.json").read_text(encoding="utf-8"))
     checks._validate_timeline(record)
     assert [c["kind"] for c in record["clips"]] == ["fx-shot", "fx-shot", "fx-shot", "video"]

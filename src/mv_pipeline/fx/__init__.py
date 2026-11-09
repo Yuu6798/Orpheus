@@ -1,6 +1,6 @@
 """演出エンジン fx（実験的）: 1 枚絵 + 深度 + マスクから、カメラ・空間レイヤー・局所光で動画を作る。
 
-設定スキーマ（fx-shot/0.2。0.1 もそのまま読める）は contracts/ の外にあり、昇格にはユーザー承認が要る。
+設定スキーマ（fx-shot/0.3。0.2 と 0.1 もそのまま読める）は contracts/ の外にあり、昇格にはユーザー承認が要る。
 決定論: 同じ spec・seed・環境（ライブラリ版）なら同じフレームを返す。LLM もネットワークも使わない。
 
 このパッケージを import しても cv2 は読み込まない（既存コマンドは cv2 なしで動く）。
@@ -40,9 +40,10 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
 import hashlib
 from pathlib import Path
 
-SCHEMA_VERSION = "fx-shot/0.2"
+SCHEMA_VERSION = "fx-shot/0.3"
+SCHEMA_V02 = "fx-shot/0.2"         # 0.3 の新しい項目（camera.frame・clamp・punch、faces）を使わない spec。0.3 の既定値で読んで同じ絵になる
 SCHEMA_V01 = "fx-shot/0.1"         # 0.2 の新しい項目を使わない 0.1 の spec は、0.2 の既定値で読んで同じ絵になる
-VERSION = "0.2"
+VERSION = "0.3"
 VARIANTS = ("base", "layers", "light", "both")
 
 _PACKAGE = Path(__file__).resolve().parent

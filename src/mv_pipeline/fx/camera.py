@@ -1,4 +1,10 @@
-"""カメラ: zoom・center のキーフレーム、plane ごとの視差付き変換、深度視差。
+"""カメラ: zoom・center のキーフレーム、plane ごとの視差付き変換、深度視差、視野の取り方（frame・clamp・punch。fx-shot/0.3）。
+
+視野の取り方: camera.frame が cover（既定）なら下の「切った後の画面」の上で動く。source なら板は元画像の全体
+（assets.Assets.plate_size）で、center は元画像の正規化座標のまま、視野の大きさは zoom 1 で元画像に収まる出力の縦横比の
+いちばん大きい範囲（実制作の縦のレンダラの crop と同じ取り方。実制作は出力の画素の番号をそのまま元画像の画素の番号へ写すので、
+画素の端の座標で写すこちらとは最大で半画素ずれる）。clamp なら視野を画像の中に止めるよう center を寄せる。punch は 0〜duration_s 秒の zoom に
+1 − amount·(1 − ease_out(t/duration_s)) を掛け、zoom は 1 より小さくしない。
 
 座標系: spec の camera.center は**元画像**の正規化座標（0..1）。出力の縦横比が元画像と違うときは cover で
 中央に合わせて切るので、CameraPath が box（assets.Assets.box）を使って「切った後の画面」の正規化座標
@@ -42,8 +48,27 @@ class DepthMotion:
     legacy: tuple | None = None
 
 
+def ease_out(x):
+    """1 − (1 − x)³（x は 0..1 に切る）。punch の戻り方（実制作の縦のレンダラと同じ）。"""
+    x = min(max(x, 0.0), 1.0)
+    return 1 - (1 - x) ** 3
+
+
+def punch_factor(punch, t):
+    """押し込みの zoom の倍率。t < duration_s の間 1 − amount·(1 − ease_out(t/duration_s))、その後は 1。"""
+    if punch is None:
+        return 1.0
+    v = t / punch["duration_s"]
+    return 1 - punch["amount"] * (1 - ease_out(v)) if v < 1 else 1.0
+
+
 class CameraPath:
-    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0), pivot=0.5):
+    """camera の時間変化。plate は板の大きさ（camera.frame: source の元画像の全体。None なら板は描画サイズ = cover）。
+
+    source では、zoom 1 の視野が元画像に収まる出力の縦横比のいちばん大きい範囲になるよう、板の 1 画素を cover 倍
+    （= max(W/板の幅, H/板の高さ)）して写す。center は元画像（= 板）の正規化座標。"""
+
+    def __init__(self, camera, duration_s, size, box=(0.0, 0.0, 1.0, 1.0), pivot=0.5, plate=None):
         self.keys = camera["keys"]
         self.box = tuple(box)
         self.parallax_px = camera["parallax_px"]
@@ -56,14 +81,35 @@ class CameraPath:
         self.duration = duration_s
         self.size = size
         self.kpx = size[0] / 1920.0
+        self.plate = None if plate is None else tuple(plate)
+        self.cover = 1.0 if plate is None else max(size[0] / plate[0], size[1] / plate[1])
+        self.clamp = bool(camera.get("clamp", False))
+        self.punch = camera.get("punch")
         first = self.keys[0]
-        self.z0, self.c0 = first["zoom"], to_screen(self.box, *first["center"])
+        if self.clamp or self.punch is not None or self.plate is not None:
+            self.z0, cx, cy = self.at(0.0)          # 押し込み・止めた後の最初の状態（層が最初のコマで重なるように）
+            self.c0 = (cx, cy)
+        else:
+            self.z0, self.c0 = first["zoom"], to_screen(self.box, *first["center"])
 
     def at(self, t):
         """時刻 t のカメラ (zoom, cx, cy)。cx, cy は切った後の画面の正規化座標（keys は元画像の座標）。"""
         state = timeline.interp(self.keys, t, ["zoom", "center"])
+        zoom = state["zoom"]
+        if self.punch is not None:              # 実制作と同じ: zoom·倍率 を 1 で止める
+            zoom = max(1.0, zoom * punch_factor(self.punch, t))
         cx, cy = to_screen(self.box, *state["center"])
-        return state["zoom"], cx, cy
+        if self.clamp:
+            half_w, half_h = self.half_view(zoom)
+            cx, cy = min(max(cx, half_w), 1.0 - half_w), min(max(cy, half_h), 1.0 - half_h)
+        return zoom, cx, cy
+
+    def half_view(self, zoom):
+        """zoom の視野の半分の幅と高さ（板の正規化座標）。"""
+        if self.plate is None:
+            return 0.5 / zoom, 0.5 / zoom
+        scale = self.cover * zoom
+        return self.size[0] / (2.0 * scale * self.plate[0]), self.size[1] / (2.0 * scale * self.plate[1])
 
     def plane_view(self, t, parallax, drift_px=(0.0, 0.0)):
         """parallax p の層の (zoom_p, cx_p, cy_p, drift_x, drift_y)。drift は出力画素。"""
@@ -84,7 +130,7 @@ class CameraPath:
     def matrix(self, t, parallax, drift_px=(0.0, 0.0)):
         """画素座標 → 出力画素座標の 2×3 行列（float32）。"""
         z, cx, cy, dx, dy = self.plane_view(t, parallax, drift_px)
-        return affine(z, cx, cy, dx, dy, self.size)
+        return affine(z, cx, cy, dx, dy, self.size, self.plate, self.cover)
 
     def depth_amplitude(self, t):
         """深度視差の振幅（出力画素）= parallax_px × (W/1920) × s(t)。s は 0→1 を in_out で（t=0 で恒等）。
@@ -131,17 +177,38 @@ class CameraPath:
         worst = 0.0
         for t in np.linspace(0.0, self.duration, samples):
             z, cx, cy, _, _ = self.plane_view(float(t), 1.0)
-            worst = max(worst, 0.5 / z - cx, cx + 0.5 / z - 1.0, 0.5 / z - cy, cy + 0.5 / z - 1.0)
+            if self.plate is None:
+                worst = max(worst, 0.5 / z - cx, cx + 0.5 / z - 1.0, 0.5 / z - cy, cy + 0.5 / z - 1.0)
+            else:
+                half_w, half_h = self.half_view(z)
+                worst = max(worst, half_w - cx, cx + half_w - 1.0, half_h - cy, cy + half_h - 1.0)
         if worst > 1e-6:
             return f"camera の視野が画像の外へ最大 {worst * 100:.1f}% はみ出します（端の画素を引き伸ばして埋めます）"
         return None
 
 
-def affine(zoom, cx, cy, dx, dy, size):
+def affine(zoom, cx, cy, dx, dy, size, plate=None, cover=1.0):
+    """板の画素 → 出力の画素の 2×3（画素中心規約）。plate が None なら板は描画サイズ。"""
     width, height = size
-    tx = zoom * (0.5 - cx * width) + width / 2.0 - 0.5 + dx
-    ty = zoom * (0.5 - cy * height) + height / 2.0 - 0.5 + dy
-    return np.array([[zoom, 0.0, tx], [0.0, zoom, ty]], dtype=np.float32)
+    if plate is None:
+        tx = zoom * (0.5 - cx * width) + width / 2.0 - 0.5 + dx
+        ty = zoom * (0.5 - cy * height) + height / 2.0 - 0.5 + dy
+        return np.array([[zoom, 0.0, tx], [0.0, zoom, ty]], dtype=np.float32)
+    scale = cover * zoom
+    tx = scale * (0.5 - cx * plate[0]) + width / 2.0 - 0.5 + dx
+    ty = scale * (0.5 - cy * plate[1]) + height / 2.0 - 0.5 + dy
+    return np.array([[scale, 0.0, tx], [0.0, scale, ty]], dtype=np.float32)
+
+
+def screen_box(path, t, box):
+    """元画像の正規化座標の箱 [x0, y0, x1, y1] → 時刻 t の画面の正規化座標の箱（camera の層 parallax 1。深度視差は入れない）。
+    箱の辺は画素の端の座標で写す（板の u → 板の画素の端 u·幅 → 出力の画素の端 → 出力の幅で割る）。"""
+    matrix = path.matrix(t, 1.0).astype(np.float64)
+    plate_w, plate_h = path.plate or path.size
+    (u0, v0), (u1, v1) = to_screen(path.box, box[0], box[1]), to_screen(path.box, box[2], box[3])
+    x = lambda u: (matrix[0, 0] * (u * plate_w - 0.5) + matrix[0, 2] + 0.5) / path.size[0]  # noqa: E731
+    y = lambda v: (matrix[1, 1] * (v * plate_h - 0.5) + matrix[1, 2] + 0.5) / path.size[1]  # noqa: E731
+    return [x(u0), y(v0), x(u1), y(v1)]
 
 
 def is_identity(matrix, tolerance=1e-6):
@@ -149,8 +216,8 @@ def is_identity(matrix, tolerance=1e-6):
 
 
 def warp(img, matrix, size, border=cv2.BORDER_REPLICATE):
-    """img を matrix で変換する。恒等ならコピーせずそのまま返す（ビット単位で同じ）。"""
-    if is_identity(matrix):
+    """img を matrix で変換する。恒等で大きさも同じならコピーせずそのまま返す（ビット単位で同じ。source の板は出力と大きさが違う）。"""
+    if is_identity(matrix) and img.shape[1] == size[0] and img.shape[0] == size[1]:
         return img
     return cv2.warpAffine(img, matrix, size, flags=cv2.INTER_LINEAR, borderMode=border)
 
