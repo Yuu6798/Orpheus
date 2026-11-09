@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "fx-timeline/0.1",
-  "description": "複数の fx ショット（fx-shot の spec）を時刻順に並べ、つなぎ（cut・xfade・black・flash）で 1 本にする。ショットは次のショットの start（最後は duration_s）まで。look（fx-shot と同じ定義。読み込み時に足す）はつないだ後の全体に掛ける。",
+  "description": "複数のショットを時刻順に並べ、つなぎ（cut・xfade・black・flash）で 1 本にする。ショットは fx-shot の spec（spec）か動画（video）。ショットは次のショットの start（最後は duration_s）まで。look（fx-shot と同じ定義。読み込み時に足す）はつないだ後の全体に掛ける。",
   "type": "object",
   "required": [
     "schema_version",
@@ -122,7 +122,6 @@
       "items": {
         "type": "object",
         "required": [
-          "spec",
           "start"
         ],
         "additionalProperties": false,
@@ -131,8 +130,14 @@
         },
         "properties": {
           "spec": {
-            "description": "fx-shot の spec（このファイルからの相対パス）。出力の大きさで描く",
+            "description": "fx-shot の spec（このファイルからの相対パス）。出力の大きさで描く。video とどちらか一方",
             "type": "string"
+          },
+          "video": {
+            "$ref": "#/$defs/video"
+          },
+          "camera": {
+            "$ref": "#/$defs/video_camera"
           },
           "start": {
             "$ref": "#/$defs/time"
@@ -142,7 +147,7 @@
             "type": "boolean"
           },
           "offset_s": {
-            "description": "このショットの頭に当てる、ショットの spec の中の時刻（秒。既定 0）",
+            "description": "spec のショットの頭に当てる、spec の中の時刻（秒。既定 0）。video のショットでは video.offset_s を使う",
             "type": "number",
             "minimum": 0
           },
@@ -153,7 +158,7 @@
               "light",
               "both"
             ],
-            "description": "ショットを描く fx の版（既定 both）"
+            "description": "spec のショットを描く fx の版（既定 both）"
           },
           "transition_in": {
             "oneOf": [
@@ -247,7 +252,52 @@
             ],
             "description": "mv gate がこの切れ目を照合する先（既定 beat）"
           }
-        }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "spec"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "video"
+                  ]
+                },
+                {
+                  "required": [
+                    "camera"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "video"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "spec"
+                  ]
+                },
+                {
+                  "required": [
+                    "offset_s"
+                  ]
+                },
+                {
+                  "required": [
+                    "variant"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
       }
     }
   },
@@ -328,6 +378,156 @@
       ],
       "minItems": 3,
       "maxItems": 3
+    },
+    "video": {
+      "description": "動画のショットの素材。コマ位置は (offset_s + ショットの中の時刻·speed)·fps（loop があればループの式）。小数の位置は前後のコマを混ぜ、端のコマで止まる",
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "動画（このファイルからの相対パス）"
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "コマ位置の計算に使う動画の fps（既定はファイルの fps）"
+        },
+        "speed": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "再生の速さ（既定 1）。loop ではループの速さ"
+        },
+        "offset_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "ショットの頭に当てる動画の中の秒（既定 0）。loop とは一緒に使えない"
+        },
+        "loop": {
+          "description": "コマ frames[0]〜frames[1] を繰り返す。つなぎ目は crossfade_frames コマ重ねる。mix > 0 なら速さと位相をずらしたもう 1 本を重みで重ねる",
+          "type": "object",
+          "required": [
+            "frames"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "frames": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "crossfade_frames": {
+              "type": "number",
+              "minimum": 0,
+              "description": "つなぎ目で重ねるコマ数（既定 6）"
+            },
+            "start_s": {
+              "type": "number",
+              "description": "ショットの中の時刻に足す秒（ループの中の位置。speed が掛かる前。既定 0）"
+            },
+            "mix": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "もう 1 本の重み（既定 0 = 重ねない）"
+            },
+            "mix_speed": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "もう 1 本の時刻の倍率（既定 0.77）"
+            },
+            "mix_offset_s": {
+              "type": "number",
+              "description": "もう 1 本の時刻に足す秒（既定 0.41）"
+            }
+          }
+        }
+      }
+    },
+    "video_camera": {
+      "description": "動画のショットのカメラ。fx-shot の camera.keys と同じ書き方（t はショットの中の秒、center は動画の正規化座標）。既定は寄りなし・中央",
+      "type": "object",
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/video_camera_key"
+          }
+        }
+      }
+    },
+    "video_camera_key": {
+      "type": "object",
+      "required": [
+        "t"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "t": {
+          "type": "number",
+          "minimum": 0
+        },
+        "zoom": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "center": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "ease": {
+          "enum": [
+            "linear",
+            "in",
+            "out",
+            "in_out"
+          ]
+        }
+      }
     }
   }
 }

@@ -1,8 +1,19 @@
-"""fx-timeline/0.1: 複数の fx ショット（fx-shot の spec）を時刻順に並べ、つなぎで 1 本の動画にする（実験的。docs/fx.md）。
+"""fx-timeline/0.1: 複数のショットを時刻順に並べ、つなぎで 1 本の動画にする（実験的。docs/fx.md）。
 
-ショットは start の昇順で、次のショットの start（最後は duration_s）まで。各ショットは fx render の 1 コマ（出力の大きさで描く。
-spec の look と overlays 込みの 8 ビットの RGB）を、ショットの中の時刻 offset_s + (t − start) で描き、表示の値でつなぐ。
-つなぎの式と順番は実制作のレンダラと同じ（ease は smoothstep）:
+ショットは start の昇順で、次のショットの start（最後は duration_s）まで。ショットは 2 種類:
+
+- spec のショット: fx render の 1 コマ（出力の大きさで描く。spec の look と overlays 込みの 8 ビットの RGB）を、
+  ショットの中の時刻 offset_s + (t − start) で描く。
+- 動画のショット（video）: 動画のコマを、fx の静止画と同じ道筋（cover で中央を切り出して出力の大きさに → 線形 → camera →
+  sRGB）で描く。camera は fx-shot の keys と同じ書き方で、時刻はショットの中の秒 t − start。コマ位置は実制作のレンダラと同じ式:
+
+      位置 = (offset_s + (t − start)·speed)·fps                     （fps は既定でファイルの fps）
+      loop: τ = (t − start) + start_s、p = (τ·fps·speed) mod (区間 − crossfade_frames)。p < crossfade_frames の間は
+            区間の頭（重み p/crossfade_frames）と尻尾を重ねる。mix > 0 なら τ·mix_speed + mix_offset_s のもう 1 本を重み mix で足す
+
+  小数の位置は前後のコマを cv2.addWeighted で混ぜ（端は最後から 0.001 コマ手前で止める）、loop の重ねは float で足して切り捨てる。
+
+つなぎは表示の値で、式と順番は実制作のレンダラと同じ（ease は smoothstep）:
 
     xfade   t < start + duration_s の間、前のショットを描き続けて 前·(1 − a) + 今·a（a = ease((t − start)/duration_s)）
     black   t < start + duration_s の間、今·ease((t − start)/duration_s)（黒から上げる）
@@ -10,8 +21,8 @@ spec の look と overlays 込みの 8 ビットの RGB）を、ショットの�
 
 つないだ後に timeline の look（fx-shot と同じ grade・vignette・grain。時刻は timeline の t）を掛け、0〜255 に切って切り捨てる
 （実制作と同じく、色調整・周辺減光・粒状感はつなぎの後）。snap は start をいちばん近い拍に寄せる（0 以下は 0、終わりの 0.01 秒以内は終わり。
-同じ距離なら前の拍）。run には timeline.mp4・timeline.json（dance-timeline/0.1 の形に seam_info・flash_info・beats を足したもの。`mv gate check` が切れ目とフラッシュを拍と照合できる）・
-manifest.json を残す。
+同じ距離なら前の拍）。run には timeline.mp4・timeline.json（dance-timeline/0.1 の形に seam_info・flash_info・beats を足したもの。
+`mv gate check` が切れ目とフラッシュを拍と照合できる）・manifest.json を残す。
 """
 import bisect
 import hashlib
@@ -34,7 +45,9 @@ SCHEMA_VERSION = "fx-timeline/0.1"
 RECORD_SCHEMA = "dance-timeline/0.1"   # 0.2 は dance の描画の記録（frames・layers）が要る形
 _SCHEMA = Path(__file__).with_name("fx_timeline.schema.json")
 FLASH = {"strength": 0.75, "color": [235.0, 210.0, 255.0], "window_s": 0.30, "rate": 13.0}
+LOOP = {"crossfade_frames": 6.0, "start_s": 0.0, "mix": 0.0, "mix_speed": 0.77, "mix_offset_s": 0.41}
 KEEP_SHOTS = 2          # 前処理済みのショットを持つ数（xfade は前と今の 2 つ）。順に描くので、古いものから捨てる
+KEEP_FRAMES = 8         # 動画のショットが持つ復号済みのコマの数（loop はループの区間 + 2 コマ）
 
 
 def ease(x):
@@ -58,7 +71,7 @@ class Timeline:
     path: Path | None
     sha256: str
     warnings: tuple
-    specs: tuple           # ショットごとの fx の Spec（data["shots"] と同じ順）
+    specs: tuple           # ショットごとの fx の Spec（data["shots"] と同じ順。動画のショットは None）
 
     def resolve(self, rel):
         return safe_path(self.base_dir, rel)
@@ -77,11 +90,26 @@ def load_timeline(path):
     return parse_timeline(raw, path.resolve().parent, path.resolve(), sha256(path))
 
 
+def _check_kinds(raw):
+    """spec と video の取り違えを、スキーマの oneOf より分かる文で止める。"""
+    shots = raw.get("shots")
+    for index, shot in enumerate(shots if isinstance(shots, list) else []):
+        if not isinstance(shot, dict):
+            continue
+        if ("spec" in shot) == ("video" in shot):
+            raise PipelineError(f"fx timeline: shots[{index}] は spec（fx のショット）か video（動画のショット）のどちらか一方を書いてください")
+        wrong = [key for key in (("offset_s", "variant") if "video" in shot else ("camera",)) if key in shot]
+        if wrong:
+            hint = "動画の中の秒は video.offset_s に書きます" if "video" in shot else "カメラは spec に書きます"
+            raise PipelineError(f"fx timeline: shots[{index}] の {'・'.join(wrong)} は{'動画' if 'video' in shot else ' spec '}のショットには使えません（{hint}）")
+
+
 def parse_timeline(raw, base_dir, path=None, digest=""):
     from ..dance import beats as dancebeats            # 拍の格子と時刻の参照は dance と同じ書き方
 
     if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
         raise PipelineError(f"fx timeline schema_version must be {SCHEMA_VERSION!r}")
+    _check_kinds(raw)
     errors = sorted(jsonschema.Draft202012Validator(schema()).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
         lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
@@ -97,13 +125,20 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
         snapped = bool(shot.get("snap", False))
         if snapped and grid is None:
             raise PipelineError(f"fx timeline: shots[{index}] の snap には beats が必要です")
-        shots.append({"spec": shot["spec"], "start": snap(start, grid.beats, duration) if snapped else start, "requested": start,
-                      "snap": snapped, "offset_s": float(shot.get("offset_s", 0.0)), "variant": shot.get("variant", "both"),
-                      "transition_in": _transition(shot.get("transition_in", {"type": "cut"})),
-                      "beat_exempt": bool(shot.get("beat_exempt", False)), "align": shot.get("align", "beat")})
+        common = {"start": snap(start, grid.beats, duration) if snapped else start, "requested": start, "snap": snapped,
+                  "transition_in": _transition(shot.get("transition_in", {"type": "cut"})),
+                  "beat_exempt": bool(shot.get("beat_exempt", False)), "align": shot.get("align", "beat")}
+        if "spec" in shot:
+            shots.append({"kind": "spec", "spec": shot["spec"], "offset_s": float(shot.get("offset_s", 0.0)),
+                          "variant": shot.get("variant", "both"), **common})
+        else:
+            video = _video(shot["video"], index)
+            if not safe_path(base_dir, video["path"]).is_file():
+                raise PipelineError(f"fx timeline: shots[{index}] の動画が見つかりません: {video['path']}")
+            shots.append({"kind": "video", "video": video, "camera": _camera(shot.get("camera"), index), "offset_s": 0.0, **common})
     for index, shot in enumerate(shots):
         shot["end"] = shots[index + 1]["start"] if index + 1 < len(shots) else duration
-    specs = tuple(fxspec.load_spec(safe_path(base_dir, shot["spec"])) for shot in shots)
+    specs = tuple(fxspec.load_spec(safe_path(base_dir, shot["spec"])) if shot["kind"] == "spec" else None for shot in shots)
     look = None if raw.get("look") is None else fxspec.normalize_look(raw["look"])
     data = {"schema_version": SCHEMA_VERSION,
             "output": {"width": int(out["width"]), "height": int(out["height"]), "fps": fps, "crf": int(out.get("crf", 18))},
@@ -127,6 +162,30 @@ def _transition(raw):
     return {"type": "cut"}
 
 
+def _video(raw, index):
+    loop = raw.get("loop")
+    if loop is not None:
+        if "offset_s" in raw:
+            raise PipelineError(f"fx timeline: shots[{index}].video の loop と offset_s は一緒に使えません（ループの中の位置は loop.start_s）")
+        first, last = int(loop["frames"][0]), int(loop["frames"][1])
+        crossfade = float(loop.get("crossfade_frames", LOOP["crossfade_frames"]))
+        if last - first - crossfade <= 0:
+            raise PipelineError(f"fx timeline: shots[{index}].video.loop の区間 {first}〜{last} コマが、"
+                                f"つなぎ目の crossfade_frames {crossfade:g} コマより長くありません")
+        loop = {"frames": [first, last], "crossfade_frames": crossfade,
+                **{key: float(loop.get(key, LOOP[key])) for key in ("start_s", "mix", "mix_speed", "mix_offset_s")}}
+    return {"path": raw["path"], "fps": None if raw.get("fps") is None else float(raw["fps"]), "speed": float(raw.get("speed", 1.0)),
+            "offset_s": float(raw.get("offset_s", 0.0)), "loop": loop}
+
+
+def _camera(raw, index):
+    keys = fxspec._keys((raw or {}).get("keys") or [{"t": 0.0}], {"zoom": 1.0, "center": [0.5, 0.5]})
+    times = [key["t"] for key in keys]
+    if any(b <= a for a, b in zip(times, times[1:])):
+        raise PipelineError(f"fx timeline: shots[{index}].camera.keys の t は厳密な昇順にしてください: {times}")
+    return {"keys": keys, "parallax_px": 0.0, "parallax_dir": [1.0, 0.0]}
+
+
 def snap(t, beats, duration):
     """いちばん近い拍（実制作の snap と同じ: 0 以下は 0、終わりの 0.01 秒以内は終わり。同じ距離なら前の拍）。"""
     if t <= 0:
@@ -137,13 +196,18 @@ def snap(t, beats, duration):
     return float(values[np.argmin(np.abs(values - t))])
 
 
+def shot_name(shot):
+    """表や注意に出すショットの名前（spec のパスか video のパス）。"""
+    return shot["spec"] if shot["kind"] == "spec" else shot["video"]["path"]
+
+
 def _validate(data, specs):
     shots, duration, fps = data["shots"], data["duration_s"], data["output"]["fps"]
     if shots[0]["start"] > 1e-9:
         raise PipelineError(f"fx timeline: 最初のショットは 0 秒から始めてください（{shots[0]['start']:g} 秒）")
     warnings = []
     for index, (shot, sp) in enumerate(zip(shots, specs)):
-        where = f"shots[{index}]（{shot['spec']}）"
+        where = f"shots[{index}]（{shot_name(shot)}）"
         if shot["end"] <= shot["start"] + 1e-9:
             moved = "（snap で寄せた後）" if shot["snap"] or (index + 1 < len(shots) and shots[index + 1]["snap"]) else ""
             raise PipelineError(f"fx timeline: {where} の長さが 0 以下です{moved}（start {shot['start']:g} 秒、終わり {shot['end']:g} 秒）。"
@@ -154,6 +218,10 @@ def _validate(data, specs):
         if transition["type"] in ("xfade", "black") and transition["duration_s"] > length + 1e-9:
             raise PipelineError(f"fx timeline: {where} の {transition['type']} の duration_s {transition['duration_s']:g} 秒が"
                                 f"ショットの長さ {length:g} 秒より長いです")
+        if shot["snap"] and abs(shot["start"] - shot["requested"]) > 0.25:
+            warnings.append(f"shots[{index}]: snap で start が {shot['requested']:g} → {shot['start']:g} 秒に動きました")
+        if sp is None:
+            continue
         local_end = shot["offset_s"] + length
         if local_end > sp.data["duration_s"] + 1e-6:
             warnings.append(f"{where}: spec の長さ {sp.data['duration_s']:g} 秒を超えて {local_end:g} 秒まで描きます"
@@ -161,8 +229,6 @@ def _validate(data, specs):
         if abs(sp.data["output"]["fps"] - fps) > 1e-9:
             warnings.append(f"{where}: spec の fps {sp.data['output']['fps']:g} が timeline の fps {fps:g} と違います"
                             "（spec の look の粒状感のコマなど、spec の fps で数えるものがあります）")
-        if shot["snap"] and abs(shot["start"] - shot["requested"]) > 0.25:
-            warnings.append(f"shots[{index}]: snap で start が {shot['requested']:g} → {shot['start']:g} 秒に動きました")
     return warnings
 
 
@@ -189,6 +255,30 @@ def plan_frame(data, t):
     if transition["type"] == "flash" and since < transition["window_s"]:
         flash = (transition["strength"] * math.exp(-since * transition["rate"]), transition["color"])
     return layers, dim, flash
+
+
+def video_positions(video, local_t, fps):
+    """動画のショットの中の時刻 local_t（t − start）のコマ位置と重み [(位置, 重み)]。式と計算の順は実制作と同じ。"""
+    loop = video["loop"]
+    if loop is None:
+        return [((video["offset_s"] + local_t * video["speed"]) * fps, 1.0)]
+    tau = local_t + loop["start_s"]
+    first = _loop_once(tau, loop, video["speed"], fps)
+    if loop["mix"] <= 0:
+        return first
+    second = _loop_once(tau * loop["mix_speed"] + loop["mix_offset_s"], loop, video["speed"], fps)
+    return [(p, w * (1 - loop["mix"])) for p, w in first] + [(p, w * loop["mix"]) for p, w in second]
+
+
+def _loop_once(t, loop, speed, fps):
+    a, b = loop["frames"]
+    crossfade = loop["crossfade_frames"]
+    period = b - a - crossfade
+    p = (t * fps * speed) % period
+    if p < crossfade:
+        w = p / crossfade
+        return [(a + p, w), (a + period + p, 1 - w)]
+    return [(a + p, 1.0)]
 
 
 def blend(layers, dim, flash):
@@ -224,8 +314,105 @@ def output_size(data, scale=1.0):
     return even(data["output"]["width"]), even(data["output"]["height"])
 
 
+class VideoFrames:
+    """1 本の動画の読み手（dance の Source。タグが bt709 なら ffmpeg で行列を指定して読む）と、復号したコマの LRU。"""
+
+    def __init__(self, path, keep=KEEP_FRAMES):
+        from ..dance.clips import Source
+        try:
+            self.source = Source(path)
+            self.count = self.source.count()
+        except PipelineError as error:
+            raise PipelineError(f"動画のショットの動画を読めません（{Path(path).name}）: {error}") from error
+        self.fps, self.width, self.height = self.source.fps, self.source.width, self.source.height
+        self.keep, self._frames = keep, OrderedDict()
+
+    def get(self, index):
+        if index in self._frames:
+            self._frames.move_to_end(index)
+            return self._frames[index]
+        frame = self.source.read(index)
+        self._frames[index] = frame
+        while len(self._frames) > self.keep:
+            self._frames.popitem(last=False)
+        return frame
+
+    def at(self, pos):
+        """位置 pos（小数のコマ番号）の uint8 RGB。実制作の video_frame と同じ: 0〜コマ数 − 1.001 に止め、
+        小数の部分が 0.001 以上なら前後のコマを cv2.addWeighted で混ぜる。"""
+        import cv2
+        pos = min(max(pos, 0), self.count - 1.001)
+        first = int(pos)
+        weight = pos - first
+        if weight < 1e-3:
+            return self.get(first)
+        return cv2.addWeighted(self.get(first), 1 - weight, self.get(min(first + 1, self.count - 1)), weight, 0)
+
+    def close(self):
+        self._frames.clear()
+        self.source.close()
+
+
+class VideoShot:
+    """動画のショットの描き手。frame(local_t) は出力の大きさの uint8 RGB（fx の静止画と同じ道筋）。"""
+
+    def __init__(self, timeline, index, size):
+        from . import camera
+        from .assets import CROP_WARN_FRACTION, _pixel_box, cover_box
+
+        shot = timeline.data["shots"][index]
+        video, loop = shot["video"], shot["video"]["loop"]
+        keep = KEEP_FRAMES if loop is None else max(KEEP_FRAMES, loop["frames"][1] - loop["frames"][0] + 2)
+        self.frames = VideoFrames(timeline.resolve(video["path"]), keep)
+        self.video, self.size = video, size
+        self.fps = video["fps"] or self.frames.fps
+        width, height = self.frames.width, self.frames.height
+        self.box = _pixel_box(cover_box(width, height, *size), (width, height))
+        length = shot["end"] - shot["start"]
+        self.path = camera.CameraPath(shot["camera"], length, size, self.box)
+        self.warnings = []
+        cut = 1.0 - (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
+        if cut > CROP_WARN_FRACTION:
+            axis = "左右" if self.box[0] > 0 else "上下"
+            self.warnings.append(f"動画 {width}x{height} は出力 {size[0]}x{size[1]} と縦横比が違うため、cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
+        last = self.frames.count - 1
+        if loop is not None and loop["frames"][1] > last:
+            self.close()
+            raise PipelineError(f"fx timeline: shots[{index}].video.loop の終わり {loop['frames'][1]} が、動画の最後のコマ {last} を越えています")
+        if loop is None:
+            end = (video["offset_s"] + length * video["speed"]) * self.fps
+            if end > last:
+                held = (last / self.fps - video["offset_s"]) / video["speed"]
+                self.warnings.append(f"動画の最後のコマ {last} を越えて描くため、ショットの {max(held, 0.0):.2f} 秒から後は最後のコマのままです")
+        bounds = self.path.out_of_bounds()
+        if bounds:
+            self.warnings.append(bounds)
+
+    def source_frame(self, local_t):
+        """カメラの前の動画の 1 コマ（uint8 RGB、動画の大きさ）。"""
+        positions = video_positions(self.video, local_t, self.fps)
+        if self.video["loop"] is None:
+            return self.frames.at(positions[0][0])
+        total = None
+        for pos, weight in positions:
+            part = self.frames.at(pos).astype(np.float32)
+            total = part * weight if total is None else total + part * weight
+        return np.clip(total, 0, 255).astype(np.uint8)
+
+    def frame(self, local_t):
+        from . import camera
+        from .assets import _crop_resize
+        from .color import to_linear, to_srgb8
+        plate = to_linear(_crop_resize(self.source_frame(local_t), self.box, self.size))
+        return to_srgb8(camera.warp_with_depth(plate, self.path.matrix(local_t, 1.0), self.size, None, None))
+
+    def close(self):
+        self.frames.close()
+
+
 class Context:
-    """timeline を描く状態。ショットの fx の Context は初めて使うときに作り、新しい順に KEEP_SHOTS 個まで持つ（spec が同じなら共有）。"""
+    """timeline を描く状態。ショットの描き手（fx の Context か VideoShot）は初めて使うときに作り、新しい順に KEEP_SHOTS 個まで持つ
+    （spec が同じ spec のショットは共有する）。描き終えたら close() で動画の読み手を閉じる。"""
 
     def __init__(self, timeline, scale=1.0):
         from . import look as fxlook
@@ -238,23 +425,41 @@ class Context:
         self._render, self._contexts, self._warned = render, OrderedDict(), set()
 
     def shot(self, index):
-        name = self.data["shots"][index]["spec"]
+        shot = self.data["shots"][index]
+        name = shot["spec"] if shot["kind"] == "spec" else f"video:{index}"
         if name in self._contexts:
             self._contexts.move_to_end(name)
             return self._contexts[name]
-        ctx = self._render.prepare(self.timeline.specs[index], size=self.size)
+        if shot["kind"] == "spec":
+            ctx = self._render.prepare(self.timeline.specs[index], size=self.size)
+        else:
+            ctx = VideoShot(self.timeline, index, self.size)
         if name not in self._warned:
             self._warned.add(name)
-            self.warnings += [f"{name}: {w}" for w in ctx.warnings]
+            self.warnings += [f"{shot_name(shot)}: {w}" for w in ctx.warnings]
         self._contexts[name] = ctx
         while len(self._contexts) > KEEP_SHOTS:
-            self._contexts.popitem(last=False)
+            _, old = self._contexts.popitem(last=False)
+            if isinstance(old, VideoShot):
+                old.close()
         return ctx
+
+    def image(self, index, local):
+        """ショット index の、ショットの中の時刻 local の uint8 RGB（出力の大きさ）。"""
+        shot = self.data["shots"][index]
+        if shot["kind"] == "video":
+            return self.shot(index).frame(local)
+        return self._render.frame(self.shot(index), local, shot["variant"])
 
     def frame(self, t):
         layers, dim, flash = plan_frame(self.data, t)
-        images = [(self._render.frame(self.shot(i), local, self.data["shots"][i]["variant"]), weight) for i, local, weight in layers]
-        return finish(blend(images, dim, flash), self.look, t)
+        return finish(blend([(self.image(i, local), weight) for i, local, weight in layers], dim, flash), self.look, t)
+
+    def close(self):
+        for ctx in self._contexts.values():
+            if isinstance(ctx, VideoShot):
+                ctx.close()
+        self._contexts.clear()
 
 
 def timeline_record(timeline, size, start=0.0, duration=None, frames=None):
@@ -269,7 +474,7 @@ def timeline_record(timeline, size, start=0.0, duration=None, frames=None):
     return {"schema_version": RECORD_SCHEMA, "size": list(size), "fps": fps, "duration_s": total,
             "interval": {"start": start, "duration": length, "frames": count}, "lyric_fade": "inside", "lyrics": [],
             "ui_regions": [], "beats": None if beats is None else {"beats": beats["beats"], "downbeats": beats["downbeats"]},
-            "clips": [{"path": shot["spec"], "start": shot["start"], "end": shot["end"], "kind": "fx-shot",
+            "clips": [{"path": shot_name(shot), "start": shot["start"], "end": shot["end"], "kind": "fx-shot" if shot["kind"] == "spec" else "video",
                        "transition_in": shot["transition_in"], "beat_exempt": shot["beat_exempt"]} for shot in shots],
             "seams": [shot["start"] for shot in shots[1:]], "flashes": [shot["start"] for shot in flashes],
             "seam_info": [{"t": shot["start"], "from": index, "to": index + 1, "kind": shot["transition_in"]["type"],
@@ -277,6 +482,14 @@ def timeline_record(timeline, size, start=0.0, duration=None, frames=None):
             "flash_info": [{"t": shot["start"], "strength": shot["transition_in"]["strength"], "decay_s": 1 / shot["transition_in"]["rate"],
                             "window_s": shot["transition_in"]["window_s"], "mode": "lerp_display", "beat_exempt": shot["beat_exempt"],
                             "align": shot["align"]} for shot in flashes]}
+
+
+def _describe_video(video):
+    loop = video["loop"]
+    text = f"video ×{video['speed']:g}" + (f" {video['fps']:g}fps" if video["fps"] else "")
+    if loop is None:
+        return text + (f" +{video['offset_s']:g}s" if video["offset_s"] else "")
+    return text + f" loop {loop['frames'][0]}–{loop['frames'][1]}" + (f" mix {loop['mix']:g}" if loop["mix"] > 0 else "")
 
 
 def plan_text(path):
@@ -294,14 +507,15 @@ def plan_text(path):
     out = data["output"]
     lines = [f"# {SCHEMA_VERSION}  {out['width']}x{out['height']} {out['fps']:g}fps {data['duration_s']:g} 秒  ショット {len(data['shots'])}"
              f"  look {'あり' if data['look'] else 'なし'}  音声 {data['audio']['path'] if data['audio'] else 'なし'}", "",
-             f"{'#':<3} {'start':>8} {'end':>8} {'拍':>10}  {'つなぎ':<18} {'offset':>7}  spec"]
+             f"{'#':<3} {'start':>8} {'end':>8} {'拍':>10}  {'つなぎ':<18} {'offset':>7}  ショット"]
     for index, shot in enumerate(data["shots"]):
         transition = shot["transition_in"]
         text = transition["type"] + (f" {transition['duration_s']:g}s" if "duration_s" in transition else "") \
             + (f" {transition['strength']:g}" if transition["type"] == "flash" else "")
         moved = f"  (snap {shot['requested']:.3f}→)" if shot["snap"] and shot["start"] != shot["requested"] else ""
+        name = shot["spec"] if shot["kind"] == "spec" else f"{shot['video']['path']}（{_describe_video(shot['video'])}）"
         lines.append(f"{index:<3} {shot['start']:>8.3f} {shot['end']:>8.3f} {beat_of(shot['start']):>10}  {text:<18} "
-                     f"{shot['offset_s']:>7.3f}  {shot['spec']}{moved}")
+                     f"{shot['offset_s']:>7.3f}  {name}{moved}")
     lines += [f"注意: {w}" for w in timeline.warnings]
     return "\n".join(lines)
 
@@ -321,6 +535,9 @@ def _shot_records(timeline):
     from . import spec_layers
     records = []
     for shot, sp in zip(timeline.data["shots"], timeline.specs):
+        if sp is None:
+            records.append({"video": shot["video"]["path"], "sha256": sha256(timeline.resolve(shot["video"]["path"]))})
+            continue
         record = {"spec": shot["spec"], "sha256": sp.sha256, "assets": {role: item["sha256"] for role, item in fxassets.describe(sp).items()}}
         if sp.data["overlays"]:
             record["overlays"] = spec_layers.describe(sp)
@@ -381,7 +598,10 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
                 yield ctx.frame(fxtimeline.frame_time(i, fps, start))
                 meter(i + 1)
 
-        result = render.write_video(video, frames(), size, fps, data["output"]["crf"], n_frames, audio, run.log_path)
+        try:
+            result = render.write_video(video, frames(), size, fps, data["output"]["crf"], n_frames, audio, run.log_path)
+        finally:
+            ctx.close()
         record = timeline_record(timeline, size, start, length, n_frames)
         (run.dir / "timeline.json").write_text(json.dumps(record, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         checks = probe.check_video(video, width=size[0], height=size[1], fps=fps, frames=n_frames, audio=audio is not None,
@@ -417,10 +637,32 @@ def _summary(run_dir, manifest, reused):
 
 # ---- デモ ------------------------------------------------------------------------
 
+def _demo_clip(path, base_path, seconds=3.0, fps=16):
+    """デモの動画（合成）: デモの絵の上を、明るい光の玉が左から右へ横切り、明滅する。BT.709 のタグつき・音なし。"""
+    from PIL import Image
+
+    from . import render
+    base = np.asarray(Image.open(base_path).convert("RGB")).astype(np.float32)
+    height, width = base.shape[:2]
+    ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+    count = int(round(seconds * fps))
+
+    def frames():
+        for k in range(count):
+            u = k / max(count - 1, 1)
+            cx, cy = width * (0.15 + 0.7 * u), height * (0.35 + 0.08 * math.sin(6.0 * u))
+            glow = np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * (0.05 * width) ** 2)) * (0.7 + 0.3 * math.sin(9.0 * u))
+            yield np.clip(base + glow[..., None] * np.float32([255, 210, 150]), 0, 255).astype(np.uint8)
+
+    render.write_video(path, frames(), (width, height), fps, 18, count)
+    return count
+
+
 def demo(directory, width=320, height=180, duration=6.0, fps=24):
-    """fx のデモ素材から 3 つのショット（寄り・横移動・引き）の spec と、つなぎを全部使う fx-timeline の見本を書く。"""
+    """fx のデモ素材から 3 つの spec のショット（寄り・横移動・引き）と 1 つの動画のショット（合成の動画をループ）を作り、
+    つなぎを全部使う fx-timeline の見本を書く。"""
     if duration < 3:
-        raise PipelineError(f"timeline のデモの長さは 3 秒以上にしてください（つなぎの長さが 0.4〜0.5 秒のため）: {duration:g}")
+        raise PipelineError(f"timeline のデモの長さは 3 秒以上にしてください（つなぎの長さが 0.3〜0.5 秒のため）: {duration:g}")
     from . import demo as fxdemo
 
     directory = Path(directory)
@@ -433,6 +675,7 @@ def demo(directory, width=320, height=180, duration=6.0, fps=24):
     for name, keys in cameras.items():
         shot = {**spec, "camera": {**spec["camera"], "keys": keys}}
         (shots_dir / name).write_text(json.dumps(shot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    frames = _demo_clip(shots_dir / "clip.mp4", shots_dir / "base.png")
     beat = 0.5                                   # 120 BPM
     timeline = {"schema_version": SCHEMA_VERSION, "output": {"width": width, "height": height, "fps": fps, "crf": 18},
                 "duration_s": duration, "beats": {"bpm": 120, "count": int(duration / beat) + 4},
@@ -441,7 +684,11 @@ def demo(directory, width=320, height=180, duration=6.0, fps=24):
                 "shots": [{"spec": "shots/shot_a.json", "start": 0, "transition_in": {"type": "black", "duration_s": 0.5}},
                           {"spec": "shots/shot_b.json", "start": {"beat": round(duration / beat * 0.3)}, "offset_s": 1.0,
                            "transition_in": {"type": "xfade", "duration_s": 0.4}},
-                          {"spec": "shots/shot_c.json", "start": round(duration * 0.62, 3), "snap": True, "transition_in": {"type": "flash"}}]}
+                          {"spec": "shots/shot_c.json", "start": round(duration * 0.62, 3), "snap": True, "transition_in": {"type": "flash"}},
+                          {"video": {"path": "shots/clip.mp4", "speed": 0.8, "loop": {"frames": [4, frames - 8], "crossfade_frames": 6, "mix": 0.5}},
+                           "camera": {"keys": [{"t": 0, "zoom": 1.05, "center": [0.5, 0.5]}, {"t": 2.0, "zoom": 1.2, "center": [0.55, 0.45], "ease": "in_out"}]},
+                           "start": round(duration * 0.8, 3), "snap": True, "transition_in": {"type": "xfade", "duration_s": 0.3}}]}
     path = directory / "timeline.json"
     path.write_text(json.dumps(timeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"timeline": str(path), "shots": [str(shots_dir / name) for name in cameras], "size": [width, height], "duration_s": duration}
+    return {"timeline": str(path), "shots": [str(shots_dir / name) for name in cameras] + [str(shots_dir / "clip.mp4")],
+            "size": [width, height], "duration_s": duration}

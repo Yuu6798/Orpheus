@@ -68,7 +68,7 @@ jobs:
           uv run --no-sync mv fx render "$RUNNER_TEMP/fxdemo/spec.json" --out "$RUNNER_TEMP/fxruns" > "$RUNNER_TEMP/fx-render.json"
           cat "$RUNNER_TEMP/fx-render.json"
           uv run --no-sync python -c "import json, sys; r = json.load(open(sys.argv[1])); assert r['status'] == 'succeeded' and r['technical_pass'] is True and r['grid'], r" "$RUNNER_TEMP/fx-render.json"
-      # fx-timeline: 合成の 3 ショットを cut 以外のつなぎ (black / xfade / flash) で 1 本に -> technical_pass。
+      # fx-timeline: 合成の 3 ショットと合成の動画のループ 1 ショットを cut 以外のつなぎ (black / xfade / flash) で 1 本に -> technical_pass。
       - name: fx timeline smoke (demo -> render -> technical_pass)
         run: |
           uv run --no-sync mv fx timeline demo "$RUNNER_TEMP/fxtimeline" --duration 3
