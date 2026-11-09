@@ -462,7 +462,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
 | `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
 | `mv fx timeline plan TIMELINE` | ショット・つなぎ・秒・いちばん近い拍の表（描かない。fx extra なしで動く） |
-| `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks PY]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す。`--hooks` で作品ごとの演出（[hooks](#演出の-hooks火の演出)） |
+| `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks PY]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す。`--hooks` で作品ごとの演出（[hooks](#演出の-hooks火空と天気明かり)） |
 
 stdout は短い JSON、進捗は stderr に 1 版 1 行、詳細は run の `render.log`。エラーは `Error: …`（原因と直し方）で終了コード 1。
 `--scale` は出力寸法を偶数に丸めて縮尺する（下見用。key に入る）。`--start/--duration` はショットの長さに収まること。
@@ -648,7 +648,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
 ```json
 {"schema_version": "fx-timeline/0.1", "output": {"width": 1080, "height": 1920, "fps": 30, "crf": 18}, "duration_s": 24.9,
  "beats": {"path": "beats.json"}, "audio": {"path": "song.wav", "offset_s": 132.7},
- "look": {"vignette": {}, "grain": {}},
+ "look": {"vignette": {}, "grain": {}}, "pulse": {"amount": 0.006, "sections": [[0.079, 22.148]]},
  "shots": [{"spec": "shots/a.json", "start": 0, "transition_in": {"type": "black", "duration_s": 0.5}},
            {"spec": "shots/b.json", "start": {"beat": 4}, "offset_s": 0.5, "transition_in": {"type": "xfade", "duration_s": 0.4}},
            {"spec": "shots/c.json", "start": 3.7, "snap": true, "transition_in": {"type": "flash", "strength": 0.6}},
@@ -707,12 +707,20 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 実制作と同じく、色調整・周辺減光・粒状感はつなぎの後に掛かる。そのため、黒から上げる頭のコマにも粒が乗る。
   - ショットの spec の look は、つなぐ前に掛かる。全体で揃えたい仕上げは timeline の look に置く。
   - 最後に 0..255 に切り、切り捨てる。
+- **拍の脈**（`pulse`）: 拍ごとに、全部のショットの camera の zoom に (1 + `amount`·exp(−(t − 直前の拍)·`decay`)) を掛ける。
+  実制作の 2 つのレンダラの `beat_pulse` と同じ式で、実制作は Shorts が 0.006、本編が 0.010（`decay` の既定 9 も同じ）。
+  - `beats` が要る。直前の拍は t より前の最後の拍（t がちょうど拍なら 1 つ前の拍。実制作と同じ）。最初の拍より前は 0。
+  - `sections`（[始め, 終わり) の並び。秒か拍の参照）の外は 0。無ければ全体に掛ける。
+  - spec のショットにも動画のショットにも掛かる。顔の枠（`faces.json`）と hooks の `view` も、同じ脈で動く。
+  - `punch` があれば、(1 + 脈)·押し込み を掛けてから 1 で止める（実制作の縦のレンダラと同じ順）。脈だけなら 1 で止めない（本編のレンダラと同じ）。
+  - 層の視差の基準（最初のコマの状態）は脈を入れずに決める。そのため、脈が 0 の時刻の画は、pulse が無いときと同じになる。
+  - `mv fx timeline plan` の表の頭に、脈の強さと区間を出す。
 - **止まるもの**:
   - 最初のショットが 0 秒から始まらない。
   - 長さが 0 以下のショットがある。snap で同じ拍に寄った場合もこれに当たる。
   - 最初のショットに xfade を付けた。
   - xfade や black がショットより長い。
-  - beats が無いのに snap を使った。
+  - beats が無いのに snap か pulse を使った。pulse の区間の始めが終わりより後。
   - ショットに `spec` と `video` の両方がある、またはどちらも無い。動画のショットに `offset_s`・`variant` を、spec のショットに `camera` を書いた。
   - 動画が見つからない。`loop` と `offset_s` を一緒に書いた。ループの区間が `crossfade_frames` より長くない、または `crossfade_frames` が区間の半分より長い。カメラのキーの `t` が昇順でない。
   - 描くとき: ループの終わりのコマが動画の最後のコマを越えている。
@@ -738,30 +746,35 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
 - **字幕**は描かない。歌詞は書き出した `timeline.mp4` に `mv overlay` で重ねる（実制作と同じく、仕上げの後に字が来る）。
 - 前処理したショットはメモリに 2 つまで持つ。順に描くので、古いものから捨てる。同じ spec のショットは前処理を共有する。
 
-### 演出の hooks（火の演出）
+### 演出の hooks（火・空と天気・明かり）
 
-作品ごとの演出（炎・火の粉・刃の火など）は、timeline のスキーマには入れず、Python の hooks で掛ける（dance の仕上げの hooks と同じ考え。
-演出の値は作品ごとで、種類も多いため）。部品は公開の `mv_pipeline.fx.fire`、見本は `examples/fx/fire_hooks.py`（デモの timeline 用）。
+作品ごとの演出（炎・火の粉・刃の火・灯・稲光・雨など）は、timeline のスキーマには入れず、Python の hooks で掛ける（dance の仕上げの hooks と同じ考え。
+演出の値は作品ごとで、種類も多いため）。部品は公開の `mv_pipeline.fx.fire`・`sky`・`accent`。
+見本は `examples/fx/fire_hooks.py`（火）と `examples/fx/sky_hooks.py`（空と天気・明かり）で、どちらもデモの timeline 用。
 
 ```sh
 uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/fx/fire_hooks.py
+uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/fx/sky_hooks.py
 ```
 
 - hooks のファイルは `--hooks` で明示したときだけ実行する。関数はどれも任意で、渡した画を書き換えてよく、同じ形の画を返す。
   - `prepare(ctx)`: 描画の最初に 1 回。
   - `shot(img, t, view)`: ショットの画（つなぎの前）。`t` は timeline の時刻、`view` はそのショットのその時刻の見え方。
-  - `final(img, t, ctx)`: つないだ後、timeline の look の前。
+  - `final(img, t, ctx)`: つないだ後、timeline の look の前。`ctx.view_at(t)` はその時刻のショット（xfade の間は入ってくるショット）の `view`。
   - `img` は float32 (H, W, 3) の表示の値（0..255、ガンマ符号化。まだ切らない）。実制作の演出と同じく、色調整・周辺減光・粒状感（timeline の look）の前に掛かる。
+  - 実制作の縦のレンダラの順は、ショットの演出 → つなぎ → 空の奥の色（`sky.grade`）→ 雨（`sky.rain`）→ 周辺減光・粒状感。
+    ショットの演出は `shot` に、空の奥の色と雨は `final` に置くと、この順になる。
 - `view`（`mv_pipeline.fx.view.View`。実制作の演出の部品の `Geo` に当たる）は、ショットの camera（層の視差 1。深度視差は入れない）で素材の座標を画面の画素へ写す。
-  画素の中心が整数（cv2 の描画と同じ）。
+  画素の中心が整数（cv2 の描画と同じ）。点と倍率は Python の float（実制作の `Geo` と同じ型）。
   - `view.point(u, v)`・`view.points(...)`: 元画像の正規化座標 → 画面の画素。`view.scale` は元画像の幅 1 が画面の何画素か。
     `view.px` は元画像の幅を 1920 とした 1 画素が画面の何画素か（決まった画素の既定値を持つ部品、例えば `embers` の `k` に渡す）。
   - `view.base(幅, 高さ)`: 基準座標（実制作の素材の座標系。例えば 1672×941 の画素）で書いた位置と長さを写す。`.pt(x, y)`・`.pts(...)`・`.k`（基準の 1 が画面の何画素か）は
-    実制作の `Geo` と同じ使い方なので、実制作の演出の設定をそのまま写せる。
+    実制作の `Geo` と同じ使い方なので、実制作の演出の設定をそのまま写せる。部品の中の決まった長さ（ぼかしや余白の画素）も、この大きさの画素を前提にしている。
   - `view.blade(点列, w0, w1, base=None)`: 刃（根元 → 切っ先）を画面の `fire.Blade` にする。
     `base` があれば点・幅・炎の高さ `h` は基準座標の画素、無ければ点は正規化座標で、幅と `h` は元画像の幅の割合。
     刃の火の粉の速さと大きさは、基準座標の刃なら基準座標の画素（実制作と同じ）、正規化座標の刃なら元画像の幅を 1920 とした画素（`view.px`）で数える。
   - `view.warp(配列)`: 元画像の全体の大きさの配列（マスクなど）を画面へ写す。
+  - `view.depth()`: spec の深度（`assets.depth`。fx の前処理の後で 1 = 手前）を同じ camera で画面へ写したもの。深度の無い spec と動画のショットは None。
   - `view.index`・`view.kind`（spec / video）・`view.name`・`view.t`（ショットの中の時刻）。
 - 火の部品（`mv_pipeline.fx.fire`）。どれも画面の座標と表示の値の上で計算し、スクリーン合成で重ねる。時刻 t と引数だけで決まる（状態を持たない）。
   - `flame_field`（炎の出どころから立ち上がる炎の舌の場）・`add_fire`（炎の色と光で重ねる）
@@ -771,6 +784,22 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
       範囲が点の間に落ちて燃えなかったり（点が 2 つの刃に `cov: [0.2, 0.8]`）、区間の全体が燃えたりする。
       `resample`（画面の画素。例えば 1）を書くと、刃をどの区間もその長さ以下に細かく分けてから数えるので、点の数によらず同じ範囲が燃える。
   - `params_at`（`keys` の時刻のキーで値を補間する。実制作の演出の設定と同じ書き方）、`screen`・`blur`・`tex`・`ramp_fire` などの小道具。
+- 空と天気の部品（`mv_pipeline.fx.sky`）。位置と長さは基準座標で、`view.base(...)` で写す。
+  - `lamps(f, geo, t, P)`: 灯（灯籠の火袋・窓・遠い点）。灯ごとに点く時刻 `on`（`ramp` 秒で上がり少し揺れて落ち着く）・消える時刻 `off`・揺らぎ `flick`。
+    `kind` が `box`・`window` なら、範囲の中の明るい所（紙）ほど強く光り、暗い所（格子）は暗いまま。
+  - `lightning(f, geo, t, P, screen_depth)`: 稲光。`pulses` の明滅で空を明るくし（`sky`: `all`・`top`・`depth`。`depth` は `view.depth()` で奥だけ）、
+    `p0` → `p1` に枝つきの稲妻の筋を描く。
+  - `rain(f, t, P, sc)`: 画面全体の雨（3 層）。光のある所では雨粒が明るく見える。`sc`（既定は画の高さ / 1080）で長さと速さが変わる。
+  - `grade(f, P, screen_depth)`: 暗い所・遠い所に薄い色（既定は紫）を足す。深度が無ければ画面の上から `top` の割合まで。
+- 明かりと質感の部品（`mv_pipeline.fx.accent`。素材の局所照明の `lights` とは別で、描いた後の画に掛ける）。
+  - `warm_light`（柔らかい暖色の光。`mode` は mul・tint・それ以外はスクリーン合成）・`streaks`（濡れた石に映る縦の光の筋）・`shadow`（足元から伸びる影）
+  - `spread_light`（紙の内側に灯が広がる）・`flicker`（描かれた灯・炎の明るい暖色の所を少し揺らす）・`smoke`（立ち昇る煙）
+  - `steel(f, blade, t, P)`（刃の中の粒と、刃に沿ってゆっくり動く反射。描いた刀を周りの絵の質感に寄せる）
+  - `amt`・`len` は `[[t, 値], ...]` で書くと時刻で補間する。
+- 静止画の固定の手直し（`mv_pipeline.fx.retouch.static_edit(画像, ops, base)`）は、描画の前に元画像に 1 回だけ掛ける。
+  手直しした画像を別の名前で書き出し、spec の `assets.base` にする。
+  - `erase`（区域の中の暖色の明るい所を周りの色で埋める）・`dim`（同じ所を暗くする）・`specks`（小さな暖色の点を消す）・`desat`（赤の彩度を落とす）。
+  - 区域は基準座標の多角形で書き、画像の幅に合わせて広げる。
 - 決定論: hooks は入力・t・定数だけの関数にする（ファイル書き込みとネットワークは禁止。乱数は seed から作る）。
   hooks ファイルの sha256 は run のキャッシュ key と manifest（`hooks`）に入る。hooks を変えれば描き直し、hooks の有無で key は分かれる。
 - hooks で時刻とショットの区切りは変わらない（`timeline.json` と `faces.json` は hooks に関係しない）。
@@ -779,6 +808,12 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
     火の粉のショット（84 コマ）と、刃のショットの刃の上の小さな炎（キーで消える）と落ちる火の粉（83 コマ）、同じショットの刃に沿った火（83 コマ。その Shorts では使っていない）が、
     すべてバイト単位で同じだった。
   - `view` の写し方は、実制作の `Geo` より x・y とも 0.5 画素だけ左上になる（画素の中心の決め方の違い。fx の絵の写し方とは合っている）。
+  - 空と天気・明かりと質感の部品と静止画の手直しも、写した関数と同じ入力で画がバイト単位で同じ（`tests/test_fx_sky.py`）。
+    実際の絵でも、実制作の部品と縦のレンダラのカメラ（拍の脈つき）をそのまま抜き出して比べた。
+    縦の Shorts の 1 本の 9 ショットで、ショットの演出 → 空の奥の色（深度つき）→ 雨を掛けた 762 コマが、すべてバイト単位で同じだった。
+    影絵は公開に無いので、両方とも実制作の関数を掛けた。
+  - 静止画の手直しは、実制作の設定 3 つで同じだった。刀の絵の desat と、その Shorts の素材に無い erase・dim の設定を同じ基準座標の別の絵に掛けたもの。
+  - 拍の脈: 公開の `pulse`（timeline の 0 秒を窓の頭にし、拍と区間をその分ずらす）の zoom は、実制作の `cam` と 762 コマで相対差 2.3e-10 以内だった（脈のあるコマ 662）。
 - **実制作との比較**: つなぎの式・snap・ショットの区切り・各コマのショットは、実制作の式を写した関数と合成の配列で比べ、全コマでバイト単位で同じだった（`tests/test_fx_sequence.py`）。
   - さらに、実制作の 2 つのレンダラのファイルから snap・ショットの組み立て・`shot_index`・`render_frame` をそのまま抜き出して実行した。描画の部品はスタブに置き換え、合成の画で比べた。
   - 横の MV の 46 ショットの設定（cut 23・xfade 13・black 1・flash 9。拍は合成の 2 通り。設定の拍の記録が手元に無いため）では、次のとおりだった。ショットの区切りは一致し、5760 コマすべてでショットが同じ、つないだ画は比べた 5689 コマすべてで同じ。最後の 3 秒は実制作だけが暗転するので比べていない。
