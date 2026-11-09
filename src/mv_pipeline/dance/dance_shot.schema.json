@@ -725,6 +725,23 @@
         }
       }
     },
+    "cues": {
+      "description": "曲の出来事の時刻（ドロップ・休み・曲の終わりなど）に名前を付ける。値は時刻か時刻の並び（拍・小節・コマの参照も可）。hooks のステージのセットと mv dance plan が使い、timeline にも写す",
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/time"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/time"
+            }
+          }
+        ]
+      }
+    },
     "flashes": {
       "type": "array",
       "items": {

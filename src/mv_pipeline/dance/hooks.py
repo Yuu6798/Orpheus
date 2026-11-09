@@ -3,7 +3,8 @@
 spec からは読み込まない。明示したときだけ Python を実行する。関数はどれも任意で、入力を書き換えず、新しい配列を返す:
 
     prepare(ctx)                            描画の最初に 1 回（テクスチャの準備など）
-    stage(img, t, ctx, L)                   stage の後
+    backdrop(img, t, ctx)                   カメラの前のステージ（素材を出力の大きさに合わせた画）。返した画にカメラ・視差・ブレが掛かる
+    stage(img, t, ctx, L)                   stage の後（カメラの後）
     behind(img, t, ctx, L)                  後ろの字の後、人物の前（人物の後ろの光・影・反射など）
     performer(color, alpha, t, ctx, L)      人物そのもの。(color, alpha) を返す（輪郭の光・色合わせなど）
     front(img, t, ctx, L)                   人物とフラッシュの後、前の字の前
@@ -23,7 +24,7 @@ import numpy as np
 
 from ..io import PipelineError
 
-NAMES = ("prepare", "stage", "behind", "performer", "front", "final")
+NAMES = ("prepare", "backdrop", "stage", "behind", "performer", "front", "final")
 
 
 class Hooks:
@@ -51,6 +52,13 @@ class Hooks:
     def prepare(self, ctx):
         if self.has("prepare"):
             self._guarded("prepare", lambda: self.functions["prepare"](ctx))
+
+    def backdrop(self, img, t, ctx):
+        """カメラの前のステージを描き替える。無ければ img のまま（同じ配列）。"""
+        if not self.has("backdrop"):
+            return img
+        result = self._guarded("backdrop", lambda: self.functions["backdrop"](img, t, ctx))
+        return _checked("backdrop", result, img.shape)
 
     def image(self, name, img, t, ctx, layers):
         """stage・behind・front・final を掛ける。無ければ img のまま。"""

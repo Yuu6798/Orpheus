@@ -54,6 +54,11 @@ def body_height(ctx):
     return fit["body_height"] * ctx.size[1] if fit and fit["mode"] == "body" else None
 
 
+def cues(ctx):
+    """spec の cues（名前 → 秒の昇順の並び）。曲の出来事の時刻。"""
+    return ctx.spec.data["cues"]
+
+
 def rng(ctx, name):
     """spec の seed と名前から決まる乱数生成器。"""
     return timeline.seeded_rng(ctx.spec.data["seed"], name)

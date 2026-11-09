@@ -335,8 +335,11 @@ def _warp_stage(ctx, image, matrix):
 
 
 def _stage_view(ctx, t, state, samples):
-    """カメラ・視差・ブレを掛けたステージ。動かないときは素材の配列そのものを返すので、書き換えない。"""
+    """カメラ・視差・ブレを掛けたステージ。動かないときは素材の配列そのものを返すので、書き換えない。
+    hooks の backdrop はカメラの前に掛ける（ステージのセットを、人物と同じくカメラで動く画面に描くため）。"""
     image, parallax = ctx.stage.at(t), ctx.spec.data["stage"]["parallax"]
+    if ctx.hooks is not None:
+        image = ctx.hooks.backdrop(image, t, ctx)
     if samples:
         return sum(_warp_stage(ctx, image, ctx.camera.matrix(item, parallax)) for item in samples) / np.float32(len(samples))
     matrix = ctx.camera.matrix(state, parallax)
@@ -654,6 +657,8 @@ def timeline_record(ctx, start=0.0, duration=None, frames=None):
         "audio": None if audio is None else {"fit": audio["fit"], "end_s": audio["end_s"]},
         "finished": finished,
     })
+    if data["cues"]:
+        record["cues"] = data["cues"]       # 曲の出来事の時刻（名前 → 秒の並び）。0.3 の spec に cues があるときだけ
     for row, line in zip(record["lyrics"], ctx.lines):
         row.update(sung=line.sung, reveal=line.style["reveal"], exclusive=line.style["exclusive"],
                    fade_in_s=max(line.style["fade_in_s"], line.style["enter"]["dur_s"] if line.style["enter"] else 0.0), fade_out_s=line.fall_s,
