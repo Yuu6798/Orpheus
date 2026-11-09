@@ -17,7 +17,7 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
 版（variants）は VARIANTS。fingerprint() は fx パッケージの全ファイル（.py と schema）から作る
 エンジン指紋で、run の manifest とキャッシュ key に入れる。
 
-モジュールの構成（CLI は `mv fx demo|render|stills|guides|compare|masks|legacy|accept`。詳細は docs/fx.md）:
+モジュールの構成（CLI は `mv fx demo|render|stills|guides|compare|masks|legacy|accept|timeline`。詳細は docs/fx.md）:
   - spec / timeline / assets / camera / layers / light / color / render: 描画の中核（cv2 を使う。上の使い方）。
   - look: 最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式。spec に look があるときだけ、全版に同じものを掛ける）。
   - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート（基準の列つき）と、
@@ -32,7 +32,9 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
   - legacy: 外部の実制作レンダラを呼んで run として記録する（cv2 不要・キャッシュしない）。
   - overlay: 透過レイヤー（PNG 連番・アルファつき動画・時刻つきの 1 枚の画像）を土台に重ねて書き出す `mv overlay`（--layers でレイヤーごとの仕上げ・コマ番号のずれ。書き出しは render なので fx extra が要る）。
   - demo: 合成デモ素材と spec.json（cv2 を使う）。
-  runs / legacy / probe は cv2 を import しない（fx accept と fx legacy は fx extra なしで動く）。
+  - sequence: fx-timeline/0.1（`mv fx timeline`）。複数のショットの spec を時刻順に並べ、cut・xfade・black・flash でつなぎ、
+    timeline の look を掛けて 1 本にする。run に timeline.mp4 と mv gate 用の timeline.json を残す（timeline は時間の補助関数の名前なので別名）。
+  runs / legacy / probe / sequence は cv2 を import しない（fx accept・fx legacy・fx timeline plan は fx extra なしで動く）。
   例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
 """
 import hashlib

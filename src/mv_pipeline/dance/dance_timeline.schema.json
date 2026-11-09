@@ -50,7 +50,7 @@
         "required": ["t", "from", "to", "kind", "beat_exempt"],
         "properties": {
           "t": {"type": "number"}, "from": {"type": "integer"}, "to": {"type": "integer"},
-          "kind": {"enum": ["cut", "blend", "dissolve"]}, "beat_exempt": {"type": "boolean"},
+          "kind": {"enum": ["cut", "blend", "dissolve", "xfade", "black", "flash"]}, "beat_exempt": {"type": "boolean"},
           "align": {"enum": ["beat", "downbeat"]}
         }
       }
@@ -64,7 +64,7 @@
         "required": ["t", "strength", "decay_s", "mode", "beat_exempt"],
         "properties": {
           "t": {"type": "number"}, "strength": {"type": "number"}, "decay_s": {"type": "number"},
-          "mode": {"enum": ["lerp_linear", "add_display"]}, "beat_exempt": {"type": "boolean"},
+          "mode": {"enum": ["lerp_linear", "add_display", "lerp_display"]}, "beat_exempt": {"type": "boolean"},
           "align": {"enum": ["beat", "downbeat"]}
         }
       }
@@ -128,7 +128,7 @@
         "path": {"type": "string"},
         "start": {"type": "number"},
         "end": {"type": "number"},
-        "kind": {"enum": ["video", "image"]},
+        "kind": {"enum": ["video", "image", "fx-shot"]},
         "transition_in": {"type": "object"},
         "beat_exempt": {"type": "boolean"}
       }
