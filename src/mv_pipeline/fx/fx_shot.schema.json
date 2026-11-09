@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "fx-shot/0.2",
-  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。0.2 は 0.1 に深度視差の項目（camera.pivot、camera.keys の depth_shift と dolly、assets.depth の下ごしらえ）を足した版で、0.1 の spec（fx_shot_0_1.schema.json）もそのまま読める（新しい項目は既定値になり、絵は 0.1 と同じ）。座標（light.position・camera.center）は元画像（基準画像）の正規化座標 0..1、長さ（light.radius・emitter.size）は元画像の幅が基準。出力の縦横比が違って cover で切られても、被写体・マスクに対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈する）。カメラが動いても光と対象は一緒に動く。時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
+  "title": "fx-shot/0.3",
+  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。0.3 は 0.2 にカメラの視野の取り方（camera.frame・clamp・punch）と顔の枠（faces）を足した版、0.2 は 0.1 に深度視差の項目（camera.pivot、camera.keys の depth_shift と dolly、assets.depth の下ごしらえ）を足した版で、0.2 と 0.1 の spec（fx_shot_0_2.schema.json・fx_shot_0_1.schema.json）もそのまま読める（新しい項目は既定値になり、絵は同じ）。座標（light.position・camera.center）は元画像（基準画像）の正規化座標 0..1、長さ（light.radius・emitter.size）は元画像の幅が基準。出力の縦横比が違って cover で切られても、被写体・マスクに対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈する）。カメラが動いても光と対象は一緒に動く。時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
   "type": "object",
   "required": ["schema_version", "output", "duration_s", "assets"],
   "properties": {
-    "schema_version": {"const": "fx-shot/0.2"},
+    "schema_version": {"const": "fx-shot/0.3"},
     "output": {
       "type": "object",
       "required": ["width", "height"],
@@ -104,6 +104,23 @@
             }
           ],
           "default": 0.5
+        },
+        "frame": {
+          "enum": ["cover", "source"],
+          "default": "cover",
+          "description": "視野をどこから取るか。cover は出力の縦横比で元画像の中央を切った範囲（0.2 まで）。source は元画像の全体で、center を縦にも横にも端まで動かせる（縦の出力で横の絵を左右に追うなど）。zoom 1 はどちらも元画像に収まる出力の縦横比のいちばん大きい視野。source は layers・lights と一緒には使えない。"
+        },
+        "clamp": {"type": "boolean", "default": false, "description": "視野を画像の中に止める（center を内側へ寄せる）。止めなければ外は端の画素を伸ばして埋め、注意を出す。"},
+        "punch": {
+          "type": "object",
+          "required": ["amount", "duration_s"],
+          "properties": {
+            "amount": {"type": "number", "minimum": 0, "maximum": 0.9},
+            "duration_s": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false,
+          "patternProperties": {"^x_": {}},
+          "description": "入りの押し込み。0 秒から duration_s の間、zoom を 1 − amount·(1 − ease_out(t/duration_s)) 倍する（少し引いた所から ease-out で keys の寄りへ。ease_out(x) = 1 − (1 − x)³）。zoom は 1 より小さくしない。"
         }
       },
       "additionalProperties": false,
@@ -143,6 +160,21 @@
       },
       "additionalProperties": false,
       "patternProperties": {"^x_": {}}
+    },
+    "faces": {
+      "type": "array",
+      "description": "顔の枠（元画像の正規化座標 [x0, y0, x1, y1]）。描画には使わない。fx-timeline の run がカメラで画面へ写して faces.json（mv gate check の字と顔の検査の入力）に書く。目で測った枠は estimated: true（既定）。",
+      "items": {
+        "type": "object",
+        "required": ["box"],
+        "properties": {
+          "box": {"$ref": "#/$defs/box"},
+          "role": {"enum": ["main", "other"], "default": "main"},
+          "estimated": {"type": "boolean", "default": true}
+        },
+        "additionalProperties": false,
+        "patternProperties": {"^x_": {}}
+      }
     }
   },
   "additionalProperties": false,

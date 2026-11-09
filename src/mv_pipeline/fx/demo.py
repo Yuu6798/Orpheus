@@ -6,7 +6,7 @@
     depth.png        深度（16bit。白 = 手前。空が最奥、地面は下ほど手前、人物は中間。人物の境界は人物マスクの羽根と同じなだらかさ）
     mask_subject.png 人物のマスク   mask_ground.png 地面のマスク
     audio.wav        合成音（低い持続音 + 点火の風切り音 + 脈動。尺 = duration + 1 秒）
-    spec.json        上の素材を使う fx-shot/0.2 の設定（深度視差は 0.1 と同じ parallax_px。pivot などの 0.2 の項目は使わない）
+    spec.json        上の素材を使う fx-shot/0.3 の設定（深度視差は 0.1 と同じ parallax_px。pivot などの 0.2 の項目と、frame などの 0.3 の項目は使わない）
 
 演出が目で分かる値にしてある:
 - 白い炎は手の上にあり（emitter.attach = subject。手と一緒に動き、袖に隠れない）、光は対象物ごとに違う当たり方をする。

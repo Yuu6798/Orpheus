@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fx-shot/0.2",
+  "description": "演出エンジン fx の 1 ショット設定。実験的で contracts/ の外にある。0.2 は 0.1 に深度視差の項目（camera.pivot、camera.keys の depth_shift と dolly、assets.depth の下ごしらえ）を足した版で、0.1 の spec（fx_shot_0_1.schema.json）もそのまま読める（新しい項目は既定値になり、絵は 0.1 と同じ）。座標（light.position・camera.center）は元画像（基準画像）の正規化座標 0..1、長さ（light.radius・emitter.size）は元画像の幅が基準。出力の縦横比が違って cover で切られても、被写体・マスクに対する位置と大きさは変わらない（cover の切り出し後の画面ではなく元画像で解釈する）。カメラが動いても光と対象は一緒に動く。時間は秒（ショット時刻）、色は sRGB 0-255。`x_` で始まる鍵はどの階層でも許す（作品ごとの試行用。描画には使われない）。",
+  "type": "object",
+  "required": ["schema_version", "output", "duration_s", "assets"],
+  "properties": {
+    "schema_version": {"const": "fx-shot/0.2"},
+    "output": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 16, "maximum": 7680, "multipleOf": 2},
+        "height": {"type": "integer", "minimum": 16, "maximum": 4320, "multipleOf": 2},
+        "fps": {"type": "number", "exclusiveMinimum": 0, "maximum": 120, "default": 24},
+        "crf": {"type": "integer", "minimum": 0, "maximum": 51, "default": 18}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "duration_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 3600},
+    "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295, "default": 0},
+    "audio": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "offset_s": {"type": "number", "minimum": 0, "default": 0}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "assets": {
+      "type": "object",
+      "required": ["base"],
+      "properties": {
+        "base": {"$ref": "#/$defs/path"},
+        "depth": {
+          "oneOf": [
+            {"$ref": "#/$defs/path"},
+            {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": {"$ref": "#/$defs/path"},
+                "near": {"enum": ["white", "black"], "default": "white"},
+                "normalize": {"enum": ["percentile", "none"], "default": "percentile", "description": "percentile は 2〜98 パーセンタイルを 0..1 に伸ばす（0.1 と同じ）。none は伸ばさず、16 bit なら 65535、8 bit なら 255 で割るだけ（float の画像はそのままで、0..1 に収まっていること）。実制作の pivot の値は none の尺度。"},
+                "resolution": {"enum": ["depth", "base"], "default": "depth", "description": "regions・dilate_px・blur_px を掛ける解像度で、px もこの画素で数える。depth は深度画像のまま、base は先に基準画像の大きさへ線形補間で合わせてから。"},
+                "regions": {"type": "array", "items": {"$ref": "#/$defs/depth_region"}, "description": "深度を平面か一定の値に置きかえる領域（画面に合成するモニターを歪ませない、遠景を止めるなど）。並びの順に掛ける。"},
+                "dilate_px": {"type": "integer", "minimum": 0, "maximum": 99, "default": 0, "description": "手前を太らせる楕円の直径（奇数。0 で無効）。手前の物の縁が背景ごと動き、輪郭が裂けにくくなる。"},
+                "blur_px": {"type": "number", "minimum": 0, "maximum": 100, "default": 0, "description": "太らせた後に掛けるガウスぼかしの σ（0 で無効）。"}
+              },
+              "additionalProperties": false,
+              "patternProperties": {"^x_": {}}
+            }
+          ]
+        },
+        "masks": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/id"},
+          "additionalProperties": {
+            "oneOf": [
+              {"$ref": "#/$defs/path"},
+              {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": {"$ref": "#/$defs/path"},
+                  "feather_px": {"type": "number", "minimum": 0, "maximum": 200, "default": 0}
+                },
+                "additionalProperties": false,
+                "patternProperties": {"^x_": {}}
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "keys": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/camera_key"}},
+        "parallax_px": {"type": "number", "minimum": 0, "maximum": 400, "default": 0, "description": "0.1 の深度視差。ショット全体で 0 から parallax_px × parallax_dir へ in_out で動く（keys の depth_shift の省略形。両方は書けない）。"},
+        "parallax_dir": {"$ref": "#/$defs/vec2", "default": [1, 0]},
+        "pivot": {
+          "description": "深度視差で動かない深さ（0..1、1 = 手前）。数か、マスクの中（{\"mask\": id}）か元画像の箱の中（{\"box\": [x0, y0, x1, y1]}）の深度の中央値。既定 0.5（0.1 と同じ）。",
+          "oneOf": [
+            {"$ref": "#/$defs/unit"},
+            {
+              "type": "object",
+              "required": ["mask"],
+              "properties": {"mask": {"$ref": "#/$defs/id"}},
+              "additionalProperties": false,
+              "patternProperties": {"^x_": {}}
+            },
+            {
+              "type": "object",
+              "required": ["box"],
+              "properties": {"box": {"$ref": "#/$defs/box"}},
+              "additionalProperties": false,
+              "patternProperties": {"^x_": {}}
+            }
+          ],
+          "default": 0.5
+        }
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "layers": {
+      "type": "object",
+      "properties": {
+        "background": {
+          "type": "object",
+          "properties": {
+            "parallax": {"type": "number", "minimum": 0, "maximum": 4, "default": 0.4},
+            "inpaint_px": {"type": "number", "minimum": 0, "maximum": 200, "default": 8}
+          },
+          "additionalProperties": false,
+          "patternProperties": {"^x_": {}}
+        },
+        "planes": {"type": "array", "items": {"$ref": "#/$defs/plane"}},
+        "effects": {"type": "array", "items": {"$ref": "#/$defs/effect"}}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "lights": {"type": "array", "items": {"$ref": "#/$defs/light"}},
+    "overlays": {
+      "type": "array",
+      "items": {"type": "object"},
+      "description": "描画の中で重ねる透過レイヤー（歌詞の連番・題字のカード）。各要素は fx_overlay_layers.schema.json の layer と同じ形（path は連番のフォルダ、image は時刻つきの 1 枚の画像。動画は受けない）で、spec の読み込みでその形を検証する。look の後・最後の 8 bit への丸めの前に、全 4 版に同じものを重ねる。大きさは output と同じ（resize: true なら縮尺）。無ければ従来とバイト同一。"
+    },
+    "look": {
+      "type": "object",
+      "description": "最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式・同じ既定値）。光とレイヤーの後、表示用の値（ガンマ符号化した 0..1）の上で全 4 版に同じものを掛ける。周辺減光と粒状感は出力画面基準（元画像の座標ではない）。無い子（grade / vignette / grain）は無効、look 自体が無ければ従来とバイト同一。",
+      "properties": {
+        "grade": {"$ref": "#/$defs/look_grade"},
+        "vignette": {"$ref": "#/$defs/look_vignette"},
+        "grain": {"$ref": "#/$defs/look_grain"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    }
+  },
+  "additionalProperties": false,
+  "patternProperties": {"^x_": {}},
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,39}$"},
+    "path": {"type": "string", "minLength": 1},
+    "ease": {"enum": ["linear", "in", "out", "in_out"]},
+    "unit": {"type": "number", "minimum": 0, "maximum": 1},
+    "vec2": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "point": {"type": "array", "prefixItems": [{"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}], "minItems": 2, "maxItems": 2},
+    "color": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number", "minimum": 0, "maximum": 255},
+        {"type": "number", "minimum": 0, "maximum": 255},
+        {"type": "number", "minimum": 0, "maximum": 255}
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "camera_key": {
+      "type": "object",
+      "required": ["t"],
+      "properties": {
+        "t": {"type": "number", "minimum": 0},
+        "zoom": {"type": "number", "minimum": 1, "maximum": 8, "default": 1},
+        "center": {"$ref": "#/$defs/point", "default": [0.5, 0.5]},
+        "depth_shift": {"$ref": "#/$defs/vec2", "default": [0, 0], "description": "深さが pivot から 1 違う面の変位（出力幅 1920 換算の px。+x で手前が右、+y で手前が下へ）。画素の変位は depth_shift × (D − pivot)。"},
+        "dolly": {"type": "number", "minimum": -1, "maximum": 1, "default": 0, "description": "深さが pivot から 1 違う面の、画面の中心からの拡大率（正で手前ほど大きく = 寄り、負で引き）。"},
+        "ease": {"$ref": "#/$defs/ease", "default": "linear"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "box": {
+      "type": "array",
+      "description": "元画像の正規化座標の箱 [x0, y0, x1, y1]（x0 < x1、y0 < y1）。",
+      "prefixItems": [{"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}],
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "depth_region": {
+      "type": "object",
+      "description": "深度を置きかえる領域。quad（元画像の正規化座標の四隅。画像の外にはみ出してよい）か box のどちらか。plane は inner に縮めた範囲の深度に最小二乗の平面を当て、grow に広げた範囲へ書く。value は grow に広げた範囲を value にする。縁は blur_px の σ でなじませる（px は assets.depth.resolution の画素）。",
+      "properties": {
+        "quad": {"type": "array", "items": {"$ref": "#/$defs/vec2"}, "minItems": 4, "maxItems": 4},
+        "box": {"$ref": "#/$defs/box"},
+        "mode": {"enum": ["plane", "value"], "default": "plane"},
+        "value": {"$ref": "#/$defs/unit"},
+        "inner": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.92},
+        "grow": {"type": "number", "minimum": 1, "maximum": 2, "default": 1.03},
+        "blur_px": {"type": "number", "minimum": 0, "maximum": 200, "default": 4}
+      },
+      "oneOf": [{"required": ["quad"]}, {"required": ["box"]}],
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "grade_gain": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number", "minimum": 0, "maximum": 4},
+        {"type": "number", "minimum": 0, "maximum": 4},
+        {"type": "number", "minimum": 0, "maximum": 4}
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "grade_key": {
+      "description": "区間 [t, 次のキーの t) の色。配列形 [t, sat, [r, g, b], con]（実制作の grade_keys と同じ）かオブジェクト形。オブジェクト形で省いた項目は中立（sat 1・gain [1,1,1]・con 0）。t は評価時刻 τ = 時刻 + time_offset_s の軸（秒）。",
+      "oneOf": [
+        {
+          "type": "array",
+          "prefixItems": [
+            {"type": "number"},
+            {"type": "number", "minimum": 0, "maximum": 3},
+            {"$ref": "#/$defs/grade_gain"},
+            {"type": "number", "minimum": 0, "maximum": 1}
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        {
+          "type": "object",
+          "required": ["t"],
+          "properties": {
+            "t": {"type": "number"},
+            "sat": {"type": "number", "minimum": 0, "maximum": 3, "default": 1},
+            "gain": {"$ref": "#/$defs/grade_gain", "default": [1, 1, 1]},
+            "con": {"type": "number", "minimum": 0, "maximum": 1, "default": 0}
+          },
+          "additionalProperties": false,
+          "patternProperties": {"^x_": {}}
+        }
+      ]
+    },
+    "look_grade": {
+      "type": "object",
+      "required": ["keys"],
+      "properties": {
+        "keys": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/grade_key"}},
+        "blend_s": {"type": "number", "minimum": 0, "maximum": 10, "default": 1.2, "description": "次のキーの時刻の何秒前から次の色へ移るか（smoothstep）。0 なら段差。"},
+        "time_offset_s": {"type": "number", "minimum": -1000000, "maximum": 1000000, "default": 0, "description": "評価時刻 τ = 時刻 + time_offset_s（±1e6 秒まで。曲の長さには十分）。曲の絶対秒で書いたキーを使うときは、区間の曲上の開始秒を入れる。grain のコマ番号 τ·fps の四捨五入（半コマは切り上げ）も同じ τ で数える。"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "look_vignette": {
+      "type": "object",
+      "properties": {
+        "amount": {"type": "number", "minimum": 0, "maximum": 2, "default": 0.38},
+        "start": {"type": "number", "minimum": 0, "maximum": 2, "default": 0.55, "description": "減光が始まる楕円距離 r（辺の中点が 1、角が √2）。"},
+        "power": {"type": "number", "minimum": 0.1, "maximum": 8, "default": 1.6},
+        "floor": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.55, "description": "乗算ゲインの下限。"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "look_grain": {
+      "type": "object",
+      "properties": {
+        "sigma": {"type": "number", "minimum": 0, "maximum": 50, "default": 2.0, "description": "正規分布の標準偏差（0..255 の単位）。"},
+        "size_px": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2, "description": "粒の一辺（出力画素。解像度に比例しない）。"},
+        "frames": {"type": "integer", "minimum": 1, "maximum": 64, "default": 6, "description": "パターンの枚数。コマ番号で巡回する。"},
+        "seed": {"type": "integer", "minimum": 0, "default": 7, "description": "粒の乱数の seed。spec の seed とは独立で、版にも依らない。"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "plane": {
+      "type": "object",
+      "required": ["id", "mask"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "mask": {"$ref": "#/$defs/id"},
+        "z": {"type": "number", "default": 0},
+        "parallax": {"type": "number", "minimum": 0, "maximum": 4, "default": 1.0},
+        "drift_px": {"$ref": "#/$defs/vec2", "default": [0, 0]}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "effect": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {"type": {"enum": ["fog", "particles"]}},
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "fog"}}}, "then": {"$ref": "#/$defs/fog"}},
+        {"if": {"properties": {"type": {"const": "particles"}}}, "then": {"$ref": "#/$defs/particles"}}
+      ]
+    },
+    "fog": {
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "type": {"const": "fog"},
+        "z": {"type": "number", "default": 0},
+        "color": {"$ref": "#/$defs/color", "default": [170, 175, 200]},
+        "opacity": {"$ref": "#/$defs/unit", "default": 0.3},
+        "scale": {"type": "number", "minimum": 0.02, "maximum": 1, "default": 0.25},
+        "drift": {"$ref": "#/$defs/vec2", "default": [0.01, 0]},
+        "parallax": {"type": "number", "minimum": 0, "maximum": 4, "default": 0.6}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "particles": {
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "type": {"const": "particles"},
+        "z": {"type": "number", "default": 0},
+        "count": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 100},
+        "color": {"$ref": "#/$defs/color", "default": [255, 255, 255]},
+        "size_px": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+            {"type": "number", "exclusiveMinimum": 0, "maximum": 100}
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "default": [1.5, 4.0]
+        },
+        "velocity": {"$ref": "#/$defs/vec2", "default": [0, -0.05]},
+        "flicker": {"$ref": "#/$defs/unit", "default": 0},
+        "parallax": {"type": "number", "minimum": 0, "maximum": 4, "default": 1.0}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "keyed_value": {
+      "type": "object",
+      "required": ["t", "v"],
+      "properties": {
+        "t": {"type": "number", "minimum": 0},
+        "v": {"type": "number", "minimum": 0, "maximum": 20},
+        "ease": {"$ref": "#/$defs/ease", "default": "linear"}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "receiver": {
+      "type": "object",
+      "required": ["mask"],
+      "properties": {
+        "mask": {"$ref": "#/$defs/id"},
+        "gain": {"type": "number", "minimum": 0, "maximum": 20, "default": 1.0},
+        "rim": {"type": "number", "minimum": 0, "maximum": 20, "default": 0},
+        "reflection": {"type": "number", "minimum": 0, "maximum": 20, "default": 0}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "light": {
+      "type": "object",
+      "required": ["id", "position"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "type": {"const": "point", "default": "point"},
+        "position": {"$ref": "#/$defs/point"},
+        "color": {"$ref": "#/$defs/color", "default": [255, 255, 255]},
+        "radius": {"type": "number", "exclusiveMinimum": 0, "maximum": 2, "default": 0.45},
+        "intensity": {
+          "oneOf": [
+            {"type": "number", "minimum": 0, "maximum": 20},
+            {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/keyed_value"}}
+          ],
+          "default": 1.0
+        },
+        "flicker": {
+          "type": "object",
+          "properties": {
+            "amount": {"$ref": "#/$defs/unit", "default": 0},
+            "hz": {"type": "number", "exclusiveMinimum": 0, "maximum": 60, "default": 5.0}
+          },
+          "additionalProperties": false,
+          "patternProperties": {"^x_": {}}
+        },
+        "emitter": {
+          "type": "object",
+          "properties": {
+            "size": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.5, "default": 0.03},
+            "glow": {"type": "number", "minimum": 0, "maximum": 20, "default": 0.5},
+            "attach": {
+              "$ref": "#/$defs/id",
+              "description": "光点が載る層: layers.planes の id か \"background\"。未指定なら、光点の影響半径（size×4）内に不透明部分を持つ plane のうち z が最も前のもの、なければ背景。載った層と同じカメラ変換で動き、その層の画素の上に描かれる。"
+            }
+          },
+          "additionalProperties": false,
+          "patternProperties": {"^x_": {}}
+        },
+        "receivers": {"type": "array", "items": {"$ref": "#/$defs/receiver"}},
+        "depth": {"$ref": "#/$defs/unit"},
+        "depth_falloff": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.25}
+      },
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    }
+  }
+}

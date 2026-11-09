@@ -1,8 +1,8 @@
-"""fx-shot/0.2 設定の読み込み・検証・既定値補完（0.1 の spec も読む）。
+"""fx-shot/0.3 設定の読み込み・検証・既定値補完（0.2 と 0.1 の spec も読む）。
 
 load_spec(path) は検証済みで既定値を埋めた Spec を返す。以降のモジュールは spec.data の
 正規化済み辞書だけを見る（生 JSON は見ない）。`x_` で始まる鍵はそのまま残るが描画には使われない。
-0.1 の spec はその版の schema で検証し、0.2 の正規形（新しい項目は既定値）にそろえる。既定値は 0.1 と同じ絵になる値。
+0.2 と 0.1 の spec はその版の schema で検証し、0.3 の正規形（新しい項目は既定値）にそろえる。既定値は元の版と同じ絵になる値。
 素材パスは spec ファイルのあるディレクトリ基準で、io.safe_path により逸脱を拒否する
 （存在確認は assets 読み込み時）。
 
@@ -22,9 +22,10 @@ from pathlib import Path
 import jsonschema
 
 from ..io import PipelineError, read_json, safe_path, sha256
-from . import SCHEMA_V01, SCHEMA_VERSION, spec_layers
+from . import SCHEMA_V01, SCHEMA_V02, SCHEMA_VERSION, spec_layers
 
 _SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("fx_shot.schema.json"),
+            SCHEMA_V02: Path(__file__).with_name("fx_shot_0_2.schema.json"),
             SCHEMA_V01: Path(__file__).with_name("fx_shot_0_1.schema.json")}
 BACKGROUND = "background"   # emitter.attach で背景の層を指す予約語（plane の id には使えない）
 DEFAULT_PIVOT = 0.5         # 0.1 の深度視差の動かない深さ
@@ -102,7 +103,7 @@ def _validate_schema(raw):
         raise PipelineError("fx spec must be a JSON object")
     version = raw.get("schema_version")
     if not isinstance(version, str) or version not in _SCHEMAS:
-        raise PipelineError(f"fx spec schema_version must be {SCHEMA_VERSION!r} or {SCHEMA_V01!r}, got {version!r}")
+        raise PipelineError(f"fx spec schema_version must be {SCHEMA_VERSION!r}, {SCHEMA_V02!r} or {SCHEMA_V01!r}, got {version!r}")
     validator = jsonschema.Draft202012Validator(schema(version))
     errors = sorted(validator.iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
@@ -187,15 +188,29 @@ def _normalize(raw):
             "parallax_px": _f(camera.get("parallax_px", 0)),
             "parallax_dir": _vec(camera.get("parallax_dir", [1, 0])),
             "pivot": _normalize_pivot(camera.get("pivot", DEFAULT_PIVOT)),
+            "frame": camera.get("frame", "cover"),
+            "clamp": bool(camera.get("clamp", False)),
+            "punch": _normalize_punch(camera.get("punch")),
             **_ext(camera),
         },
         "layers": None if layers is None else _normalize_layers(layers),
         "lights": [_normalize_light(light) for light in raw.get("lights", [])],
         "look": None if raw.get("look") is None else normalize_look(raw["look"]),
         "overlays": spec_layers.normalize(raw.get("overlays")),
+        "faces": normalize_faces(raw.get("faces")),
     }
     data.update(_ext(raw))
     return data
+
+
+def _normalize_punch(punch):
+    return None if punch is None else {"amount": _f(punch["amount"]), "duration_s": _f(punch["duration_s"]), **_ext(punch)}
+
+
+def normalize_faces(faces):
+    """顔の枠（元画像の正規化座標）を正規化する（fx-timeline の動画のショットも使う公開関数）。"""
+    return [{"box": _vec(face["box"]), "role": face.get("role", "main"), "estimated": bool(face.get("estimated", True)), **_ext(face)}
+            for face in faces or []]
 
 
 def _normalize_depth(depth):
@@ -416,6 +431,11 @@ def _validate_semantics(data):
                 raise PipelineError(f"fx spec: light {light['id']!r} の receiver mask {receiver['mask']!r} が assets.masks にありません")
         if light["depth"] is not None and not data["assets"]["depth"]:
             warnings.append(f"light {light['id']!r}: depth を指定していますが assets.depth がないため無視します")
+    if data["camera"]["frame"] == "source" and ((layers and (layers["planes"] or layers["effects"])) or data["lights"]):
+        raise PipelineError("fx spec: camera.frame: source は layers（planes・effects）と lights とは一緒に使えません"
+                            "（今は。視野を元画像の全体から取る描き方は、平らな描画と深度視差だけ）")
+    for index, face in enumerate(data["faces"]):
+        _check_box(face["box"], f"faces[{index}].box")
     if data["camera"]["parallax_px"] > 0 and not data["assets"]["depth"]:
         warnings.append("camera.parallax_px > 0 ですが assets.depth がないため深度視差は無効です")
     _validate_depth(data, warnings)

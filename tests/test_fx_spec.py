@@ -73,7 +73,7 @@ def test_canonical_json_ignores_key_order():
         {"a": [2, {"c": 2, "d": 1}], "b": 1})
 
 
-@pytest.mark.parametrize("version", ["fx-shot/0.3", "fx-shot/0", None, 1, ["fx-shot/0.2"]])
+@pytest.mark.parametrize("version", ["fx-shot/0.4", "fx-shot/0", None, 1, ["fx-shot/0.2"]])
 def test_rejects_wrong_schema_version(tmp_path, version):
     data = spec_dict()
     if version is None:

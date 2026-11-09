@@ -139,6 +139,13 @@
           "camera": {
             "$ref": "#/$defs/video_camera"
           },
+          "faces": {
+            "description": "動画のショットの顔の枠（動画の正規化座標）。spec のショットは spec の faces を使う。run がカメラで画面へ写して faces.json に書く",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/face"
+            }
+          },
           "start": {
             "$ref": "#/$defs/time"
           },
@@ -268,6 +275,11 @@
                 {
                   "required": [
                     "camera"
+                  ]
+                },
+                {
+                  "required": [
+                    "faces"
                   ]
                 }
               ]
@@ -464,7 +476,7 @@
       }
     },
     "video_camera": {
-      "description": "動画のショットのカメラ。fx-shot の camera.keys と同じ書き方（t はショットの中の秒、center は動画の正規化座標）。既定は寄りなし・中央",
+      "description": "動画のショットのカメラ。keys は fx-shot の camera.keys と同じ書き方（t はショットの中の秒、center は動画の正規化座標）。frame・clamp・punch も fx-shot の camera と同じ。既定は寄りなし・中央・cover",
       "type": "object",
       "required": [
         "keys"
@@ -480,6 +492,40 @@
           "items": {
             "$ref": "#/$defs/video_camera_key"
           }
+        },
+        "frame": {
+          "enum": [
+            "cover",
+            "source"
+          ],
+          "description": "視野をどこから取るか（fx-shot の camera.frame と同じ。source は動画の全体）"
+        },
+        "clamp": {
+          "type": "boolean",
+          "description": "視野を動画の中に止める（fx-shot の camera.clamp と同じ）"
+        },
+        "punch": {
+          "type": "object",
+          "required": [
+            "amount",
+            "duration_s"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_": {}
+          },
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.9
+            },
+            "duration_s": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "description": "入りの押し込み（fx-shot の camera.punch と同じ）"
         }
       }
     },
@@ -526,6 +572,54 @@
             "out",
             "in_out"
           ]
+        }
+      }
+    },
+    "face": {
+      "type": "object",
+      "required": [
+        "box"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_": {}
+      },
+      "properties": {
+        "box": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "role": {
+          "enum": [
+            "main",
+            "other"
+          ]
+        },
+        "estimated": {
+          "type": "boolean"
         }
       }
     }

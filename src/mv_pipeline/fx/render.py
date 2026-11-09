@@ -118,7 +118,7 @@ def prepare(spec, scale=1.0, size=None):
     data = spec.data
     assets = load_assets(spec, size)
     pivot, pivot_from = resolve_pivot(data["camera"]["pivot"], assets)
-    path = camera.CameraPath(data["camera"], data["duration_s"], size, assets.box, pivot)
+    path = camera.CameraPath(data["camera"], data["duration_s"], size, assets.box, pivot, plate=assets.plate_size)
     warnings = list(spec.warnings) + list(assets.warnings)
     bounds = path.out_of_bounds()
     if bounds:

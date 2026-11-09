@@ -99,9 +99,9 @@ def _check_kinds(raw):
             continue
         if ("spec" in shot) == ("video" in shot):
             raise PipelineError(f"fx timeline: shots[{index}] は spec（fx のショット）か video（動画のショット）のどちらか一方を書いてください")
-        wrong = [key for key in (("offset_s", "variant") if "video" in shot else ("camera",)) if key in shot]
+        wrong = [key for key in (("offset_s", "variant") if "video" in shot else ("camera", "faces")) if key in shot]
         if wrong:
-            hint = "動画の中の秒は video.offset_s に書きます" if "video" in shot else "カメラは spec に書きます"
+            hint = "動画の中の秒は video.offset_s に書きます" if "video" in shot else "カメラと顔の枠は spec に書きます"
             raise PipelineError(f"fx timeline: shots[{index}] の {'・'.join(wrong)} は{'動画' if 'video' in shot else ' spec '}のショットには使えません（{hint}）")
 
 
@@ -136,7 +136,12 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
             video = _video(shot["video"], index)
             if not safe_path(base_dir, video["path"]).is_file():
                 raise PipelineError(f"fx timeline: shots[{index}] の動画が見つかりません: {video['path']}")
-            shots.append({"kind": "video", "video": video, "camera": _camera(shot.get("camera"), index), "offset_s": 0.0, **common})
+            faces = fxspec.normalize_faces(shot.get("faces"))
+            for number, face in enumerate(faces):
+                if not (face["box"][0] < face["box"][2] and face["box"][1] < face["box"][3]):
+                    raise PipelineError(f"fx timeline: shots[{index}].faces[{number}].box は [x0, y0, x1, y1] で x0 < x1、y0 < y1 にしてください")
+            shots.append({"kind": "video", "video": video, "camera": _camera(shot.get("camera"), index), "faces": faces, "offset_s": 0.0,
+                          **common})
     for index, shot in enumerate(shots):
         shot["end"] = shots[index + 1]["start"] if index + 1 < len(shots) else duration
     specs = tuple(_without_audio(fxspec.load_spec(safe_path(base_dir, shot["spec"]))) if shot["kind"] == "spec" else None for shot in shots)
@@ -190,11 +195,14 @@ def _video(raw, index):
 
 
 def _camera(raw, index):
-    keys = fxspec._keys((raw or {}).get("keys") or [{"t": 0.0}], {"zoom": 1.0, "center": [0.5, 0.5]})
+    raw = raw or {}
+    keys = fxspec._keys(raw.get("keys") or [{"t": 0.0}], {"zoom": 1.0, "center": [0.5, 0.5]})
     times = [key["t"] for key in keys]
     if any(b <= a for a, b in zip(times, times[1:])):
         raise PipelineError(f"fx timeline: shots[{index}].camera.keys の t は厳密な昇順にしてください: {times}")
-    return {"keys": keys, "parallax_px": 0.0, "parallax_dir": [1.0, 0.0]}
+    punch = raw.get("punch")
+    return {"keys": keys, "parallax_px": 0.0, "parallax_dir": [1.0, 0.0], "frame": raw.get("frame", "cover"), "clamp": bool(raw.get("clamp", False)),
+            "punch": None if punch is None else {"amount": float(punch["amount"]), "duration_s": float(punch["duration_s"])}}
 
 
 def snap(t, beats, duration):
@@ -385,15 +393,23 @@ class VideoShot:
         self.video, self.size = video, size
         self.fps = video["fps"] or self.frames.fps
         width, height = self.frames.width, self.frames.height
-        self.box = _pixel_box(cover_box(width, height, *size), (width, height))
         length = shot["end"] - shot["start"]
         tail = _xfade_tail(timeline.data["shots"], index)        # 次の xfade の間も、このショットを描き続ける
-        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box)   # 視野の確かめも、その間まで見る
-        self.warnings = []
-        cut = 1.0 - (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
-        if cut > CROP_WARN_FRACTION:
-            axis = "左右" if self.box[0] > 0 else "上下"
-            self.warnings.append(f"動画 {width}x{height} は出力 {size[0]}x{size[1]} と縦横比が違うため、cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
+        self.warnings, self.faces = [], shot["faces"]
+        if shot["camera"]["frame"] == "source":     # 動画の全体が板（fx-shot の camera.frame: source と同じ）
+            self.box = (0.0, 0.0, 1.0, 1.0)
+            cover = max(size[0] / width, size[1] / height)
+            self.plate_size = (width, height) if cover >= 1 else (max(1, int(round(width * cover))), max(1, int(round(height * cover))))
+            if cover > 1:
+                self.warnings.append(f"動画 {width}x{height} は、zoom 1 の視野（出力 {size[0]}x{size[1]} の縦横比）でも出力より小さく、"
+                                     f"{cover:.2f} 倍に拡大されます")
+        else:
+            self.box, self.plate_size = _pixel_box(cover_box(width, height, *size), (width, height)), None
+            cut = 1.0 - (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
+            if cut > CROP_WARN_FRACTION:
+                axis = "左右" if self.box[0] > 0 else "上下"
+                self.warnings.append(f"動画 {width}x{height} は出力 {size[0]}x{size[1]} と縦横比が違うため、cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
+        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box, plate=self.plate_size)   # 視野の確かめも、次の xfade の間まで見る
         last = self.frames.count - 1
         if loop is not None and loop["frames"][1] > last:
             self.close()
@@ -423,7 +439,7 @@ class VideoShot:
         from . import camera
         from .assets import _crop_resize
         from .color import to_linear, to_srgb8
-        plate = to_linear(_crop_resize(self.source_frame(local_t), self.box, self.size))
+        plate = to_linear(_crop_resize(self.source_frame(local_t), self.box, self.plate_size or self.size))
         return to_srgb8(camera.warp_with_depth(plate, self.path.matrix(local_t, 1.0), self.size, None, None))
 
     def close(self):
@@ -474,6 +490,22 @@ class Context:
     def frame(self, t):
         layers, dim, flash = plan_frame(self.data, t)
         return finish(blend([(self.image(i, local), weight) for i, local, weight in layers], dim, flash), self.look, t)
+
+    def faces_at(self, t):
+        """時刻 t のショット（xfade の間は入ってくるショット）の顔の枠を、camera で画面の正規化座標へ写したもの。
+        [{box, role, estimated}]。画面の外に出た所は切り、全部外なら入れない。深度視差は入れない（実制作と同じ）。"""
+        from . import camera
+        index = shot_index(self.data, t)
+        shot = self.data["shots"][index]
+        faces = self.timeline.specs[index].data["faces"] if shot["kind"] == "spec" else shot["faces"]
+        if not faces:
+            return []
+        local, path, out = shot["offset_s"] + (t - shot["start"]), self.shot(index).path, []
+        for face in faces:
+            box = [min(max(v, 0.0), 1.0) for v in camera.screen_box(path, local, face["box"])]
+            if box[2] > box[0] and box[3] > box[1]:
+                out.append({"box": [round(v, 5) for v in box], "role": face["role"], "estimated": face["estimated"]})
+        return out
 
     def close(self):
         for ctx in self._contexts.values():
@@ -593,7 +625,12 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
                                             "audio": sha256(audio_path) if audio_path else None, "start": start, "duration": length,
                                             "frames": n_frames, "size": list(size), "scale": float(scale), "libraries": libraries})
     out = (Path(out) if out else timeline.base_dir / "fx_runs").resolve()
-    has_record = lambda run_dir, manifest: (Path(run_dir) / "timeline.json").is_file()  # noqa: E731
+    has_faces = any((sp.data["faces"] if sp is not None else shot["faces"]) for shot, sp in zip(data["shots"], timeline.specs))
+
+    def has_record(run_dir, manifest):
+        """再利用は、timeline.json（と、顔の枠を書いた run なら faces.json）が残っているときだけ。"""
+        return (Path(run_dir) / "timeline.json").is_file() and (not manifest.get("faces") or (Path(run_dir) / manifest["faces"]).is_file())
+
     with runs.Session(out, key, "timeline", "render.log", say=say, tag="[fx timeline]", force=force, accept_reuse=has_record) as session:
         if session.reused:
             return _summary(session.reused_dir, session.reused, reused=True)
@@ -605,7 +642,7 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
             shots=shots, engine=runs.engine_record(fx, "fx"), libraries=libraries,
             interval={"start": start, "duration": length, "fps": fps, "frames": n_frames},
             output={"size": list(size), "scale": float(scale), "crf": data["output"]["crf"]},
-            look="applied" if data["look"] else "absent", variants={}, grid=None, warnings=[])
+            look="applied" if data["look"] else "absent", faces=None, variants={}, grid=None, warnings=[])
         run.save()
         run.log(f"timeline start key={key} shots={len(data['shots'])} start={start:g} duration={length:g} frames={n_frames} "
                 f"size={size[0]}x{size[1]}")
@@ -614,9 +651,14 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
         video = run.dir / "timeline.mp4"
         meter = _meter(None if quiet else say, n_frames)
 
+        faces = [] if has_faces else None
+
         def frames():
             for i in range(n_frames):
-                yield ctx.frame(fxtimeline.frame_time(i, fps, start))
+                t = fxtimeline.frame_time(i, fps, start)
+                yield ctx.frame(t)
+                if faces is not None:          # mv gate check の faces（[{start, end, box, role, estimated}]、box は画面の正規化座標）
+                    faces.extend({"start": round(t, 6), "end": round(t + 1 / fps, 6), **face} for face in ctx.faces_at(t))
                 meter(i + 1)
 
         try:
@@ -624,6 +666,9 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
         finally:
             ctx.close()
         record = timeline_record(timeline, size, start, length, n_frames)
+        if faces is not None:
+            (run.dir / "faces.json").write_text(json.dumps(faces, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+            run.manifest["faces"] = "faces.json"
         (run.dir / "timeline.json").write_text(json.dumps(record, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
         checks = probe.check_video(video, width=size[0], height=size[1], fps=fps, frames=n_frames, audio=audio is not None,
                                    audio_s=n_frames / fps if audio else None, bt709=True)
@@ -653,7 +698,7 @@ def _summary(run_dir, manifest, reused):
     return {"run_id": manifest["run_id"], "run_dir": str(run_dir), "reused": reused, "status": manifest["status"],
             "technical_pass": manifest["technical_pass"], "interval": manifest["interval"], "size": manifest["output"]["size"],
             "look": manifest.get("look"), "video": str(run_dir / item["path"]), "timeline": str(run_dir / item["timeline_json"]),
-            "warnings": manifest["warnings"]}
+            "faces": str(run_dir / manifest["faces"]) if manifest.get("faces") else None, "warnings": manifest["warnings"]}
 
 
 # ---- デモ ------------------------------------------------------------------------
@@ -679,6 +724,9 @@ def _demo_clip(path, base_path, seconds=3.0, fps=16):
     return count
 
 
+HEAD = [0.42, 0.2, 0.49, 0.3]       # デモの人物の頭の枠（元画像の正規化座標。人物のマスクの上端の帯から目で決めた）
+
+
 def demo(directory, width=320, height=180, duration=6.0, fps=24):
     """fx のデモ素材から 3 つの spec のショット（寄り・横移動・引き）と 1 つの動画のショット（合成の動画をループ）を作り、
     つなぎを全部使う fx-timeline の見本を書く。"""
@@ -695,6 +743,8 @@ def demo(directory, width=320, height=180, duration=6.0, fps=24):
                "shot_c.json": [{"t": 0, "zoom": 1.4, "center": [0.5, 0.55]}, {"t": duration, "zoom": 1.1, "center": [0.5, 0.5], "ease": "in_out"}]}
     for name, keys in cameras.items():
         shot = {**spec, "camera": {**spec["camera"], "keys": keys}}
+        if name == "shot_a.json":
+            shot["faces"] = [{"box": HEAD}]          # 顔の枠（目で測った推定）。run が faces.json に写す
         (shots_dir / name).write_text(json.dumps(shot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     frames = _demo_clip(shots_dir / "clip.mp4", shots_dir / "base.png")
     beat = 0.5                                   # 120 BPM
@@ -708,6 +758,7 @@ def demo(directory, width=320, height=180, duration=6.0, fps=24):
                           {"spec": "shots/shot_c.json", "start": round(duration * 0.62, 3), "snap": True, "transition_in": {"type": "flash"}},
                           {"video": {"path": "shots/clip.mp4", "speed": 0.8, "loop": {"frames": [4, frames - 8], "crossfade_frames": 6, "mix": 0.5}},
                            "camera": {"keys": [{"t": 0, "zoom": 1.05, "center": [0.5, 0.5]}, {"t": 2.0, "zoom": 1.2, "center": [0.55, 0.45], "ease": "in_out"}]},
+                           "faces": [{"box": HEAD}],
                            "start": round(duration * 0.8, 3), "snap": True, "transition_in": {"type": "xfade", "duration_s": 0.3}}]}
     path = directory / "timeline.json"
     path.write_text(json.dumps(timeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
