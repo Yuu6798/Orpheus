@@ -450,7 +450,7 @@ class Context:
     """timeline を描く状態。ショットの描き手（fx の Context か VideoShot）は初めて使うときに作り、新しい順に KEEP_SHOTS 個まで持つ
     （spec が同じ spec のショットは共有する）。描き終えたら close() で動画の読み手を閉じる。"""
 
-    def __init__(self, timeline, scale=1.0):
+    def __init__(self, timeline, scale=1.0, hooks=None):
         from . import look as fxlook
         from . import render
         self.timeline, self.data = timeline, timeline.data
@@ -459,6 +459,9 @@ class Context:
         self.look = None if self.data["look"] is None else fxlook.prepare(self.data["look"], self.size, self.fps)
         self.warnings = list(timeline.warnings)
         self._render, self._contexts, self._warned = render, OrderedDict(), set()
+        self.hooks = hooks                     # fx/hooks.py の Hooks か None（--hooks を渡したときだけ）
+        if hooks is not None:
+            hooks.prepare(self)
 
     def shot(self, index):
         shot = self.data["shots"][index]
@@ -480,16 +483,32 @@ class Context:
                 old.close()
         return ctx
 
-    def image(self, index, local):
-        """ショット index の、ショットの中の時刻 local の uint8 RGB（出力の大きさ）。"""
+    def image(self, index, local, t=None):
+        """ショット index の、ショットの中の時刻 local の画（出力の大きさ）。hooks の shot が無ければ uint8 RGB、あれば
+        それを掛けた float32 の表示の値（t は timeline の時刻。hooks に渡す）。"""
         shot = self.data["shots"][index]
         if shot["kind"] == "video":
-            return self.shot(index).frame(local)
-        return self._render.frame(self.shot(index), local, shot["variant"])
+            image = self.shot(index).frame(local)
+        else:
+            image = self._render.frame(self.shot(index), local, shot["variant"])
+        if self.hooks is not None and self.hooks.has("shot"):
+            image = self.hooks.shot(image.astype(np.float32), t, self.view(index, local))
+        return image
+
+    def view(self, index, local):
+        """ショット index の、ショットの中の時刻 local の見え方（hooks の shot に渡す fx/view.py の View）。"""
+        from .view import View
+        shot, ctx = self.data["shots"][index], self.shot(index)
+        if shot["kind"] == "video":
+            return View(ctx.path, ctx.box, ctx.plate_size, self.size, local, index, "video", shot["video"]["path"])
+        return View(ctx.path, ctx.assets.box, ctx.assets.plate_size, self.size, local, index, "spec", shot["spec"])
 
     def frame(self, t):
         layers, dim, flash = plan_frame(self.data, t)
-        return finish(blend([(self.image(i, local), weight) for i, local, weight in layers], dim, flash), self.look, t)
+        image = blend([(self.image(i, local, t), weight) for i, local, weight in layers], dim, flash)
+        if self.hooks is not None and self.hooks.has("final"):
+            image = self.hooks.final(image, t, self)
+        return finish(image, self.look, t)
 
     def faces_at(self, t):
         """時刻 t のショット（xfade の間は入ってくるショット）の顔の枠を、camera で画面の正規化座標へ写したもの。
@@ -598,10 +617,12 @@ def _shot_records(timeline):
     return records
 
 
-def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False, progress=None, quiet=False):
-    """timeline.mp4 と timeline.json を run として出す（fx の run と同じ記録・再利用・構造検査）。"""
+def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False, progress=None, quiet=False, hooks=None):
+    """timeline.mp4 と timeline.json を run として出す（fx の run と同じ記録・再利用・構造検査）。hooks は演出の hooks のパス
+    （fx/hooks.py。明示したときだけ実行する。sha256 が key と manifest に入る）。"""
     from .. import fx
     from . import probe, render, runs
+    from .hooks import Hooks
 
     began = time.monotonic()
     say = progress or (lambda message: None)
@@ -621,9 +642,12 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
     if audio_path is not None and not audio_path.is_file():
         raise PipelineError(f"音声が見つかりません: {data['audio']['path']}")
     libraries = render.library_versions()
-    key = runs.content_key_for("timeline", {"timeline": data, "shots": shots, "engine": fx.fingerprint(),
-                                            "audio": sha256(audio_path) if audio_path else None, "start": start, "duration": length,
-                                            "frames": n_frames, "size": list(size), "scale": float(scale), "libraries": libraries})
+    effects = None if hooks is None else Hooks(hooks)
+    payload = {"timeline": data, "shots": shots, "engine": fx.fingerprint(), "audio": sha256(audio_path) if audio_path else None,
+               "start": start, "duration": length, "frames": n_frames, "size": list(size), "scale": float(scale), "libraries": libraries}
+    if effects is not None:
+        payload["hooks"] = effects.record["sha256"]
+    key = runs.content_key_for("timeline", payload)
     out = (Path(out) if out else timeline.base_dir / "fx_runs").resolve()
     has_faces = any((sp.data["faces"] if sp is not None else shot["faces"]) for shot, sp in zip(data["shots"], timeline.specs))
 
@@ -642,11 +666,12 @@ def render_run(path, out=None, start=0.0, duration=None, scale=1.0, force=False,
             shots=shots, engine=runs.engine_record(fx, "fx"), libraries=libraries,
             interval={"start": start, "duration": length, "fps": fps, "frames": n_frames},
             output={"size": list(size), "scale": float(scale), "crf": data["output"]["crf"]},
-            look="applied" if data["look"] else "absent", faces=None, variants={}, grid=None, warnings=[])
+            look="applied" if data["look"] else "absent", faces=None, hooks=None if effects is None else effects.record,
+            variants={}, grid=None, warnings=[])
         run.save()
         run.log(f"timeline start key={key} shots={len(data['shots'])} start={start:g} duration={length:g} frames={n_frames} "
-                f"size={size[0]}x{size[1]}")
-        ctx = Context(timeline, scale)
+                f"size={size[0]}x{size[1]}" + (f" hooks={effects.record['path']}" if effects else ""))
+        ctx = Context(timeline, scale, effects)
         audio = None if audio_path is None else {"path": audio_path, "start": data["audio"]["offset_s"] + start, "duration": n_frames / fps}
         video = run.dir / "timeline.mp4"
         meter = _meter(None if quiet else say, n_frames)
@@ -698,7 +723,8 @@ def _summary(run_dir, manifest, reused):
     return {"run_id": manifest["run_id"], "run_dir": str(run_dir), "reused": reused, "status": manifest["status"],
             "technical_pass": manifest["technical_pass"], "interval": manifest["interval"], "size": manifest["output"]["size"],
             "look": manifest.get("look"), "video": str(run_dir / item["path"]), "timeline": str(run_dir / item["timeline_json"]),
-            "faces": str(run_dir / manifest["faces"]) if manifest.get("faces") else None, "warnings": manifest["warnings"]}
+            "faces": str(run_dir / manifest["faces"]) if manifest.get("faces") else None, "hooks": manifest.get("hooks"),
+            "warnings": manifest["warnings"]}
 
 
 # ---- デモ ------------------------------------------------------------------------

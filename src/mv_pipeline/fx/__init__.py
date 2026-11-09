@@ -35,6 +35,8 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
   - demo: 合成デモ素材と spec.json（cv2 を使う）。
   - sequence: fx-timeline/0.1（`mv fx timeline`）。複数のショット（spec か動画。動画は速さ・offset・ループ）を時刻順に並べ、cut・xfade・black・flash でつなぎ、
     timeline の look を掛けて 1 本にする。run に timeline.mp4 と mv gate 用の timeline.json を残す（timeline は時間の補助関数の名前なので別名）。
+  - hooks / view / fire: fx-timeline の演出の hooks（--hooks。prepare・shot・final）と、hooks に渡すショットの見え方（素材の座標 → 画面）と、
+    火の演出の部品（炎の舌・小さい炎・火の粉・刃の火。実制作の演出の部品と同じ式）。
   runs / legacy / probe / sequence は cv2 を import しない（fx accept・fx legacy・fx timeline plan は fx extra なしで動く）。
   例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
 """
