@@ -6,8 +6,10 @@
   名前が seg_<最初のコマ>_<終わりのコマ>.mp4 なら（実制作の区間の描画と同じ）、区間がすき間なく続くことと、区間ごとのコマ数
   （終わり − 最初）を確かめる。どの区間も同じ寸法・fps・映像の符号化であること（つなぎは再エンコードしないため）。
 - つなぎ: ffmpeg の concat で、映像を再エンコードせずにつなぐ（-c copy）。全体のコマ数を確かめる。
-- 音（--audio）: --audio-start 秒から映像の長さ（コマ数 / fps）を切り出し、頭と終わりにフェードを掛けて AAC 192k・48kHz にする。
+- 音（--audio）: --audio-start 秒から映像の長さを切り出し、頭と終わりにフェードを掛けて AAC 192k・48kHz にする。映像の長さは
+  パケットの時刻から正確に出す（表示の fps は丸めてあるため。整数の fps ならコマ数 / fps と同じ）。フェードの長さは音を付けるときだけ確かめる。
 - 元データ: 映像と音を -c copy で合わせ、映像の長さで切り、faststart で書く。既にあって中身が違えば --force が要る。
+  --out が入力（区間・--audio）と同じファイルなら、--force でも書かない。
 - 記録 <MASTER の名前>.deliver.json: 区間（sha256・コマ数）・音・ffmpeg（パス・版・sha256）・コマンド・元データの bytes と sha256・
   構造検査（technical_pass。作品の採否ではない）。
 
@@ -19,6 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 
 from . import media
@@ -78,6 +81,27 @@ def _ranges(segments):
     return ranges
 
 
+def video_seconds(path):
+    """映像の長さ（秒の Fraction）。パケットの time base・pts・長さから正確に出す（最後のパケットの終わり − 最初の pts）。
+
+    ffmpeg が表示する fps は 23.98 のように丸めてあるので、コマ数 / fps では端数のある fps（24000/1001 など）の長さがずれる
+    （14,400 コマで 600.6 秒のところが 600.5004 秒）。整数の fps なら、コマ数 / fps とまったく同じ値になる。"""
+    result = subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-map", "0:v:0",
+                             "-c", "copy", "-f", "framecrc", "-"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    base = re.search(r"^#tb 0: (\d+)/(\d+)", result.stdout, re.MULTILINE)
+    start = end = None
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if line.startswith("#") or len(parts) < 4:
+            continue
+        pts, length = int(parts[2]), int(parts[3])          # 列は stream, dts, pts, 長さ, 大きさ, crc
+        start = pts if start is None else min(start, pts)
+        end = pts + length if end is None else max(end, pts + length)
+    if result.returncode != 0 or base is None or start is None:
+        raise PipelineError(f"{Path(path).name} の映像の時刻を読み取れません: {result.stderr.strip()[-300:]}")
+    return Fraction(end - start) * Fraction(int(base[1]), int(base[2]))
+
+
 def _concat_list(segments, path):
     """ffmpeg の concat の一覧（実制作と同じ file '<スラッシュ区切りの絶対パス>'。' はエスケープする）。"""
     lines = []
@@ -85,6 +109,10 @@ def _concat_list(segments, path):
         name = segment.resolve().as_posix().replace("'", "'\\''")
         lines.append(f"file '{name}'\n")
     path.write_bytes("".join(lines).encode("utf-8"))
+
+
+def _same_file(path):
+    return os.path.normcase(str(Path(path).resolve()))
 
 
 def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out=FADE_OUT_S, force=False):
@@ -99,6 +127,11 @@ def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out
         raise PipelineError(f"音声が見つかりません: {audio}")
     if not audio_start >= 0:
         raise PipelineError(f"--audio-start は 0 以上にしてください: {audio_start}")
+    inputs = {_same_file(path): path.name for path in segments}
+    if audio is not None:
+        inputs[_same_file(audio)] = Path(audio).name
+    if _same_file(out) in inputs:          # 置き換えると入力が消える（区間のフォルダに書く、--audio に動画を渡すなど）
+        raise PipelineError(f"--out {out.name} は入力（{inputs[_same_file(out)]}）と同じファイルです。入力は --force でも上書きしません")
     ranges = _ranges(segments)
     infos = [probe.inspect(p)["video"] for p in segments]
     keys = {(i["codec"], i["pix_fmt"], i["width"], i["height"], i["fps"]) for i in infos}
@@ -118,8 +151,8 @@ def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out
         records.append({"path": str(path), "sha256": sha256(path), "frames": frames,
                         "range": None if ranges is None else list(ranges[index])})
     total = sum(r["frames"] for r in records)
-    duration = total / fps
-    if fade_in + fade_out > duration:
+    duration = float(sum((video_seconds(path) for path in segments), Fraction(0)))     # 表示の fps（丸めてある）では割らない
+    if audio is not None and fade_in + fade_out > duration:                        # フェードは音にだけ掛ける
         raise PipelineError(f"フェード（{fade_in:g} + {fade_out:g} 秒）が長さ {duration:g} 秒より長いです")
     out.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".deliver-", dir=out.parent))       # 置き換えを同じドライブで行うため、出力の隣に作る
