@@ -26,6 +26,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
 | `mv export remotion-props` | analysis / storyboard から、Remotion 側が秒を扱わずに済むコマ番号だけの props.json を書く | 実験的 | [remotion-props](docs/remotion-props.md) |
 | `mv layer render` | Remotion の透過レイヤーの描画を工程として包み、版・sha256・ブラウザー・描画時間・決定論の確認を台帳に残す | 実験的 | [remotion-props › 台帳](docs/remotion-props.md#描画を台帳に載せるmv-layer-render) |
+| `mv export subtitles` | 歌詞の行の時刻から、字幕ファイル（SRT・WebVTT・LRC）と動画の概要欄に貼る歌詞を書く | 実験的 | [subtitles](docs/subtitles.md) |
 | `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
 | `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
@@ -147,6 +148,7 @@ pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 | [adapters.md](docs/adapters.md) | 歌詞同期・音源分離アダプターの共通形式と接続例 |
 | [remotion-props.md](docs/remotion-props.md) | Remotion を透過レイヤーの部品として使うための、コマ番号だけの props の書き出し |
 | [sheet.md](docs/sheet.md) | 時刻や出来事のコマを 1 枚に並べる閲覧用のシート |
+| [subtitles.md](docs/subtitles.md) | 歌詞の行の時刻からの字幕ファイル（SRT・WebVTT・LRC）と、概要欄に貼る歌詞 |
 | [fx.md](docs/fx.md) / [dance.md](docs/dance.md) / [gate.md](docs/gate.md) / [inspect.md](docs/inspect.md) | 実験的な機能の使い方と限界 |
 | [model3d.md](docs/model3d.md) / [model3d-dance.md](docs/model3d-dance.md) / [model3d-review.md](docs/model3d-review.md) | 3D ツールの使い方、既存制作レシピの接続、実行確認の記録 |
 | [dependencies.md](docs/dependencies.md) | 採用ツールの版と利用条件（Remotion の利用条件を含む） |
