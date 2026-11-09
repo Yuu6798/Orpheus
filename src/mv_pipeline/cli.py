@@ -144,6 +144,7 @@ def _fx_parser(commands):
     render.add_argument("--scale", type=float, default=1.0)
     render.add_argument("--force", action="store_true", help="render again even if an identical run exists")
     render.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
+    render.add_argument("--hooks", type=Path, help="effects hooks (Python: prepare, shot, final). Runs only when given here")
     plan = steps.add_parser("plan", help="print the shots and transitions with their times and nearest beats")
     plan.add_argument("timeline", type=Path)
 
@@ -332,7 +333,8 @@ def fx_command(args):
         _require_fx()
         if args.timeline_command == "demo":
             return sequence.demo(args.dir, args.width, args.height, args.duration, args.fps)
-        return sequence.render_run(args.timeline, args.out, args.start, args.duration, args.scale, args.force, _progress, args.quiet)
+        return sequence.render_run(args.timeline, args.out, args.start, args.duration, args.scale, args.force, _progress, args.quiet,
+                                   args.hooks)
     _require_fx()
     from .fx import demo, runs
     if command == "demo":

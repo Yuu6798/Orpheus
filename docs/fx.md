@@ -402,7 +402,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
 | `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
 | `mv fx timeline plan TIMELINE` | ショット・つなぎ・秒・いちばん近い拍の表（描かない。fx extra なしで動く） |
-| `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す |
+| `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks PY]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す。`--hooks` で作品ごとの演出（[hooks](#演出の-hooks火の演出)） |
 
 stdout は短い JSON、進捗は stderr に 1 版 1 行、詳細は run の `render.log`。エラーは `Error: …`（原因と直し方）で終了コード 1。
 `--scale` は出力寸法を偶数に丸めて縮尺する（下見用。key に入る）。`--start/--duration` はショットの長さに収まること。
@@ -677,6 +677,42 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - gate の設定に `beats` が無ければ、timeline の拍で照合する。
 - **字幕**は描かない。歌詞は書き出した `timeline.mp4` に `mv overlay` で重ねる（実制作と同じく、仕上げの後に字が来る）。
 - 前処理したショットはメモリに 2 つまで持つ。順に描くので、古いものから捨てる。同じ spec のショットは前処理を共有する。
+
+### 演出の hooks（火の演出）
+
+作品ごとの演出（炎・火の粉・刃の火など）は、timeline のスキーマには入れず、Python の hooks で掛ける（dance の仕上げの hooks と同じ考え。
+演出の値は作品ごとで、種類も多いため）。部品は公開の `mv_pipeline.fx.fire`、見本は `examples/fx/fire_hooks.py`（デモの timeline 用）。
+
+```sh
+uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/fx/fire_hooks.py
+```
+
+- hooks のファイルは `--hooks` で明示したときだけ実行する。関数はどれも任意で、渡した画を書き換えてよく、同じ形の画を返す。
+  - `prepare(ctx)`: 描画の最初に 1 回。
+  - `shot(img, t, view)`: ショットの画（つなぎの前）。`t` は timeline の時刻、`view` はそのショットのその時刻の見え方。
+  - `final(img, t, ctx)`: つないだ後、timeline の look の前。
+  - `img` は float32 (H, W, 3) の表示の値（0..255、ガンマ符号化。まだ切らない）。実制作の演出と同じく、色調整・周辺減光・粒状感（timeline の look）の前に掛かる。
+- `view`（`mv_pipeline.fx.view.View`。実制作の演出の部品の `Geo` に当たる）は、ショットの camera（層の視差 1。深度視差は入れない）で素材の座標を画面の画素へ写す。
+  画素の中心が整数（cv2 の描画と同じ）。
+  - `view.point(u, v)`・`view.points(...)`: 元画像の正規化座標 → 画面の画素。`view.scale` は元画像の幅 1 が画面の何画素か。
+  - `view.base(幅, 高さ)`: 基準座標（実制作の素材の座標系。例えば 1672×941 の画素）で書いた位置と長さを写す。`.pt(x, y)`・`.pts(...)`・`.k`（基準の 1 が画面の何画素か）は
+    実制作の `Geo` と同じ使い方なので、実制作の演出の設定をそのまま写せる。
+  - `view.blade(点列, w0, w1, base=None)`: 刃（根元 → 切っ先）を画面の `fire.Blade` にする。
+  - `view.warp(配列)`: 元画像の全体の大きさの配列（マスクなど）を画面へ写す。
+  - `view.index`・`view.kind`（spec / video）・`view.name`・`view.t`（ショットの中の時刻）。
+- 火の部品（`mv_pipeline.fx.fire`）。どれも画面の座標と表示の値の上で計算し、スクリーン合成で重ねる。時刻 t と引数だけで決まる（状態を持たない）。
+  - `flame_field`（炎の出どころから立ち上がる炎の舌の場）・`add_fire`（炎の色と光で重ねる）
+  - `candle`（小さな炎）・`embers`（火の粉。周期で生まれ直す）
+  - `blade_fire`（刃に沿って燃える火。むら・熱・火の粉つき）・`blade_candle`（刃の上の小さな炎。強拍で揺れる `kick`）
+  - `params_at`（`keys` の時刻のキーで値を補間する。実制作の演出の設定と同じ書き方）、`screen`・`blur`・`tex`・`ramp_fire` などの小道具。
+- 決定論: hooks は入力・t・定数だけの関数にする（ファイル書き込みとネットワークは禁止。乱数は seed から作る）。
+  hooks ファイルの sha256 は run のキャッシュ key と manifest（`hooks`）に入る。hooks を変えれば描き直し、hooks の有無で key は分かれる。
+- hooks で時刻とショットの区切りは変わらない（`timeline.json` と `faces.json` は hooks に関係しない）。
+- 実制作との比較: 部品は実制作の演出の部品と同じ式・同じ順・同じ型で書いてあり、写した関数と同じ入力で画がバイト単位で同じ（`tests/test_fx_fire.py`）。
+  - さらに、実制作の演出の部品と縦のレンダラのカメラをそのまま抜き出して実行し、Shorts S2 r3 の実際の絵の上で、同じ画面の入力に掛けて比べた。
+    K4 の火の粉（84 コマ）、K6 の刃の上の小さな炎（キーで消える）と落ちる火の粉（83 コマ）、K6 の刃に沿った火（83 コマ。S2 r3 では使っていない）が、
+    すべてバイト単位で同じだった。
+  - `view` の写し方は、実制作の `Geo` より x・y とも 0.5 画素だけ左上になる（画素の中心の決め方の違い。fx の絵の写し方とは合っている）。
 - **実制作との比較**: つなぎの式・snap・ショットの区切り・各コマのショットは、実制作の式を写した関数と合成の配列で比べ、全コマでバイト単位で同じだった（`tests/test_fx_sequence.py`）。
   - さらに、実制作の 2 つのレンダラのファイルから snap・ショットの組み立て・`shot_index`・`render_frame` をそのまま抜き出して実行した。描画の部品はスタブに置き換え、合成の画で比べた。
   - 横の MV の 46 ショットの設定（cut 23・xfade 13・black 1・flash 9。拍は合成の 2 通り。設定の拍の記録が手元に無いため）では、次のとおりだった。ショットの区切りは一致し、5760 コマすべてでショットが同じ、つないだ画は比べた 5689 コマすべてで同じ。最後の 3 秒は実制作だけが暗転するので比べていない。
