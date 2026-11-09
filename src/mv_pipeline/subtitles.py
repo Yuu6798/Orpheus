@@ -16,7 +16,8 @@ SOURCE（行の本文と、歌い出し・歌い終わりの秒）:
     消える = min(歌い終わり + tail（既定 0.40 秒）, 次の字幕の出る時刻)。字幕は重ねない。--duration があればそこで切る
 行は歌い出しの順に並べる。歌い出しが同じ行、歌い終わりが歌い出しより前の行、字幕が出ている時間が無くなる行（0 秒に寄せた
 字幕のすぐ後に次の行が来る、--duration の後に出る）があれば止める。時刻は字幕（srt・vtt・lrc）を書くときだけ確かめる
-（--formats description だけなら、時刻の無い行ばかりでも概要欄の歌詞を書ける）。
+（--formats description だけなら、時刻の無い行ばかりでも概要欄の歌詞を書ける）。出入り（lead・tail・--duration で切る）は
+SRT・WebVTT を書くときだけ（LRC は歌い出し・歌い終わりのまま書くので、lead では止めない）。
 
 書き出すもの（UTF-8、BOM なし、改行は LF）:
     <STEM>.srt              番号・"HH:MM:SS,mmm --> HH:MM:SS,mmm"・本文を空行で区切る
@@ -294,13 +295,16 @@ def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", 
         raise PipelineError(f"--formats は {', '.join(FORMATS)} から選んでください: {', '.join(unknown) or '（空）'}")
     if duration is not None and not duration > 0:
         raise PipelineError(f"--duration は 0 より大きい秒にしてください: {duration}")
+    if vtt_settings and ("\n" in vtt_settings or "\r" in vtt_settings or "-->" in vtt_settings):
+        raise PipelineError(f"--vtt-settings は 1 行の設定にしてください（改行と --> は WebVTT の字幕の区切りを壊します）: {vtt_settings!r}")
     lines, kind, path = read_source(source, field)
     rows, untimed, cue_list, warnings = [], [], [], []
     if any(f in formats for f in ("srt", "vtt", "lrc")):       # 時刻は字幕を書くときだけ確かめる（概要欄の歌詞は本文と区間だけ）
         rows, untimed = timed(lines, duration)
         if not rows:
             raise PipelineError(f"時刻のある歌詞の行がありません（{path.name}）")
-        cue_list, warnings = cues(rows, lead, tail, duration)
+        if "srt" in formats or "vtt" in formats:          # 出入り（lead・tail・--duration）は SRT・WebVTT のもの。LRC は歌い出し・歌い終わりのまま
+            cue_list, warnings = cues(rows, lead, tail, duration)
         if untimed:
             warnings.append(f"時刻の無い行 {len(untimed)} 行は字幕に入れていません: {', '.join(untimed)}")
     empty = [line["id"] for line in lines if not line["text"]]

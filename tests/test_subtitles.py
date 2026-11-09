@@ -230,6 +230,24 @@ def test_description_only_needs_no_cue_timing(tmp_path):
             subtitles.export(write_lines(tmp_path, rows, "rows.json"), tmp_path / "rows_srt", formats=("srt",))
 
 
+def test_lrc_only_exports_keep_the_singing_times_without_display_cues(tmp_path):
+    # LRC は歌い出し・歌い終わりのまま書く。SRT・WebVTT の出入り（lead 0.15 秒）で、1 行目の字幕が −0.05 秒に消えるとして止めない
+    rows = [{"start": 0.0, "end": 0.05, "text": "a"}, {"start": 0.1, "end": 1.0, "text": "b"}]
+    result = subtitles.export(write_lines(tmp_path, rows), tmp_path / "lrc", formats=("lrc",))
+    assert (tmp_path / "lrc" / "lines.lrc").read_text(encoding="utf-8") == "[00:00.00]a\n[00:00.05]\n[00:00.10]b\n[00:01.00]\n"
+    assert result["cues"] == 0 and result["warnings"] == []
+    with pytest.raises(PipelineError, match="近すぎ"):              # SRT は今までどおり出入りで止める
+        subtitles.export(write_lines(tmp_path, rows), tmp_path / "srt", formats=("srt", "lrc"))
+
+
+@pytest.mark.parametrize("settings", ["line:8%\nposition:50%", "line:8% --> x"])
+def test_vtt_settings_must_be_one_line(tmp_path, settings):
+    # 改行や --> は、WebVTT の字幕の時刻の行を壊す
+    with pytest.raises(PipelineError, match="--vtt-settings"):
+        subtitles.export(write_lines(tmp_path), tmp_path / "out", formats=("vtt",), vtt_settings=settings)
+    assert not (tmp_path / "out").exists()
+
+
 def test_vtt_escapes_markup_characters_in_lyrics(tmp_path):
     # 歌詞はただの文字。WebVTT ではそのままだと <forever> がタグ、&amp; が文字参照として読まれて、出る字が変わる
     rows = [{"start": 1.0, "end": 2.0, "text": "Love <forever> & you &amp; me"}]
