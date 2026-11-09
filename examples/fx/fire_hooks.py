@@ -22,6 +22,8 @@ def shot(img, t, view):
         fire.embers(img, lambda u: (X + (u - 0.5) * 12 * k, Y - 10 * k), t, seed=7, n=24, cycle=1.6, k=k * 1.5)
     elif view.index == 2:
         blade = view.blade(BLADE, 0.006, 0.003)          # 幅は元画像の幅の割合（根元・切っ先）
-        fire.blade_fire(img, blade, t, {"h": 0.04, "cov": [0.1, 1.0], "patch": 0.3, "heat": 0.3, "embers": 10, "seed": 3})
+        # 点が 3 つの粗い刃なので、resample で細かく分けてから燃える範囲（cov）を数える（既定は点の上で数える）
+        fire.blade_fire(img, blade, t, {"h": 0.04, "cov": [0.1, 1.0], "patch": 0.3, "heat": 0.3, "embers": 10, "seed": 3,
+                                        "resample": 1})
         fire.blade_candle(img, blade, t, {"at": 0.9, "h": 0.03, "seed": 9})
     return img
