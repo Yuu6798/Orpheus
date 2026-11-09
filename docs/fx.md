@@ -573,6 +573,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 描く時刻はショットの中の時刻 `offset_s + (t − start)`。
   - spec の look と overlays は、ショットの中で掛かる。
   - spec の audio は使わない。音は timeline の `audio` を使い、`offset_s` は timeline の 0 秒に当てる音声の中の秒。
+    spec の audio のファイルは無くても止まらず、key にも入らない。
 - **時刻**は次のどれかで書ける。dance と同じ書き方で、拍は `beats` から引く。
   - 秒
   - `{"beat": n}`
@@ -603,13 +604,13 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - xfade や black がショットより長い。
   - beats が無いのに snap を使った。
 - **注意（warnings）として残るもの**:
-  - spec の長さを超えて描く。カメラは終わりの値のままになる。
+  - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade なら、その間も前のショットを描くので、その分も数える。
   - spec の fps が timeline の fps と違う。
   - snap で start が 0.25 秒より大きく動いた。
 - **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
   - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
   - manifest の kind は timeline で、版は `timeline` の 1 つ。
-  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも）、音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
+  - key には次のものが入る。正規化した timeline、各ショットの spec と素材の sha256（overlays のコマも。spec の audio は入らない）、timeline の音声、fx の指紋、区間、出力寸法と scale、ライブラリ版。
   - 同じ入力なら描き直さない（`--force` で描き直す）。ショットの spec を 1 つ変えれば描き直しになる。
 - **`timeline.json`** は `mv gate check` が読む形。dance-timeline/0.1 に `beats`・`seam_info`・`flash_info` を足したもので、字幕は無い。
   - 切れ目はショットの頭。kind はつなぎの種類。

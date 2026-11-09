@@ -209,6 +209,24 @@ def test_warnings_for_long_shots_other_fps_and_far_snaps(tmp_path):
     assert any("snap で start が 0.6 → 1 秒" in w for w in warnings)
 
 
+def test_the_long_shot_warning_counts_the_next_xfade(tmp_path):
+    """次のショットが xfade なら、前のショットはその間も描き続けるので、spec の長さを超える分の注意に含める。"""
+    write_shots(tmp_path)                                                       # spec の長さは 2 秒
+    shots = [{"spec": "a.json", "start": 0}, {"spec": "b.json", "start": 1.8, "transition_in": {"type": "xfade", "duration_s": 0.4}},
+             {"spec": "c.json", "start": 2.5}]
+    warnings = parse(tmp_path, timeline_dict(shots)).warnings
+    assert any("a.json" in w and "spec の長さ 2 秒を超えて 2.2 秒まで" in w and "xfade" in w for w in warnings), warnings
+    shots[1]["transition_in"] = {"type": "cut"}
+    assert not any("a.json" in w for w in parse(tmp_path, timeline_dict(shots)).warnings)
+
+
+def test_shot_audio_is_dropped_on_load(tmp_path):
+    """ショットの spec の audio は使わない（音は timeline の audio）。読み込みで外し、spec のファイルの記録はそのまま。"""
+    write_shots(tmp_path, audio={"path": "gone.wav"})
+    spec = parse(tmp_path, timeline_dict([{"spec": "a.json", "start": 0}])).specs[0]
+    assert spec.data["audio"] is None and spec.path == (tmp_path / "a.json").resolve() and spec.sha256
+
+
 def test_look_runs_after_the_transitions(tmp_path):
     """黒から上げる頭のコマは、look が無ければ真っ黒、粒状感の look があれば粒だけが乗る（つなぎの後に掛かる。実制作と同じ順）。"""
     from mv_pipeline.fx import look as fxlook
@@ -302,6 +320,24 @@ def test_shots_render_at_the_timeline_size_and_only_two_stay_prepared(scene):
         ctx.frame(t)
         assert len(ctx._contexts) <= sequence.KEEP_SHOTS
     assert list(ctx._contexts) == ["c.json", "a.json"]            # 古い b を捨て、a は作り直した
+
+
+def test_shot_audio_is_neither_required_nor_in_the_key(scene):
+    """ショットの spec の audio のファイルが無くても描け、中身を変えても描き直さない（使わない音で止めない・作り直さない）。"""
+    (scene / "song.wav").write_bytes(b"not read")
+    for name, audio in (("a.json", "gone.wav"), ("b.json", "song.wav")):
+        data = json.loads((scene / name).read_text(encoding="utf-8"))
+        data["audio"] = {"path": audio}
+        (scene / name).write_text(json.dumps(data), encoding="utf-8")
+    path = scene / "timeline.json"
+    path.write_text(json.dumps(timeline_dict([{"spec": "a.json", "start": 0}, {"spec": "b.json", "start": 0.5}], duration_s=1.0)),
+                    encoding="utf-8")
+    first = sequence.render_run(path, quiet=True)
+    assert first["technical_pass"] and not first["reused"]
+    manifest = json.loads((scene / "fx_runs" / first["run_id"] / "manifest.json").read_text(encoding="utf-8"))
+    assert [sorted(shot["assets"]) for shot in manifest["shots"]] == [["base", "depth", "mask:ground", "mask:subject"]] * 2
+    (scene / "song.wav").write_bytes(b"changed")
+    assert sequence.render_run(path, quiet=True)["reused"]
 
 
 def run_cli(*argv):
