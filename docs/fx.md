@@ -348,6 +348,60 @@ uv run mv fx masks masks.json --out trial/    # 別のフォルダに書く（�
 - 記録（`masks_record.json`、`fx-masks-record/0.1`）には、計画と入力の sha256、各マスクの面積（127 を超える画素）、マスクどうしの重なり（両方が 20 を超える画素）、GrabCut が変えた画素の数、OpenCV の版を残す。数は残すだけで、合否は出さない。
 - 実制作の 2 つのマスク作りの台本を計画に書き直して確かめた。段階 1 の切り抜き + 多角形の計画は、段階 1 で使ったマスク 2 枚と画素まで同じだった。GrabCut の計画は、同じ基準画像から作った台本の出力と、マスクも確認用の絵も画素まで同じだった。どちらも同じ OpenCV が前提で、GrabCut は版が違うと結果が変わりうる。
 
+## クリップの下ごしらえ（`mv fx clips`）
+
+生成した動画（静止画から作った動画など）を、使う前に整える。**揺れ止め**（1 コマ目に合わせてカメラの流れを打ち消す）と、
+**色のゲイン**（1 コマ目を元の静止画の色に合わせる）。どちらも実制作の 2 つの下ごしらえの台本と同じ OpenCV の演算（同じ順・同じ型）。
+出来たクリップは、fx-timeline の動画のショットなどで使う。
+
+```sh
+uv run mv fx clips projects/xxx/clips.json                # clips の各 out と clips_record.json（計画のフォルダー。--out で変える）
+uv run mv fx clips projects/xxx/clips.json --only V01,V05  # 一部だけ
+```
+
+```json
+{"schema_version": "fx-clips/0.1", "crf": 12,
+ "clips": [{"id": "V01", "source": "i2v/V01.mp4", "out": "prepared/V01.mp4",
+            "stabilize": {"mask": "masks/E03_mask.png", "dilate_px": 25, "smooth_frames": 1.5},
+            "color": {"reference": "stills/E03.png"}},
+           {"id": "V02", "source": "vsr/V02_1080.mp4", "measure_from": "i2v/V02.mp4", "out": "prepared/V02.mp4", "stabilize": {}}]}
+```
+
+- **揺れ止め**（`stabilize`）の手順:
+  - 測る大きさ（幅 `measure_width`。既定 640、高さは縦横比から。1280×720 も 1920×1080 も 640×360）に縮めて灰色にし、σ1 でぼかす。
+  - 背景で、1 コマ目への ECC（回転 + 移動。200 回・1e-6・gaussFiltSize 5）を測る。
+    背景は、`mask` の白（人物など動くもの。`dilate_px`（既定 25、測る大きさの画素）の楕円で太らせる）の外。`mask` が無ければ画面全体で測る。
+    各コマの初期値は前のコマの値で、収束しなかったコマは前のコマの値のまま（記録と注意に残す）。
+  - 移動 x・y と回転を `smooth_frames`（σ。既定 1.5 コマ。0 でならさない）のガウスでならし（端は端の値。scipy の `gaussian_filter1d` と同じ計算）、1 コマ目の値を引く。
+    1 コマ目は生成したままなので、元の静止画とつながる。
+  - 2 コマ目からは、ならした動きを逆に掛ける（INTER_CUBIC・端の画素を伸ばす）。移動は 出力の幅 / 測る幅 倍。
+  - `measure_from` を書くと、その動画（同じコマ数）で測って `source` に掛ける。例えば、超解像の前の元の動画で測り、超解像した動画に掛ける（実制作と同じ使い方）。
+  - 打ち消すと縁に絵の無い所ができる。コマごとに「元の絵が届いている内側の矩形」を記録し、最も狭いコマで幅か高さが 90% を切れば注意を出す（寄りで隠すか、`smooth_frames` を上げる）。
+  - 人物が大きく動く素材を画面全体で測ると、人物の動きまで打ち消してしまう。動くものを `mask` で除くか、揺れ止めを使わない（使うかどうかは素材を見て決める）。
+- **色のゲイン**（`color`）の手順:
+  - 幅 480 に縮めた 1 コマ目と `reference` で、色ごとに 倍率·値 + 足し算 を最小二乗で求める。
+  - 次の 2 つを満たすときだけ、全コマに掛ける（0..255 に切って切り捨てた表を引く）。使わなかったときも、求めた値と理由を記録する。
+    - 合わせた後の平均の差が `min_improvement`（既定 0.5）より縮む。
+    - 倍率がどれも `gain_range`（既定 0.85〜1.15）に入る。
+- 順番は 揺れ止め → 色。書き出しは fx と同じ（libx264・BT.709 のタグ・`crf` 既定 12）で、コマ数・fps・大きさは `source` と同じ。音は書かない。
+  読み方は dance と同じ読み手（タグが bt709 なら行列を指定して ffmpeg、タグが無ければ OpenCV）。
+- **記録**（`clips_record.json`、`fx-clips-record/0.1`）には、クリップごとに次を残す。数は残すだけで、合否は出さない。揺れ止めの後の揺れの測り直しはしない。
+  - 入力と出力の sha256。
+  - 揺れ止め: 測った動きとならした動き（測る大きさの単位と度）、収束しなかったコマ、各コマの内側の矩形、最後のコマの動き（出力の画素）。
+  - 色: 倍率と足し算、合わせる前と後の平均の差、使ったかと理由。
+- **作り直しと上書き**:
+  - 同じ入力（計画の項目・読むファイルの sha256・fx の指紋・ライブラリ版）の出力が記録どおりに残っていれば、作り直さない。
+  - 記録に無いか中身の違う既存の出力は上書きせずに止める（手で直したクリップを守るため。上書きするなら `--force`）。
+  - 出力が入力（計画・`source`・`measure_from`・`mask`・`reference`）や記録と同じファイルになるときも、何も書く前に止める。
+- **実制作との比較**: 2 つの台本の関数（揺れ止めの `gray_small`・`measure`・`params`・`smooth`・`mat`・`inner_rect`、色の `color_fit`）をそのまま抜き出して実行し、同じ入力で比べた。
+  - 手元にある実際の動画 12 本（1280×720・24fps・121〜243 コマ）と元の絵で比べた。
+    - 色: 倍率・足し算・平均の差・使うかが、12 本すべてで同じだった。
+    - 揺れ止め: マスクなしと合成のマスクの 2 通りで、測った動き・ならした動き・行列・内側の矩形と、揺れ止めした全コマが、すべて同じだった。
+  - 実制作の記録そのもの（揺れ止めの 8 本、色の 12 カット）は、元の動画（記録の sha256 の動画・超解像した版）が手元に無いので、再現していない。
+  - 色の記録の値は超解像した版から求めたもので、手元の元の版から求めた値とは違う（例えば使うかどうか）。
+  - 実制作の色の台本は、速さを変えるカットの前後のコマをオプティカルフローで補っていた。その尺合わせはここには入れていない。
+    速さは fx-timeline の動画のショットで変える（前後のコマを混ぜる）。
+
 ## 実作品の素材での回し方
 
 素材のある環境（Cowork や PC）で、**spec を素材の隣に置いて**実行する。素材・spec・出力は Git に入れない（このリポジトリは public）。
@@ -370,6 +424,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx guides IMAGE --out OUT.png [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
+| `mv fx clips PLAN.json [--out DIR] [--only ID,…] [--force]` | 計画（fx-clips/0.1）から、生成した動画に揺れ止めと色のゲインを掛けて書き、記録を残す（[クリップの下ごしらえ](#クリップの下ごしらえmv-fx-clips)） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
 | `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
