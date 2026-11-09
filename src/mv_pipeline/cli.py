@@ -52,6 +52,7 @@ def parser():
     _sheet_parser(commands)
     _layer_parser(commands)
     _overlay_parser(commands)
+    _deliver_parser(commands)
     return p
 
 
@@ -503,6 +504,27 @@ def _overlay_parser(commands):
     overlay.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
 
 
+def _deliver_parser(commands):
+    """受け渡しの書き出し（docs/deliver.md）。cv2 を使わず、`project` 引数も project_lock も持たない。"""
+    deliver = commands.add_parser("deliver", help="experimental: join rendered segments and add the audio into a master MP4")
+    sub = deliver.add_subparsers(dest="deliver_command", required=True)
+    join = sub.add_parser("join", help="concatenate segment videos without re-encoding, cut the audio with fades and mux a master")
+    join.add_argument("segments", type=Path, nargs="+", help="segment videos in order, or one folder of seg_<first>_<end>.mp4")
+    join.add_argument("--out", type=Path, required=True, help="master .mp4 to write (a <name>.deliver.json record is written beside it)")
+    join.add_argument("--audio", type=Path, help="audio file to cut from (none: video only)")
+    join.add_argument("--audio-start", type=float, default=0.0, help="seconds into the audio where the video starts (default 0)")
+    join.add_argument("--fade-in", type=float, default=0.02, help="audio fade-in seconds (default 0.02)")
+    join.add_argument("--fade-out", type=float, default=0.25, help="audio fade-out seconds (default 0.25)")
+    join.add_argument("--force", action="store_true", help="overwrite a master whose contents differ")
+
+
+def deliver_command(args):
+    from . import deliver
+    if args.deliver_command == "join":
+        return deliver.join(args.segments, args.out, args.audio, args.audio_start, args.fade_in, args.fade_out, args.force)
+    raise PipelineError(f"Unsupported deliver command: {args.deliver_command}")
+
+
 def overlay_command(args):
     _require_fx()      # 書き出しは fx の render（cv2 を import する）にある
     from .fx import overlay
@@ -527,7 +549,7 @@ def workflow_command(args):
 
 GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
                   "inspect": inspect_command, "workflow": workflow_command, "export": export_command, "overlay": overlay_command,
-                  "sheet": sheet_command, "layer": layer_command}
+                  "sheet": sheet_command, "layer": layer_command, "deliver": deliver_command}
 
 
 # ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------
