@@ -51,6 +51,11 @@ def _shifts(data):
     return _table("shift", ["#", "t", "ease", "beat", "offset", "scale", "path"], rows)
 
 
+def _cues(data):
+    return _table("cues", ["name", "t", "beat"], [
+        [name, _seconds(t), _beat_of(t, data)] for name, times in data["cues"].items() for t in times])
+
+
 def _replace(data):
     def target(value):
         if isinstance(value, dict):
@@ -105,7 +110,7 @@ def build(data):
     current = data["source_schema"] == SCHEMA_VERSION      # 0.3 の欄（丸め・retime・replace_frames）は 0.3 の spec だけに出す
     head = [f"# {data['source_schema']}  {data['output']['width']}x{data['output']['height']} {data['output']['fps']:g}fps "
             f"{data['duration_s']:g} 秒" + (f"  元のコマの丸め {data['performer']['frame_rounding']}" if current else ""), ""]
-    frames = _retime(data) + _shifts(data) + _replace(data) if current else []
+    frames = _cues(data) + _retime(data) + _shifts(data) + _replace(data) if current else []
     return "\n".join(head + _clips(data) + frames + _seams(data) + _accents(data) + _camera(data) + _flashes(data) + _lyrics(data)).rstrip()
 
 

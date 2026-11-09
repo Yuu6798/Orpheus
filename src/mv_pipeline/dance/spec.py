@@ -355,6 +355,8 @@ def _normalize(raw, base_dir, notes=None):
             **_ext(camera),
         },
         "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"]),
+        "cues": {name: sorted(time(v, f"cues の {name}") for v in (value if isinstance(value, list) else [value]))
+                 for name, value in raw.get("cues", {}).items()},
         "flashes": _normalize_flashes(raw.get("flashes", []), grid, time, float(raw["duration_s"]), fps, [] if notes is None else notes),
         "lyrics": {
             "font": font, "fonts": fonts,
