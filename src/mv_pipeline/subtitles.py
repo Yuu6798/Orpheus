@@ -27,7 +27,7 @@ SRT・WebVTT を書くときだけ（LRC は歌い出し・歌い終わりのま
     <STEM>_description.txt  見出しと、区間（section）ごとに空行で分けた本文（時刻の無い行も入れる）。動画の概要欄に貼る形
     <STEM>_subtitles.json   記録（入力の sha256・設定・行の数・時刻の出所・書いたファイルの sha256・注意）
 時刻は秒をミリ秒（LRC は 1/100 秒）に丸める（Python の round）。丸めた時刻で字幕の長さが無くなる行（SRT・WebVTT）と、歌い出しが
-同じになる行（LRC）は止める。行の時刻の出所（推定か確認済みか）は記録と結果に数で残し、確定扱いにしない。
+同じになる行と、歌い出しと歌い終わりが同じになる行（LRC）は止める。行の時刻の出所（推定か確認済みか）は記録と結果に数で残し、確定扱いにしない。
 --name はフォルダを含まないファイル名の頭（フォルダの区切り・..・ドライブは止める）。既にあるファイルと中身が違えば、--force を付けない限り
 何も書かない。出力が入力（SOURCE・--description-body）と同じファイルになるときは、--force でも書かない。
 
@@ -235,6 +235,9 @@ def lrc(rows):
             raise PipelineError(f"行 {rows[index - 1]['id']} と {row['id']} の歌い出しが、LRC の 1/100 秒に丸めると同じ "
                                 f"{lrc_time(row['start'])} になります（LRC では 2 行の順と時刻を分けられません）。"
                                 "行を 1 つにまとめるか、--formats から lrc を外してください")
+        if _centiseconds(row["end"]) <= _centiseconds(row["start"]):     # 終わりの印が自分の歌い出しと同じ時刻になる
+            raise PipelineError(f"行 {row['id']} の歌い出しと歌い終わりが、LRC の 1/100 秒に丸めると同じ {lrc_time(row['start'])} "
+                                "になります（LRC では行が出ている時間がありません）。歌い終わりを直すか、--formats から lrc を外してください")
         out.append(f"{lrc_time(row['start'])}{row['text'].replace(chr(10), ' / ')}")
         following = rows[index + 1]["start"] if index + 1 < len(rows) else None
         if following is None or _centiseconds(row["end"]) < _centiseconds(following):     # 次の行の頭と同じ印にはしない

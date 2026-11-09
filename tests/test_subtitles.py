@@ -240,6 +240,16 @@ def test_lrc_only_exports_keep_the_singing_times_without_display_cues(tmp_path):
         subtitles.export(write_lines(tmp_path, rows), tmp_path / "srt", formats=("srt", "lrc"))
 
 
+def test_lrc_refuses_a_line_whose_end_collapses_onto_its_start(tmp_path):
+    # 1.0〜1.001 秒の行は、LRC では [00:01.00]first のすぐ後に終わりの印 [00:01.00] が来て、出ている時間が無くなる
+    rows = [{"start": 1.0, "end": 1.001, "text": "first"}, {"start": 2.0, "end": 3.0, "text": "second"}]
+    with pytest.raises(PipelineError, match="歌い出しと歌い終わり"):
+        subtitles.export(write_lines(tmp_path, rows), tmp_path / "out", formats=("lrc",))
+    assert not (tmp_path / "out").exists()
+    subtitles.export(write_lines(tmp_path, rows), tmp_path / "srt", formats=("srt",))       # SRT は tail で 0.4 秒は出る
+    assert "1\n00:00:00,850 --> 00:00:01,401\nfirst\n" in (tmp_path / "srt" / "lines.srt").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("settings", ["line:8%\nposition:50%", "line:8% --> x"])
 def test_vtt_settings_must_be_one_line(tmp_path, settings):
     # 改行や --> は、WebVTT の字幕の時刻の行を壊す
