@@ -269,7 +269,7 @@ class Timeline:
         for index, clip in enumerate(self.clips):
             if clip["path"] not in self.sources:
                 self.sources[clip["path"]] = self._source(spec, clip)
-            if clip["transition_in"]["type"] == "blend" and self.clips[index - 1]["path"] not in self.outgoing:
+            if clip["transition_in"]["type"] in ("blend", "dissolve") and self.clips[index - 1]["path"] not in self.outgoing:
                 self.outgoing[self.clips[index - 1]["path"]] = self._source(spec, self.clips[index - 1])
 
     @staticmethod
@@ -321,15 +321,31 @@ class Timeline:
         step = int(math.floor((t - clip["start"]) * self.fps + 1e-6))
         return smoothstep((step + 1) / (frames + 1)) if 0 <= step < frames else None
 
+    def dissolve_weight(self, clip, t):
+        """t が clip の dissolve の窓（start の前後 frames/2 コマ）の中なら新しい側の重み（窓の頭で 0、線形）、外なら None。
+        式の順は非公開の制作のディゾルブと同じ: w = (t − (start − half)) / (2·half)。"""
+        if clip["transition_in"]["type"] != "dissolve":
+            return None
+        half = clip["transition_in"]["frames"] / (2 * self.fps)
+        low = clip["start"] - half
+        return (t - low) / (2 * half) if low <= t < clip["start"] + half else None
+
     def mapping(self, t):
         """時刻 t の [(clip 番号, 元のフレーム番号, 重み)]。画を読まずに決まる（replace_frames のある動画だけ、コマ数を 1 回数える）。
-        blend の窓では前のクリップが先。"""
+        blend と dissolve の窓では前のクリップが先。dissolve は start の前から次のクリップを重ねる。"""
         index = self.index_at(t)
         if index is None:
             return []
         clip = self.clips[index]
+        if index + 1 < len(self.clips) and t < self.clips[index + 1]["start"]:
+            following = self.clips[index + 1]
+            weight = self.dissolve_weight(following, t)
+            if weight is not None:
+                return [(index, self.source_frame(clip, t), 1.0 - weight), (index + 1, self.source_frame(following, t), weight)]
         number = self.source_frame(clip, t)
         weight = self.blend_weight(clip, t)
+        if weight is None:
+            weight = self.dissolve_weight(clip, t)
         if weight is None:
             return [(index, number, 1.0)]
         return [(index - 1, self.source_frame(self.clips[index - 1], t), 1.0 - weight), (index, number, weight)]

@@ -152,6 +152,8 @@ def _normalize_clip(clip, time, legacy):
             "start": time(clip["start"], "clip の start"), "end": time(clip["end"], "clip の end"),
             "source_start": float(clip.get("source_start", 0)), "speed": float(clip.get("speed", 1.0)),
             "retime": [_normalize_retime(segment, time) for segment in clip.get("retime", [])],
+            "shift": [{"t": time(s["t"], "shift の t"), "ease": time(s["ease"], "shift の ease"), "offset": _vec(s.get("offset", [0, 0])),
+                       "scale": float(s.get("scale", 0.0)), **_ext(s)} for s in clip.get("shift", [])],
             "placement": {"offset": _vec(place.get("offset", [0, 0])), "scale": float(place.get("scale", 1.0)),
                           "flip_x": bool(place.get("flip_x", False)), **_ext(place)},
             "fit": clip.get("fit", True), "beat_exempt": bool(clip.get("beat_exempt", False)), "align": clip.get("align", "beat"),
@@ -378,19 +380,46 @@ def _validate_clips(clips, duration, warnings):
     ordered = sorted(clips, key=lambda c: c["start"])
     if ordered != clips:
         raise PipelineError("dance spec: performer.clips は start の昇順に並べてください")
-    if clips[0]["transition_in"]["type"] == "blend":
-        raise PipelineError(f"dance spec: 最初の clip {clips[0]['path']!r} は blend できません（前のクリップがありません）")
+    if clips[0]["transition_in"]["type"] in ("blend", "dissolve"):
+        raise PipelineError(f"dance spec: 最初の clip {clips[0]['path']!r} は {clips[0]['transition_in']['type']} できません（前のクリップがありません）")
     for left, right in zip(clips, clips[1:]):
         if right["start"] < left["end"] - 1e-9:
             raise PipelineError(f"dance spec: clip {left['path']!r} と {right['path']!r} の区間が重なっています")
         if right["start"] > left["end"] + 1e-9:
-            if right["transition_in"]["type"] == "blend":
-                raise PipelineError(f"dance spec: blend する clip {right['path']!r} は前のクリップと隙間なく接してください")
+            if right["transition_in"]["type"] in ("blend", "dissolve"):
+                raise PipelineError(f"dance spec: {right['transition_in']['type']} する clip {right['path']!r} は前のクリップと隙間なく接してください")
             warnings.append(f"performer: {left['end']:g}〜{right['start']:g} 秒に人物がいません")
     if clips[0]["start"] > 0:
         warnings.append(f"performer: 0〜{clips[0]['start']:g} 秒に人物がいません")
     if clips[-1]["end"] < duration - 1e-9:
         warnings.append(f"performer: {clips[-1]['end']:g}〜{duration:g} 秒に人物がいません")
+
+
+def _dissolve_half(clip, fps):
+    transition = clip["transition_in"]
+    return transition["frames"] / (2 * fps) if transition["type"] == "dissolve" else 0.0
+
+
+def _validate_seam_shapes(clips, fps):
+    """dissolve の窓（切れ目の前後 frames/2 コマ）が前後のクリップに収まり、隣の窓と重ならないこと。shift の ease は t と違う時刻。
+    1 つのクリップの中に入る窓は、頭の dissolve の後半と、次のクリップの dissolve の前半なので、その和がクリップの長さ以下ならよい。
+    頭が blend なら、その窓（start から frames コマ）も次の dissolve の前半と重ならないこと（重なると、mapping が次の dissolve を
+    先に見るので、blend の途中の前のクリップが急に消える）。次が dissolve でなければ、blend の長さは今までどおり（0.2 と同じ）見ない。"""
+    for index, clip in enumerate(clips):
+        half_in = _dissolve_half(clip, fps)
+        half_out = _dissolve_half(clips[index + 1], fps) if index + 1 < len(clips) else 0.0
+        length = clip["end"] - clip["start"]
+        if half_in + half_out > length + 1e-9:
+            raise PipelineError(f"dance spec: clip {clip['path']!r}（{length:g} 秒）に dissolve の窓が収まりません"
+                                f"（頭の後半 {half_in:g} 秒 + 次の前半 {half_out:g} 秒。frames を減らしてください）")
+        if clip["transition_in"]["type"] == "blend" and half_out > 0:
+            blend = clip["transition_in"]["frames"] / fps
+            if blend + half_out > length + 1e-9:
+                raise PipelineError(f"dance spec: clip {clip['path']!r}（{length:g} 秒）で、頭の blend の窓 {blend:g} 秒と次の dissolve の前半 "
+                                    f"{half_out:g} 秒が重なります（前のクリップが blend の途中で消えるので、どちらかの frames を減らしてください）")
+        for shift in clip["shift"]:
+            if abs(shift["ease"] - shift["t"]) < 1e-9:
+                raise PipelineError(f"dance spec: clip {clip['path']!r} の shift の ease は t と違う時刻にしてください（{shift['t']:g} 秒）")
 
 
 def _validate_retime(clips, warnings):
@@ -486,6 +515,7 @@ def _validate_semantics(data):
     if data["performer"]["rows"]["box_frames"] % 2 == 0:
         raise PipelineError(f"dance spec: performer.rows.box_frames は奇数にしてください（中心のコマの前後を同じ数だけ平均する）: "
                             f"{data['performer']['rows']['box_frames']}")
+    _validate_seam_shapes(data["performer"]["clips"], out["fps"])
     _validate_retime(data["performer"]["clips"], warnings)
     _validate_replace(data["performer"]["replace_frames"], data["performer"]["clips"])
     _validate_audio(data["audio"], warnings, duration)
