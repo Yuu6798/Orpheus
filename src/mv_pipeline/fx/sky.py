@@ -100,7 +100,7 @@ def bolt_path(p0, p1, seed, rough=0.22, depth=6, branch=0.5):
     rng = np.random.default_rng(seed)
 
     def split(a, b, d, out):
-        if d == 0:
+        if d <= 0:              # 枝は depth − 2 で分けるので、depth が 0・1 なら負になる（そこで止める。depth 2 以上は実制作と同じ）
             out.append(b)
             return
         m = (a + b) / 2

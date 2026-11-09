@@ -617,6 +617,15 @@ def test_bolt_path_equals_the_private_part():
         assert all(np.array_equal(a, b) and wa == wb for (a, wa), (b, wb) in zip(mine, theirs))
 
 
+@pytest.mark.parametrize("depth", [0, 1, 2])
+def test_low_detail_bolts_stop_splitting_at_nonpositive_depths(depth):
+    # 枝は depth − 2 で分ける。終わりを d == 0 だけで見ていたので、depth 0・1 では枝の分け方が負の深さで止まらず、再帰の上限で落ちていた
+    paths = sky.bolt_path((10.0, 10.0), (100.0, 80.0), 3, depth=depth, branch=1.0)
+    main = paths[0][0]
+    assert len(main) == 2 ** depth + 1 and np.allclose(main[0], (10.0, 10.0)) and np.allclose(main[-1], (100.0, 80.0))
+    assert len(paths) >= 3 and all(len(branch) == 2 ** max(depth - 2, 0) + 1 for branch, _ in paths[1:])
+
+
 @pytest.mark.parametrize("t", [0.0, 0.37, 2.0, 11.3])
 def test_rain_and_grade_equal_the_private_parts(t):
     P = {"amt": 1.0, "density": 1.0 * 0.45, "angle": -0.12, "ambient": 0.2, "catch": 1.5}
