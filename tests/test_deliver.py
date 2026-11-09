@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import wave
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -134,6 +135,49 @@ def test_segments_must_share_size_and_fps(tmp_path):
         deliver.join([empty], tmp_path / "m.mp4")
     with pytest.raises(PipelineError, match=".mp4"):
         deliver.join([tmp_path / "a.mp4"], tmp_path / "m.mov")
+
+
+def ntsc_segment(path, count):
+    """24000/1001 fps（表示は 23.98 fps）の区間。"""
+    subprocess.run([media.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x36:rate=24000/1001",
+                    "-frames:v", str(count), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], check=True)
+    return path
+
+
+def test_fractional_fps_segments_use_the_exact_duration(tmp_path):
+    # 表示の fps（23.98）で割ると 48 コマが 2.0017 秒になり（正しくは 2.002 秒）、音の切り出しと元データの長さが短くなっていた
+    folder = tmp_path / "ntsc"
+    folder.mkdir()
+    for first in (0, 24):
+        ntsc_segment(folder / f"seg_{first:05d}_{first + 24:05d}.mp4", 24)
+    result = deliver.join([folder], tmp_path / "master.mp4", audio=tone(tmp_path / "song.wav"))
+    assert result["duration_s"] == 2.002 and result["frames"] == 48 and result["technical_pass"]
+    commands = [" ".join(command) for command in read_json(result["record"])["commands"]]
+    assert any("-t 2.002000" in command and "afade=t=out:st=1.752000" in command for command in commands)
+    assert deliver.video_seconds(folder / "seg_00000_00024.mp4") == Fraction(1001, 1000)
+
+
+def test_a_video_only_join_does_not_check_the_audio_fades(tmp_path):
+    # フェードは音にだけ掛ける。1 コマ（12 fps で 0.083 秒）の区間も、音を付けなければつなげる
+    one = segment(tmp_path / "one.mp4", 0, 1)
+    result = deliver.join([one], tmp_path / "master.mp4")
+    assert result["frames"] == 1 and result["technical_pass"]
+    with pytest.raises(PipelineError, match="フェード"):
+        deliver.join([one], tmp_path / "with_audio.mp4", audio=tone(tmp_path / "song.wav"))
+
+
+def test_out_never_replaces_an_input_even_with_force(segments, tmp_path):
+    # 区間のフォルダの区間や --audio の名前を --out にすると、置き換えで入力が消える
+    first = sorted(segments.glob("seg_*.mp4"))[0]
+    before = first.read_bytes()
+    with pytest.raises(PipelineError, match="入力"):
+        deliver.join([segments], first, force=True)
+    assert first.read_bytes() == before
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(before)
+    with pytest.raises(PipelineError, match="入力"):
+        deliver.join([segments], clip, audio=clip, force=True)
+    assert clip.read_bytes() == before and not list(tmp_path.glob(".deliver-*")) and not list(segments.glob(".deliver-*"))
 
 
 def test_cli_joins_and_prints_a_summary(segments, tmp_path):
