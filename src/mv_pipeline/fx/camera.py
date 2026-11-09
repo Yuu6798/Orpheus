@@ -294,10 +294,13 @@ def depth_out_of_bounds(path, depth, parallaxes=(1.0,), samples=41, tolerance_px
 
     camera の視野のはみ出し（CameraPath.out_of_bounds）を超えた分だけを数える。parallaxes は深度視差を掛ける層の
     視差（平らな版は 1.0、layers のある版は背景の parallax も）。値は 1920 幅換算の px。
+    調べる点は出力の端の画素で、参照する位置は入力画像（板）の画素なので、端は板の大きさで比べる（camera.frame: source の
+    板は出力と大きさが違う。cover の板は出力と同じ大きさ）。
     """
     if depth is None or not path.has_depth_motion:
         return None
     width, height = path.size
+    plate_w, plate_h = path.plate or path.size
     reach = max(abs(float(depth.max()) - path.pivot), abs(float(depth.min()) - path.pivot))   # |D − pivot| の最大
     motions = [(t, path.depth_motion(t)) for t in path.probe_times(samples)]
     motions = [(t, motion) for t, motion in motions if motion is not None]
@@ -323,10 +326,10 @@ def depth_out_of_bounds(path, depth, parallaxes=(1.0,), samples=41, tolerance_px
             depth_out = cv2.remap(depth, source_x, source_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
             dx, dy = depth_offsets(depth_out, path.size, motion, (xs, ys))
             map_x, map_y = ((xs - dx) - np.float32(tx)) / np.float32(scale), ((ys - dy) - np.float32(ty)) / np.float32(scale)
-            camera_x = (np.array([0.0, width - 1.0]) - tx) / scale       # 変位なしの参照位置（端の画素）
+            camera_x = (np.array([0.0, width - 1.0]) - tx) / scale       # 変位なしの参照位置（出力の端の画素 → 板の画素）
             camera_y = (np.array([0.0, height - 1.0]) - ty) / scale
-            before = (-camera_x[0], camera_x[1] - (width - 1), -camera_y[0], camera_y[1] - (height - 1))   # 左・右・上・下
-            after = (-float(map_x.min()), float(map_x.max()) - (width - 1), -float(map_y.min()), float(map_y.max()) - (height - 1))
+            before = (-camera_x[0], camera_x[1] - (plate_w - 1), -camera_y[0], camera_y[1] - (plate_h - 1))   # 左・右・上・下
+            after = (-float(map_x.min()), float(map_x.max()) - (plate_w - 1), -float(map_y.min()), float(map_y.max()) - (plate_h - 1))
             worst = max(worst, max(a - max(b, 0.0) for a, b in zip(after, before)) * scale)
     if worst > tolerance_px:
         return (f"深度視差の変位で、画面の端が画像の外を最大 {worst / path.kpx:.1f}px（1920 幅換算）参照します"

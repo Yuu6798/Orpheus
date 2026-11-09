@@ -178,6 +178,40 @@ def test_views_outside_the_image_warn_unless_clamped(tmp_path):
     assert ctx.warnings == [] and (cx, cy) == pytest.approx((1 - 0.5 / 1.5, 0.5 / 1.5))
 
 
+def depth_spec(directory, depth, center_x, shift, size):
+    """右へ depth_shift する source の spec（深度は灰色の 8 bit。2〜98 パーセンタイルで 0..1 に伸ばされる）。"""
+    cv2.imencode(".png", depth)[1].tofile(str(directory / "depth.png"))
+    raw = {"schema_version": "fx-shot/0.3", "output": {"width": size[0], "height": size[1], "fps": 12}, "duration_s": 1.0,
+           "assets": {"base": "base.png", "depth": {"path": "depth.png"}},
+           "camera": {"keys": [{"t": 0, "zoom": 1.0, "center": [center_x, 0.5]},
+                               {"t": 1, "zoom": 1.0, "center": [center_x, 0.5], "depth_shift": [shift, 0]}], "frame": "source", "clamp": True}}
+    path = directory / f"depth_{center_x}_{shift}_{size[0]}x{size[1]}.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    ctx = render.prepare(fxspec.load_spec(path))
+    matrix = ctx.path.matrix(1.0, 1.0)                      # 最後のコマが最も大きく動く
+    map_x, _ = camera.sample_maps(matrix, size, camera.warp(ctx.assets.depth, matrix, size), ctx.path.depth_motion(1.0))
+    return ctx, (float(map_x.min()), float(map_x.max())), any("深度視差の変位" in w for w in ctx.warnings)
+
+
+def test_the_depth_edge_check_compares_with_the_plate_in_source_frame(tmp_path):
+    # source の板は出力と大きさが違う。端の検査は、参照する位置（板の画素）を板の大きさで比べる（出力の大きさではない）
+    landscape(tmp_path)                                                      # 320×180 → 縦 90×160 の板は 284×160
+    ramp = np.tile(np.linspace(255, 0, 320).astype(np.uint8), (180, 1))     # 左が手前
+    ctx, (low, high), warned = depth_spec(tmp_path, ramp, 0.5, 400, (90, 160))
+    assert ctx.assets.plate_size == (284, 160) and 90 < low and high < 200 and not warned          # 板の中だけを引く
+    ctx, (low, high), warned = depth_spec(tmp_path, ramp, 0.95, 40, (90, 160))
+    assert high > 283 and warned                                                                # 板の右端の外を引く
+
+
+def test_the_depth_edge_check_sees_past_a_plate_narrower_than_the_output(tmp_path):
+    square = np.zeros((100, 100, 3), np.uint8)                              # 横 160×90 には 100×100 の板（出力より幅が狭い）
+    cv2.imencode(".png", square)[1].tofile(str(tmp_path / "base.png"))
+    steps = np.full((100, 100), 255, np.uint8)
+    steps[:, :20], steps[:, 80:] = 128, 0                                    # 左端は動かない深さ、右端だけ奥
+    ctx, (low, high), warned = depth_spec(tmp_path, steps, 0.5, 400, (160, 90))
+    assert ctx.assets.plate_size == (100, 100) and low > -0.5 and high > 105 and warned            # 板の右端の外を 6 画素以上引く
+
+
 @pytest.mark.parametrize("extra, message", [
     ({"lights": [{"id": "l", "position": [0.5, 0.5], "intensity": [{"t": 0, "v": 1}]}]}, "lights"),
     ({"layers": {"planes": [], "effects": [{"id": "fog", "type": "fog"}]}}, "layers"),
