@@ -44,24 +44,27 @@ def _scale(size, matrix):
     return scale + (":in_color_matrix=bt709" if matrix == "bt709" else "")
 
 
-def _filters(size, matrix, start, end):
+def _filters(size, matrix, start, end, fps=None):
     chain = []
+    if fps:      # 一定の間隔のコマに揃える（可変フレームレートの動画を、コマ数 = 時間で測るため）。コマ番号は揃えた後のもの
+        chain.append(f"fps={fps}")
     if start or end is not None:
         chain.append(f"trim=start_frame={int(start)}" + (f":end_frame={int(end)}" if end is not None else ""))
     chain.append(_scale(size, matrix))
     return ",".join(chain)
 
 
-def frames(path, size, info, start=0, end=None):
+def frames(path, size, info, start=0, end=None, fps=None):
     """(コマ番号, uint8 RGB (h, w, 3)) を復号順に返す。size=(w, h)（None は元の大きさ）、[start, end) はコマ番号。
 
+    fps（"30" や "30000/1001"）を渡すと、ffmpeg の fps フィルタでその間隔のコマに揃えてから返す（渡さなければ復号したコマをそのまま）。
     最後まで読んだら ffmpeg のエラー出力を確かめ、壊れていれば PipelineError。"""
     width, height = size or (info["width"], info["height"])
     frame_bytes = width * height * 3
     errors = tempfile.TemporaryFile()
     process = subprocess.Popen(
         [media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(path), "-map", "0:v:0",
-         "-fps_mode", "passthrough", "-vf", _filters(size, info["matrix"], start, end), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
+         "-fps_mode", "passthrough", "-vf", _filters(size, info["matrix"], start, end, fps), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
         stdout=subprocess.PIPE, stderr=errors)
     index = int(start)
     try:
