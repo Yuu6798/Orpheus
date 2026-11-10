@@ -513,8 +513,9 @@ def check_flashes(timeline, video, master, limits):
     except PipelineError as error:
         return result(name, "fail", f"{label} の明滅を測れません", [{"t": 0, "text": "", "detail": str(error)[:400]}]), None
     counts, top, window = measured["counts"], measured["max_per_window"], measured["busiest_window"]
-    summary = (f"{label} を測定、変化 {counts['changes']}（上がり {counts['up']}・下がり {counts['down']}）、明滅 {counts['flashes']} 回、"
-               f"どの 1 秒でも最大 {top} 回（上限 {limits['max_per_s']:g}、変化は相対輝度で {limits['delta']:g} 以上）")
+    # 変化と明滅の数は動画全体のもの。合否は 1 秒の窓ごとに数え直した最大の回数で決まる（全体の数より多いことがある）
+    summary = (f"{label} を測定、動画全体で変化 {counts['changes']}（上がり {counts['up']}・下がり {counts['down']}）・明滅 {counts['flashes']} 回、"
+               f"1 秒の窓ごとに数え直して最大 {top} 回（上限 {limits['max_per_s']:g}、変化は相対輝度で {limits['delta']:g} 以上）")
     problems = []
     if measured["status"] == "fail":
         frames = "・".join(f"{a}-{b}" for a, b in window["pairs"])

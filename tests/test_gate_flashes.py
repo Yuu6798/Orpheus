@@ -441,7 +441,8 @@ def test_gate_check_adds_the_flash_row_only_when_flash_is_written(tmp_path):
     assert after["checks"][:9] == before["checks"] and len(after["checks"]) == 10       # 今までの 9 行は同じ。行が 1 つ増えるだけ
     row = after["checks"][9]
     assert row["check"] == "明滅" and row["status"] == "pass" and row["problems"] == []
-    assert row["summary"] == "master を測定、変化 10（上がり 5・下がり 5）、明滅 5 回、どの 1 秒でも最大 3 回（上限 3、変化は相対輝度で 0.1 以上）"
+    assert row["summary"] == ("master を測定、動画全体で変化 10（上がり 5・下がり 5）・明滅 5 回、"
+                              "1 秒の窓ごとに数え直して最大 3 回（上限 3、変化は相対輝度で 0.1 以上）")
     assert after["overall"] == before["overall"] == "pass_with_skips" and after["thresholds"] == before["thresholds"]
     assert after["flash"] == {"delta": 0.1, "max_per_s": 3, "report": "flash_report.json"}
     saved = read_json(out_after / "flash_report.json")
@@ -462,7 +463,7 @@ def test_gate_check_fails_above_the_limit_and_points_at_the_busiest_second(tmp_p
     assert code == 1 and result["overall"] == "fail" and result["checks"][9]["status"] == "fail"
     report = read_json(tmp_path / "gate_report/gate_report.json")
     row = report["checks"][9]
-    assert row["summary"].startswith("video を測定、変化 8（上がり 4・下がり 4）、明滅 4 回、どの 1 秒でも最大 4 回（上限 3")
+    assert row["summary"].startswith("video を測定、動画全体で変化 8（上がり 4・下がり 4）・明滅 4 回、1 秒の窓ごとに数え直して最大 4 回（上限 3")
     (problem,) = row["problems"]
     # 問題の時刻はショットの時刻（描いた区間の開始 2.0 秒 + 動画のコマ 35 = 1.1666… 秒をミリ秒に切り捨てた 1.166 秒）
     assert problem["t"] == pytest.approx(3.166) and "動画のコマ 35（1.166 秒）からの 1 秒に明滅 4 回" in problem["detail"]
@@ -503,7 +504,7 @@ def test_gate_check_measures_the_master_and_takes_the_flash_still_from_it(tmp_pa
     path, config = _run_dir(tmp_path / "b", calm)
     path.write_text(json.dumps({**config, "flash": {}}), encoding="utf-8")
     row = gate.run(path)[0]["checks"][9]
-    assert row["status"] == "pass" and row["summary"].startswith("video を測定、変化 0（上がり 0・下がり 0）、明滅 0 回")
+    assert row["status"] == "pass" and row["summary"].startswith("video を測定、動画全体で変化 0（上がり 0・下がり 0）・明滅 0 回、1 秒の窓ごとに数え直して最大 0 回")
 
 
 def test_a_video_that_cannot_be_read_fails_the_flash_row_and_keeps_the_other_rows(tmp_path):
