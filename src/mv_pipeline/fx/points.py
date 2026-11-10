@@ -342,7 +342,7 @@ def find_points(plan_path, out=None):
 
     def entry(x, y, value):
         u, v = to_norm(x, y, size)
-        return {"u": round(u, 6), "v": round(v, 6), "score": round(value, 4)}
+        return {"u": round(u, 6), "v": round(v, 6), "score": round(value, 6)}
 
     points = [entry(x, y, value) for x, y, value in found["points"]]
     result = {"schema_version": RESULT_VERSION,
