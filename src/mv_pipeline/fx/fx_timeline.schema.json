@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "fx-timeline/0.1",
-  "description": "複数のショットを時刻順に並べ、つなぎ（cut・xfade・black・flash）で 1 本にする。ショットは fx-shot の spec（spec）か動画（video）。ショットは次のショットの start（最後は duration_s）まで。look（fx-shot と同じ定義。読み込み時に足す）はつないだ後の全体に掛ける。",
+  "title": "fx-timeline/0.2",
+  "description": "複数のショットを時刻順に並べ、つなぎ（cut・xfade・black・flash・burn）で 1 本にする。0.2 は 0.1 につなぎの焼け抜け（burn）を足した版で、0.1 の timeline（fx_timeline_0_1.schema.json）もそのまま読める（絵は同じ）。ショットは fx-shot の spec（spec）か動画（video）。ショットは次のショットの start（最後は duration_s）まで。look（fx-shot と同じ定義。読み込み時に足す）はつないだ後の全体に掛ける。",
   "type": "object",
   "required": [
     "schema_version",
@@ -15,7 +15,7 @@
   },
   "properties": {
     "schema_version": {
-      "const": "fx-timeline/0.1"
+      "const": "fx-timeline/0.2"
     },
     "output": {
       "type": "object",
@@ -280,6 +280,94 @@
                   "rate": {
                     "type": "number",
                     "exclusiveMinimum": 0
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "description": "焼け抜け（0.2）。前のショットを描き続け、start から duration_s の間、ノイズの形に焼け抜けて今のショットが現れる。進み p = (t − start)/duration_s。場 N（画面の正規化座標の上のノイズ、0..1）としきい値 thr = −(soft + 縁の width) + p·(1 + 2·(soft + 縁の width)) で、今のショットの割合は clamp((thr − N)/soft, 0, 1)",
+                "required": [
+                  "type",
+                  "duration_s"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "burn"
+                  },
+                  "duration_s": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295,
+                    "description": "ノイズの模様の seed（既定 0）。模様は seed と scale と画面の縦横比で決まり、時刻では変わらない"
+                  },
+                  "scale": {
+                    "type": "number",
+                    "minimum": 0.01,
+                    "maximum": 4,
+                    "description": "模様の大きさ（画面の幅に対する割合。既定 0.08）。粗いむらの升目 4 つ分で、細かいむらの升目はその 1/16"
+                  },
+                  "soft": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "description": "焼け抜けの境目のやわらかさ（場の値の幅。既定 0.035）"
+                  },
+                  "edge": {
+                    "description": "光る縁。e = clamp(1 − |N − thr|/width, 0, 1) を color × gain でスクリーン合成する。無いか gain 0 なら縁なし。color の既定は (255, 125, 35)",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "$ref": "#/$defs/rgb"
+                      },
+                      "width": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1,
+                        "description": "縁の幅（場の値の幅。既定 0.05）"
+                      },
+                      "gain": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 4,
+                        "description": "縁の強さ（既定 0.9。color × gain × e は 255 で止める）"
+                      }
+                    }
+                  },
+                  "char": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "焦げ。前線の少し先（まだ前のショットの側）の帯を、この割合まで暗くする（既定 0 = 無効）"
+                  },
+                  "from": {
+                    "description": "広がり始める点（画面の正規化座標 [x, y]。既定 [0.5, 0.5]）。bias > 0 のときだけ使う",
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    ],
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "bias": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "from からの距離を場に混ぜる割合（N·(1 − bias) + 距離·bias。既定 0 = ノイズだけ。1 で from から丸く広がる）"
                   }
                 }
               }

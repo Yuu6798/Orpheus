@@ -3,7 +3,7 @@
 1 枚絵（と任意の深度・マスク）から、**カメラ・空間レイヤー・局所光**で動画を作る。同じ素材・同じ区間で
 「現行版 / レイヤー / 局所光 / 両方」を並べて比べるための道具で、CLI と設定ファイルだけで動く。
 仕上げに、実制作と同じ式の**色調整・周辺減光・粒状感（look）**を全版に掛けられる（任意。[look](#look色調整周辺減光粒状感)）。
-いくつものショットは **fx-timeline** でカット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にできる（[timeline](#timeline複数のショットをつなぐfx-timeline01)）。
+いくつものショットは **fx-timeline** でカット・クロスフェード・黒から上げる・フラッシュ・焼け抜けでつないで 1 本にできる（[timeline](#timeline複数のショットをつなぐfx-timeline02)）。
 炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光など、作品ごとの演出は、timeline の **hooks** で掛ける部品（`fx.fire`・`fx.sky`・`fx.accent`）がある（[演出の hooks](#演出の-hooks火空と天気明かり)）。
 
 - **深度とマスクは任意**: 必須の素材は基準画像（`assets.base`）だけ。深度やマスクが無いと、それを使う機能（深度視差、plane、受光マスクつきの局所光）が使えないだけで、カメラ・look・timeline・hooks はそのまま動く。
@@ -152,7 +152,7 @@ z の小さい順に背面から合成し、effects も z で挟む（霧 z=1 �
 - `camera.punch`: 入りの押し込み。0 秒から `duration_s` の間、zoom に `1 − amount·(1 − ease_out(t/duration_s))` を掛ける（`ease_out(x) = 1 − (1 − x)³`）。少し引いた所から ease-out で keys の寄りへ戻る。zoom は 1 より小さくしない（実制作と同じ）。
 - `clamp`・`punch` があるときは、層の視差の基準（最初のキーの状態）も、止めた・押し込んだ後の 0 秒の状態にする（どの層も最初のコマで重なる）。
 - `faces`（任意）: 顔の枠。元画像の正規化座標 `[x0, y0, x1, y1]`、`role`（`main`・`other`。既定 main）、`estimated`（既定 true。目で測った推定）。
-  - 描画には使わない。fx-timeline の run が、カメラで画面へ写して `faces.json` に書く（[timeline](#timeline複数のショットをつなぐfx-timeline01)）。
+  - 描画には使わない。fx-timeline の run が、カメラで画面へ写して `faces.json` に書く（[timeline](#timeline複数のショットをつなぐfx-timeline02)）。
   - 写し方は camera の層（深度視差は入れない。実制作と同じ）で、画面の外に出た所は切る。
 - 実制作との比較: 実制作の縦のレンダラの視野（`cam` と `crop_M`。拍の脈は除く）と顔の写し方（`Geo.pt`）を写した関数と比べた（`tests/test_fx_camera_frame.py`）。
   - 縦 1080×1920 に横 1672×941 を写す 5 つのショット（実制作の設定の寄り・中心・押し込みの 4 つと、左右の端まで動かす 1 つ）で、全コマの視野が 1e-6 画素以内、zoom が 1e-12 以内で同じだった。
@@ -462,7 +462,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx clips PLAN.json [--out DIR] [--only ID,…] [--force]` | 計画（fx-clips/0.1）から、生成した動画に揺れ止めと色のゲインを掛けて書き、記録を残す（[クリップの下ごしらえ](#クリップの下ごしらえmv-fx-clips)） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
-| `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、つなぎを全部使う timeline.json を作る（[timeline](#timeline複数のショットをつなぐfx-timeline01)） |
+| `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、black・xfade・flash でつなぐ timeline.json（fx-timeline/0.1）を作る（[timeline](#timeline複数のショットをつなぐfx-timeline02)） |
 | `mv fx timeline plan TIMELINE` | ショット・つなぎ・秒・いちばん近い拍の表（描かない。fx extra なしで動く） |
 | `mv fx timeline render TIMELINE [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks PY]` | `timeline.mp4` と `timeline.json`（`mv gate check` 用）を run として出す。`--hooks` で作品ごとの演出（[hooks](#演出の-hooks火空と天気明かり)） |
 
@@ -637,19 +637,24 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 - run の key には、使うコマ（ショット全体）と画像の sha256 が入る。連番の 1 コマを描き直せば、作り直しになる。
 - 段階 1 の 0.2 の spec に見本の字の連番を overlays として重ねた描画は、書き出した版に `mv overlay` で重ねたものと平均 1.3〜2.6/255 の差だった（向こうは圧縮が 2 度掛かる分）。
 
-## timeline（複数のショットをつなぐ・fx-timeline/0.1）
+## timeline（複数のショットをつなぐ・fx-timeline/0.2）
 
-いくつものショット（fx-shot の spec か、動画）を時刻順に並べ、カット・クロスフェード・黒から上げる・フラッシュでつないで 1 本にする。
-設定は `fx-timeline/0.1`（`src/mv_pipeline/fx/fx_timeline.schema.json`。実験的で、`contracts/` の外）。
+いくつものショット（fx-shot の spec か、動画）を時刻順に並べ、カット・クロスフェード・黒から上げる・フラッシュ・焼け抜けでつないで 1 本にする。
+設定は `fx-timeline/0.2`（`src/mv_pipeline/fx/fx_timeline.schema.json`。実験的で、`contracts/` の外）。
+
+0.2 は 0.1 につなぎの焼け抜け（`burn`。[下の「焼け抜け」](#焼け抜けburnfx-timeline02)）を足した版。`"schema_version": "fx-timeline/0.1"` の timeline は 0.1 の schema
+（`fx_timeline_0_1.schema.json`）で検証してそのまま読め、絵は 0.2 の実装でもバイト単位で同じ（デモの timeline の 6 秒 144 コマと 3 秒 72 コマを、変更の前後で比べて確認）。
+0.1 の timeline に burn を書くと拒否する（`schema_version` を `fx-timeline/0.2` に書き換えれば、ほかの項目はそのまま読める）。
+デモの timeline は 0.1 のまま書く（burn は入れていない）。
 
 ```sh
-uv run mv fx timeline demo projects/fxtimeline                     # spec のショット 3 つと動画のショット 1 つ、つなぎを全部使う timeline.json（頭の枠つき）
+uv run mv fx timeline demo projects/fxtimeline                     # spec のショット 3 つと動画のショット 1 つ、black・xfade・flash でつなぐ timeline.json（頭の枠つき）
 uv run mv fx timeline plan projects/fxtimeline/timeline.json       # ショット・つなぎ・秒・いちばん近い拍の表（描かない）
 uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp4 と timeline.json を run として出す
 ```
 
 ```json
-{"schema_version": "fx-timeline/0.1", "output": {"width": 1080, "height": 1920, "fps": 30, "crf": 18}, "duration_s": 24.9,
+{"schema_version": "fx-timeline/0.2", "output": {"width": 1080, "height": 1920, "fps": 30, "crf": 18}, "duration_s": 24.9,
  "beats": {"path": "beats.json"}, "audio": {"path": "song.wav", "offset_s": 132.7},
  "look": {"vignette": {}, "grain": {}}, "pulse": {"amount": 0.006, "sections": [[0.079, 22.148]]},
  "shots": [{"spec": "shots/a.json", "start": 0, "transition_in": {"type": "black", "duration_s": 0.5}},
@@ -657,7 +662,8 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
            {"spec": "shots/c.json", "start": 3.7, "snap": true, "transition_in": {"type": "flash", "strength": 0.6}},
            {"video": {"path": "clips/walk.mp4", "speed": 0.9, "offset_s": 0.5},
             "camera": {"keys": [{"t": 0, "zoom": 1.0, "center": [0.55, 0.5]}, {"t": 2.7, "zoom": 1.04, "ease": "in_out"}]}, "start": 6.4},
-           {"video": {"path": "clips/fire.mp4", "speed": 0.8, "loop": {"frames": [6, 24], "mix": 0.5}}, "start": 9.1}]}
+           {"video": {"path": "clips/fire.mp4", "speed": 0.8, "loop": {"frames": [6, 24], "mix": 0.5}}, "start": 9.1},
+           {"spec": "shots/d.json", "start": 12.0, "transition_in": {"type": "burn", "duration_s": 0.5, "seed": 3, "edge": {}, "char": 0.6}}]}
 ```
 
 - **ショット**は `start` の昇順に並べる。各ショットは、次のショットの `start` まで続く（最後のショットは `duration_s` まで）。最初のショットは 0 秒から始める。
@@ -696,7 +702,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - 0 秒以下は 0 秒にする。
   - 終わりの 0.01 秒以内は終わりにする。
   - 同じ距離なら前の拍を選ぶ。
-- **つなぎ**（`transition_in`。既定は cut）は実制作のレンダラと同じ式で、表示の値（0..255 の float）の上で計算する。
+- **つなぎ**（`transition_in`。既定は cut）は、表示の値（0..255 の float）の上で計算する。xfade・black・flash は実制作のレンダラと同じ式。
 
 | type | 式 |
 |---|---|
@@ -704,6 +710,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
 | `xfade` | `start` から `duration_s` の間、前のショットを描き続けて 前·(1 − a) + 今·a（a = smoothstep((t − start)/duration_s)） |
 | `black` | `start` から `duration_s` の間、今·smoothstep((t − start)/duration_s) |
 | `flash` | `start` から `window_s` の間、今 + (`color` − 今)·`strength`·exp(−(t − start)·`rate`)。既定は `strength` 0.75、`color` (235, 210, 255)、`window_s` 0.30 秒、`rate` 13 |
+| `burn` | `start` から `duration_s` の間、前のショットを描き続けて、ノイズの形に焼け抜ける（0.2 で足した。式は[下の「焼け抜け」](#焼け抜けburnfx-timeline02)） |
 
 - **look**: timeline の `look`（fx-shot と同じ書き方）は、つないだ後の全体に掛ける。
   - 時刻は timeline の t を使う。
@@ -721,20 +728,21 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
 - **止まるもの**:
   - 最初のショットが 0 秒から始まらない。
   - 長さが 0 以下のショットがある。snap で同じ拍に寄った場合もこれに当たる。
-  - 最初のショットに xfade を付けた。
-  - xfade や black がショットより長い。
+  - 最初のショットに xfade か burn を付けた。
+  - xfade・burn・black がショットより長い。
+  - `fx-timeline/0.1` の timeline に burn を書いた。
   - beats が無いのに snap か pulse を使った。pulse の区間の始めが終わりより後。
   - ショットに `spec` と `video` の両方がある、またはどちらも無い。動画のショットに `offset_s`・`variant` を、spec のショットに `camera` を書いた。
   - 動画が見つからない。`loop` と `offset_s` を一緒に書いた。ループの区間が `crossfade_frames` より長くない、または `crossfade_frames` が区間の半分より長い。カメラのキーの `t` が昇順でない。
   - 描くとき: ループの終わりのコマが動画の最後のコマを越えている。
 - **注意（warnings）として残るもの**:
-  - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade なら、その間も前のショットを描くので、その分も数える。
+  - spec の長さを超えて描く。カメラは終わりの値のままになる。次のショットが xfade か burn なら、その間も前のショットを描くので、その分も数える。
   - spec の fps が timeline の fps と違う。
   - snap で start が 0.25 秒より大きく動いた。
-  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る（これも次のショットの xfade の間まで見る）。
+  - 動画のショットが動画の最後のコマを越えて描く（その秒から後は最後のコマのまま。次のショットの xfade・burn の間の分も数える）。動画の縦横比が出力と違い、cover で切った。カメラの視野が動画の外へ出る（これも次のショットの xfade・burn の間まで見る）。
 - **run**は `<timeline のフォルダ>/fx_runs/<run_id>/` にできる。
   - 中身は `fx_timeline.json`（写し）・`timeline.mp4`・`timeline.json`・`manifest.json`・`render.log`。
-  - 顔の枠を持つショットがあれば `faces.json` も書く。コマごとに、そのコマのショット（xfade の間は入ってくるショット）の顔の枠をカメラで画面へ写したもの。
+  - 顔の枠を持つショットがあれば `faces.json` も書く。コマごとに、そのコマのショット（xfade・burn の間は入ってくるショット）の顔の枠をカメラで画面へ写したもの。
     形は `mv gate check` の `faces` と同じ `[{"start", "end", "box", "role", "estimated"}]`（box は画面の正規化座標）で、gate の設定の `faces` にそのまま渡せる。
     推定の枠（`estimated: true`）との重なりは、gate では不合格にせず要確認になる。
   - manifest の kind は timeline で、版は `timeline` の 1 つ。
@@ -748,6 +756,50 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - gate の設定に `beats` が無ければ、timeline の拍で照合する。
 - **字幕**は描かない。歌詞は書き出した `timeline.mp4` に `mv overlay` で重ねる（実制作と同じく、仕上げの後に字が来る）。
 - 前処理したショットはメモリに 2 つまで持つ。順に描くので、古いものから捨てる。同じ spec のショットは前処理を共有する。
+
+### 焼け抜け（burn・fx-timeline/0.2）
+
+前のショットがノイズの形に焼け抜けて今のショットが現れ、境目が光るつなぎ。火から次の場面へ移る所などに使う。
+つなぎは 2 つのショットの画が要るので、hooks ではなく timeline のつなぎとして持つ。式は `src/mv_pipeline/fx/burn.py`（numpy だけ）。
+
+```json
+{"type": "burn", "duration_s": 0.5, "seed": 3, "scale": 0.08, "soft": 0.035,
+ "edge": {"color": [255, 125, 35], "width": 0.05, "gain": 0.9}, "char": 0.6, "from": [0.5, 0.5], "bias": 0.0}
+```
+
+- **窓と色空間**は xfade と同じ。`start` から `duration_s` の間、前のショットを描き続け、表示の値（0..255 の float）の上で混ぜる。
+  - 進みは p = (t − start)/`duration_s`。直線で 0 から 1 へ進む（xfade と違い、smoothstep は掛けない）。
+  - `duration_s` だけが必須。ほかは既定値があり、`edge` と `char` は書いたときだけ効く（書かなければ、ただの焼け抜け）。
+- **場** N（0..1）は、画面の正規化座標の上のなめらかなノイズ。
+  - `seed`（既定 0）で模様が決まる。時刻では変わらない。
+  - `scale`（既定 0.08。0.01〜4）は模様の大きさで、画面の幅に対する割合。粗いむらの升目 4 つ分に当たる（既定で、画面の幅に粗い升目が 50 個）。
+  - 作り方: 格子の乱数を 3 次の補間（OpenCV の INTER_CUBIC と同じ核）でつないだむらを 2 つ足す。粗いむら（升目は画面の幅 × `scale`/4）を 0.7、
+    升目がその 1/4 の細かいむらを 0.3。それを 0..1 に伸ばす。
+  - 横も縦も画面の幅を物差しにするので、升目は正方形になる。画素の中心で読むので、解像度（`--scale`）を変えても同じ模様になる。
+    0..1 に伸ばす最小と最大も、出力の解像度に依らない格子（粗い升目あたり 10 点）で読む。そこからはみ出した山と谷は 0 と 1 で切る。
+  - 細かいむらの升目（画面の幅 × `scale`/16）が 2 画素より小さくなる解像度では、細部が画素に負ける（既定の 0.08 なら幅 400 画素より下。粗いむらは同じ）。
+- **しきい値**: thr = −R + p·(1 + 2·R)。R = `soft` + 縁の `width`（縁が無ければ `width` は 0 として数える）。
+  - p = 0 で今のショットは 1 画素も出ず、p = 1 で前のショットは 1 画素も残らない。
+  - 窓の頭のコマ（p = 0）は前のショット、窓が終わった最初のコマは今のショットと、バイト単位で同じ。
+- **混ぜ方**: m = clamp((thr − N)/`soft`, 0, 1)、画 = 前·(1 − m) + 今·m。`soft`（既定 0.035）は境目のやわらかさ（場の値の幅）。
+- **焦げ**（`char`。既定 0 = 無効）: 前線の少し先（まだ前のショットの側）の帯を暗くする。
+  - 混ぜた画に (1 − `char`·c) を掛ける。c = clamp(1 − |N − thr − 0.353·R| / (0.471·R), 0, 1)。帯の中心でいちばん暗く（`char` の割合まで）、前後へ離れるほど元に戻る。
+  - 既定の `soft` 0.035・`width` 0.05 では、前線の 0.03 先を中心に前後 0.04（R に比例して伸び縮みし、前線から R の内側に収まる）。
+- **縁**（`edge`）: e = clamp(1 − |N − thr|/`width`, 0, 1) を、`color` × `gain` × e（255 で止める）でスクリーン合成する。焦げの後に重ねる。
+  - `edge` を書けば、既定は `color` (255, 125, 35)・`width` 0.05・`gain` 0.9（`"edge": {}` で既定の縁。色は `fx.fire` の小さな炎の光と同じ橙）。
+  - `edge` が無いか `gain` が 0 なら縁なし（どちらも同じ絵）。
+- **広がり方**（`from`・`bias`）: `bias` > 0 なら、場を N·(1 − `bias`) + D·`bias` にする。
+  - D は `from`（画面の正規化座標 [x, y]。既定は中央）からの距離で、いちばん遠い画面の隅で 1。`from` の近くから先に焼ける。
+  - `bias` 0（既定）は純粋なノイズで、`from` は使わない。1 は `from` から丸く広がる。
+  - `bias` が大きいほど場の値の幅が 0..1 より狭くなり、窓の頭と終わりで何も起きない時間が少し延びる。
+- 前線から R より遠い画素は、前のショットか今のショットの値そのまま（縁と焦げは前線の近くだけ）。
+- 時刻だけで決まり、状態を持たない。区間（`--start`）で描いても、全体を描いたときと同じコマになる。
+- `timeline.json` の `seam_info` の kind は `burn`。拍との照合は xfade と同じく、焼け始めの `start` で行う。
+- **確認の状況**: リポジトリの外の試作（1080p、0.5 秒）で同じ式を使った。この実装そのものは合成素材でだけ確かめた（実素材では未確認）。
+  - 同じなのは、混ぜ方・縁の e・焦げの帯の式と、進みが直線であること（上の例の値では、しきい値をそろえれば同じ値になる。テストに式の写しがある）。
+  - 違うのは次の 3 つ。しきい値の余白は R にそろえた（試作は thr = p·1.25 − 0.12）。縁の光はスクリーン合成にした（試作は発光のバッファに足してぼかす）。
+    ノイズは、試作と同じ 2 つのむら（重み 0.7・0.3、升目は画面の幅の 1/48 と 1/192。`scale` 0.083 に当たる）を、解像度に依らない形に作り直した
+    （乱数の並びが違うので、模様そのものは同じにならない）。
 
 ### 演出の hooks（火・空と天気・明かり）
 

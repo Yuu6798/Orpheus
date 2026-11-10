@@ -1,4 +1,5 @@
-"""fx-timeline/0.1（fx/sequence.py）: ショットの並び・つなぎ（cut・xfade・black・flash）・snap・timeline の look・gate の記録・run。
+"""fx-timeline（fx/sequence.py）: ショットの並び・つなぎ（cut・xfade・black・flash）・snap・timeline の look・gate の記録・run。
+合成の timeline は今の版（0.2）で書く。0.2 のつなぎ（burn）と、0.1 の timeline の読み方は test_fx_burn.py。
 
 つなぎと snap の式は、実制作のレンダラの式を写した関数（private_*）と合成の配列で比べる。描画を使うテストは cv2（fx extra）が要る。
 """
