@@ -250,6 +250,34 @@ def test_include_and_exclude_combine_as_any_include_and_no_exclude():
 
 # ---- 手順の部品 --------------------------------------------------------------------
 
+def test_pixels_and_normalized_coordinates_round_trip():
+    size = (480, 320)
+    assert points.to_pixel(0.5, 0.5, size) == (240, 160) and points.to_pixel(0.999, 0.0, size) == (479, 0)   # その点を含む画素
+    assert points.to_pixel(1.0, 1.0, size) == (479, 319) and points.to_pixel(0.4999, 0.4999, size) == (239, 159)
+    assert points.to_norm(240, 160, size) == (240.5 / 480, 160.5 / 320)                                       # 画素の中心
+    assert all(points.to_pixel(*points.to_norm(x, y, size), size) == (x, y) for x in (0, 7, 239, 479) for y in (0, 100, 319))
+
+
+def test_the_template_is_the_median_of_normalized_patches():
+    rng = np.random.default_rng(3)
+    shape = rng.normal(0, 1, (7, 7))
+    gray = np.full((40, 60), 100.0, np.float32)
+    centers = [(10, 10), (30, 12), (50, 20), (20, 30)]
+    for index, (x, y) in enumerate(centers):                                                  # 同じ形を、明るさと濃さを変えて置く
+        gray[y - 3:y + 4, x - 3:x + 4] = 80 + 20 * index + (5 + 3 * index) * shape
+    gray[30, 20] = 255                                                                        # 4 つ目の例にだけ写り込んだ点
+    stack = points.patches(gray, centers, 3)
+    assert all(abs(float(patch.mean())) < 1e-6 and float(patch.std()) == pytest.approx(1.0, abs=1e-5) for patch in stack)
+    assert np.abs(stack[0] - stack[1]).max() < 1e-5                                           # 明るさと濃さの違いは消える
+    template = points.template_of(stack)
+    wanted = (shape - shape.mean()) / shape.std()
+    assert template.dtype == np.float32 and np.abs(template - wanted).max() < 1e-5             # 写り込みに引きずられない（平均なら崩れる）
+    assert np.abs(np.mean(np.stack(stack), axis=0) - wanted).max() > 0.2
+    assert points.patches(np.full((9, 9), 50.0, np.float32), [(4, 4)], 3) == [None]            # 平らな切り抜き
+    with pytest.raises(PipelineError, match="型紙が平ら"):
+        points.template_of([np.zeros((7, 7), np.float32)] * 3)
+
+
 def test_peaks_keep_the_higher_of_two_close_maxima_and_only_allowed_ones():
     score = np.zeros((20, 30), np.float32)
     score[5, 5], score[5, 10], score[12, 20], score[15, 3], score[2, 25] = 0.9, 0.8, 0.7, 0.4, 0.8
@@ -274,7 +302,7 @@ def test_too_many_maxima_stop_with_advice(monkeypatch):
         points.peaks(score, 0.5, 2, np.ones(score.shape, bool))
 
 
-def test_flat_windows_score_zero_and_are_never_picked(tmp_path):
+def test_flat_windows_score_zero_and_are_never_picked(tmp_path, monkeypatch):
     rgb, rings, _ = write_scene(tmp_path)
     rgb[:, :200] = 128                                                                        # 左側を同じ値で塗りつぶす
     Image.fromarray(rgb).save(tmp_path / "base.png")
@@ -288,6 +316,14 @@ def test_flat_windows_score_zero_and_are_never_picked(tmp_path):
     assert np.all(score[flat] == 0.0) and np.isfinite(score).all() and -1.0 <= score.min() and score.max() <= 1.0
     _, result = find(tmp_path, plan_for(right, threshold=0.3, refine=0))
     assert all(x > 200 - PATCH for x, _ in pixels(result)) and len(matched(pixels(result), right)) == len(right)
+    # OpenCV が平らな窓に高い点数を返しても 0 点にし、NaN・無限大・範囲の外の値は 0 と −1..1 にそろえる
+    broken = np.full(flat.shape, 0.5, np.float32)
+    broken[flat] = 0.9
+    broken[0, -4:] = [np.nan, np.inf, -np.inf, 7.0]
+    monkeypatch.setattr(points.cv2, "matchTemplate", lambda *args: broken.copy())
+    guarded = points.correlate(gray8.astype(np.float32), template, flat)
+    assert np.all(guarded[flat] == 0.0) and guarded[0, -4:].tolist() == [0.0, 0.0, 0.0, 1.0] and guarded[5, -5] == 0.5
+    monkeypatch.undo()
     flat_seed = plan_for(right)
     flat_seed["seeds"][0] = norm(100, 100)
     with pytest.raises(PipelineError, match="種 0 の周り 15 画素が平ら"):
@@ -306,6 +342,19 @@ def test_refine_rebuilds_the_template_from_the_best_half_of_the_detections(tmp_p
     # 手で読んだ種（1 画素ずれ）の型紙より、検出から作り直した型紙のほうが、輪の点数の下限が上がる
     assert min(p["score"] for p in twice["points"]) > min(p["score"] for p in plain["points"])
     assert not np.array_equal(np.asarray(Image.open(tmp_path / "r0" / "template.png")), np.asarray(Image.open(tmp_path / "r2" / "template.png")))
+
+
+def test_refine_takes_the_highest_scoring_detections():
+    rgb, rings, _ = scene()
+    gray8 = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    seeds = [(x + dx, y + dy) for (x, y), (dx, dy) in zip(rings, HAND)]
+    everywhere = np.ones((H, W), bool)
+    first = points.detect(gray8, seeds, PATCH, 0.5, 8, 0, everywhere)                         # しきい値を下げて、輪でないものも混ぜる
+    best = sorted(first["points"], key=lambda p: -p[2])[:math.ceil(len(first["points"]) / 2)]
+    assert len(first["points"]) > 70 and len(matched([p[:2] for p in best], rings)) == len(best)   # 上位半分は全部輪、残りに輪でないものがある
+    wanted = points.template_of(points.patches(gray8.astype(np.float32), [p[:2] for p in best], PATCH // 2))
+    refined = points.detect(gray8, seeds, PATCH, 0.5, 8, 1, everywhere)
+    assert np.array_equal(refined["template"], wanted) and not np.array_equal(refined["template"], first["template"])
 
 
 def test_refining_from_mostly_false_detections_spoils_the_template(tmp_path):
