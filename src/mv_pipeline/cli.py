@@ -234,7 +234,7 @@ def _gate_parser(commands):
                                              "exit code 1 above --max-per-s. Not a compliance judgment")
     flashes.add_argument("video", type=Path)
     flashes.add_argument("--out", type=Path, help="default: <video stem>_flash_report next to the video")
-    flashes.add_argument("--delta", type=float, default=0.10, help="a change is a rise or fall of at least this between frames (brightness 0-1)")
+    flashes.add_argument("--delta", type=float, default=0.10, help="a change is a rise or fall of at least this from the last peak or valley (linear relative luminance 0-1)")
     flashes.add_argument("--max-per-s", type=float, default=3, help="most flashes allowed in any one-second window")
 
 

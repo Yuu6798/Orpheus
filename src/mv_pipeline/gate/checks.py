@@ -489,14 +489,22 @@ def check_export(timeline, video, master, expected, th):
     return result(name, status, "、".join(notes), problems)
 
 
+FLASH_CHECK = "明滅"
+
+
+def _flash_source(video, master):
+    """明滅を測る動画と、その呼び名。master があれば master、無ければ video（どちらも無ければ None）。"""
+    return (master, "master") if master is not None else (video, "video")
+
+
 def check_flashes(timeline, video, master, limits):
     """完成動画の明滅（gate.json に flash を書いたときだけ）。(検査の行, flash_report.json の中身 | None)。
 
     master（無ければ video）を gate/flashes.py で測り、どの 1 秒の窓でも明滅が max_per_s 回以下かを見る。
     回数は機械で測った数字で、規格への適合の判定ではない。問題の時刻は、ほかの検査と同じショットの時刻（描いた区間の開始を足す）。
     動画を読めないときは、ほかの検査の結果を捨てずに、この行を不合格にする（測れていないものを合格にしない）。"""
-    name = "明滅"
-    target, label = (master, "master") if master is not None else (video, "video")
+    name = FLASH_CHECK
+    target, label = _flash_source(video, master)
     if target is None:
         return skip(name, "master か video"), None
     from . import flashes
@@ -506,7 +514,7 @@ def check_flashes(timeline, video, master, limits):
         return result(name, "fail", f"{label} の明滅を測れません", [{"t": 0, "text": "", "detail": str(error)[:400]}]), None
     counts, top, window = measured["counts"], measured["max_per_window"], measured["busiest_window"]
     summary = (f"{label} を測定、変化 {counts['changes']}（上がり {counts['up']}・下がり {counts['down']}）、明滅 {counts['flashes']} 回、"
-               f"どの 1 秒でも最大 {top} 回（上限 {limits['max_per_s']:g}、変化の大きさ {limits['delta']:g} 以上）")
+               f"どの 1 秒でも最大 {top} 回（上限 {limits['max_per_s']:g}、変化は相対輝度で {limits['delta']:g} 以上）")
     problems = []
     if measured["status"] == "fail":
         frames = "・".join(f"{a}-{b}" for a, b in window["pairs"])
@@ -518,16 +526,20 @@ def check_flashes(timeline, video, master, limits):
     return result(name, measured["status"], summary, problems), measured
 
 
-def _extract_stills(report, video, out, first=0.0):
-    """問題のコマを静止画で書き出す（検査ごとに最大 MAX_STILLS 枚）。first は動画の先頭のショット時刻。"""
-    if video is None:
-        return
+def _extract_stills(report, video, out, first=0.0, sources=None):
+    """問題のコマを静止画で書き出す（検査ごとに最大 MAX_STILLS 枚）。first は動画の先頭のショット時刻。
+
+    sources は {検査の名前: 動画}。その検査の静止画だけを、測った動画から取る（明滅は master を測るので master から）。
+    ほかの検査は今までどおり video から取り、video が無ければ取らない。"""
     for item in report["checks"]:
+        source = (sources or {}).get(item["check"], video)
+        if source is None:
+            continue
         for index, problem in enumerate(item["problems"][:MAX_STILLS]):
             if not problem.get("t"):
                 continue
             target = out / f"{item['check']}_{index:02d}_{problem['t']:.2f}s.jpg"
-            run = subprocess.run([ffmpeg(), "-y", "-loglevel", "error", "-nostdin", "-ss", f"{max(0.0, problem['t'] - first):.3f}", "-i", str(video),
+            run = subprocess.run([ffmpeg(), "-y", "-loglevel", "error", "-nostdin", "-ss", f"{max(0.0, problem['t'] - first):.3f}", "-i", str(source),
                                   "-frames:v", "1", "-q:v", "3", str(target)], capture_output=True)
             if run.returncode == 0 and target.is_file():
                 problem["still"] = target.name
@@ -607,7 +619,9 @@ def run(config_path, out=None):
     out.mkdir(parents=True, exist_ok=True)
     if flash_report is not None:
         flashes.write(flash_report, out)
-    _extract_stills(report, video, out, _window(timeline)[0])
+    # flash を書いたときだけ、明滅の静止画を測った動画（master があれば master）から取る。ほかは今までどおり video から
+    sources = {FLASH_CHECK: _flash_source(video, master)[0]} if flash is not None else None
+    _extract_stills(report, video, out, _window(timeline)[0], sources)
     (out / "gate_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "gate_report.md").write_text(_markdown(report), encoding="utf-8")
     return report, out

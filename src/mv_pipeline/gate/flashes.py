@@ -6,27 +6,30 @@ hooks で足した光は timeline に載らないので、描き終えた動画�
 **規格への適合を判定するものではない**（既定値は広く使われている目安に合わせた仮の値。docs/gate.md）。
 
 測り方:
-  1. コマを小さく読む（幅 READ_WIDTH 画素の面積平均。色の行列はタグによらず BT.709 として読む。読み手は inspection.video）。
-  2. コマごとの明るさ = 表示の値（ガンマのかかった RGB）の輝度 0.2126 R + 0.7152 G + 0.0722 B の画面全体の平均 / 255。
-  3. 変化 = 続く 2 コマの間で明るさが delta 以上、上がるか下がること。同じ向きの変化が続くコマに並ぶとき（数コマかけた
-     上がり・下がり）は 1 つにまとめ、大きさはその合計。1 コマあたり delta 未満のゆっくりした明暗は、何コマ続いても変化にしない。
-  4. 明滅 = 隣り合う 2 つの変化が反対向き（暗 → 明 → 暗、または明 → 暗 → 明）で、始まりのコマの差が 1 秒未満の組。前から順に、
-     重ならないように組にする。片方向だけの変化（場面の切り替え）や、1 秒以上離れた 2 つの変化は明滅にしない。
-  5. 1 秒の窓の回数 = その窓（始まりのコマから fps コマ未満）に入る変化だけを、4 と同じ決まりで組にした数。窓の前にある
+  1. コマを小さく読む（幅 READ_WIDTH 画素までの面積平均。色の行列はタグによらず BT.709 として読む。読み手は inspection.video）。
+  2. コマごとの明るさ = 線形の相対輝度。表示の値を sRGB の伝達特性で線形に戻し（fx.color.to_linear。fx・dance の合成と同じ式）、
+     0.2126 R + 0.7152 G + 0.0722 B を画面全体で平均する（0〜1）。delta はこの値に対するしきい値。
+  3. 変化 = 明るさが、直前の極値（山か谷）から delta 以上離れること（しきい値つきのジグザグ）。離れたコマで 1 つの変化とし、
+     向きを反転して次の極値を追う。変化の時刻はしきい値を越えたコマ。上がりと下がりは必ず交互になる。
+     数コマかけた上がりも、ゆっくり消える光の戻りも、合計が delta に達したコマで 1 つの変化になる。delta 未満の揺れは変化にしない。
+  4. 明滅 = 隣り合う 2 つの変化（暗 → 明 → 暗、または明 → 暗 → 明）で、コマの差が 1 秒未満の組。前から順に、重ならないように
+     組にする。片方向だけの変化（場面の切り替え・単調なフェード）や、1 秒以上離れた 2 つの変化は明滅にしない。
+  5. 1 秒の窓の回数 = その窓（ある変化のコマから fps コマ未満）に入る変化だけを、4 と同じ決まりで組にした数。窓の前にある
      変化が組をずらして数を減らさないよう、窓ごとに組み直す（明滅の一覧と区切りが違うことがある）。
      どの窓でも最大の回数が max_per_s を超えたら status は fail（終了コード 1）。
 
-出力（既定は動画の隣の `<動画の名前>_flash_report/`）は flash_report.json: 動画の sha256・fps・コマ数、しきい値、変化の一覧、
+出力（既定は動画の隣の `<動画の名前>_flash_report/`）は flash_report.json: 動画の sha256・fps・コマ数、測り方、しきい値、変化の一覧、
 明滅の一覧、どの 1 秒の窓でも最大何回か、最も多い窓。同じ動画と同じしきい値なら同じ報告になる（時刻や絶対パスは書かない）。
 
-測らないもの: 画面の一部だけの明滅（全体の平均に薄まる）、色（赤）の明滅、1 コマあたり delta 未満でゆっくり消える光の戻り。
-cv2 は使わない（numpy・Pillow・ffmpeg）。
+測らないもの: 画面の一部だけの明滅（全体の平均に薄まる）、色（赤）の明滅、暗い側の明るさの条件（目安にある「暗い方が
+一定より暗いときだけ数える」は見ていない）。cv2 は使わない（numpy・Pillow・ffmpeg）。
 """
 import math
 from pathlib import Path
 
 import numpy as np
 
+from ..fx.color import to_linear
 from ..inspection import video
 from ..io import PipelineError, atomic_json, sha256
 
@@ -34,11 +37,12 @@ SCHEMA = "gate-flash-report/0.1"
 REPORT_NAME = "flash_report.json"
 DEFAULTS = {"delta": 0.10, "max_per_s": 3}   # 仮の値（1 秒間に 3 回を超えない・変化は最大の明るさの 10%）。規格の判定ではない
 WINDOW_S = 1.0
-READ_WIDTH = 64                              # 読む幅（画素）。画面全体の平均だけを使うので小さくてよい
+READ_WIDTH = 320                             # 読む幅（画素。元より大きくしない）。画面全体の平均だけを使うので小さく読む
 READ_MATRIX = "bt709"
-LUMA = (0.2126, 0.7152, 0.0722)              # BT.709 の輝度の係数（表示の値に掛ける）
+TRANSFER = "srgb"                            # 表示の値を線形に戻す式（fx.color.to_linear）
+LUMA = (0.2126, 0.7152, 0.0722)              # BT.709 / sRGB の原色の相対輝度の係数（線形の値に掛ける）
 EPS = 1e-9
-NOTE = "機械で測った回数の報告です。規格への適合を判定するものではありません（画面の一部・色の明滅は測っていません）。"
+NOTE = "機械で測った回数の報告です。規格への適合を判定するものではありません（画面の一部・色の明滅と、暗い側の明るさの条件は見ていません）。"
 
 
 def _number(value, name):
@@ -65,14 +69,16 @@ def settings(value=None, where="flash"):
 
 
 def read_levels(path):
-    """(コマごとの明るさ 0〜1 の list, 動画の情報, 読んだ大きさ)。情報は inspection.video.describe の形。"""
+    """(コマごとの明るさ = 線形の相対輝度 0〜1 の list, 動画の情報, 読んだ大きさ)。情報は inspection.video.describe の形。
+
+    縮めたコマの画素ごとに線形へ戻してから平均する（平均してから戻すと、明暗のある絵で暗く出る）。"""
     path = Path(path)
     if video.is_image(path):
         raise PipelineError(f"動画を指定してください（画像は測れません）: {path.name}")
     info = video.describe(path)
     size = video.even_size(info["width"], info["height"], READ_WIDTH)
     weights = np.array(LUMA)
-    levels = [float(frame.reshape(-1, 3).mean(axis=0) @ weights) / 255.0
+    levels = [float(to_linear(frame).reshape(-1, 3).mean(axis=0, dtype=np.float64) @ weights)
               for _, frame in video.frames(path, size, {**info, "matrix": READ_MATRIX})]
     if not levels:
         raise PipelineError(f"動画のコマを 1 つも読めません: {path.name}")
@@ -80,30 +86,56 @@ def read_levels(path):
 
 
 def find_changes(levels, delta):
-    """変化の一覧 [{"frame", "end_frame", "direction", "from", "to", "amount"}]。
+    """変化の一覧 [{"frame", "direction", "from", "from_frame", "to", "to_frame", "amount"}]。上がりと下がりが必ず交互に並ぶ。
 
-    frame は変わった後の最初のコマ（frame - 1 → frame の間で delta 以上）。同じ向きの変化が続くコマに並べば 1 つにまとめ、
-    end_frame はその最後のコマ、amount は from（変わる前）と to（変わった後）の差。"""
+    直前の極値（山か谷）から delta 以上離れたコマで 1 つの変化とし、向きを反転して次の極値を追う（しきい値つきのジグザグ）。
+    最初の変化までは、それまでの最小と最大の両方を極値として見る。
+      frame       しきい値を越えたコマ（変化の時刻）
+      from, from_frame   離れる前の極値と、そのコマ（同じ値が続くときは最後のコマ）
+      to, to_frame       変化の後に着いた極値と、そのコマ（次の変化の from。最後の変化は動画の終わりまでの極値）
+      amount      from と to の差（山から谷まで。delta 以上）"""
     changes = []
+    low = high = extreme = 0       # 最初の変化まで: これまでの最小・最大のコマ。その後: 追っている極値のコマ
+    direction = None
     for index in range(1, len(levels)):
-        step = levels[index] - levels[index - 1]
-        if abs(step) < delta - EPS:
-            continue
-        direction = "up" if step > 0 else "down"
-        last = changes[-1] if changes else None
-        if last is not None and last["end_frame"] == index - 1 and last["direction"] == direction:
-            last["end_frame"], last["to"] = index, levels[index]
+        level = levels[index]
+        if direction is None:
+            low = index if level <= levels[low] else low
+            high = index if level >= levels[high] else high
+            if level - levels[low] >= delta - EPS:
+                start, direction = low, "up"
+            elif levels[high] - level >= delta - EPS:
+                start, direction = high, "down"
+            else:
+                continue
+        elif direction == "up":
+            if level >= levels[extreme]:
+                extreme = index
+                continue
+            if levels[extreme] - level < delta - EPS:
+                continue
+            start, direction = extreme, "down"
         else:
-            changes.append({"frame": index, "end_frame": index, "direction": direction, "from": levels[index - 1], "to": levels[index]})
-    for change in changes:
-        change["amount"] = abs(change["to"] - change["from"])
+            if level <= levels[extreme]:
+                extreme = index
+                continue
+            if level - levels[extreme] < delta - EPS:
+                continue
+            start, direction = extreme, "up"
+        changes.append({"frame": index, "direction": direction, "from": levels[start], "from_frame": start})
+        extreme = index
+    # 着いた極値は、次の変化が離れた極値。最後の変化は、動画の終わりまで追った極値
+    ends = [(c["from"], c["from_frame"]) for c in changes[1:]] + ([(levels[extreme], extreme)] if changes else [])
+    for change, (level, frame) in zip(changes, ends):
+        change["to"], change["to_frame"], change["amount"] = level, frame, abs(level - change["from"])
     return changes
 
 
 def pair(changes, span):
-    """明滅の組 [(i, j)]（changes の添字）。隣り合う 2 つが反対向きで、始まりのコマの差が span 未満なら 1 組。
+    """明滅の組 [(i, j)]（changes の添字）。隣り合う 2 つが反対向きで、コマの差が span 未満なら 1 組。
 
-    前から順に、重ならないように取る（隣どうしの組を最も多く取る取り方になる）。"""
+    前から順に、重ならないように取る（隣どうしの組を最も多く取る取り方になる）。find_changes の変化は向きが交互なので、
+    向きの条件で外れるのは手で作った一覧だけ。"""
     pairs, index = [], 0
     while index + 1 < len(changes):
         first, second = changes[index], changes[index + 1]
@@ -116,7 +148,7 @@ def pair(changes, span):
 
 
 def busiest(changes, span):
-    """(最大の回数, その窓の最初の変化の添字 | None, その窓の組)。窓は変化の始まりのコマから span コマ未満。
+    """(最大の回数, その窓の最初の変化の添字 | None, その窓の組)。窓は変化のコマから span コマ未満。
 
     どの 1 秒の窓に入る変化も、ある変化から始まる窓に全部入るので、変化から始まる窓だけを見れば足りる。同じ回数なら早い窓。"""
     best = (0, None, [])
@@ -144,8 +176,8 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
     changes = find_changes(levels, limits["delta"])
     pairs = pair(changes, span)
     top, start, window_pairs = busiest(changes, span)
-    rows = [{"frame": c["frame"], "end_frame": c["end_frame"], "t": _seconds(c["frame"], fps), "direction": c["direction"],
-             "amount": round(c["amount"], 4), "from": round(c["from"], 4), "to": round(c["to"], 4)} for c in changes]
+    rows = [{"frame": c["frame"], "t": _seconds(c["frame"], fps), "direction": c["direction"], "amount": round(c["amount"], 4),
+             "from": round(c["from"], 4), "from_frame": c["from_frame"], "to": round(c["to"], 4), "to_frame": c["to_frame"]} for c in changes]
     flashes = [{"frame": changes[a]["frame"], "t": _seconds(changes[a]["frame"], fps),
                 "return_frame": changes[b]["frame"], "return_t": _seconds(changes[b]["frame"], fps),
                 "order": f"{changes[a]['direction']}_{changes[b]['direction']}",
@@ -161,7 +193,9 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
         "schema_version": SCHEMA,
         "video": {"name": path.name, "sha256": sha256(path), "fps": fps, "frames": len(levels),
                   "size": [info["width"], info["height"]], "matrix_tag": info["matrix"]},
-        "read": {"size": list(size), "matrix": READ_MATRIX, "brightness": "mean(0.2126 R + 0.7152 G + 0.0722 B) / 255"},
+        "read": {"size": list(size), "matrix": READ_MATRIX, "transfer": TRANSFER, "weights": list(LUMA),
+                 "brightness": "relative_luminance",    # 表示の値を線形に戻した 0.2126 R + 0.7152 G + 0.0722 B の画面平均（0〜1）
+                 "change": "delta_from_last_extremum"}, # 直前の極値（山か谷）から delta 以上離れたコマで 1 つの変化
         "thresholds": {**limits, "window_s": WINDOW_S},
         "counts": {"changes": len(changes), "up": ups, "down": len(changes) - ups, "flashes": len(flashes),
                    "unpaired_changes": len(changes) - 2 * len(flashes)},
