@@ -263,6 +263,11 @@ def test_spaced_times_never_repeat_a_frame_and_bad_steps_are_refused(tmp_path):
     for bad in (0, -2, 2.5):
         with pytest.raises(PipelineError, match="--count"):
             sheet.build(tmp_path / "frames", tmp_path / "x.png", count=bad, **options)
+    for extra in ({"every": 5e-324}, {"count": 10 ** 400}):                    # 浮動小数で数えられない値も、エラーの文で止める
+        with pytest.raises(PipelineError, match="桁外れ"):
+            sheet.build(tmp_path / "frames", tmp_path / "x.png", **extra, **options)
+    with pytest.raises(PipelineError, match="正の fps"):
+        sheet.build(tmp_path / "frames", tmp_path / "x.png", every=0.5, **{**options, "fps": 0})
     assert not (tmp_path / "x.png").exists()
 
 

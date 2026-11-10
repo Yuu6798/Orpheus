@@ -281,8 +281,14 @@ def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEF
     for entry in entries:
         entry["missing"] = not 0 <= entry["frame"] < source["frames"]
     if every is not None or count is not None:
+        if not (math.isfinite(fps) and fps > 0):
+            raise PipelineError(f"--every・--count には正の fps が要ります: {fps:g}")
+        try:
+            spaced = spaced_times(fps, source["frames"], every, count)
+        except OverflowError:                 # 浮動小数で数えられないほど小さい間隔・多い等分
+            raise PipelineError(f"--every・--count の値が桁外れで、時刻を数えられません（--every {every}、--count {count}）") from None
         taken = {entry["frame"] for entry in entries}
-        for t, frame, name, short in spaced_times(fps, source["frames"], every, count):
+        for t, frame, name, short in spaced:
             if frame not in taken:            # 同じコマがすでにあれば足さない（--at・--events のコマ、--every、--count の順に残る）
                 taken.add(frame)
                 entries.append({"t": offset + t, "frame": frame, "event": name, "event_ascii": short, "missing": False})
