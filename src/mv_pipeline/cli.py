@@ -230,6 +230,12 @@ def _gate_parser(commands):
     tl.add_argument("--alpha-threshold", type=int, default=64, help="a pixel is visible when alpha is above this (0-254)")
     tl.add_argument("--flashes", help="comma-separated flash times in seconds to write into the timeline (props have none)")
     tl.add_argument("--out", type=Path, required=True, help="timeline.json to write (plus <stem>_measured.json)")
+    flashes = sub.add_parser("flashes", help="count whole-frame brightness flashes in a finished video (no timeline); "
+                                             "exit code 1 above --max-per-s. Not a compliance judgment")
+    flashes.add_argument("video", type=Path)
+    flashes.add_argument("--out", type=Path, help="default: <video stem>_flash_report next to the video")
+    flashes.add_argument("--delta", type=float, default=0.10, help="a change is a rise or fall of at least this between frames (brightness 0-1)")
+    flashes.add_argument("--max-per-s", type=float, default=3, help="most flashes allowed in any one-second window")
 
 
 def _inspect_parser(commands):
@@ -396,7 +402,7 @@ def dance_command(args):
 
 
 def gate_command(args):
-    """gate サブコマンドを実行して結果の辞書を返す。check の不合格は args.failed=1。"""
+    """gate サブコマンドを実行して結果の辞書を返す。check の不合格と、flashes の上限の超過は args.failed=1。"""
     if args.gate_command == "lines":
         from .gate import lines
         return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
@@ -412,6 +418,11 @@ def gate_command(args):
         except ValueError as error:
             raise PipelineError(f"--flashes は秒をコンマで区切って指定してください: {args.flashes!r}") from error
         return frames_timeline.write(args.frames, args.lyrics, args.layer, args.out, args.hints, args.alpha_threshold, flashes)
+    if args.gate_command == "flashes":
+        from .gate import flashes
+        report, out = flashes.run(args.video, args.out, args.delta, args.max_per_s)
+        args.failed = 1 if report["status"] == "fail" else 0
+        return flashes.summary(report, out)
     from .gate import checks
     report, out = checks.run(args.config, args.out)
     args.failed = 1 if report["overall"] == "fail" else 0

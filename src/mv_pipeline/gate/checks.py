@@ -17,6 +17,7 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "tracks": "tracks.json",                           {"名前": [[t, x, y], …]}（人物に付く要素の位置。画素）
      "poses": "poses.json",                             [{"t": 秒, "points": [[x, y], …]}]（骨格。正規化座標）
      "beats": "analysis.json",                          "downbeats"・"beats"・"beats_s" のどれかの配列（無ければ timeline の beats）
+     "flash": {"delta": 0.10, "max_per_s": 3},          書いたときだけ、master（無ければ video）の明滅を測る検査を足す（gate/flashes.py）
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
@@ -25,6 +26,8 @@ warn があれば pass_with_warnings、なければ pass。
 しきい値は最初の 1 作で確かめて直す前提の仮の値。好みの判断はしない。終了コードは fail のとき 1。
 
 timeline は dance-timeline/0.1 と 0.2 の両方を読む。dance/dance_timeline.schema.json で検証し、知らない欄は無視する。
+
+"flash" を書かない設定では、検査は今までの 9 つだけで、結果も合否も出力のファイルも変わらない（明滅の検査は既定で掛けない）。
 """
 import bisect
 import itertools
@@ -486,6 +489,32 @@ def check_export(timeline, video, master, expected, th):
     return result(name, status, "、".join(notes), problems)
 
 
+def check_flashes(timeline, video, master, limits):
+    """完成動画の明滅（gate.json に flash を書いたときだけ）。(検査の行, flash_report.json の中身 | None)。
+
+    master（無ければ video）を gate/flashes.py で測り、どの 1 秒の窓でも明滅が max_per_s 回以下かを見る。
+    回数は機械で測った数字で、規格への適合の判定ではない。問題の時刻は、ほかの検査と同じショットの時刻（描いた区間の開始を足す）。
+    動画を読めないときは、ほかの検査の結果を捨てずに、この行を不合格にする（測れていないものを合格にしない）。"""
+    name = "明滅"
+    target, label = (master, "master") if master is not None else (video, "video")
+    if target is None:
+        return skip(name, "master か video"), None
+    from . import flashes
+    try:
+        measured = flashes.measure(target, limits["delta"], limits["max_per_s"])
+    except PipelineError as error:
+        return result(name, "fail", f"{label} の明滅を測れません", [{"t": 0, "text": "", "detail": str(error)[:400]}]), None
+    counts, top, window = measured["counts"], measured["max_per_window"], measured["busiest_window"]
+    summary = (f"{label} を測定、変化 {counts['changes']}（上がり {counts['up']}・下がり {counts['down']}）、明滅 {counts['flashes']} 回、"
+               f"どの 1 秒でも最大 {top} 回（上限 {limits['max_per_s']:g}、変化の大きさ {limits['delta']:g} 以上）")
+    problems = []
+    if measured["status"] == "fail":
+        frames = "・".join(f"{a}-{b}" for a, b in window["pairs"])
+        problems.append({"t": _window(timeline)[0] + window["start_t"], "text": "",
+                         "detail": f"動画の {window['start_t']:.3f} 秒からの 1 秒に明滅 {top} 回（上限 {limits['max_per_s']:g}。組のコマ {frames}）"})
+    return result(name, measured["status"], summary, problems), measured
+
+
 def _extract_stills(report, video, out, first=0.0):
     """問題のコマを静止画で書き出す（検査ごとに最大 MAX_STILLS 枚）。first は動画の先頭のショット時刻。"""
     if video is None:
@@ -538,6 +567,10 @@ def run(config_path, out=None):
     th = {**THRESHOLDS, **config.get("thresholds", {})}
     if "confirmed_overrides_measured" in config:
         th["confirmed_overrides_measured"] = config["confirmed_overrides_measured"]
+    flash = config.get("flash")       # 書いたときだけ明滅を測る。書かなければ、下の 9 つの検査も報告も今までどおり
+    if flash is not None:
+        from . import flashes
+        flash = flashes.settings(flash, 'gate の設定の "flash"')
     video, master = path_of("video"), path_of("master")
     scoped = _scoped(timeline)
     confirmed = load("confirmed")
@@ -557,12 +590,20 @@ def run(config_path, out=None):
               check_hook_overlap(scoped, th),
               check_beats(scoped, load("beats"), th),
               check_export(timeline, video, master, config.get("expected_sha256"), th)]
+    flash_report = None
+    if flash is not None:
+        row, flash_report = check_flashes(timeline, video, master, flash)
+        checks.append(row)
     statuses = {c["status"] for c in checks}
     overall = ("fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses
                else "pass_with_warnings" if "warn" in statuses else "pass")
     report = {"overall": overall, "timeline": str(path_of("timeline")), "thresholds": th, "checks": checks}
+    if flash is not None:
+        report["flash"] = {**flash, "report": flashes.REPORT_NAME if flash_report is not None else None}
     out = Path(out) if out else base / "gate_report"
     out.mkdir(parents=True, exist_ok=True)
+    if flash_report is not None:
+        flashes.write(flash_report, out)
     _extract_stills(report, video, out, _window(timeline)[0])
     (out / "gate_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "gate_report.md").write_text(_markdown(report), encoding="utf-8")
