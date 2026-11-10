@@ -9,6 +9,7 @@ import subprocess
 import numpy as np
 import pytest
 from fx_synth import run_cli
+from PIL import Image
 
 from mv_pipeline import encode, media
 from mv_pipeline.gate import checks as gate
@@ -347,9 +348,12 @@ def test_gate_check_fails_above_the_limit_and_points_at_the_busiest_second(tmp_p
     row = report["checks"][9]
     assert row["summary"].startswith("video を測定、変化 8（上がり 4・下がり 4）、明滅 4 回、どの 1 秒でも最大 4 回（上限 3")
     (problem,) = row["problems"]
-    # 問題の時刻はショットの時刻（描いた区間の開始 2.0 秒 + 動画の 1.1667 秒）。静止画は動画のその位置から取る
-    assert problem["t"] == pytest.approx(3.1667) and "動画の 1.167 秒からの 1 秒に明滅 4 回" in problem["detail"]
-    assert "35-36・42-43・50-51・57-58" in problem["detail"] and (tmp_path / "gate_report" / problem["still"]).is_file()
+    # 問題の時刻はショットの時刻（描いた区間の開始 2.0 秒 + 動画のコマ 35 = 1.1666… 秒をミリ秒に切り捨てた 1.166 秒）
+    assert problem["t"] == pytest.approx(3.166) and "動画のコマ 35（1.166 秒）からの 1 秒に明滅 4 回" in problem["detail"]
+    assert "35-36・42-43・50-51・57-58" in problem["detail"]
+    # 静止画は窓の最初の変化のコマ（光ったコマ 35）。四捨五入した 1.167 秒で取ると、次の暗いコマ 36 になる
+    with Image.open(tmp_path / "gate_report" / problem["still"]) as still:
+        assert np.asarray(still.convert("L")).mean() > 200
     assert read_json(tmp_path / "gate_report/flash_report.json")["status"] == "fail"
 
 
