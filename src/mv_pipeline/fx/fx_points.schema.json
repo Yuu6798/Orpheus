@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fx-points/0.1",
+  "description": "繰り返し物の位置検出の計画（`mv fx points`）。実験的で contracts/ の外にある。同じ形の小物の例（seeds）の周りの切り抜きから型紙を作り、画像の輝度と正規化相互相関で照合して、threshold 以上の極大を拾う。座標はどれも元画像の正規化座標 0..1（`mv fx guides` で読む）、長さに _px の付く値は元画像の画素。素材パスは計画のファイルのあるディレクトリ基準。作品ごとの位置を含むので、計画は素材の隣に置き、Git に入れない。`x_` で始まる鍵はどの階層でも許す。",
+  "type": "object",
+  "required": ["schema_version", "image", "seeds", "patch_px"],
+  "properties": {
+    "schema_version": {"const": "fx-points/0.1"},
+    "image": {"type": "string", "minLength": 1, "description": "探す画像。輝度（8 bit）で照合する。"},
+    "seeds": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/unit_point"},
+              "description": "例の中心 [u, v]。3 個以上。どの種も、周りの patch_px 四方が画像に収まること。"},
+    "patch_px": {"type": "integer", "minimum": 3, "maximum": 1025,
+                 "description": "型紙の 1 辺（奇数。元画像の画素）。物 1 つと、その周りが少し入る大きさ。"},
+    "threshold": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.75,
+                  "description": "拾う点数（正規化相互相関、−1..1）の下限。既定は合成素材で決めた仮の値で、素材ごとに points_preview.jpg を見て決める。"},
+    "min_distance_px": {"type": "integer", "minimum": 1, "maximum": 4096,
+                        "description": "検出どうしの最小の間隔。これより近い極大は、点数の高い方だけを残す。省けば patch_px の半分（切り上げ）。"},
+    "refine": {"type": "integer", "minimum": 0, "maximum": 10, "default": 1,
+               "description": "型紙の作り直しの回数。1 回ごとに、点数の高い検出（上位半分。3 個は下回らない）の切り抜きから型紙を作り直して拾い直す。0 なら種の型紙だけ。"},
+    "include": {"type": "array", "items": {"$ref": "#/$defs/range"},
+                "description": "探す範囲。検出の中心がどれかに入るものだけを拾う。省くか空なら画像の全体。"},
+    "exclude": {"type": "array", "items": {"$ref": "#/$defs/range"},
+                "description": "除く範囲。検出の中心がどれかに入るものは拾わない（include より後に掛ける）。"}
+  },
+  "additionalProperties": false,
+  "patternProperties": {"^x_": {}},
+  "$defs": {
+    "unit": {"type": "number", "minimum": 0, "maximum": 1},
+    "unit_point": {"type": "array", "prefixItems": [{"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}], "minItems": 2, "maxItems": 2},
+    "coord": {"type": "number", "minimum": -16, "maximum": 16},
+    "point": {"type": "array", "prefixItems": [{"$ref": "#/$defs/coord"}, {"$ref": "#/$defs/coord"}], "minItems": 2, "maxItems": 2,
+              "description": "画像の外も指せる点（−16〜16）。"},
+    "range": {
+      "description": "範囲 1 つ。box・polygon・ellipse のどれか 1 つを書く。",
+      "oneOf": [{"$ref": "#/$defs/range_box"}, {"$ref": "#/$defs/range_polygon"}, {"$ref": "#/$defs/range_ellipse"}]
+    },
+    "range_box": {
+      "description": "矩形 [x0, y0, x1, y1]（画像の中。x0 < x1、y0 < y1）。",
+      "type": "object",
+      "required": ["box"],
+      "properties": {"box": {"type": "array", "prefixItems": [{"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}, {"$ref": "#/$defs/unit"}],
+                             "minItems": 4, "maxItems": 4}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "range_polygon": {
+      "description": "多角形（3 点以上。画像の外の頂点も書ける。`mv fx masks` の polygon と同じ塗り方）。",
+      "type": "object",
+      "required": ["polygon"],
+      "properties": {"polygon": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 3}},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    },
+    "range_ellipse": {
+      "description": "楕円の輪。中心からの距離 r（画像の幅を 1 とした横の半径。縦は画素で ry_ratio 倍につぶれた楕円の上で同じ r）が r_min 以上 rx 以下の所。",
+      "type": "object",
+      "required": ["ellipse"],
+      "properties": {"ellipse": {
+        "type": "object",
+        "required": ["center", "rx"],
+        "properties": {
+          "center": {"$ref": "#/$defs/point", "description": "中心 [u, v]（画像の外でもよい）。"},
+          "rx": {"type": "number", "exclusiveMinimum": 0, "maximum": 16, "description": "外側の横の半径（画像の幅を 1 とする）。"},
+          "ry_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 16, "default": 1, "description": "縦の半径 / 横の半径（画素で数える。1 で円。俯瞰でつぶれて見える輪は 1 より小さい）。"},
+          "r_min": {"type": "number", "minimum": 0, "default": 0, "description": "内側を抜く横の半径（rx と同じ単位。rx より小さいこと）。0 で抜かない。"}
+        },
+        "additionalProperties": false,
+        "patternProperties": {"^x_": {}}
+      }},
+      "additionalProperties": false,
+      "patternProperties": {"^x_": {}}
+    }
+  }
+}
