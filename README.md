@@ -27,7 +27,10 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv export remotion-props` | analysis / storyboard から、Remotion 側が秒を扱わずに済むコマ番号だけの props.json を書く | 実験的 | [remotion-props](docs/remotion-props.md) |
 | `mv layer render` | Remotion の透過レイヤーの描画を工程として包み、版・sha256・ブラウザー・描画時間・決定論の確認を台帳に残す | 実験的 | [remotion-props › 台帳](docs/remotion-props.md#描画を台帳に載せるmv-layer-render) |
 | `mv export subtitles` | 歌詞の行の時刻から、字幕ファイル（SRT・WebVTT・LRC）と動画の概要欄に貼る歌詞を書く | 実験的 | [subtitles](docs/subtitles.md) |
-| `mv fx` | 1 枚絵＋深度＋マスクから、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる | 実験的 | [fx](docs/fx.md) |
+| `mv fx` | 1 枚絵から、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる（深度とマスクは任意。無ければ、それを使う機能だけが使えない） | 実験的 | [fx](docs/fx.md) |
+| `mv fx timeline` | いくつもの fx のショットを、カット・クロスフェード・黒・フラッシュでつないで 1 本にする。`--hooks` で、炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光などの演出の部品（`fx.fire`・`fx.sky`・`fx.accent`）を掛ける | 実験的 | [fx › timeline](docs/fx.md#timeline複数のショットをつなぐfx-timeline01)、[演出の hooks](docs/fx.md#演出の-hooks火空と天気明かり) |
+| `mv fx guides` | 素材の絵に座標の目盛りを重ねて、光や炎を置く位置を読む | 実験的 | [fx › 見比べの補助](docs/fx.md#見比べの補助目盛り基準の列比較動画) |
+| `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する | 実験的 | [fx › legacy 接続](docs/fx.md#legacy-接続) |
 | `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
 | `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）、歌詞の行・秒の確認表、透過連番から起こす timeline | 実験的 | [gate](docs/gate.md) |
