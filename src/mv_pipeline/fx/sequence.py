@@ -1,4 +1,7 @@
-"""fx-timeline/0.1: 複数のショットを時刻順に並べ、つなぎで 1 本の動画にする（実験的。docs/fx.md）。
+"""fx-timeline/0.2: 複数のショットを時刻順に並べ、つなぎで 1 本の動画にする（実験的。docs/fx.md）。
+
+0.2 は 0.1 につなぎの焼け抜け（burn）を足した版。0.1 の timeline は 0.1 の schema（fx_timeline_0_1.schema.json）で検証して
+そのまま読む（正規形は 0.2 と同じ形で、絵は同じ）。0.1 の timeline に burn を書くと拒否する。
 
 ショットは start の昇順で、次のショットの start（最後は duration_s）まで。ショットは 2 種類:
 
@@ -14,11 +17,13 @@
 
   小数の位置は前後のコマを cv2.addWeighted で混ぜ（端は最後から 0.001 コマ手前で止める）、loop の重ねは float で足して切り捨てる。
 
-つなぎは表示の値で、式と順番は実制作のレンダラと同じ（ease は smoothstep）:
+つなぎは表示の値で、xfade・black・flash の式と順番は実制作のレンダラと同じ（ease は smoothstep）:
 
     xfade   t < start + duration_s の間、前のショットを描き続けて 前·(1 − a) + 今·a（a = ease((t − start)/duration_s)）
     black   t < start + duration_s の間、今·ease((t − start)/duration_s)（黒から上げる）
     flash   t − start < window_s の間、今 + (色 − 今)·strength·exp(−(t − start)·rate)（既定 0.75・(235, 210, 255)・0.30 秒・13）
+    burn    t < start + duration_s の間、前のショットを描き続けて、ノイズの形に焼け抜ける（0.2。進み p = (t − start)/duration_s は直線。
+            窓の置き方と色空間は xfade と同じ。式は fx/burn.py）
 
 つないだ後に timeline の look（fx-shot と同じ grade・vignette・grain。時刻は timeline の t）を掛け、0〜255 に切って切り捨てる
 （実制作と同じく、色調整・周辺減光・粒状感はつなぎの後）。snap は start をいちばん近い拍に寄せる（0 以下は 0、終わりの 0.01 秒以内は終わり。
@@ -42,12 +47,17 @@ from ..io import PipelineError, read_json, safe_path, sha256
 from . import spec as fxspec
 from . import timeline as fxtimeline
 
-SCHEMA_VERSION = "fx-timeline/0.1"
+SCHEMA_VERSION = "fx-timeline/0.2"
+SCHEMA_V01 = "fx-timeline/0.1"         # 0.2 の新しい項目（つなぎの burn）を使わない timeline。そのまま読めて同じ絵になる
 RECORD_SCHEMA = "dance-timeline/0.1"   # 0.2 は dance の描画の記録（frames・layers）が要る形
-_SCHEMA = Path(__file__).with_name("fx_timeline.schema.json")
+_SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("fx_timeline.schema.json"),
+            SCHEMA_V01: Path(__file__).with_name("fx_timeline_0_1.schema.json")}
 FLASH = {"strength": 0.75, "color": [235.0, 210.0, 255.0], "window_s": 0.30, "rate": 13.0}
+BURN = {"seed": 0, "scale": 0.08, "soft": 0.035, "char": 0.0, "from": [0.5, 0.5], "bias": 0.0}     # 縁（edge）は書いたときだけ
+BURN_EDGE = {"color": [255.0, 125.0, 35.0], "width": 0.05, "gain": 0.9}     # 色は fx.fire の小さい炎の光と同じ橙
+OVERLAPS = ("xfade", "burn")           # 前のショットを描き続けて重ねるつなぎ（窓は start から duration_s）
 LOOP = {"crossfade_frames": 6.0, "start_s": 0.0, "mix": 0.0, "mix_speed": 0.77, "mix_offset_s": 0.41}
-KEEP_SHOTS = 2          # 前処理済みのショットを持つ数（xfade は前と今の 2 つ）。順に描くので、古いものから捨てる
+KEEP_SHOTS = 2          # 前処理済みのショットを持つ数（xfade・burn は前と今の 2 つ）。順に描くので、古いものから捨てる
 KEEP_FRAMES = 8         # 動画のショットが持つ復号済みのコマの数（loop はループの区間 + 2 コマ）
 PULSE_DECAY = 9.0       # 拍の脈の減り方（1/秒。実制作の 2 つのレンダラと同じ）
 
@@ -57,9 +67,9 @@ def ease(x):
     return x * x * (3 - 2 * x)
 
 
-def schema():
-    """JSON Schema。look は fx-shot と同じ定義を使う。"""
-    data = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+def schema(version=SCHEMA_VERSION):
+    """JSON Schema（version は fx-timeline/0.2 か 0.1）。look は fx-shot と同じ定義を使う。"""
+    data = json.loads(_SCHEMAS[version].read_text(encoding="utf-8"))
     look = fxspec.look_schema()
     data["properties"]["look"] = look["look"]
     data["$defs"].update(look["defs"])
@@ -74,6 +84,7 @@ class Timeline:
     sha256: str
     warnings: tuple
     specs: tuple           # ショットごとの fx の Spec（data["shots"] と同じ順。動画のショットは None）
+    source_schema: str = SCHEMA_VERSION    # ファイルに書いてあった版（data の schema_version は読んだ後の正規形の版）
 
     def resolve(self, rel):
         return safe_path(self.base_dir, rel)
@@ -106,13 +117,25 @@ def _check_kinds(raw):
             raise PipelineError(f"fx timeline: shots[{index}] の {'・'.join(wrong)} は{'動画' if 'video' in shot else ' spec '}のショットには使えません（{hint}）")
 
 
+def _check_version(raw):
+    """版ごとのつなぎの取り違えを、スキーマの oneOf より分かる文で止める（0.1 の timeline に 0.2 の burn）。"""
+    shots = raw.get("shots")
+    for index, shot in enumerate(shots if isinstance(shots, list) else []):
+        transition = shot.get("transition_in") if isinstance(shot, dict) else None
+        if raw["schema_version"] == SCHEMA_V01 and isinstance(transition, dict) and transition.get("type") == "burn":
+            raise PipelineError(f"fx timeline: shots[{index}] の burn（焼け抜け）は {SCHEMA_VERSION} のつなぎです。{SCHEMA_V01} の timeline には"
+                                f"書けません（schema_version を {SCHEMA_VERSION!r} にしてください。ほかの項目はそのまま読めます）")
+
+
 def parse_timeline(raw, base_dir, path=None, digest=""):
     from ..dance import beats as dancebeats            # 拍の格子と時刻の参照は dance と同じ書き方
 
-    if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
-        raise PipelineError(f"fx timeline schema_version must be {SCHEMA_VERSION!r}")
+    version = raw.get("schema_version") if isinstance(raw, dict) else None
+    if not isinstance(version, str) or version not in _SCHEMAS:
+        raise PipelineError(f"fx timeline schema_version must be {SCHEMA_VERSION!r} or {SCHEMA_V01!r}, got {version!r}")
     _check_kinds(raw)
-    errors = sorted(jsonschema.Draft202012Validator(schema()).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
+    _check_version(raw)
+    errors = sorted(jsonschema.Draft202012Validator(schema(version)).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
         lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
         raise PipelineError("fx timeline is invalid:\n" + "\n".join(lines))
@@ -155,7 +178,7 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
     warnings = _validate(data, specs) + fxspec.look_warnings(look)
     if data["audio"]:
         safe_path(base_dir, data["audio"]["path"])
-    return Timeline(data=data, base_dir=base_dir, path=path, sha256=digest, warnings=tuple(warnings), specs=specs)
+    return Timeline(data=data, base_dir=base_dir, path=path, sha256=digest, warnings=tuple(warnings), specs=specs, source_schema=version)
 
 
 def _without_audio(sp):
@@ -172,6 +195,16 @@ def _transition(raw):
                 "window_s": float(raw.get("window_s", FLASH["window_s"])), "rate": float(raw.get("rate", FLASH["rate"]))}
     if kind in ("xfade", "black"):
         return {"type": kind, "duration_s": float(raw["duration_s"])}
+    if kind == "burn":
+        edge = raw.get("edge")
+        if edge is not None:
+            edge = {"color": [float(v) for v in edge.get("color", BURN_EDGE["color"])],
+                    **{key: float(edge.get(key, BURN_EDGE[key])) for key in ("width", "gain")}}
+        return {"type": "burn", "duration_s": float(raw["duration_s"]), "seed": int(raw.get("seed", BURN["seed"])),
+                **{key: float(raw.get(key, BURN[key])) for key in ("scale", "soft")},
+                "edge": edge if edge and edge["gain"] > 0 else None,          # gain 0 は縁なしと同じ絵（しきい値の余白も縁なしと同じ）
+                "char": float(raw.get("char", BURN["char"])), "from": [float(v) for v in raw.get("from", BURN["from"])],
+                "bias": float(raw.get("bias", BURN["bias"]))}
     return {"type": "cut"}
 
 
@@ -258,10 +291,10 @@ def shot_name(shot):
     return shot["spec"] if shot["kind"] == "spec" else shot["video"]["path"]
 
 
-def _xfade_tail(shots, index):
-    """次のショットが xfade なら、その長さ（その間もショット index を描き続ける）。それ以外は 0。"""
+def _overlap_tail(shots, index):
+    """次のショットが xfade か burn なら (その長さ, つなぎの種類)（その間もショット index を描き続ける）。それ以外は (0, None)。"""
     following = shots[index + 1]["transition_in"] if index + 1 < len(shots) else {"type": "cut"}
-    return following["duration_s"] if following["type"] == "xfade" else 0.0
+    return (following["duration_s"], following["type"]) if following["type"] in OVERLAPS else (0.0, None)
 
 
 def _validate(data, specs):
@@ -276,20 +309,20 @@ def _validate(data, specs):
             raise PipelineError(f"fx timeline: {where} の長さが 0 以下です{moved}（start {shot['start']:g} 秒、終わり {shot['end']:g} 秒）。"
                                 "start は昇順にし、最後のショットは duration_s より前から始めてください")
         transition, length = shot["transition_in"], shot["end"] - shot["start"]
-        if index == 0 and transition["type"] == "xfade":
-            raise PipelineError("fx timeline: 最初のショットは xfade できません（前のショットがありません。黒から上げるなら black）")
-        if transition["type"] in ("xfade", "black") and transition["duration_s"] > length + 1e-9:
+        if index == 0 and transition["type"] in OVERLAPS:
+            raise PipelineError(f"fx timeline: 最初のショットは {transition['type']} できません（前のショットがありません。黒から上げるなら black）")
+        if transition["type"] in (*OVERLAPS, "black") and transition["duration_s"] > length + 1e-9:
             raise PipelineError(f"fx timeline: {where} の {transition['type']} の duration_s {transition['duration_s']:g} 秒が"
                                 f"ショットの長さ {length:g} 秒より長いです")
         if shot["snap"] and abs(shot["start"] - shot["requested"]) > 0.25:
             warnings.append(f"shots[{index}]: snap で start が {shot['requested']:g} → {shot['start']:g} 秒に動きました")
         if sp is None:
             continue
-        tail = _xfade_tail(shots, index)            # 次の xfade の間も、このショットを描き続ける
+        tail, kind = _overlap_tail(shots, index)    # 次の xfade・burn の間も、このショットを描き続ける
         local_end = shot["offset_s"] + length + tail
         if local_end > sp.data["duration_s"] + 1e-6:
             warnings.append(f"{where}: spec の長さ {sp.data['duration_s']:g} 秒を超えて {local_end:g} 秒まで描きます"
-                            f"（{'次のショットの xfade の間も描くため。' if tail else ''}カメラのキーなどは spec の終わりの値のまま）")
+                            f"（{f'次のショットの {kind} の間も描くため。' if tail else ''}カメラのキーなどは spec の終わりの値のまま）")
         if abs(sp.data["output"]["fps"] - fps) > 1e-9:
             warnings.append(f"{where}: spec の fps {sp.data['output']['fps']:g} が timeline の fps {fps:g} と違います"
                             "（spec の look の粒状感のコマなど、spec の fps で数えるものがあります）")
@@ -304,14 +337,20 @@ def shot_index(data, t):
 
 
 def plan_frame(data, t):
-    """時刻 t の ([(ショットの番号, ショットの中の時刻, 重み)], 黒の倍率, フラッシュ (量, 色) か None)。"""
+    """時刻 t の ([(ショットの番号, ショットの中の時刻, 重み)], 黒の倍率, フラッシュ (量, 色) か None)。
+
+    burn の間は xfade と同じく前と今の 2 つを返す。重みは進み p の (1 − p, p) で、画素ごとの混ぜ方は burn_at の設定で決まる
+    （blend に burn を渡す。渡さなければ重みのままの直線の重ねになる）。"""
     index = shot_index(data, t)
     shot = data["shots"][index]
     local = lambda i: data["shots"][i]["offset_s"] + (t - data["shots"][i]["start"])  # noqa: E731
     layers = [(index, local(index), 1.0)]
     transition, since = shot["transition_in"], t - shot["start"]
     dim, flash = 1.0, None
-    if transition["type"] == "xfade" and index > 0 and t < shot["start"] + transition["duration_s"]:
+    burning = burn_at(data, t)
+    if burning is not None:
+        layers = [(index - 1, local(index - 1), 1 - burning[2]), (index, local(index), burning[2])]
+    elif transition["type"] == "xfade" and index > 0 and t < shot["start"] + transition["duration_s"]:
         a = ease(since / transition["duration_s"])
         layers = [(index - 1, local(index - 1), 1 - a), (index, local(index), a)]
     elif transition["type"] == "black" and t < shot["start"] + transition["duration_s"]:
@@ -319,6 +358,17 @@ def plan_frame(data, t):
     if transition["type"] == "flash" and since < transition["window_s"]:
         flash = (transition["strength"] * math.exp(-since * transition["rate"]), transition["color"])
     return layers, dim, flash
+
+
+def burn_at(data, t):
+    """時刻 t が burn の窓の中なら (ショットの番号, burn の設定, 進み p)。外なら None。窓は xfade と同じ t < start + duration_s で、
+    p = (t − start)/duration_s（直線で 0 から 1 へ。xfade と違い smoothstep は掛けない）。"""
+    index = shot_index(data, t)
+    shot = data["shots"][index]
+    transition = shot["transition_in"]
+    if transition["type"] != "burn" or index == 0 or not t < shot["start"] + transition["duration_s"]:
+        return None
+    return index, transition, min(max((t - shot["start"]) / transition["duration_s"], 0.0), 1.0)
 
 
 def video_positions(video, local_t, fps):
@@ -345,9 +395,13 @@ def _loop_once(t, loop, speed, fps):
     return [(a + p, 1.0)]
 
 
-def blend(layers, dim, flash):
-    """plan_frame の重みで、ショットの画（表示の値 0..255）をつなぐ。layers は [(画, 重み)]。float32 を返す（まだ切らない）。"""
-    if len(layers) == 2:
+def blend(layers, dim, flash, burn=None):
+    """plan_frame の重みで、ショットの画（表示の値 0..255）をつなぐ。layers は [(画, 重み)]。float32 を返す（まだ切らない）。
+    burn は焼け抜けの間だけ渡す (burn の設定, 進み p, 画と同じ大きさの場)。あれば 2 つの画を、重みでなく焼け抜けの式で混ぜる。"""
+    if len(layers) == 2 and burn is not None:
+        from . import burn as fxburn
+        image = fxburn.composite(layers[0][0], layers[1][0], burn[2], burn[1], burn[0])
+    elif len(layers) == 2:
         (before, weight_before), (now, weight_now) = layers
         image = before.astype(np.float32) * weight_before + now.astype(np.float32) * weight_now
     else:
@@ -432,7 +486,7 @@ class VideoShot:
         self.fps = video["fps"] or self.frames.fps
         width, height = self.frames.width, self.frames.height
         length = shot["end"] - shot["start"]
-        tail = _xfade_tail(timeline.data["shots"], index)        # 次の xfade の間も、このショットを描き続ける
+        tail, kind = _overlap_tail(timeline.data["shots"], index)        # 次の xfade・burn の間も、このショットを描き続ける
         self.warnings, self.faces = [], shot["faces"]
         if shot["camera"]["frame"] == "source":     # 動画の全体が板（fx-shot の camera.frame: source と同じ）
             self.box = (0.0, 0.0, 1.0, 1.0)
@@ -447,7 +501,7 @@ class VideoShot:
             if cut > CROP_WARN_FRACTION:
                 axis = "左右" if self.box[0] > 0 else "上下"
                 self.warnings.append(f"動画 {width}x{height} は出力 {size[0]}x{size[1]} と縦横比が違うため、cover で中央に合わせて{axis}を計 {cut * 100:.1f}% 切りました")
-        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box, plate=self.plate_size,   # 視野の確かめも、次の xfade の間まで見る
+        self.path = camera.CameraPath(shot["camera"], length + tail, size, self.box, plate=self.plate_size,   # 視野の確かめも、次の xfade・burn の間まで見る
                                       pulse=shot_pulse(timeline.data, index))
         last = self.frames.count - 1
         if loop is not None and loop["frames"][1] > last:
@@ -458,7 +512,7 @@ class VideoShot:
             if end > last:
                 held = (last / self.fps - video["offset_s"]) / video["speed"]
                 self.warnings.append(f"動画の最後のコマ {last} を越えて描くため、ショットの {max(held, 0.0):.2f} 秒から後は最後のコマのままです"
-                                     + ("（次のショットの xfade の間も描く分を含む）" if tail else ""))
+                                     + (f"（次のショットの {kind} の間も描く分を含む）" if tail else ""))
         bounds = self.path.out_of_bounds()
         if bounds:
             self.warnings.append(bounds)
@@ -499,6 +553,7 @@ class Context:
         self.warnings = list(timeline.warnings)
         self._render, self._contexts, self._warned = render, OrderedDict(), set()
         self._pulsed = OrderedDict()           # 拍の脈があるとき、spec のショットごとの写し（camera だけ違い、素材は共有）
+        self._burns = OrderedDict()            # burn の場（ショットの番号 → 出力の大きさの N）。設定と大きさだけで決まる作り置き
         self.hooks = hooks                     # fx/hooks.py の Hooks か None（--hooks を渡したときだけ）
         if hooks is not None:
             hooks.prepare(self)
@@ -557,8 +612,19 @@ class Context:
             return View(ctx.path, ctx.box, ctx.plate_size, self.size, local, index, "video", shot["video"]["path"])
         return View(ctx.path, ctx.assets.box, ctx.assets.plate_size, self.size, local, index, "spec", shot["spec"], ctx.assets.depth)
 
+    def burn_field(self, index):
+        """ショット index の burn の場（float32 (H, W)、0..1）。初めて使うときに作り、新しい順に KEEP_SHOTS 個まで持つ。"""
+        if index in self._burns:
+            self._burns.move_to_end(index)
+            return self._burns[index]
+        from . import burn as fxburn
+        self._burns[index] = fxburn.field(self.data["shots"][index]["transition_in"], self.size)
+        while len(self._burns) > KEEP_SHOTS:
+            self._burns.popitem(last=False)
+        return self._burns[index]
+
     def view_at(self, t):
-        """timeline の時刻 t のショット（xfade の間は入ってくるショット）の見え方。hooks の final で、つないだ後の画に掛ける
+        """timeline の時刻 t のショット（xfade・burn の間は入ってくるショット）の見え方。hooks の final で、つないだ後の画に掛ける
         演出（空の奥の色の深度など）に使う。"""
         index = shot_index(self.data, t)
         shot = self.data["shots"][index]
@@ -566,13 +632,15 @@ class Context:
 
     def frame(self, t):
         layers, dim, flash = plan_frame(self.data, t)
-        image = blend([(self.image(i, local, t), weight) for i, local, weight in layers], dim, flash)
+        burning = burn_at(self.data, t)
+        burn = None if burning is None else (burning[1], burning[2], self.burn_field(burning[0]))
+        image = blend([(self.image(i, local, t), weight) for i, local, weight in layers], dim, flash, burn)
         if self.hooks is not None and self.hooks.has("final"):
             image = self.hooks.final(image, t, self)
         return finish(image, self.look, t)
 
     def faces_at(self, t):
-        """時刻 t のショット（xfade の間は入ってくるショット）の顔の枠を、camera で画面の正規化座標へ写したもの。
+        """時刻 t のショット（xfade・burn の間は入ってくるショット）の顔の枠を、camera で画面の正規化座標へ写したもの。
         [{box, role, estimated}]。画面の外に出た所は切り、全部外なら入れない。深度視差は入れない（実制作と同じ）。"""
         from . import camera
         index = shot_index(self.data, t)
@@ -593,6 +661,7 @@ class Context:
                 ctx.close()
         self._contexts.clear()
         self._pulsed.clear()
+        self._burns.clear()
 
 
 def timeline_record(timeline, size, start=0.0, duration=None, frames=None):
@@ -639,7 +708,7 @@ def plan_text(path):
         return f"{index}{t - beats[index]:+.3f}"
 
     out, pulse = data["output"], data["pulse"]
-    lines = [f"# {SCHEMA_VERSION}  {out['width']}x{out['height']} {out['fps']:g}fps {data['duration_s']:g} 秒  ショット {len(data['shots'])}"
+    lines = [f"# {timeline.source_schema}  {out['width']}x{out['height']} {out['fps']:g}fps {data['duration_s']:g} 秒  ショット {len(data['shots'])}"
              f"  look {'あり' if data['look'] else 'なし'}  音声 {data['audio']['path'] if data['audio'] else 'なし'}"]
     if pulse is not None:
         where = "全体" if pulse["sections"] is None else "、".join(f"{a:.3f}-{b:.3f}" for a, b in pulse["sections"])
@@ -820,7 +889,8 @@ HEAD = [0.42, 0.2, 0.49, 0.3]       # デモの人物の頭の枠（元画像の
 
 def demo(directory, width=320, height=180, duration=6.0, fps=24):
     """fx のデモ素材から 3 つの spec のショット（寄り・横移動・引き）と 1 つの動画のショット（合成の動画をループ）を作り、
-    つなぎを全部使う fx-timeline の見本を書く。"""
+    cut 以外の 0.1 のつなぎ（black・xfade・flash）を全部使う fx-timeline の見本を書く。0.1 の項目だけを使うので、版は 0.1 のまま書く
+    （0.2 の burn は入れない。デモの timeline と絵を変えないため）。"""
     if duration < 3:
         raise PipelineError(f"timeline のデモの長さは 3 秒以上にしてください（つなぎの長さが 0.3〜0.5 秒のため）: {duration:g}")
     from . import demo as fxdemo
@@ -839,7 +909,7 @@ def demo(directory, width=320, height=180, duration=6.0, fps=24):
         (shots_dir / name).write_text(json.dumps(shot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     frames = _demo_clip(shots_dir / "clip.mp4", shots_dir / "base.png")
     beat = 0.5                                   # 120 BPM
-    timeline = {"schema_version": SCHEMA_VERSION, "output": {"width": width, "height": height, "fps": fps, "crf": 18},
+    timeline = {"schema_version": SCHEMA_V01, "output": {"width": width, "height": height, "fps": fps, "crf": 18},
                 "duration_s": duration, "beats": {"bpm": 120, "count": int(duration / beat) + 4},
                 "audio": {"path": "shots/audio.wav"},
                 "look": {"vignette": {"amount": 0.3}, "grain": {"sigma": 1.5}},

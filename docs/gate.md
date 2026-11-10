@@ -70,7 +70,7 @@ uv run mv gate check gate.json [--out DIR]
 一部の区間だけ描いた run（`mv dance render --start/--duration`）は、timeline の `interval` の中に出るものだけを見る。確認済みの時刻だけは曲全体で見る。
 
 `timeline` は `dance-timeline/0.1` と `0.2` の両方を読む（`src/mv_pipeline/dance/dance_timeline.schema.json` で検証し、知らない欄は無視する。形が違えばエラーで止まる）。独自のレンダラで仕上げた場合も、この形式で timeline を書けば検査できる。
-`mv fx timeline render`（複数の fx ショットをつなぐ。docs/fx.md の timeline）の run の `timeline.json` もこの形。`0.1` に `beats`・`seam_info`（kind は `cut`・`xfade`・`black`・`flash`）・`flash_info`（mode は `lerp_display`）を足したもので、字幕は無い。
+`mv fx timeline render`（複数の fx ショットをつなぐ。docs/fx.md の timeline）の run の `timeline.json` もこの形。`0.1` に `beats`・`seam_info`（kind は `cut`・`xfade`・`black`・`flash`・`burn`）・`flash_info`（mode は `lerp_display`）を足したもので、字幕は無い。
 
 **顔の推定（`"faces": "auto"`）** — `"spec"` に dance の spec のパスを書くと、dance の api から 2 コマごとに人物のアルファを取り、頭の帯から顔の箱を推定する。頭の帯は、fit の体の高さ（無ければその時刻のアルファの高さ）× 寄りの倍率の、上端から 12%。報告には「推定」と書く。
 
