@@ -82,3 +82,12 @@ def test_the_same_frame_comes_out_whichever_segment_draws_it(tmp_path):
     part = read_bt709(render(tmp_path, 6, 9), 1)
     assert abs(bar(whole) - 21) <= 2 and abs(bar(part) - 21) <= 2
     assert np.abs(whole - part).mean() <= 3
+
+
+def test_an_empty_range_stops_without_writing_a_file(tmp_path):
+    """`seg 6 6`（空の区間）は、使い方を出して 0 以外で終わり、0 コマのファイルを残さない。"""
+    segs = tmp_path / "segs"
+    out = segs / "seg_0006_0006.mp4"
+    done = subprocess.run([sys.executable, str(RENDERER), str(config(tmp_path)), "seg", "6", "6", str(out)], capture_output=True)
+    assert done.returncode != 0 and b"usage" in done.stderr
+    assert not out.exists() and not segs.exists()

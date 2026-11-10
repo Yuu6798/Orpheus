@@ -13,7 +13,8 @@ import numpy as np
 
 from mv_pipeline import encode
 
-PATCHES = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (168, 107, 255), (255, 153, 64), (200, 200, 200))   # RGB
+PATCHES = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (64, 160, 224), (224, 192, 64), (200, 200, 200))   # RGB
+USAGE = "usage: render_frames.py CONFIG seg START END OUT（END は START より大きいコマ番号）"
 
 
 def frame(n, width, height):
@@ -29,12 +30,14 @@ def frame(n, width, height):
 
 def main(argv):
     if len(argv) != 5 or argv[1] != "seg":
-        raise SystemExit("usage: render_frames.py CONFIG seg START END OUT")
+        raise SystemExit(USAGE)
     config_path, _, start, end, out = argv
+    first, last = int(start), int(end)
+    if last <= first:   # 空の区間は描かない（0 コマのファイルを残さない）
+        raise SystemExit(USAGE)
     with open(config_path, encoding="utf-8") as stream:
         config = json.load(stream)
     width, height = config.get("width", 320), config.get("height", 180)
-    first, last = int(start), int(end)
     frames = (frame(n, width, height) for n in range(first, last))
     encode.write_video(out, frames, (width, height), config.get("fps", 24), config.get("crf", 18), last - first)
 
