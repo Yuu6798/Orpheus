@@ -89,10 +89,8 @@ def image_grid(rgb, crop=None, units="norm", step=None, width=1600):
                  "source_size": [full_width, height]}
 
 
-def load_viewable(path):
-    """画像を表示用の uint8 RGB で読む。16 bit（深度など）は 257 で割り、float は 0..1 を 255 倍する。アルファは捨てる（cv2 で読むのと同じ）。"""
-    from .assets import _open
-    image = _open(path, "guides")
+def viewable(image):
+    """Pillow の画像 → 表示用の uint8 RGB。16 bit（深度など）は 257 で割り、float は 0..1 を 255 倍する。アルファは捨てる（cv2 で読むのと同じ）。"""
     if image.mode.startswith("I"):
         values = np.asarray(image, dtype=np.float64)
         gray = np.clip(values / 257.0 + 0.5, 0, 255).astype(np.uint8) if values.max() > 255 else np.clip(values, 0, 255).astype(np.uint8)
@@ -101,6 +99,12 @@ def load_viewable(path):
         gray = np.clip(np.asarray(image, dtype=np.float64) * 255.0 + 0.5, 0, 255).astype(np.uint8)
         return np.repeat(gray[..., None], 3, axis=2)
     return np.asarray(image.convert("RGB"))
+
+
+def load_viewable(path):
+    """画像を表示用の uint8 RGB で読む（viewable）。"""
+    from .assets import _open
+    return viewable(_open(path, "guides"))
 
 
 def write_image_grid(image_path, out, crop=None, units="norm", step=None, width=1600):

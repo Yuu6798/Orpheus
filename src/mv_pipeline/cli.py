@@ -109,6 +109,9 @@ def _fx_parser(commands):
     masks.add_argument("plan", type=Path, help="fx-masks/0.1 plan (JSON)")
     masks.add_argument("--out", type=Path, help="output folder (default: the plan's folder)")
     masks.add_argument("--force", action="store_true", help="overwrite existing mask files whose content differs")
+    points = sub.add_parser("points", help="find repeated small objects from a few seed examples (template matching; a table of positions)")
+    points.add_argument("plan", type=Path, help="fx-points/0.1 plan (JSON)")
+    points.add_argument("--out", type=Path, help="output folder (default: the plan's folder)")
     clips = sub.add_parser("clips", help="prepare generated clips from a plan (stabilise to the first frame, match colour to a still)")
     clips.add_argument("plan", type=Path, help="fx-clips/0.1 plan (JSON)")
     clips.add_argument("--out", type=Path, help="output folder (default: the plan's folder)")
@@ -360,6 +363,9 @@ def fx_command(args):
     if command == "masks":
         from .fx import masks
         return masks.make_masks(args.plan, args.out, args.force)
+    if command == "points":
+        from .fx import points
+        return points.find_points(args.plan, args.out)
     if command == "clips":
         from .fx import clipprep
         only = [value.strip() for value in args.only.split(",") if value.strip()] if args.only else None

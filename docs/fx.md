@@ -379,6 +379,114 @@ uv run mv fx masks masks.json --out trial/    # 別のフォルダに書く（�
 - 記録（`masks_record.json`、`fx-masks-record/0.1`）には、計画と入力の sha256、各マスクの面積（127 を超える画素）、マスクどうしの重なり（両方が 20 を超える画素）、GrabCut が変えた画素の数、OpenCV の版を残す。数は残すだけで、合否は出さない。
 - 実制作の 2 つのマスク作りの台本を計画に書き直して確かめた。段階 1 の切り抜き + 多角形の計画は、段階 1 で使ったマスク 2 枚と画素まで同じだった。GrabCut の計画は、同じ基準画像から作った台本の出力と、マスクも確認用の絵も画素まで同じだった。どちらも同じ OpenCV が前提で、GrabCut は版が違うと結果が変わりうる。
 
+## 繰り返し物の位置（`mv fx points`）
+
+同じ形の小物がたくさん並ぶ絵（俯瞰の広場に並ぶ灯の皿など）で、数個の例（種）を指すと、残りの位置を拾って表にする。
+hooks の部品（`sky.lamps` など）に渡す位置を、1 つずつ手で打たずに済ませるための下ごしらえ。**実験的**で、計画の書式 `fx-points/0.1`
+（`src/mv_pipeline/fx/fx_points.schema.json`）は `contracts/` の外にある。計画には作品ごとの位置が入るので、素材の隣に置いて Git に入れない。
+
+```json
+{
+  "schema_version": "fx-points/0.1",
+  "image": "base.png",
+  "seeds": [[0.147, 0.942], [0.868, 0.173], [0.661, 0.192], [0.261, 0.183]],
+  "patch_px": 15,
+  "threshold": 0.75,
+  "min_distance_px": 8,
+  "refine": 1,
+  "include": [{"ellipse": {"center": [0.5, 0.5], "rx": 0.38, "ry_ratio": 0.55, "r_min": 0.16}}],
+  "exclude": [{"box": [0.4, 0.0, 0.6, 0.3]}, {"polygon": [[0.0, 1.0], [0.0, 0.42], [0.55, 1.0]]}]
+}
+```
+
+```sh
+uv run mv fx guides base.png --out guides.jpg --crop 0.1 0.1 0.4 0.4 --step 0.01   # 種の位置（正規化座標）を目盛りで読む
+uv run mv fx points points_plan.json                # 計画のフォルダに points.json・points_preview.jpg・template.png
+uv run mv fx points points_plan.json --out trial/   # 別のフォルダに書く（しきい値や範囲を変えて見比べる）
+```
+
+- **手順**（乱数を使わない）:
+  1. 種の周りを `patch_px` 四方で切り抜き、1 枚ずつ平均 0・分散 1 にそろえ、画素ごとの中央値で型紙を作る。
+  2. 画像の輝度（8 bit）と型紙の正規化相互相関（`cv2.matchTemplate` の `TM_CCOEFF_NORMED`。点数は −1〜1）を取る。同じ値の画素だけの窓は 0 点にする。
+  3. `threshold` 以上の極大を、点数の高い順に拾う。先に拾った点から `min_distance_px` より近いものは捨てる。
+  4. `refine` 回、点数の高い検出（上位半分。3 個は下回らない）の切り抜きから型紙を作り直し、2 と 3 をやり直す。
+- 座標はどれも元画像の正規化座標（0..1。`mv fx guides` の目盛りで読む）。`_px` の付く値は元画像の画素。上の JSON の値は合成素材（テストの場面）のもので、素材ごとに決める。
+
+| 項目 | 内容 |
+|---|---|
+| `image` | 探す画像（計画のフォルダーからの相対パス）。16 bit は 8 bit に直し、アルファは見ない（`mv fx guides` と同じ読み方） |
+| `seeds` | 例の中心 `[u, v]`。3 個以上。どの種も、周りの `patch_px` 四方が画像に収まること |
+| `patch_px` | 型紙の 1 辺（奇数）。物 1 つと、その周りが少し入る大きさにする |
+| `threshold` | 拾う点数の下限。省けば 0.75（**仮の値**。下の「しきい値」） |
+| `min_distance_px` | 検出どうしの最小の間隔。省けば `patch_px` の半分（切り上げ） |
+| `refine` | 型紙の作り直しの回数。省けば 1。0 なら種の型紙だけで拾う |
+| `include`・`exclude` | 探す範囲と除く範囲。検出の中心が、`include` のどれかに入り（省けば画像の全体）、`exclude` のどれにも入らないものを拾う |
+
+- **範囲**の書き方は 3 つ。`box` と `ellipse` は、画素の中心が入るかで決める。
+  - `{"box": [x0, y0, x1, y1]}`: 矩形（画像の中。x0 < x1、y0 < y1）。
+  - `{"polygon": [[u, v], …]}`: 多角形（3 点以上。画像の外の頂点も −16〜16 の範囲で書ける）。`mv fx masks` の `polygon` と同じ塗り方で、頂点を画素に切り捨てて塗る（縁の画素を含む）。
+  - `{"ellipse": {"center": [u, v], "rx": 0.38, "ry_ratio": 0.55, "r_min": 0.16}}`: 楕円の輪。俯瞰でつぶれて見える円い広場などに使う。
+    - 中心からの距離を r = √(Δx² + (Δy / `ry_ratio`)²) / 画像の幅 と数え（Δx・Δy は中心からの画素）、`r_min` ≤ r ≤ `rx` の所。
+    - `rx` は外側の横の半径、`r_min` は内側を抜く横の半径。どちらも画像の幅を 1 とするので、目盛りの u の差でそのまま読める。`r_min` を省けば内側を抜かない。
+    - `ry_ratio` は縦の半径 / 横の半径（画素で数える。省けば 1 で、画素の上の円）。
+- **出力**（計画のフォルダー。`--out` で変える）:
+  - `points.json`（`fx-points-result/0.1`）: 点の一覧 `points`（`{"u", "v", "score"}`。上から・左からの順）、件数 `count`、使ったしきい値 `threshold`、
+    型紙の大きさと作るのに使った切り抜きの数 `template`、回ごとの検出の数 `rounds`、種の位置（種を含む画素の中心）とその点数 `seeds`、画像と計画の sha256、fx と OpenCV の版、注意 `warnings`。
+    `u`・`v` は検出の画素の中心で、hooks の `view.point(u, v)`・`view.points(...)` にそのまま渡せる。位置は画素の単位（それより細かくは合わせない）。
+  - `points_preview.jpg`: 画像に、検出の丸と番号（水色。`points` の並びの 0 からの番号）、種の十字（桃）、範囲の線（`include` は緑・`exclude` は赤）を重ねた閲覧用の絵。
+  - `template.png`: 最後の型紙（最小〜最大を 0〜255 に伸ばした閲覧用。照合に使う値そのものではない）。
+- **採点しない**: 合否を出さない。点数としきい値を報告するだけで、0 個でも終了コードは 0。どの点を使うかは、人が `points_preview.jpg` を見て決める
+  （要らない点は `exclude` で除くか、表から番号で外す）。
+- **しきい値**: 既定の 0.75 は合成素材で決めた**仮の値**で、実素材に合う値ではない。素材ごとに `--out` で別のフォルダーに書いて見比べ、決める。
+  - 決めた場面は、石畳のような背景に小さな輪 60 個と形の違う点 20 個を置いたもの（`tests/test_fx_points.py`）。
+    3 通りの場面で、輪の点数は 0.86 以上、形の違う点と背景は 0.66 以下で、既定はその間に置いた。
+  - `seeds` の点数は種の位置そのものの点数。手で読んだ種は物の中心から外れるぶん、近くの検出より低く出る。
+  - `min_distance_px` の既定と、作り直しに使う検出の割合（上位半分）も、同じ合成素材で確かめただけの仮の値。
+- 出力は毎回書き直す（`mv fx masks` と違い、既にあるファイルを守らない）。手で直した表は別の名前で持つ。
+  出力（と、絵の書き出しの一時ファイル `<名前>.tmp`）が入力（計画・画像）と同じファイルになるときは、何も書く前に止める
+  （計画を `points.json` と名付けて計画のフォルダーに書く場合など。計画の名前を変えるか、`--out` で別のフォルダーに書く）。
+- 同じ計画・同じ画像・同じ環境（fx と OpenCV の版）なら、3 つの出力はバイト単位で同じ（`points.json` に時刻と絶対パスを入れない）。
+- 何も書く前に止める計画: 種が 2 個以下・`patch_px` が偶数・画像の外の種・切り抜きが画像からはみ出す種・同じ画素を指す種・周りが同じ値の画素だけの種・
+  逆向きか画像の外の `box`・`rx` 以上の `r_min`・探す範囲が残らない `include` と `exclude`。
+  `threshold` 以上の極大が 20 万個を超えたときも止める（しきい値が低すぎて画面じゅうを拾っている）。
+- `warnings` に残すだけのもの: 探す範囲の中の種の近く（`min_distance_px` 以内）に検出が無い、検出が 3 個に満たず型紙の作り直しをやめた、検出が 0 個。
+
+hooks へ渡す例。表から `sky.lamps` の灯を作り、輪の内側から順に点くように、点く時刻を中心からの距離で決める（`ellipse_radius` は範囲の `ellipse` と同じ r）。
+
+```python
+import json
+from pathlib import Path
+
+from mv_pipeline.fx import points, sky
+
+TABLE = json.loads(Path(__file__).with_name("points.json").read_text(encoding="utf-8"))
+SIZE = TABLE["image"]["size"]                                # 元画像の [幅, 高さ]。基準座標にする
+CENTER, RATIO, R_IN, R_OUT = [0.5, 0.5], 0.55, 0.16, 0.38    # 輪の中心・つぶれ・内と外の半径（計画の ellipse と同じ値）
+LAMPS = {"lamps": []}
+for p in TABLE["points"]:
+    r = float(points.ellipse_radius(p["u"], p["v"], CENTER, RATIO, SIZE))
+    LAMPS["lamps"].append({"x": p["u"] * SIZE[0], "y": p["v"] * SIZE[1], "r": 5,
+                           "on": 1.0 + 3.0 * (r - R_IN) / (R_OUT - R_IN)})      # 内側の縁が 1.0 秒、外側の縁が 4.0 秒に点く
+
+
+def shot(img, t, view):
+    sky.lamps(img, view.base(*SIZE), t, LAMPS)
+    return img
+```
+
+- run のキャッシュ key に入るのは hooks のファイルの sha256 だけで、hooks が読む `points.json` は入らない。表を変えたら `--force` で描き直すか、点の一覧を hooks のファイルに書き写す。
+- **限界**:
+  - 大きさと向きが種と同じものしか拾えない。奥ほど小さく写る絵では、近い所と遠い所で計画を分ける（範囲と `patch_px` を変える）。
+  - 輝度だけを見る。色の違いは見分けない。
+  - 画像の端から `patch_px` の半分より近い物は拾えない（切り抜きが画像からはみ出すため）。
+  - 重なった物・半分隠れた物は点数が下がる。`min_distance_px` より近く並ぶ物は 1 つにまとまる。
+  - しきい値が低すぎて誤検出が検出の半分を超えると、作り直した型紙が誤検出に寄り、物の点数が下がって誤検出が増える（合成素材のしきい値 0.4 で、輪の点数の下限が 0.87 → 0.63、検出が 475 → 654 個）。
+    まず `refine: 0` で `points_preview.jpg` を見て、しきい値を決めてから作り直す。
+  - 1 枚の絵の上の位置を出すだけ。カメラの動きは hooks の `view` が写す。動画の中で動く物は追わない。
+- **実素材での確認状況**: 2026-11-10、リポジトリの外の試作で、1672×941 の俯瞰の絵から 217 個を拾い、重ねた絵の目視で大きな誤検出は無かった。
+  そのときの種は円検出で拾った 55 個で、手で打った数個の種からこの道具で拾う手順は実素材では未確認。この実装そのものを通したのは合成素材だけ。
+  - そのときのしきい値は 0.34 だった（型紙は 55 個の種の中央値）。既定の 0.75 は合成素材で決めた仮の値で、実素材では `points_preview.jpg` を見ながら下げる必要がありそう（1 例だけの観察）。
+
 ## クリップの下ごしらえ（`mv fx clips`）
 
 生成した動画（静止画から作った動画など）を、使う前に整える。**揺れ止め**（1 コマ目に合わせてカメラの流れを打ち消す）と、
@@ -459,6 +567,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx guides IMAGE --out OUT.png\|.jpg [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
+| `mv fx points PLAN.json [--out DIR]` | 計画（fx-points/0.1）から、同じ形の小物の位置を種の型紙の照合で拾い、位置の表・閲覧用の絵・型紙を書く（[繰り返し物の位置](#繰り返し物の位置mv-fx-points)） |
 | `mv fx clips PLAN.json [--out DIR] [--only ID,…] [--force]` | 計画（fx-clips/0.1）から、生成した動画に揺れ止めと色のゲインを掛けて書き、記録を残す（[クリップの下ごしらえ](#クリップの下ごしらえmv-fx-clips)） |
 | `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
@@ -842,6 +951,7 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
 - 空と天気の部品（`mv_pipeline.fx.sky`）。位置と長さは基準座標で、`view.base(...)` で写す。
   - `lamps(f, geo, t, P)`: 灯（灯籠の火袋・窓・遠い点）。灯ごとに点く時刻 `on`（`ramp` 秒で上がり少し揺れて落ち着く）・消える時刻 `off`・揺らぎ `flick`。
     `kind` が `box`・`window` なら、範囲の中の明るい所（紙）ほど強く光り、暗い所（格子）は暗いまま。
+    同じ形の灯がたくさん並ぶ絵では、位置の表を `mv fx points` で作れる（[繰り返し物の位置](#繰り返し物の位置mv-fx-points)）。
   - `lightning(f, geo, t, P, screen_depth)`: 稲光。`pulses` の明滅で空を明るくし（`sky`: `all`・`top`・`depth`。`depth` は `view.depth()` で奥だけ）、
     `p0` → `p1` に枝つきの稲妻の筋を描く。
   - `rain(f, t, P, sc)`: 画面全体の雨（3 層）。光のある所では雨粒が明るく見える。`sc`（既定は画の高さ / 1080）で長さと速さが変わる。
