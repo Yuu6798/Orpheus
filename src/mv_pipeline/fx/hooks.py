@@ -7,7 +7,7 @@ timeline からは読み込まない。明示したときだけ Python を実行
     final(img, t, ctx)        つないだ後、timeline の look の前。ctx.view_at(t) はその時刻のショットの見え方（深度は view.depth()）
 
 img は float32 (H, W, 3) の表示の値（0..255、ガンマ符号化。まだ切らない）。演出の部品は fx/fire.py（火）・fx/sky.py（空と天気）・
-fx/accent.py（明かりと質感）。
+fx/accent.py（明かりと質感）・fx/particles.py（形に集まる光の粒）。
 決定論を保つため、hooks は入力・t・定数だけの関数にする（ファイル書き込みとネットワークは禁止。乱数は seed から作る）。
 hooks ファイルの sha256 は run のキャッシュ key と manifest に入る。hooks で時刻とショットの区切りは変わらない。
 """
