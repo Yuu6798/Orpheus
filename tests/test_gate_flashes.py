@@ -65,7 +65,8 @@ def test_changes_and_flashes_land_on_the_frames_where_the_light_was_put(tmp_path
     assert report["video"] == {"name": "v.mp4", "sha256": sha256(path), "fps": 30.0, "frames": 60, "size": [64, 36], "matrix_tag": "bt709"}
     # 測り方が報告から分かる: BT.709 として読み、sRGB の伝達特性で線形に戻した相対輝度。変化は直前の極値から delta 以上
     assert report["read"] == {"size": [64, 36], "matrix": "bt709", "transfer": "srgb", "weights": [0.2126, 0.7152, 0.0722],
-                              "brightness": "relative_luminance", "change": "delta_from_last_extremum"}
+                              "brightness": "relative_luminance", "change": "delta_from_last_extremum",
+                              "window": "recounted_from_its_own_frames"}
     assert report["thresholds"] == {"delta": 0.1, "max_per_s": 3, "window_s": 1.0} and report["schema_version"] == "gate-flash-report/0.1"
     assert "規格への適合を判定するものではありません" in report["note"]
 
@@ -280,30 +281,56 @@ def test_pairs_are_neighbouring_opposite_changes_less_than_a_second_apart():
     assert flashes.pair(_changes("u1 d40 u45 d50"), 30) == [(1, 2)]
 
 
-def test_a_window_is_paired_on_its_own_so_an_earlier_change_cannot_hide_a_flash():
-    """暗くなる切り替え（d1）の後に、0.7 秒で 4 回の閃光。前から順の組は切り替えと最初の上がりを組にして 1 つずつずれ、
-    閃光の窓（16〜45）に丸ごと入る組が 3 つになる。窓の中だけで組み直すと 4 つで、これを回数にする。"""
-    changes = _changes("d1 u16 d18 u22 d24 u28 d30 u34 d36")
-    whole = flashes.pair(changes, 30)
-    assert whole == [(0, 1), (2, 3), (4, 5), (6, 7)]
-    assert sum(1 for a, b in whole if changes[a]["frame"] >= 16 and changes[b]["frame"] < 46) == 3
-    assert flashes.busiest(changes, 30) == (4, 1, [(1, 2), (3, 4), (5, 6), (7, 8)])
-    assert flashes.busiest([], 30) == (0, None, []) and flashes.busiest(_changes("u5"), 30) == (0, None, [])
-    # 窓は変化のコマから fps コマ未満。4 つ目の戻り（35）が 1 つ目の上がり（5）のちょうど 1 秒後なら、その窓には 3 組しか入らない
-    assert flashes.busiest(_changes("u5 d6 u15 d16 u25 d26 u34 d35"), 30)[0] == 3
-    assert flashes.busiest(_changes("u5 d6 u15 d16 u25 d26 u33 d34"), 30)[0] == 4
+def _lit(count, at, base=0.0, peak=1.0):
+    """base の明るさが count コマ続く中の、at のコマだけを peak にした明るさの列。"""
+    return [peak if frame in at else base for frame in range(count)]
+
+
+def test_a_window_is_counted_from_its_own_frames():
+    assert flashes.busiest([], 0.1, 30) == (0, None, [], 0) and flashes.busiest([0.5], 0.1, 30) == (0, None, [], 0)
+    assert flashes.busiest([0.0] * 5 + [1.0] * 5, 0.1, 30) == (0, None, [], 0)          # 上がるだけ
+    # 窓は、最初の変化を保ったままいちばん遅く始まる窓（ここでは 1 つ目の上がりのコマ 5 から）
+    assert flashes.busiest(_lit(60, [5, 12, 20, 27]), 0.1, 30) == (4, 5, [(5, 6), (12, 13), (20, 21), (27, 28)], 8)
+    # 窓はコマ s への変わり目から fps コマ未満の変わり目まで。4 つ目の戻り（35）が 1 つ目の上がり（5）のちょうど 1 秒後なら 3 回
+    assert flashes.busiest(_lit(60, [5, 15, 25, 34]), 0.1, 30)[0] == 3
+    assert flashes.busiest(_lit(60, [5, 15, 25, 33]), 0.1, 30)[0] == 4
+    assert flashes.busiest(_lit(60, [5, 15, 25, 33]), 0.1, 29.97)[0] == 4 and flashes.busiest(_lit(60, [5, 15, 25, 34]), 0.1, 29.97)[0] == 3
     # 同じ回数なら早い窓
-    assert flashes.busiest(_changes("u5 d6 u100 d101"), 30) == (1, 0, [(0, 1)])
+    assert flashes.busiest(_lit(200, [5, 100]), 0.1, 30)[:3] == (1, 5, [(5, 6)])
+    # 10 コマおきに続く閃光は、どの窓でも 3 回。早い窓（5 から）を返し、後ろの窓へずれていかない
+    assert flashes.busiest(_lit(100, range(5, 96, 10)), 0.1, 30) == (3, 5, [(5, 6), (15, 16), (25, 26)], 6)
 
 
-def test_the_same_scene_change_before_a_burst_is_counted_from_the_video_too(tmp_path):
-    """上の形を動画で: 明るい場面が暗くなり、0.5 秒後から 0.7 秒で 4 回の閃光。どの 1 秒でも最大 4 回で、超過。"""
-    values = [200] * 5 + _strobe(60, [15, 21, 27, 33])
-    report = flashes.measure(_video(tmp_path / "v.mp4", values))
-    assert _steps(report["changes"])[:3] == [(5, "down"), (20, "up"), (21, "down")] and report["counts"]["changes"] == 9
-    assert [(f["frame"], f["return_frame"]) for f in report["flashes"]] == [(5, 20), (21, 26), (27, 32), (33, 38)]   # 前から順の組はずれる
-    assert report["max_per_window"] == 4 and report["status"] == "fail"
-    assert report["busiest_window"]["start_frame"] == 20 and report["busiest_window"]["pairs"] == [[20, 21], [26, 27], [32, 33], [38, 39]]
+def test_a_brighter_scene_before_the_window_cannot_absorb_a_flash():
+    """暗い場面（0.0）が明るい場面（0.3）に切り替わり、1 秒後から 0.73 秒で 4 回の閃光。動画全体で取った変化は、1 つ目の閃光の
+    上がりが切り替えの上がり（コマ 10 で越え、山はコマ 40）に吸収されて 8 つ・明滅 3 回になる。窓の中だけで数え直すと 4 回。"""
+    levels = [0.0] * 10 + _lit(80, [30, 37, 45, 52], base=0.3)
+    whole = flashes.find_changes(levels, 0.1)
+    assert [(c["frame"], c["direction"]) for c in whole][:3] == [(10, "up"), (41, "down"), (47, "up")] and whole[0]["to_frame"] == 40
+    assert len(whole) == 8 and len(flashes.pair(whole, 30)) == 3
+    assert flashes.busiest(levels, 0.1, 30) == (4, 40, [(40, 41), (47, 48), (55, 56), (62, 63)], 8)
+    # 切り替えが無いときと同じ回数になる
+    assert flashes.busiest(_lit(90, [40, 47, 55, 62], base=0.3), 0.1, 30)[0] == 4
+
+
+def test_a_darker_scene_before_the_window_cannot_shift_the_pairs():
+    """明るい場面が暗くなり（d5）、0.5 秒後から 0.63 秒で 4 回の閃光。前から順の組は切り替えと最初の上がりを組にして 1 つずつずれる。"""
+    levels = [0.6] * 5 + _lit(60, [15, 21, 27, 33])
+    whole = flashes.find_changes(levels, 0.1)
+    assert [(whole[a]["frame"], whole[b]["frame"]) for a, b in flashes.pair(whole, 30)] == [(5, 20), (21, 26), (27, 32), (33, 38)]
+    assert flashes.busiest(levels, 0.1, 30) == (4, 20, [(20, 21), (26, 27), (32, 33), (38, 39)], 8)
+
+
+def test_the_same_scene_changes_before_a_burst_are_counted_from_the_video_too(tmp_path):
+    """上の 2 つの形を動画で。どちらも、どの 1 秒でも最大 4 回で、超過（動画全体の明滅の一覧は 3 回・4 回で、区切りも違う）。"""
+    brighter = flashes.measure(_video(tmp_path / "up.mp4", [DARK] * 10 + _strobe(80, [30, 37, 45, 52], base=150)))
+    assert brighter["counts"]["flashes"] == 3 and brighter["max_per_window"] == 4 and brighter["status"] == "fail"
+    assert brighter["busiest_window"] == {"start_frame": 40, "start_t": 1.3333, "end_t": 2.3333, "flashes": 4, "changes": 8,
+                                          "pairs": [[40, 41], [47, 48], [55, 56], [62, 63]]}
+    darker = flashes.measure(_video(tmp_path / "down.mp4", [200] * 5 + _strobe(60, [15, 21, 27, 33])))
+    assert [(f["frame"], f["return_frame"]) for f in darker["flashes"]] == [(5, 20), (21, 26), (27, 32), (33, 38)]
+    assert darker["max_per_window"] == 4 and darker["status"] == "fail"
+    assert darker["busiest_window"]["start_frame"] == 20 and darker["busiest_window"]["pairs"] == [[20, 21], [26, 27], [32, 33], [38, 39]]
 
 
 # ---- しきい値と入力 ------------------------------------------------------------------

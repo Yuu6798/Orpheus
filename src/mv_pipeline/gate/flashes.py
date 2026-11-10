@@ -14,8 +14,9 @@ hooks で足した光は timeline に載らないので、描き終えた動画�
      数コマかけた上がりも、ゆっくり消える光の戻りも、合計が delta に達したコマで 1 つの変化になる。delta 未満の揺れは変化にしない。
   4. 明滅 = 隣り合う 2 つの変化（暗 → 明 → 暗、または明 → 暗 → 明）で、コマの差が 1 秒未満の組。前から順に、重ならないように
      組にする。片方向だけの変化（場面の切り替え・単調なフェード）や、1 秒以上離れた 2 つの変化は明滅にしない。
-  5. 1 秒の窓の回数 = その窓（ある変化のコマから fps コマ未満）に入る変化だけを、4 と同じ決まりで組にした数。窓の前にある
-     変化が組をずらして数を減らさないよう、窓ごとに組み直す（明滅の一覧と区切りが違うことがある）。
+  5. 1 秒の窓の回数 = その 1 秒の明るさだけに 3 を掛け直し、隣り合う 2 つの変化を前から組にした数。窓の前の明るさは使わない。
+     窓の前にある変化（場面の切り替えなど）が、窓の中の上がりを吸収したり、組を 1 つずつずらしたりして、回数を減らさないため
+     （動画全体で取った変化・明滅の一覧と、数や区切りが違うことがある）。窓は 1 コマずつずらして全部見る。
      どの窓でも最大の回数が max_per_s を超えたら status は fail（終了コード 1）。
 
 出力（既定は動画の隣の `<動画の名前>_flash_report/`）は flash_report.json: 動画の sha256・fps・コマ数、測り方、しきい値、変化の一覧、
@@ -147,18 +148,23 @@ def pair(changes, span):
     return pairs
 
 
-def busiest(changes, span):
-    """(最大の回数, その窓の最初の変化の添字 | None, その窓の組)。窓は変化のコマから span コマ未満。
+def busiest(levels, delta, span):
+    """(最大の回数, その窓の最初のコマ | None, その窓で数えた組 [(コマ, コマ)], その窓の変化の数)。
 
-    どの 1 秒の窓に入る変化も、ある変化から始まる窓に全部入るので、変化から始まる窓だけを見れば足りる。同じ回数なら早い窓。"""
-    best = (0, None, [])
-    for start, first in enumerate(changes):
-        stop = start
-        while stop < len(changes) and changes[stop]["frame"] - first["frame"] < span - EPS:
-            stop += 1
-        pairs = pair(changes[start:stop], span)
-        if len(pairs) > best[0]:
-            best = (len(pairs), start, [(start + a, start + b) for a, b in pairs])
+    1 秒の窓は、コマ s への変わり目から span コマ未満の変わり目まで（明るさはコマ s - 1 から読む）。窓ごとに、その中の
+    明るさだけに find_changes を掛け直して、変化を前から 2 つずつ組にする（窓の中の変化は交互で、どの 2 つも 1 秒未満）。
+    動画全体の変化の一覧から数えると、窓の前の上がり（明るい場面への切り替え）に窓の中の光の上がりが吸収されたり、組が
+    1 つずつずれたりして、回数が減る。窓は 1 コマずつずらして全部見る。同じ回数なら早い窓で、その最初の変化を保ったまま
+    いちばん遅く始まる窓（最初の変化に寄せた窓）を返す。"""
+    reach = max(1, math.ceil(span - EPS))          # 1 つの窓に入る変わり目の数
+    best, running = (0, None, [], 0), False
+    for start in range(1, len(levels)):
+        frames = [start - 1 + change["frame"] for change in find_changes(levels[start - 1:start + reach], delta)]
+        count = len(frames) // 2
+        if count > best[0] or (running and count == best[0] and frames[0] == best[2][0][0]):
+            best, running = (count, start, [(frames[i], frames[i + 1]) for i in range(0, 2 * count, 2)], len(frames)), True
+        else:
+            running = False
     return best
 
 
@@ -175,7 +181,7 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
     span = fps * WINDOW_S
     changes = find_changes(levels, limits["delta"])
     pairs = pair(changes, span)
-    top, start, window_pairs = busiest(changes, span)
+    top, start, window_pairs, window_changes = busiest(levels, limits["delta"], span)
     rows = [{"frame": c["frame"], "t": _seconds(c["frame"], fps), "direction": c["direction"], "amount": round(c["amount"], 4),
              "from": round(c["from"], 4), "from_frame": c["from_frame"], "to": round(c["to"], 4), "to_frame": c["to_frame"]} for c in changes]
     flashes = [{"frame": changes[a]["frame"], "t": _seconds(changes[a]["frame"], fps),
@@ -184,10 +190,8 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
                 "amount": round(min(changes[a]["amount"], changes[b]["amount"]), 4)} for a, b in pairs]
     window = None
     if start is not None:
-        first = changes[start]["frame"]
-        inside = [c for c in changes[start:] if c["frame"] - first < span - EPS]
-        window = {"start_frame": first, "start_t": _seconds(first, fps), "end_t": round(_seconds(first, fps) + WINDOW_S, 4),
-                  "flashes": top, "changes": len(inside), "pairs": [[changes[a]["frame"], changes[b]["frame"]] for a, b in window_pairs]}
+        window = {"start_frame": start, "start_t": _seconds(start, fps), "end_t": round(_seconds(start, fps) + WINDOW_S, 4),
+                  "flashes": top, "changes": window_changes, "pairs": [list(item) for item in window_pairs]}
     ups = sum(1 for c in changes if c["direction"] == "up")
     return {
         "schema_version": SCHEMA,
@@ -195,7 +199,8 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
                   "size": [info["width"], info["height"]], "matrix_tag": info["matrix"]},
         "read": {"size": list(size), "matrix": READ_MATRIX, "transfer": TRANSFER, "weights": list(LUMA),
                  "brightness": "relative_luminance",    # 表示の値を線形に戻した 0.2126 R + 0.7152 G + 0.0722 B の画面平均（0〜1）
-                 "change": "delta_from_last_extremum"}, # 直前の極値（山か谷）から delta 以上離れたコマで 1 つの変化
+                 "change": "delta_from_last_extremum",  # 直前の極値（山か谷）から delta 以上離れたコマで 1 つの変化
+                 "window": "recounted_from_its_own_frames"},   # 1 秒の窓の回数は、その窓の明るさだけで変化を取り直して数える
         "thresholds": {**limits, "window_s": WINDOW_S},
         "counts": {"changes": len(changes), "up": ups, "down": len(changes) - ups, "flashes": len(flashes),
                    "unpaired_changes": len(changes) - 2 * len(flashes)},
