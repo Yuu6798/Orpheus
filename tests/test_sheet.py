@@ -323,6 +323,31 @@ def test_crop_of_a_transparent_sequence_is_exact_and_bad_regions_are_refused(tmp
     assert sheet.crop_box((0.0, 0.0, 1.0, 1.0), "norm", (W, H)) == [0, 0, W, H] and sheet.crop_box((0, 0, 1, 1), "px", (W, H)) == [0, 0, 1, 1]
 
 
+def _located(width=1920, height=1080):
+    """画素の値で場所が読める絵（R = x の下 8 ビット、G = x の上の桁、B = y の下 8 ビット）。"""
+    y, x = np.mgrid[0:height, 0:width]
+    return np.dstack([x % 256, x // 256 * 30 + 10, y % 256]).astype(np.uint8)
+
+
+def test_pixel_crops_use_the_given_pixels_as_they_are(tmp_path):
+    """--units px は渡した画素をそのまま使う。幅で割って掛け直すと 123 / 1920 * 1920 = 122.99999999999999 になり、1 画素ずれる。"""
+    assert sheet.crop_box((123, 39, 200, 100), "px", (1920, 1080)) == [123, 39, 200, 100]
+    assert sheet.crop_box((122, 0, 123, 10), "px", (1920, 1080)) == [122, 0, 123, 10]                 # 1 画素の幅も通る
+    for size in (1920, 1080, 720, 2160, 300):                                                       # 幅で割り切れない値を含む、全部の整数
+        assert all(sheet.crop_box((v, v, v + 1, v + 1), "px", (size, size)) == [v, v, v + 1, v + 1] for v in range(size))
+    assert sheet.crop_box((10.9, 0.2, 20.1, 9.99), "px", (1920, 1080)) == [10, 0, 20, 9]             # 小数は切り捨て
+    for crop in ((0.25, 0.25, 0.75, 1.0), (0.333, 0.1, 0.9, 0.7), (0.0640625, 0.0361, 0.1042, 0.0926), (0.0, 0.0, 1.0, 1.0)):
+        before = [int(crop[0] / 1.0 * 1920), int(crop[1] / 1.0 * 1080), int(crop[2] / 1.0 * 1920), int(crop[3] / 1.0 * 1080)]   # 変更前の式
+        assert sheet.crop_box(crop, "norm", (1920, 1080)) == before                                # norm は今までどおり
+    folder, frame = tmp_path / "wide", _located()
+    folder.mkdir()
+    Image.fromarray(frame).save(folder / "f0.png")
+    sheet.build(folder, tmp_path / "w.png", at=[0.0], fps=FPS, crop=(123, 39, 200, 100), units="px", columns=1)
+    record = read_json(tmp_path / "w.json")
+    assert record["cells"][0]["crop"] == [123, 39, 200, 100] and record["cell_width"] == 77
+    assert np.array_equal(_pictures(tmp_path / "w.png", record, 61)[0], frame[39:100, 123:200])     # 渡した範囲の画素そのまま
+
+
 # ---- 形式（--out の拡張子） -------------------------------------------------------------------
 
 def test_the_extension_of_out_picks_png_or_jpeg(tmp_path):

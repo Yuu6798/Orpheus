@@ -73,6 +73,22 @@ def test_pixel_units_draw_a_line_every_step_in_image_pixels():
         guides.image_grid(black, units="cm")
 
 
+def test_pixel_crops_cut_the_given_pixels_as_they_are():
+    """--units px は渡した画素をそのまま切る。以前は幅で割って掛け直していて、1920 幅の 123 が 122 になるなど 1 画素ずれた。"""
+    y, x = np.mgrid[0:1080, 0:1920]
+    rgb = np.ascontiguousarray(np.dstack([x % 256, x // 256 * 30 + 10, y % 256]).astype(np.uint8))     # 画素の値で場所が読める
+    out, info = guides.image_grid(rgb, crop=(123, 39, 200, 100), units="px", step=10000, width=77)       # 縮尺 1。線は 0 だけで、範囲の外
+    assert info["size"] == [77, 61] and info["crop"] == [123.0, 39.0, 200.0, 100.0]
+    assert np.array_equal(out, rgb[39:100, 123:200])
+    for left, top in ((245, 78), (490, 156), (505, 187), (1887, 1041), (64, 64)):                       # 割って掛け直すと 1 つ小さくなる値と、ならない値
+        out, _ = guides.image_grid(rgb, crop=(left, top, left + 32, top + 32), units="px", step=10000, width=32)
+        assert np.array_equal(out, rgb[top:top + 32, left:left + 32])
+    narrow, info = guides.image_grid(rgb, crop=(122, 5, 123, 15), units="px", step=10000, width=16)      # 1 画素の幅（以前は「1 画素より小さい」で止まった）
+    assert info["size"] == [16, 160] and (narrow[..., 0] == 122).all() and (narrow[..., 1] == 10).all()
+    out, _ = guides.image_grid(rgb, crop=(300.9, 200.2, 332.1, 232.99), units="px", step=10000, width=32)   # 小数は切り捨て
+    assert np.array_equal(out, rgb[200:232, 300:332])
+
+
 def test_viewable_images_turn_depth_and_float_into_gray(tmp_path):
     Image.fromarray(np.full((4, 6), 65535, np.uint16)).save(tmp_path / "d16.png")
     Image.fromarray(np.full((4, 6), 0.5, np.float32)).save(tmp_path / "f.tif")
@@ -120,7 +136,7 @@ def test_the_guides_command_picks_the_format_from_the_extension(tmp_path):
 def test_the_sheet_crop_cuts_the_same_pixels_as_the_guides_crop():
     rgb = noisy_rgb()                                                                 # 400×300
     for crop, units in (((0.2, 0.1, 0.6, 0.5), "norm"), ((0.333, 0.25, 0.9, 1.0), "norm"), ((0.0, 0.0, 1.0, 1.0), "norm"),
-                        ((37, 20, 201, 133), "px"), ((0.5, 10.9, 399.5, 299.2), "px")):
+                        ((37, 20, 201, 133), "px"), ((0.5, 10.9, 399.5, 299.2), "px"), ((29, 55, 113, 97), "px")):    # 最後は割り切れない値
         x0, y0, x1, y1 = sheet.crop_box(crop, units, (400, 300))
         step = 1.0 if units == "norm" else 10000                                      # 線は端の 0 と 1 だけ
         grid, info = guides.image_grid(rgb, crop, units, step, width=x1 - x0)         # 範囲の幅と同じ幅 = 縮尺 1

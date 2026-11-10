@@ -137,7 +137,8 @@ def spaced_times(fps, frames, every=None, count=None):
 def crop_box(crop, units, size):
     """--crop [x0, y0, x1, y1]（units "norm": 0..1、"px": 画素）→ 画素の [x0, y0, x1, y1]。size はコマの (幅, 高さ)。
 
-    範囲の切り方は `mv fx guides` の --crop と同じ式（小数は切り捨て）。範囲が逆・コマの外・1 画素より小さい範囲は PipelineError。"""
+    範囲の切り方は `mv fx guides` の --crop と同じ式（norm は幅・高さを掛けて切り捨て。px は渡した値をそのまま使い、小数は切り捨て）。
+    範囲が逆・コマの外・1 画素より小さい範囲は PipelineError。"""
     if units not in CROP_UNITS:
         raise PipelineError(f"--units は {' か '.join(CROP_UNITS)} にしてください: {units!r}")
     width, height = size
@@ -149,7 +150,8 @@ def crop_box(crop, units, size):
     if not (0 <= x0 < x1 <= scale_x and 0 <= y0 < y1 <= scale_y):
         raise PipelineError(f"--crop はコマの中の [x0 y0 x1 y1]（x0 < x1、y0 < y1）にしてください: {values}"
                             f"（{'正規化座標 0..1' if units == 'norm' else f'画素 0..{width}x{height}'}）")
-    box = [int(x0 / scale_x * width), int(y0 / scale_y * height), int(x1 / scale_x * width), int(y1 / scale_y * height)]
+    # px を幅で割って掛け直すと、123 が 122.99999999999999 になって 1 画素ずれる（1920 幅など）。px は割らない
+    box = [int(x0 * width), int(y0 * height), int(x1 * width), int(y1 * height)] if units == "norm" else [int(v) for v in values]
     if box[2] - box[0] < 1 or box[3] - box[1] < 1:
         raise PipelineError(f"--crop の範囲が 1 画素より小さくなります: {values}（コマは {width}x{height}）")
     return box
