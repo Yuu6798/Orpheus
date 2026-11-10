@@ -1,23 +1,27 @@
-"""見るためのシート（`mv sheet`）。動画か透過の連番から、指定した時刻か timeline の出来事のコマを 1 枚に並べる。
+"""見るためのシート（`mv sheet`）。動画か透過の連番から、指定した時刻・等間隔の時刻・timeline の出来事のコマを 1 枚に並べる。
 
-    mv sheet 動画か連番のフォルダ --out sheet.png (--at 秒 … | --events timeline.json [--kinds lyrics,flashes,seams])
-             [--fps 30] [--backgrounds white,black,gray] [--cell-width 320] [--columns 4] [--font PATH]
+    mv sheet 動画か連番のフォルダ --out sheet.png|.jpg (--at 秒 … | --events timeline.json [--kinds lyrics,flashes,seams]) [--every 秒] [--count N]
+             [--crop X0 Y0 X1 Y1 [--units norm|px]] [--fps 30] [--backgrounds white,black,gray] [--cell-width 320] [--columns 4] [--font PATH]
 
+- 時刻は --at か --events（どちらか一方）に、--every（0 秒から S 秒おき。長さ未満）と --count（全体を N 等分した各区間の中央）を足せる
+  （--every・--count だけでもよい）。--every・--count を使うと全部を時刻順に並べ、等間隔・等分の時刻は、同じコマがすでにあれば足さない。
+- --crop は各コマをその範囲で切り出し、縮めずに原寸でセルにする（--cell-width を明示したときだけその幅に合わせる）。範囲の切り方は `mv fx guides` と同じ。
+  --crop のセルは絵に字を掛けない（--crop なしのセルは今までの絵のまま）。
+- --out の拡張子で形式が決まる（.png か、.jpg・.jpeg の品質 90）。ほかの拡張子は止める。
 - コマごとに「コマ番号・秒・出来事の名前」を書き込む。透過の連番なら、白・黒・灰（--backgrounds）の上に置いた版を横に並べる
   （縁と読みやすさの確認用）。動画は不透明として扱い（アルファつきの動画は先に `mv overlay` などで平らにする）、時刻を --columns 列に折り返す。
 - 時刻 → コマ番号は validate.frame_at（いちばん近いコマ）。timeline の時刻はショットの時刻なので、一部の区間だけ描いた run では
   interval.start を引いてから動画のコマにする。連番の fps は --fps（--events の timeline があればその fps）。
   動画の fps は動画から読み、--fps や timeline の fps と 1% 以上違えば止める。
 - 字は --font（TTF / TTC）か、よくある場所の日本語の書体を探して使う。見つからなければ Pillow の既定の書体で、日本語を含む出来事の名前は
-  ASCII の略記（line 1 / flash / seam / given）にして画像に書き、正式な名前は隣の JSON に残す（記録の `label_font` にどちらかが分かる）。
-- 検査ではなく閲覧の道具。合否は出さない。隣に sheet.json（セルごとのコマ番号・秒・出来事・背景・そのコマの sha256、出所）を書くので、
+  ASCII の略記（line 1 / flash / seam / given / every / count）にして画像に書き、正式な名前は隣の JSON に残す（記録の `label_font` にどちらかが分かる）。
+- 検査ではなく閲覧の道具。合否は出さない。隣に sheet.json（セルごとのコマ番号・秒・出来事・背景・切り出した範囲・そのコマの sha256、出所）を書くので、
   AI が動画を見ずに「どのコマに何が写っているか」を読める入口になる。
 
 cv2 は使わない（Pillow・numpy・ffmpeg）。
 """
 import hashlib
 import math
-import os
 import re
 from pathlib import Path
 
@@ -26,13 +30,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 from . import validate
 from .inspection import video
-from .io import PipelineError, atomic_json, read_json, sha256
+from .io import PipelineError, atomic_image, atomic_json, image_format, read_json, sha256
 
 FRAME_SUFFIXES = (".png", ".webp", ".tif", ".tiff")
 BACKGROUNDS = {"white": (255, 255, 255), "black": (0, 0, 0), "gray": (128, 128, 128)}
 DEFAULT_BACKGROUNDS = ("white", "black", "gray")
 KINDS = ("lyrics", "flashes", "seams")
 LABEL_HEIGHT_SHARE = 0.11
+DEFAULT_CELL_WIDTH = 320
+CROP_UNITS = ("norm", "px")
 FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
@@ -96,6 +102,59 @@ def events_from_timeline(timeline, kinds=KINDS):
     return sorted(items, key=lambda item: item[0])
 
 
+def _spread(time_at, step, count, fps, frames, before=math.inf):
+    """time_at(k)（k = 0 … count-1。間隔は step 秒）のうち before 秒より前の時刻を [(秒, コマ番号)] で返す。
+
+    動画の中の時刻なので、いちばん近いコマが最後のコマの次になる時刻（最後の半コマ）は最後のコマにする。同じコマになる時刻は最初の 1 つだけ。
+    間隔が 1 コマより短いときは次のコマに届く k まで飛ぶので、回る回数はコマ数の程度で済む。"""
+    picked, k = [], 0
+    while k < count and frames > 0:
+        t = time_at(k)
+        if not t < before:
+            break
+        frame = min(validate.frame_at(t, fps), frames - 1)
+        if not picked or frame > picked[-1][1]:
+            picked.append((t, frame))
+        if frame >= frames - 1:
+            break
+        k = max(k + 1, math.floor(((frame + 0.5) / fps - time_at(0)) / step))     # ここより前の k は、まだ同じコマ
+    return picked
+
+
+def spaced_times(fps, frames, every=None, count=None):
+    """--every・--count の時刻 [(秒, コマ番号, 名前, ASCII の略記)]。秒は動画（連番）の先頭を 0 とする。
+
+    every: 0 秒から every 秒おき（長さ frames / fps 未満）。count: 全体を count 等分した各区間の中央。"""
+    duration = frames / fps
+    out = []
+    if every is not None:
+        out += [(t, frame, "等間隔", "every") for t, frame in _spread(lambda k: k * every, every, math.inf, fps, frames, duration - 1e-9)]
+    if count is not None:
+        out += [(t, frame, "等分", "count") for t, frame in _spread(lambda k: (k + 0.5) * duration / count, duration / count, count, fps, frames)]
+    return out
+
+
+def crop_box(crop, units, size):
+    """--crop [x0, y0, x1, y1]（units "norm": 0..1、"px": 画素）→ 画素の [x0, y0, x1, y1]。size はコマの (幅, 高さ)。
+
+    範囲の切り方は `mv fx guides` の --crop と同じ式（小数は切り捨て）。範囲が逆・コマの外・1 画素より小さい範囲は PipelineError。"""
+    if units not in CROP_UNITS:
+        raise PipelineError(f"--units は {' か '.join(CROP_UNITS)} にしてください: {units!r}")
+    width, height = size
+    scale_x, scale_y = (1.0, 1.0) if units == "norm" else (float(width), float(height))
+    values = [float(v) for v in crop]
+    if len(values) != 4:
+        raise PipelineError(f"--crop は [x0 y0 x1 y1] の 4 つの数にしてください: {list(crop)}")
+    x0, y0, x1, y1 = values
+    if not (0 <= x0 < x1 <= scale_x and 0 <= y0 < y1 <= scale_y):
+        raise PipelineError(f"--crop はコマの中の [x0 y0 x1 y1]（x0 < x1、y0 < y1）にしてください: {values}"
+                            f"（{'正規化座標 0..1' if units == 'norm' else f'画素 0..{width}x{height}'}）")
+    box = [int(x0 / scale_x * width), int(y0 / scale_y * height), int(x1 / scale_x * width), int(y1 / scale_y * height)]
+    if box[2] - box[0] < 1 or box[3] - box[1] < 1:
+        raise PipelineError(f"--crop の範囲が 1 画素より小さくなります: {values}（コマは {width}x{height}）")
+    return box
+
+
 def _load_frames(source, indices):
     """{コマ番号: (uint8 RGB か RGBA, sha256)}。連番は使うコマだけ読む。"""
     wanted = sorted({i for i in indices if 0 <= i < source["frames"]})
@@ -147,15 +206,27 @@ def _font(pixels, path):
         return ImageFont.load_default()
 
 
-def cell(image, width, label, font_path=None):
-    """コマを幅 width に縮め、上に黒帯の字（label）を足した uint8 RGB。"""
-    source = Image.fromarray(image)
-    height = max(2, int(round(source.height * width / source.width)))
-    scaled = source.resize((width, height), Image.Resampling.BOX)
+def cell(image, width, label, font_path=None, keep_picture=False):
+    """コマを幅 width に縮め（width が None なら縮めず原寸のまま）、上に黒帯の字（label）を足した uint8 RGB。
+
+    字の下の端は帯から数画素はみ出して、絵のいちばん上の行に掛かることがある（今までの絵のまま）。keep_picture なら字を帯の中に寄せて
+    先に書き、絵を後から置くので、絵の画素は 1 つも変わらない（--crop のセル用）。"""
+    scaled = Image.fromarray(image)
+    if width is not None:
+        scaled = scaled.resize((width, max(2, int(round(scaled.height * width / scaled.width)))), Image.Resampling.BOX)
+    width, height = scaled.size
     band = max(14, int(round(height * LABEL_HEIGHT_SHARE)))
     canvas = Image.new("RGB", (width, height + band), (0, 0, 0))
-    canvas.paste(scaled, (0, band))
-    ImageDraw.Draw(canvas).text((4, 2), label, font=_font(max(10, band - 6), font_path), fill=(255, 255, 255))
+    font, draw = _font(max(10, band - 6), font_path), ImageDraw.Draw(canvas)
+    if not keep_picture:
+        canvas.paste(scaled, (0, band))
+        draw.text((4, 2), label, font=font, fill=(255, 255, 255))
+    else:
+        if isinstance(font, ImageFont.FreeTypeFont):
+            draw.text((4, band), label, font=font, fill=(255, 255, 255), anchor="ld")     # 字のいちばん下（ディセンダー）を帯の下の端に合わせる
+        else:
+            draw.text((4, 2), label, font=font, fill=(255, 255, 255))
+        canvas.paste(scaled, (0, band))
     return np.asarray(canvas)
 
 
@@ -165,32 +236,29 @@ def _grid(cells, columns):
     return np.vstack([np.hstack(row + [blank] * (columns - len(row))) for row in rows])
 
 
-def _save_png(image, out):
+def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEFAULT_BACKGROUNDS, cell_width=None, columns=4, kinds=KINDS, font=None,
+          every=None, count=None, crop=None, units="norm"):
+    """シート（--out の拡張子で PNG か JPEG）と sheet.json を書く。要約を返す。
+
+    cell_width を省くと 320（crop があれば、切り出した範囲の原寸）。"""
+    has_at = at is not None and len(at) > 0
+    if has_at and events_path is not None:
+        raise PipelineError("--at（秒の並び）と --events（timeline.json）はどちらか一方にしてください（--every・--count はどちらとも併用できます）")
+    if not has_at and events_path is None and every is None and count is None:
+        raise PipelineError("並べる時刻を --at（秒の並び）・--events（timeline.json）・--every（S 秒おき）・--count（N 等分）のどれかで指定してください")
+    if every is not None and not (math.isfinite(every) and every > 0):
+        raise PipelineError(f"--every は正の秒数にしてください: {every}")
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 1):
+        raise PipelineError(f"--count は 1 以上の整数にしてください: {count}")
     out = Path(out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".tmp.png")
-    try:
-        with open(tmp, "wb") as stream:
-            Image.fromarray(image).save(stream, format="PNG")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, out)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-
-
-def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEFAULT_BACKGROUNDS, cell_width=320, columns=4, kinds=KINDS, font=None):
-    """シート（PNG）と sheet.json を書く。要約を返す。"""
-    if (at is None or len(at) == 0) == (events_path is None):
-        raise PipelineError("--at（秒の並び）か --events（timeline.json）のどちらか一方を指定してください")
+    kind = image_format(out)                          # 知らない拡張子は、動画を読む前に止める
     unknown = [k for k in kinds if k not in KINDS]
     if unknown:
         raise PipelineError(f"--kinds は {', '.join(KINDS)} から選んでください（不明: {unknown}）")
     bad = [b for b in backgrounds if b not in BACKGROUNDS]
     if bad or not backgrounds:
         raise PipelineError(f"--backgrounds は {', '.join(BACKGROUNDS)} から 1 つ以上選んでください（不明: {bad}）")
-    if cell_width < 32 or columns < 1:
+    if (cell_width is not None and cell_width < 32) or columns < 1:
         raise PipelineError("--cell-width は 32 以上、--columns は 1 以上にしてください")
     timeline, fps_origin = None, "--fps"
     if events_path is not None:
@@ -199,46 +267,62 @@ def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEF
             fps, fps_origin = timeline["fps"], "timeline"
     source = describe_source(source_path, fps, fps_origin)
     fps = source["fps"]
+    box = None if crop is None else crop_box(crop, units, source["size"])
+    width = DEFAULT_CELL_WIDTH if cell_width is None and box is None else cell_width      # None: 切り出した範囲を縮めず原寸で並べる
     font_path = find_font(font)
-    wanted = [(float(t), "指定", "given") for t in at] if events_path is None else events_from_timeline(timeline, kinds)
-    if not wanted:
-        raise PipelineError("並べる時刻がありません（timeline に行・フラッシュ・切れ目が無い）")
+    wanted = []
+    if has_at:
+        wanted = [(float(t), "指定", "given") for t in at]
+    elif events_path is not None:
+        wanted = events_from_timeline(timeline, kinds)
     # timeline の時刻はショットの時刻。一部の区間だけ描いた run の動画は interval.start から始まるので、その分を引いてコマにする
     offset = float((timeline or {}).get("interval", {}).get("start", 0.0)) if events_path is not None else 0.0
     entries = [{"t": t, "frame": validate.frame_at(t - offset, fps), "event": name, "event_ascii": short} for t, name, short in wanted]
     for entry in entries:
         entry["missing"] = not 0 <= entry["frame"] < source["frames"]
+    if every is not None or count is not None:
+        taken = {entry["frame"] for entry in entries}
+        for t, frame, name, short in spaced_times(fps, source["frames"], every, count):
+            if frame not in taken:            # 同じコマがすでにあれば足さない（--at・--events のコマ、--every、--count の順に残る）
+                taken.add(frame)
+                entries.append({"t": offset + t, "frame": frame, "event": name, "event_ascii": short, "missing": False})
+        entries.sort(key=lambda entry: entry["t"])       # 併用したら時刻順（--events があれば、等間隔・等分の時刻も timeline の時刻で書く）
+    if not entries:
+        raise PipelineError("並べる時刻がありません" + ("（timeline に行・フラッシュ・切れ目が無い）" if events_path is not None else ""))
     frames = _load_frames(source, [e["frame"] for e in entries if not e["missing"]])
     cells, layout = [], []
     for entry in entries:
         if entry["missing"]:
             continue
         image, digest = frames[entry["frame"]]
+        if box is not None:
+            image = image[box[1]:box[3], box[0]:box[2]]
         shown = entry["event"] if font_path else entry["event_ascii"]
         label = f"f{entry['frame']} {entry['t']:.3f}s {shown}"
-        record = {k: entry[k] for k in ("t", "frame", "event", "event_ascii")}
+        record = {**{k: entry[k] for k in ("t", "frame", "event", "event_ascii")}, "crop": None if box is None else list(box)}
         if source["transparent"]:
             for name in backgrounds:
-                cells.append(cell(over(image, BACKGROUNDS[name]), cell_width, f"{label} [{name}]", font_path))
+                cells.append(cell(over(image, BACKGROUNDS[name]), width, f"{label} [{name}]", font_path, keep_picture=box is not None))
                 layout.append({**record, "background": name, "cell": len(cells) - 1, "sha256": digest})
         else:
-            cells.append(cell(image[..., :3], cell_width, label, font_path))
+            cells.append(cell(image[..., :3], width, label, font_path, keep_picture=box is not None))
             layout.append({**record, "background": None, "cell": len(cells) - 1, "sha256": digest})
     if not cells:
         raise PipelineError(f"どの時刻も動画の中にありません（コマ数 {source['frames']}、fps {fps:g}）")
     per_row = len(backgrounds) if source["transparent"] else columns
     sheet = _grid(cells, per_row)
-    out = Path(out)
-    _save_png(sheet, out)
-    record = {"schema_version": "sheet/0.1", "sheet": str(out), "size": [sheet.shape[1], sheet.shape[0]], "columns": per_row,
-              "cell_width": cell_width, "fps": fps, "fps_origin": fps_origin if source["kind"] == "frames" else "video",
+    atomic_image(out, sheet)
+    record = {"schema_version": "sheet/0.1", "sheet": str(out), "format": kind.lower(), "size": [sheet.shape[1], sheet.shape[0]], "columns": per_row,
+              "cell_width": cells[0].shape[1], "fps": fps, "fps_origin": fps_origin if source["kind"] == "frames" else "video",
               "label_font": font_path, "labels": "full" if font_path else "ascii",
               "source": {k: v for k, v in source.items() if k not in ("files", "info")},
               "events": None if events_path is None else {"path": str(events_path), "sha256": sha256(events_path), "kinds": list(kinds),
                                                           "interval_start": offset},
+              "every": every, "count": count,
+              "crop": None if box is None else {"units": units, "box": [float(v) for v in crop], "pixels": list(box), "native": width is None},
               "backgrounds": list(backgrounds) if source["transparent"] else [],
               "cells": layout, "missing": [{k: e[k] for k in ("t", "frame", "event")} for e in entries if e["missing"]],
-              "note": "閲覧用。合否は出さない。cells[*].sha256 はそのコマの画素（連番はファイル）の sha256"}
+              "note": "閲覧用。合否は出さない。cells[*].sha256 はそのコマの画素（連番はファイル）の sha256（crop の前のコマ全体）。cells[*].crop は切り出した画素の範囲"}
     atomic_json(out.with_suffix(".json"), record)
-    return {"sheet": str(out), "json": str(out.with_suffix(".json")), "cells": len(cells), "rows": -(-len(cells) // per_row),
+    return {"sheet": str(out), "json": str(out.with_suffix(".json")), "format": record["format"], "cells": len(cells), "rows": -(-len(cells) // per_row),
             "size": record["size"], "missing": len(record["missing"]), "transparent": source["transparent"], "labels": record["labels"]}

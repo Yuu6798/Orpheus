@@ -2,6 +2,7 @@
 
 元画像の格子は、実制作の格子の台本（正規化座標の線と値・幅 1600 に縮尺）を書き写した参照実装と画素まで照らし合わせる。
 """
+import io
 import json
 
 import numpy as np
@@ -11,6 +12,7 @@ from PIL import Image
 cv2 = pytest.importorskip("cv2")
 
 from fx_synth import make_project, run_cli, spec_dict, write_spec  # noqa: E402
+from mv_pipeline import sheet  # noqa: E402
 from mv_pipeline.fx import guides, render, runs  # noqa: E402
 from mv_pipeline.fx import spec as fxspec  # noqa: E402
 from mv_pipeline.io import PipelineError  # noqa: E402
@@ -91,6 +93,40 @@ def test_the_guides_command_writes_the_png_and_reports_the_settings(tmp_path):
         assert image.size == tuple(result["size"])
     code, _, err = run_cli("fx", "guides", tmp_path / "base.png", "--out", tmp_path / "g2.png", "--width", 9)
     assert code == 1 and "--width" in err
+
+
+def test_the_guides_command_picks_the_format_from_the_extension(tmp_path):
+    Image.fromarray(noisy_rgb()).save(tmp_path / "base.png")
+    results = {}
+    for name in ("g.png", "g.jpg", "g.jpeg", "u.JPG"):
+        code, results[name], err = run_cli("fx", "guides", tmp_path / "base.png", "--out", tmp_path / name, "--width", 400)
+        assert code == 0, err
+    assert results["g.png"]["format"] == "png" and (tmp_path / "g.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(tmp_path / "g.png") as image:
+        assert np.array_equal(np.asarray(image), guides.image_grid(noisy_rgb(), width=400)[0])
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+    for name in ("g.jpg", "g.jpeg", "u.JPG"):                                          # 以前は .jpg の名前で PNG の中身を書いていた
+        assert results[name]["format"] == "jpeg" and (tmp_path / name).read_bytes()[:2] == b"\xff\xd8"
+        assert (tmp_path / name).read_bytes() == buffer.getvalue()                    # 同じ絵の JPEG（品質 90）
+        with Image.open(tmp_path / name) as image:
+            assert image.format == "JPEG" and list(image.size) == results[name]["size"]
+    for name in ("g.webp", "g.tif", "g"):
+        code, _, err = run_cli("fx", "guides", tmp_path / "base.png", "--out", tmp_path / name)
+        assert code == 1 and "拡張子" in err and not (tmp_path / name).exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_the_sheet_crop_cuts_the_same_pixels_as_the_guides_crop():
+    rgb = noisy_rgb()                                                                 # 400×300
+    for crop, units in (((0.2, 0.1, 0.6, 0.5), "norm"), ((0.333, 0.25, 0.9, 1.0), "norm"), ((0.0, 0.0, 1.0, 1.0), "norm"),
+                        ((37, 20, 201, 133), "px"), ((0.5, 10.9, 399.5, 299.2), "px")):
+        x0, y0, x1, y1 = sheet.crop_box(crop, units, (400, 300))
+        step = 1.0 if units == "norm" else 10000                                      # 線は端の 0 と 1 だけ
+        grid, info = guides.image_grid(rgb, crop, units, step, width=x1 - x0)         # 範囲の幅と同じ幅 = 縮尺 1
+        assert info["size"] == [x1 - x0, y1 - y0]
+        untouched = (grid == rgb[y0:y1, x0:x1]).all(axis=2)                           # 線と字の画素のほかは、同じ範囲の元の画素
+        assert untouched.mean() > 0.9, (crop, units, untouched.mean())
 
 
 # ---- 描いたコマに重ねる印 -----------------------------------------------------------------
