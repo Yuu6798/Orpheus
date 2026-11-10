@@ -4,7 +4,7 @@
 「現行版 / レイヤー / 局所光 / 両方」を並べて比べるための道具で、CLI と設定ファイルだけで動く。
 仕上げに、実制作と同じ式の**色調整・周辺減光・粒状感（look）**を全版に掛けられる（任意。[look](#look色調整周辺減光粒状感)）。
 いくつものショットは **fx-timeline** でカット・クロスフェード・黒から上げる・フラッシュ・焼け抜けでつないで 1 本にできる（[timeline](#timeline複数のショットをつなぐfx-timeline02)）。
-炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光など、作品ごとの演出は、timeline の **hooks** で掛ける部品（`fx.fire`・`fx.sky`・`fx.accent`）がある（[演出の hooks](#演出の-hooks火空と天気明かり)）。
+炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒など、作品ごとの演出は、timeline の **hooks** で掛ける部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`）がある（[演出の hooks](#演出の-hooks火空と天気明かり)）。
 
 - **深度とマスクは任意**: 必須の素材は基準画像（`assets.base`）だけ。深度やマスクが無いと、それを使う機能（深度視差、plane、受光マスクつきの局所光）が使えないだけで、カメラ・look・timeline・hooks はそのまま動く。
 - 決定論: 同じ spec・seed・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
@@ -913,12 +913,13 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
 ### 演出の hooks（火・空と天気・明かり）
 
 作品ごとの演出（炎・火の粉・刃の火・灯・稲光・雨など）は、timeline のスキーマには入れず、Python の hooks で掛ける（dance の仕上げの hooks と同じ考え。
-演出の値は作品ごとで、種類も多いため）。部品は公開の `mv_pipeline.fx.fire`・`sky`・`accent`。
-見本は `examples/fx/fire_hooks.py`（火）と `examples/fx/sky_hooks.py`（空と天気・明かり）で、どちらもデモの timeline 用。
+演出の値は作品ごとで、種類も多いため）。部品は公開の `mv_pipeline.fx.fire`・`sky`・`accent`・`particles`。
+見本は `examples/fx/fire_hooks.py`（火）・`examples/fx/sky_hooks.py`（空と天気・明かり）・`examples/fx/particles_hooks.py`（粒）で、どれもデモの timeline 用。
 
 ```sh
 uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/fx/fire_hooks.py
 uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/fx/sky_hooks.py
+uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/fx/particles_hooks.py
 ```
 
 - hooks のファイルは `--hooks` で明示したときだけ実行する。関数はどれも任意で、渡した画を書き換えてよく、同じ形の画を返す。
@@ -961,6 +962,67 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
   - `spread_light`（紙の内側に灯が広がる）・`flicker`（描かれた灯・炎の明るい暖色の所を少し揺らす）・`smoke`（立ち昇る煙）
   - `steel(f, blade, t, P)`（刃の中の粒と、刃に沿ってゆっくり動く反射。描いた刀を周りの絵の質感に寄せる）
   - `amt`・`len` は `[[t, 値], ...]` で書くと時刻で補間する。
+- 粒の部品（`mv_pipeline.fx.particles`）。光の粒が集まって形（題字など）になる。火・空の部品と同じく、画面の座標と表示の値の上で計算し、スクリーン合成で重ねる。
+  字や形そのものは描かない（書体の依存を持たない）。透過の題字カードなどのアルファ（2 次元の配列）から行き先の点を取り、そこへ粒を集める。
+  - `targets(alpha, n, seed)`: アルファの不透明な所から n 個の点を取る。戻り値は float32 の (n, 2) で、その配列の画素座標（画素の中心が整数）。
+    - アルファは 0..1 か 0..255 で、大きさは任意。最大値が 1 を超えていれば 0..255 として読む。`threshold`（既定 0.5。0..1 で書く）以上が不透明。
+    - 面積に比例して取る。不透明な画素を seed で決まる順に並べて前から n 個を使い、n が画素の数より多ければ同じ順でもう一巡する。
+      どの画素も同じ回数（差は 1 回まで）使うので、字の太い所にも細い所にも、面積のとおりに点が乗る。点は画素の中で少しずらす。
+    - 同じ引数なら同じ点で、n を増やしても前の点は変わらない。不透明な画素が無ければ、エラーの文で止まる。
+    - 画面と同じ大きさのカードなら、点をそのまま `gather` に渡せる。違う大きさなら (点 + 0.5) / [幅, 高さ] で正規化座標にして、画面の [幅, 高さ] を掛けて 0.5 を引く。
+      絵に付けて動かすなら、`shot` の中で `view.points(正規化座標)` をそのまま渡す。
+  - `gather(f, t, P, points, k)`: 時刻 t の粒を f に重ねて返す（f を書き換える。形と型は変わらない）。`points` は行き先（画面の画素）。`P` は辞書で、`t0`・`t1` だけが必須。
+    - `t0`・`t1`: 集まり始めと集まり終わりの時刻。粒 i は d·`stagger`·(t1 − t0) だけ遅れて出て（d は粒ごとの 0..1 の乱数）、(1 − `stagger`)·(t1 − t0) で着く。
+      t1 で全部の粒が行き先ちょうどに着く。進みは smoothstep（出だしと着く所でゆっくり）。`stagger`（既定 0.5。0〜0.95）が 0 なら全部が同時に動く。
+    - `origin`: 出どころ。`"ring"`（既定）は画面の外周の輪で、画面に内接する楕円と四隅を通る楕円の間（四隅の近くの粒は初めから画面の中にいる）。
+      `"below"` は画面の下の縁の外（幅いっぱい。深さは画面の高さの 1/4）。`[[x, y], …]` は画面の画素の点の集まりで、粒ごとにどれか 1 つから出る（灯の位置から題字へ、など）。
+    - `swirl`（既定 0）: 渦の振れ幅。粒がまっすぐの道筋の周りを回る半径（粒ごとに 0.5〜1 倍。1 秒に 0.25〜0.75 回転で、どの粒も同じ向き）。着くと 0。
+    - `lift`（既定 0）: 途中で弧を描く高さ。道筋の真ん中でこの高さだけ上がる。
+    - `colors`: 粒ごとに割り当てる色の一覧。飛ぶ間に `settle`（着いたときの色）へ寄る。
+    - `size`・`glow`: 芯と光彩の太さ（ガウスの σ。芯は 0.3 画素より細くならない。`glow` が 0 以下なら光彩なし）。
+    - `gain`（既定 1）: 明るさ。0 以下なら f を変えない（ビット単位で同じ）。
+    - `twinkle`（既定 0。0〜1）: またたき。粒ごとに 1 秒に 1〜3 回、明るさが 1 − `twinkle` まで落ちる。
+    - `lead`（既定 0）: t0 の前に、粒が出どころで待つ秒。その間に 0 から直線で明るくなる。0 なら t0 まで何も描かない
+      （画面の中の出どころの粒は t0 でいきなり現れる。`"ring"` の四隅の近くの粒も同じ。`lead` を書くと、先にゆっくり現れる）。
+    - `after`: 着いた後の動き `{"rise": 画素/秒, "fade_s": 秒}`。t1 から、粒ごとに少しずつ遅れて（`fade_s` の半分までの間に）火の粉のように上へ流れ、`fade_s` 秒で直線に薄れて消える。
+      昇る速さは粒ごとに `rise` の 0.5〜1.5 倍で、昇った高さの 0.2 倍まで横に揺れる。無ければ着いたまま光り続ける（消すなら `keys` で `gain` を下げる）。
+    - `seed`（既定 0）。数の値は `keys`（名前 → `[[t, 値], …]`）で時刻ごとに補間できる（`fire.params_at` と同じ書き方）。
+    - `k`（既定 1）: 長さ（`size`・`glow`・`swirl`・`lift`・`rise`）に掛ける倍率。位置（`points`・`origin` の点）には掛けない。
+      長さは `fire.embers` と同じく幅 1920 の画面の画素で書き、`view.px`（`final` では画面の幅 / 1920）を渡す。`--scale` を変えても、粒の太さと動きが画面に対して同じ割合になる。
+  - 描き方: 粒の光を 4 つの画素に分けて足し（画素の間の位置でもなめらかに動く）、`size` のガウスでぼかして芯にする。1 粒の山の高さがその粒の光になるようにそろえる。
+    芯を 255 で止めて `glow` のガウスでぼかしたものを 0.5 倍して光彩にし、芯、光彩の順にスクリーン合成する。
+    粒が重なる所は光が足し合わさって白に近づくので、形の見え方は粒の数と `gain` で決める（少なければ色のついた粒の集まり、多ければ白く光る面）。
+  - 状態を持たない。粒 i の位置と光は (t, i, seed) と引数だけの式で、区間（`--start`）で描いても、全体を描いたときと同じコマになる。
+    粒ごとの乱数は種類ごとに別の系列なので、点を後ろに足しても前の粒は変わらない。
+  - `flight(t, P, points, (幅, 高さ), k)` は時刻 t の粒の位置と光だけを返し、`splat(f, 位置, 光, size, glow, gain)` は粒を f に重ねる（`gather` はこの 2 つをつないだもの）。
+  - 既定値: 色と長さは、既にある部品の値にした。`colors` は (255, 200, 120)・(255, 236, 190)・(255, 125, 35)（`fire.embers` の火の粉・`sky.lamps` の灯の芯・`fire.candle` の炎の光）、
+    `settle` は (255, 200, 120)。`size` 1.6・`glow` 3.0・`rise` 110・`fade_s` 1.0 は `fire.embers` の粒の半径・光彩のぼかし・昇る速さ・寿命（幅のあるものは中央）。
+    `stagger` の 0.5、光彩の 0.5 倍、渦とまたたきの速さ、`below` の深さは、合成素材（輪と字の形のアルファ）を見て決めた**仮の値**。
+  - hooks の例（透過の題字カードを読み、画面に固定して集める）。見本の `examples/fx/particles_hooks.py` は、カードの代わりに合成のアルファ（輪と横棒）を自分で作る。
+
+    ```python
+    from pathlib import Path
+
+    import numpy as np
+    from PIL import Image
+
+    from mv_pipeline.fx import particles
+
+    CARD = np.asarray(Image.open(Path(__file__).with_name("title_card.png")).convert("RGBA"))[..., 3]     # カードのアルファ（画面と同じ縦横比）
+    UV = (particles.targets(CARD, 3000, seed=1) + 0.5) / np.float32(CARD.shape[1::-1])                    # 行き先（正規化座標）
+    GATHER = {"t0": 4.0, "t1": 6.0, "swirl": 150, "lift": 60, "twinkle": 0.4, "after": {"rise": 110, "fade_s": 1.5}}
+
+
+    def final(img, t, ctx):
+        width, height = ctx.size
+        return particles.gather(img, t, GATHER, UV * np.float32([width, height]) - 0.5, k=width / 1920)
+    ```
+
+    - run のキャッシュ key に入るのは hooks のファイルの sha256 だけで、hooks が読むカードは入らない。カードを変えたら `--force` で描き直す。
+    - 題字そのもの（カードの絵）は重ねない。粒が着いた後にカードを出すなら、別に重ねる（[overlay](#overlay透過レイヤーの重ね合わせfx-lyric-1) など）。
+  - **実素材での確認状況**: リポジトリの外の試作（1080p、7500 粒、3.7 秒で集まる題字）で同じ考え方を使った。この実装そのものは合成素材だけ。
+    - 同じなのは考え方（アルファの不透明な所から点を取る・粒ごとに遅れて着く・揺れと弧をつけて寄る・着いた後に上へ流れて薄れる）。
+      式・乱数・描き方・既定値は作り直したので、試作と同じ絵にはならない。
 - 静止画の固定の手直し（`mv_pipeline.fx.retouch.static_edit(画像, ops, base)`）は、描画の前に元画像に 1 回だけ掛ける。
   手直しした画像を別の名前で書き出し、spec の `assets.base` にする。
   - `erase`（区域の中の暖色の明るい所を周りの色で埋める）・`dim`（同じ所を暗くする）・`specks`（小さな暖色の点を消す）・`desat`（赤の彩度を落とす）。

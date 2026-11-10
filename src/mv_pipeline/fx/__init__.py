@@ -41,6 +41,7 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
   - burn: fx-timeline/0.2 のつなぎの焼け抜け（ノイズの場・しきい値・縁・焦げの式。numpy だけ）。
   - hooks / view / fire: fx-timeline の演出の hooks（--hooks。prepare・shot・final）と、hooks に渡すショットの見え方（素材の座標 → 画面）と、
     火の演出の部品（炎の舌・小さい炎・火の粉・刃の火。実制作の演出の部品と同じ式）。
+  - particles: hooks の部品。アルファ（透過の題字カードなど）から取った点へ、光の粒が集まって形になる（字は描かない。時刻と seed だけで決まる）。
   runs / legacy / probe / sequence / burn は cv2 を import しない（fx accept・fx legacy・fx timeline plan は fx extra なしで動く）。
   例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
 """

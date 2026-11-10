@@ -11,7 +11,7 @@ fx や dance に無い描き方を、自前の Python で書くときの手順�
 |---|---|
 | カメラ・空間レイヤー・局所光・調色（深度とマスクは任意） | fx-shot（[fx](fx.md)） |
 | カット・クロスフェード・黒・フラッシュ・焼け抜けでつなぐ | [fx › timeline](fx.md#timeline複数のショットをつなぐfx-timeline02) |
-| 炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・煙 | [fx › 演出の hooks](fx.md#演出の-hooks火空と天気明かり)（`fx.fire`・`fx.sky`・`fx.accent`） |
+| 炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・煙・形（題字など）に集まる光の粒 | [fx › 演出の hooks](fx.md#演出の-hooks火空と天気明かり)（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`） |
 | 透過の連番（歌詞・題字）を重ねる | [fx › overlay](fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | 緑背景の人物を舞台に合成する | [dance](dance.md) |
 
