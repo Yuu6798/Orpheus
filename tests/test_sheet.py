@@ -150,9 +150,9 @@ def test_cli(tmp_path):
 # ---- 等間隔の時刻（--every・--count） ---------------------------------------------------------
 
 def _numbered(i):
-    """コマ i の絵。16 画素の升目で、升 (bx, by) の値は 20 + 8·i + 6·((bx + 2·by) % 4)。コマ番号も場所も画素値で読める。"""
+    """コマ i の絵。16 画素の升目で、升 (bx, by) の値は 20 + 4·i + 40·((bx + 2·by) % 4)。コマ番号も場所も画素値で読める。"""
     by, bx = np.mgrid[0:VH, 0:VW] // BLOCK
-    gray = (20 + 8 * i + 6 * ((bx + 2 * by) % 4)).astype(np.uint8)
+    gray = (20 + 4 * i + 40 * ((bx + 2 * by) % 4)).astype(np.uint8)
     return np.repeat(gray[..., None], 3, axis=2)
 
 
@@ -173,8 +173,8 @@ def _pictures(path, record, picture_height):
 
 
 def _frame_number(picture):
-    """原寸のコマの絵の左上の升（値 20 + 8·i）からコマ番号を読む。"""
-    return int(round((float(picture[2:BLOCK - 2, 2:BLOCK - 2].mean()) - 20) / 8))
+    """原寸のコマの絵の左上の升（値 20 + 4·i）からコマ番号を読む。"""
+    return int(round((float(picture[2:BLOCK - 2, 2:BLOCK - 2].mean()) - 20) / 4))
 
 
 def _cells(path):
@@ -279,8 +279,8 @@ def test_crop_shows_the_region_at_its_native_size(tmp_path):
     assert record["cell_width"] == 48 and result["size"] == [48, 2 * (48 + band)]              # セルの絵の大きさ = 切り出した画素数（縮めない）
     for picture, frame in zip(_pictures(tmp_path / "c.png", record, 48), (6, 12)):
         assert picture.shape == (48, 48, 3)
-        assert np.abs(picture.astype(int) - _numbered(frame)[16:64, 24:72]).max() <= 3         # 元のコマの同じ範囲（符号化の誤差の範囲）
-        assert np.abs(picture.astype(int) - _numbered(frame)[16:64, 25:73]).max() > 3          # 1 画素ずれた範囲とは合わない
+        assert np.abs(picture.astype(int) - _numbered(frame)[16:64, 24:72]).max() <= 8         # 元のコマの同じ範囲（符号化の誤差の範囲）
+        assert np.abs(picture.astype(int) - _numbered(frame)[16:64, 25:73]).max() >= 32        # 1 画素ずれた範囲とは合わない（升の境目で 40 違う）
     # 画素で指定しても同じ絵。コマの sha256 は切り出す前のコマ全体のまま
     sheet.build(video, tmp_path / "p.png", at=[0.25, 0.5], crop=(24, 16, 72, 64), units="px", columns=1)
     other = read_json(tmp_path / "p.json")
@@ -293,7 +293,7 @@ def test_crop_shows_the_region_at_its_native_size(tmp_path):
     record = read_json(tmp_path / "w.json")
     assert record["cell_width"] == 96 and result["size"][0] == 96 and record["crop"]["native"] is False and record["cells"][0]["crop"] == box
     picture = _pictures(tmp_path / "w.png", record, 96)[0]
-    assert np.abs(picture[::2, ::2].astype(int) - _numbered(6)[16:64, 24:72]).max() <= 3       # 2 倍に広げた同じ範囲
+    assert np.abs(picture[::2, ::2].astype(int) - _numbered(6)[16:64, 24:72]).max() <= 8       # 2 倍に広げた同じ範囲
 
 
 def test_crop_of_a_transparent_sequence_is_exact_and_bad_regions_are_refused(tmp_path):

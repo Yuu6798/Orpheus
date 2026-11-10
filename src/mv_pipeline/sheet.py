@@ -1,6 +1,6 @@
 """見るためのシート（`mv sheet`）。動画か透過の連番から、指定した時刻・等間隔の時刻・timeline の出来事のコマを 1 枚に並べる。
 
-    mv sheet 動画か連番のフォルダ --out sheet.png|.jpg (--at 秒 … | --events timeline.json [--kinds lyrics,flashes,seams]) [--every 秒] [--count N]
+    mv sheet 動画か連番のフォルダ --out sheet.png|.jpg [--at 秒 … | --events timeline.json [--kinds lyrics,flashes,seams]] [--every 秒] [--count N]
              [--crop X0 Y0 X1 Y1 [--units norm|px]] [--fps 30] [--backgrounds white,black,gray] [--cell-width 320] [--columns 4] [--font PATH]
 
 - 時刻は --at か --events（どちらか一方）に、--every（0 秒から S 秒おき。長さ未満）と --count（全体を N 等分した各区間の中央）を足せる
