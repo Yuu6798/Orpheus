@@ -252,7 +252,7 @@ def test_swirl_and_lift_bend_the_path_and_scale_with_k():
         assert np.allclose(xy[:, 0], 120.0) and np.allclose(xy[:, 1], 80.0 - 15 * k, atol=1e-4)
     a, _ = particles.flight(1.2, {**P, "swirl": 20}, points, SIZE)
     b, _ = particles.flight(1.7, {**P, "swirl": 20}, points, SIZE)
-    turn = np.unwrap(np.arctan2(*(b - spot[0]).T[::-1]) - np.arctan2(*(a - spot[0]).T[::-1]), discont=math.pi) % (2 * math.pi)
+    turn = (np.arctan2(*(b - spot[0]).T[::-1]) - np.arctan2(*(a - spot[0]).T[::-1])) % (2 * math.pi)       # 0.5 秒の間に回った角度
     assert 2 * math.pi * 0.25 * 0.5 - 1e-3 <= turn.min() and turn.max() <= 2 * math.pi * 0.75 * 0.5 + 1e-3     # 0.5 秒で 0.125〜0.375 回転、同じ向き
 
 
@@ -339,6 +339,8 @@ def test_glow_adds_a_halo_around_the_core():
     assert both[30, 38].max() < 0.1 * both[30, 30].min()                    # 光彩は芯より弱い
     assert np.array_equal(particles.splat(core.copy(), [[30.0, 30.0]], [[255.0, 255.0, 255.0]], size=1.0, glow=-1.0),
                           particles.splat(core.copy(), [[30.0, 30.0]], [[255.0, 255.0, 255.0]], size=1.0, glow=0))
+    thin = [particles.splat(np.zeros((21, 21, 3), np.float32), [[10.4, 9.7]], [[255.0, 255.0, 255.0]], size=size, glow=0) for size in (0.0, 0.3, 0.5)]
+    assert np.array_equal(thin[0], thin[1]) and not np.array_equal(thin[1], thin[2])            # 芯は 0.3 画素より細くならない
 
 
 def test_overlapping_particles_add_up_through_the_screen_blend():
