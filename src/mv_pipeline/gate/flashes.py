@@ -7,6 +7,9 @@ hooks で足した光は timeline に載らないので、描き終えた動画�
 
 測り方:
   1. コマを小さく読む（幅 READ_WIDTH 画素までの面積平均。色の行列はタグによらず BT.709 として読む。読み手は inspection.video）。
+     コマの間隔が一定でない動画（可変フレームレート。ffmpeg の情報の平均 fps と基準 tbr が違うもの）は、ffmpeg の fps フィルタで
+     基準のフレームレートに揃えた一定の間隔のコマにしてから測る（1 秒の窓 = fps コマ、にするため。コマ番号は揃えた後のもの）。
+     平均のフレームレートに揃えると、コマの詰まった区間の光が落ちるので使わない。基準が読めない・MAX_RATE を超えるときは、測らずに止まる。
   2. コマごとの明るさ = 線形の相対輝度。表示の値を sRGB の伝達特性で線形に戻し（fx.color.to_linear。fx・dance の合成と同じ式）、
      0.2126 R + 0.7152 G + 0.0722 B を画面全体で平均する（0〜1）。delta はこの値に対するしきい値。
   3. 変化 = 明るさが、直前の極値（山か谷）から delta 以上離れること（しきい値つきのジグザグ）。離れたコマで 1 つの変化とし、
@@ -26,6 +29,8 @@ hooks で足した光は timeline に載らないので、描き終えた動画�
 一定より暗いときだけ数える」は見ていない）。cv2 は使わない（numpy・Pillow・ffmpeg）。
 """
 import math
+import re
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +38,7 @@ import numpy as np
 from ..fx.color import to_linear
 from ..inspection import video
 from ..io import PipelineError, atomic_json, sha256
+from ..media import ffmpeg
 
 SCHEMA = "gate-flash-report/0.1"
 REPORT_NAME = "flash_report.json"
@@ -42,7 +48,10 @@ READ_WIDTH = 320                             # 読む幅（画素。元より大
 READ_MATRIX = "bt709"
 TRANSFER = "srgb"                            # 表示の値を線形に戻す式（fx.color.to_linear）
 LUMA = (0.2126, 0.7152, 0.0722)              # BT.709 / sRGB の原色の相対輝度の係数（線形の値に掛ける）
+MAX_RATE = 240.0                             # 可変フレームレートの動画を揃える先の上限（fps）。これを超える基準は測らずに止める
 EPS = 1e-9
+_VIDEO_LINE = re.compile(r"Stream #\d+:\d+[^\n]*?: Video: [^\n]*")
+_BASE_RATE = re.compile(r"(\d+(?:\.\d+)?)(k?) tbr")
 NOTE = "機械で測った回数の報告です。規格への適合を判定するものではありません（画面の一部・色の明滅と、暗い側の明るさの条件は見ていません）。"
 
 
@@ -69,21 +78,53 @@ def settings(value=None, where="flash"):
     return {"delta": delta, "max_per_s": int(limit) if float(limit).is_integer() else float(limit)}
 
 
-def read_levels(path):
-    """(コマごとの明るさ = 線形の相対輝度 0〜1 の list, 動画の情報, 読んだ大きさ)。情報は inspection.video.describe の形。
+def base_rate(path):
+    """基準のフレームレート（ffmpeg の情報の出力の、最初の映像の行の tbr）。全部のコマの時刻を表せるいちばん低いフレームレートの見積もりで、
+    コマの間隔が一定の動画では平均（fps）と同じになる。読めなければ None。"""
+    run = subprocess.run([ffmpeg(), "-hide_banner", "-nostdin", "-i", str(path)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    line = _VIDEO_LINE.search(run.stderr)
+    found = _BASE_RATE.search(line[0]) if line else None
+    return float(found[1]) * (1000.0 if found[2] else 1.0) if found else None
 
+
+def exact_rate(rate):
+    """ffmpeg の表示（小数 2 桁）のフレームレート → fps フィルタに渡す式と、その値。29.97 は 30000/1001、23.98 は 24000/1001 に戻す
+    （表示の値のまま揃えると、数分に 1 コマずれる）。整数はそのまま。ほかは表示の値のまま。"""
+    whole = round(rate)
+    if abs(rate - whole) < 0.005:
+        return str(whole), float(whole)
+    ntsc = round(rate * 1.001)
+    if abs(ntsc * 1000 / 1001 - rate) <= 0.006:
+        return f"{ntsc * 1000}/1001", ntsc * 1000 / 1001
+    return f"{rate:g}", float(rate)
+
+
+def read_levels(path):
+    """(コマごとの明るさ = 線形の相対輝度 0〜1 の list, 動画の情報, 読んだ大きさ)。
+
+    情報は inspection.video.describe の形に、base_fps（基準のフレームレート）・read_fps（測ったコマのフレームレート）・resampled
+    （一定の間隔のコマに揃えたか）を足したもの。コマの間隔が一定の動画（平均と基準が同じ）は、復号したコマをそのまま測る。
+    違う動画は、基準のフレームレートに揃えてから測る（揃えられないときは PipelineError）。
     縮めたコマの画素ごとに線形へ戻してから平均する（平均してから戻すと、明暗のある絵で暗く出る）。"""
     path = Path(path)
     if video.is_image(path):
         raise PipelineError(f"動画を指定してください（画像は測れません）: {path.name}")
     info = video.describe(path)
+    base = base_rate(path)
+    resampled = base is not None and abs(base - info["fps"]) >= 0.005
+    step, rate = None, float(info["fps"])
+    if resampled:
+        if max(base, info["fps"]) > MAX_RATE:
+            raise PipelineError(f"コマの間隔が一定でない動画（平均 {info['fps']:g} fps・基準 {base:g} fps）で、基準が {MAX_RATE:g} fps を超えるので、"
+                                f"一定の間隔のコマに揃えて測れません。一定のフレームレートに変換してから測ってください: {path.name}")
+        step, rate = exact_rate(max(base, info["fps"]))
     size = video.even_size(info["width"], info["height"], READ_WIDTH)
     weights = np.array(LUMA)
     levels = [float(to_linear(frame).reshape(-1, 3).mean(axis=0, dtype=np.float64) @ weights)
-              for _, frame in video.frames(path, size, {**info, "matrix": READ_MATRIX})]
+              for _, frame in video.frames(path, size, {**info, "matrix": READ_MATRIX}, fps=step)]
     if not levels:
         raise PipelineError(f"動画のコマを 1 つも読めません: {path.name}")
-    return levels, info, size
+    return levels, {**info, "base_fps": base, "read_fps": rate, "resampled": resampled}, size
 
 
 def find_changes(levels, delta):
@@ -177,7 +218,7 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
     path = Path(path)
     limits = settings({"delta": delta, "max_per_s": max_per_s}, "明滅のしきい値")
     levels, info, size = read_levels(path)
-    fps = float(info["fps"])
+    fps = info["read_fps"]         # 測ったコマのフレームレート（揃えたときは揃えた先）。コマ番号・秒・1 秒の窓はこれで数える
     span = fps * WINDOW_S
     changes = find_changes(levels, limits["delta"])
     pairs = pair(changes, span)
@@ -195,9 +236,12 @@ def measure(path, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]):
     ups = sum(1 for c in changes if c["direction"] == "up")
     return {
         "schema_version": SCHEMA,
-        "video": {"name": path.name, "sha256": sha256(path), "fps": fps, "frames": len(levels),
+        "video": {"name": path.name, "sha256": sha256(path), "fps": float(info["fps"]), "base_fps": info["base_fps"], "frames": len(levels),
                   "size": [info["width"], info["height"]], "matrix_tag": info["matrix"]},
-        "read": {"size": list(size), "matrix": READ_MATRIX, "transfer": TRANSFER, "weights": list(LUMA),
+        # fps は測ったコマのフレームレート。resampled が true なら、コマの間隔が一定でない動画を fps フィルタでこの fps に揃えて測った
+        # （video.frames・コマ番号・秒は揃えた後のもの）
+        "read": {"size": list(size), "fps": round(fps, 6), "resampled": info["resampled"],
+                 "matrix": READ_MATRIX, "transfer": TRANSFER, "weights": list(LUMA),
                  "brightness": "relative_luminance",    # 表示の値を線形に戻した 0.2126 R + 0.7152 G + 0.0722 B の画面平均（0〜1）
                  "change": "delta_from_last_extremum",  # 直前の極値（山か谷）から delta 以上離れたコマで 1 つの変化
                  "window": "recounted_from_its_own_frames"},   # 1 秒の窓の回数は、その窓の明るさだけで変化を取り直して数える
@@ -232,6 +276,6 @@ def run(path, out=None, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]
 def summary(report, out):
     """stdout に出す短い要約。"""
     return {"status": report["status"], "out": str(out), "report": str(Path(out) / REPORT_NAME),
-            "frames": report["video"]["frames"], "fps": report["video"]["fps"], **report["thresholds"],
+            "frames": report["video"]["frames"], "fps": report["read"]["fps"], "resampled": report["read"]["resampled"], **report["thresholds"],
             **report["counts"], "max_per_window": report["max_per_window"], "busiest_window": report["busiest_window"],
             "note": report["note"]}

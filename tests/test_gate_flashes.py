@@ -62,11 +62,13 @@ def test_changes_and_flashes_land_on_the_frames_where_the_light_was_put(tmp_path
     assert report["max_per_window"] == 2 and report["status"] == "pass"
     assert report["busiest_window"] == {"start_frame": 10, "start_t": 0.3333, "end_t": 1.3333, "flashes": 2, "changes": 4,
                                         "pairs": [[10, 11], [25, 28]]}
-    assert report["video"] == {"name": "v.mp4", "sha256": sha256(path), "fps": 30.0, "frames": 60, "size": [64, 36], "matrix_tag": "bt709"}
-    # 測り方が報告から分かる: BT.709 として読み、sRGB の伝達特性で線形に戻した相対輝度。変化は直前の極値から delta 以上
-    assert report["read"] == {"size": [64, 36], "matrix": "bt709", "transfer": "srgb", "weights": [0.2126, 0.7152, 0.0722],
-                              "brightness": "relative_luminance", "change": "delta_from_last_extremum",
-                              "window": "recounted_from_its_own_frames"}
+    assert report["video"] == {"name": "v.mp4", "sha256": sha256(path), "fps": 30.0, "base_fps": 30.0, "frames": 60, "size": [64, 36],
+                               "matrix_tag": "bt709"}
+    # 測り方が報告から分かる: コマの間隔が一定の動画は揃えずにそのまま（resampled は false）、BT.709 として読み、sRGB の伝達特性で
+    # 線形に戻した相対輝度。変化は直前の極値から delta 以上。1 秒の窓は、その窓の明るさだけで数え直す
+    assert report["read"] == {"size": [64, 36], "fps": 30.0, "resampled": False, "matrix": "bt709", "transfer": "srgb",
+                              "weights": [0.2126, 0.7152, 0.0722], "brightness": "relative_luminance",
+                              "change": "delta_from_last_extremum", "window": "recounted_from_its_own_frames"}
     assert report["thresholds"] == {"delta": 0.1, "max_per_s": 3, "window_s": 1.0} and report["schema_version"] == "gate-flash-report/0.1"
     assert "規格への適合を判定するものではありません" in report["note"]
 
@@ -207,6 +209,53 @@ def test_the_window_is_one_second_of_frames_at_the_fps_of_the_video(tmp_path):
     close = flashes.measure(_video(tmp_path / "b.mp4", _strobe(48, [5, 13, 21, 27]), fps=24))
     assert close["max_per_window"] == 4 and close["status"] == "fail"
     assert close["changes"][0]["t"] == round(5 / 24, 4) and close["busiest_window"]["end_t"] == round(round(5 / 24, 4) + 1.0, 4)
+
+
+def _vfr_video(path, values, dense=30, hold=15):
+    """コマの間隔が一定でない動画: 最初の dense コマは 1/30 秒おき、その後のコマは hold/30 秒おき（平均のフレームレートは 30 よりずっと低い）。"""
+    frames = b"".join(np.full((SIZE[1], SIZE[0], 3), value, np.uint8).tobytes() for value in values)
+    stretch = f"setpts='if(lt(N,{dense}),N,{dense}+(N-{dense})*{hold})/30/TB'"
+    subprocess.run([media.ffmpeg(), "-y", "-loglevel", "error", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{SIZE[0]}x{SIZE[1]}",
+                    "-framerate", "30", "-i", "pipe:0",
+                    "-vf", f"{stretch},scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=colorspace=bt709",
+                    "-fps_mode", "vfr", "-c:v", "libx264", "-crf", "12", "-colorspace", "bt709", "-video_track_timescale", "30000", str(path)],
+                   input=frames, check=True, capture_output=True)
+    return path
+
+
+def test_a_variable_frame_rate_video_is_resampled_to_its_base_rate(tmp_path):
+    """最初の 1 秒（30 コマ）に 4 回の閃光、その後の 30 コマは 0.5 秒ずつ。平均は約 4 fps、基準（コマの時刻を表せる間隔）は 30 fps。
+    復号したコマをそのまま平均の fps で数えると 1 秒 = 4 コマになり、4 回の閃光が 1 回と数えられる。"""
+    path = _vfr_video(tmp_path / "vfr.mp4", _strobe(60, [5, 12, 20, 27]))
+    report = flashes.measure(path)
+    assert report["video"]["fps"] < 6 and report["video"]["base_fps"] == 30.0
+    assert report["read"]["fps"] == 30.0 and report["read"]["resampled"] is True
+    assert report["video"]["frames"] > 400                                       # 揃えた後のコマ数（0.5 秒のコマは 15 コマずつになる）
+    assert _steps(report["changes"]) == [(5, "up"), (6, "down"), (12, "up"), (13, "down"), (20, "up"), (21, "down"), (27, "up"), (28, "down")]
+    assert [c["t"] for c in report["changes"]][:2] == [0.1667, 0.2]              # 秒は、揃えたコマ / 30
+    assert report["max_per_window"] == 4 and report["status"] == "fail"
+    assert report["busiest_window"]["pairs"] == [[5, 6], [12, 13], [20, 21], [27, 28]]
+    # 3 回なら通過。0.5 秒ずつのコマに置いた光は、0.5 秒光って消える 1 回ずつ（1 秒に 1 回）
+    calm = flashes.measure(_vfr_video(tmp_path / "calm.mp4", _strobe(60, [5, 15, 25, 40, 44])))
+    assert calm["read"]["resampled"] is True and calm["max_per_window"] == 3 and calm["status"] == "pass" and calm["counts"]["flashes"] == 5
+    assert [(f["frame"], f["return_frame"]) for f in calm["flashes"]][3:] == [(180, 195), (240, 255)]
+    code, result, _ = run_cli("gate", "flashes", path, "--out", tmp_path / "out")
+    assert code == 1 and result["resampled"] is True and result["fps"] == 30.0 and result["max_per_window"] == 4
+
+
+def test_a_video_that_cannot_be_put_on_an_even_grid_is_not_measured(tmp_path, monkeypatch):
+    path = _vfr_video(tmp_path / "vfr.mp4", _strobe(60, [5, 12, 20, 27]))
+    monkeypatch.setattr(flashes, "base_rate", lambda path: 1000.0)               # 時刻がミリ秒刻みの動画（基準が 1k）
+    with pytest.raises(PipelineError, match="一定の間隔のコマに揃えて測れません"):
+        flashes.measure(path)
+    monkeypatch.setattr(flashes, "base_rate", lambda path: None)                 # 基準が読めなければ、復号したコマをそのまま測る
+    assert flashes.measure(path)["read"]["resampled"] is False
+
+
+def test_the_frame_rate_ffmpeg_prints_is_turned_back_into_the_exact_one():
+    assert flashes.exact_rate(30) == ("30", 30.0) and flashes.exact_rate(25.0) == ("25", 25.0)
+    assert flashes.exact_rate(29.97) == ("30000/1001", 30000 / 1001) and flashes.exact_rate(23.98) == ("24000/1001", 24000 / 1001)
+    assert flashes.exact_rate(59.94)[0] == "60000/1001" and flashes.exact_rate(12.5) == ("12.5", 12.5)
 
 
 def test_a_wide_video_is_read_small(tmp_path):
@@ -505,6 +554,25 @@ def test_gate_check_measures_the_master_and_takes_the_flash_still_from_it(tmp_pa
     path.write_text(json.dumps({**config, "flash": {}}), encoding="utf-8")
     row = gate.run(path)[0]["checks"][9]
     assert row["status"] == "pass" and row["summary"].startswith("video を測定、動画全体で変化 0（上がり 0・下がり 0）・明滅 0 回、1 秒の窓ごとに数え直して最大 0 回")
+
+
+def test_gate_check_counts_a_variable_frame_rate_master_in_seconds(tmp_path, monkeypatch):
+    """master がコマの間隔の一定でない動画。問題の時刻と静止画は、揃えたコマ / 30 fps の秒（平均の fps で割らない）。"""
+    path, config = _run_dir(tmp_path, [DARK] * 30)
+    _vfr_video(tmp_path / "vfr.mp4", _strobe(60, [5, 12, 20, 27]))
+    path.write_text(json.dumps({"timeline": "timeline.json", "master": "vfr.mp4", "flash": {}}), encoding="utf-8")
+    report, out = gate.run(path)
+    row = report["checks"][9]
+    assert row["status"] == "fail" and "1 秒の窓ごとに数え直して最大 4 回" in row["summary"]
+    assert row["problems"][0]["t"] == pytest.approx(0.166) and "動画のコマ 5（0.166 秒）" in row["problems"][0]["detail"]
+    assert _still_mean(out, row["problems"][0]) > 200
+    assert read_json(out / "flash_report.json")["read"] == {**read_json(out / "flash_report.json")["read"], "fps": 30.0, "resampled": True}
+    # 揃えられない動画は、測らずに「明滅」の行だけを不合格にする
+    monkeypatch.setattr(flashes, "base_rate", lambda path: 1000.0)
+    report, out = gate.run(path, tmp_path / "stopped")
+    row = report["checks"][9]
+    assert row["status"] == "fail" and row["summary"] == "master の明滅を測れません" and len(report["checks"]) == 10
+    assert "一定の間隔のコマに揃えて測れません" in row["problems"][0]["detail"] and not (out / "flash_report.json").exists()
 
 
 def test_a_video_that_cannot_be_read_fails_the_flash_row_and_keeps_the_other_rows(tmp_path):

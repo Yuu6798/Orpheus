@@ -520,7 +520,7 @@ def check_flashes(timeline, video, master, limits):
     if measured["status"] == "fail":
         frames = "・".join(f"{a}-{b}" for a, b in window["pairs"])
         # 時刻はミリ秒に切り捨てる。静止画は「この時刻以降の最初のコマ」を取るので、四捨五入で 1 コマ先（光った次のコマ）へずれないように
-        at = math.floor(window["start_frame"] / measured["video"]["fps"] * 1000) / 1000
+        at = math.floor(window["start_frame"] / measured["read"]["fps"] * 1000) / 1000     # read.fps: 測ったコマのフレームレート
         problems.append({"t": _window(timeline)[0] + at, "text": "",
                          "detail": f"動画のコマ {window['start_frame']}（{at:.3f} 秒）からの 1 秒に明滅 {top} 回"
                                    f"（上限 {limits['max_per_s']:g}。組のコマ {frames}）"})
