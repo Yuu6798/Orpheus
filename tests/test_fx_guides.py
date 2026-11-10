@@ -2,6 +2,7 @@
 
 元画像の格子は、実制作の格子の台本（正規化座標の線と値・幅 1600 に縮尺）を書き写した参照実装と画素まで照らし合わせる。
 """
+import io
 import json
 
 import numpy as np
@@ -11,6 +12,7 @@ from PIL import Image
 cv2 = pytest.importorskip("cv2")
 
 from fx_synth import make_project, run_cli, spec_dict, write_spec  # noqa: E402
+from mv_pipeline import sheet  # noqa: E402
 from mv_pipeline.fx import guides, render, runs  # noqa: E402
 from mv_pipeline.fx import spec as fxspec  # noqa: E402
 from mv_pipeline.io import PipelineError  # noqa: E402
@@ -71,6 +73,22 @@ def test_pixel_units_draw_a_line_every_step_in_image_pixels():
         guides.image_grid(black, units="cm")
 
 
+def test_pixel_crops_cut_the_given_pixels_as_they_are():
+    """--units px は渡した画素をそのまま切る。以前は幅で割って掛け直していて、1920 幅の 123 が 122 になるなど 1 画素ずれた。"""
+    y, x = np.mgrid[0:1080, 0:1920]
+    rgb = np.ascontiguousarray(np.dstack([x % 256, x // 256 * 30 + 10, y % 256]).astype(np.uint8))     # 画素の値で場所が読める
+    out, info = guides.image_grid(rgb, crop=(123, 39, 200, 100), units="px", step=10000, width=77)       # 縮尺 1。線は 0 だけで、範囲の外
+    assert info["size"] == [77, 61] and info["crop"] == [123.0, 39.0, 200.0, 100.0]
+    assert np.array_equal(out, rgb[39:100, 123:200])
+    for left, top in ((245, 78), (490, 156), (505, 187), (1887, 1041), (64, 64)):                       # 割って掛け直すと 1 つ小さくなる値と、ならない値
+        out, _ = guides.image_grid(rgb, crop=(left, top, left + 32, top + 32), units="px", step=10000, width=32)
+        assert np.array_equal(out, rgb[top:top + 32, left:left + 32])
+    narrow, info = guides.image_grid(rgb, crop=(122, 5, 123, 15), units="px", step=10000, width=16)      # 1 画素の幅（以前は「1 画素より小さい」で止まった）
+    assert info["size"] == [16, 160] and (narrow[..., 0] == 122).all() and (narrow[..., 1] == 10).all()
+    out, _ = guides.image_grid(rgb, crop=(300.9, 200.2, 332.1, 232.99), units="px", step=10000, width=32)   # 小数は切り捨て
+    assert np.array_equal(out, rgb[200:232, 300:332])
+
+
 def test_viewable_images_turn_depth_and_float_into_gray(tmp_path):
     Image.fromarray(np.full((4, 6), 65535, np.uint16)).save(tmp_path / "d16.png")
     Image.fromarray(np.full((4, 6), 0.5, np.float32)).save(tmp_path / "f.tif")
@@ -91,6 +109,40 @@ def test_the_guides_command_writes_the_png_and_reports_the_settings(tmp_path):
         assert image.size == tuple(result["size"])
     code, _, err = run_cli("fx", "guides", tmp_path / "base.png", "--out", tmp_path / "g2.png", "--width", 9)
     assert code == 1 and "--width" in err
+
+
+def test_the_guides_command_picks_the_format_from_the_extension(tmp_path):
+    Image.fromarray(noisy_rgb()).save(tmp_path / "base.png")
+    results = {}
+    for name in ("g.png", "g.jpg", "g.jpeg", "u.JPG"):
+        code, results[name], err = run_cli("fx", "guides", tmp_path / "base.png", "--out", tmp_path / name, "--width", 400)
+        assert code == 0, err
+    assert results["g.png"]["format"] == "png" and (tmp_path / "g.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    with Image.open(tmp_path / "g.png") as image:
+        assert np.array_equal(np.asarray(image), guides.image_grid(noisy_rgb(), width=400)[0])
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=90)
+    for name in ("g.jpg", "g.jpeg", "u.JPG"):                                          # 以前は .jpg の名前で PNG の中身を書いていた
+        assert results[name]["format"] == "jpeg" and (tmp_path / name).read_bytes()[:2] == b"\xff\xd8"
+        assert (tmp_path / name).read_bytes() == buffer.getvalue()                    # 同じ絵の JPEG（品質 90）
+        with Image.open(tmp_path / name) as image:
+            assert image.format == "JPEG" and list(image.size) == results[name]["size"]
+    for name in ("g.webp", "g.tif", "g"):
+        code, _, err = run_cli("fx", "guides", tmp_path / "base.png", "--out", tmp_path / name)
+        assert code == 1 and "拡張子" in err and not (tmp_path / name).exists()
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_the_sheet_crop_cuts_the_same_pixels_as_the_guides_crop():
+    rgb = noisy_rgb()                                                                 # 400×300
+    for crop, units in (((0.2, 0.1, 0.6, 0.5), "norm"), ((0.333, 0.25, 0.9, 1.0), "norm"), ((0.0, 0.0, 1.0, 1.0), "norm"),
+                        ((37, 20, 201, 133), "px"), ((0.5, 10.9, 399.5, 299.2), "px"), ((29, 55, 113, 97), "px")):    # 最後は割り切れない値
+        x0, y0, x1, y1 = sheet.crop_box(crop, units, (400, 300))
+        step = 1.0 if units == "norm" else 10000                                      # 線は端の 0 と 1 だけ
+        grid, info = guides.image_grid(rgb, crop, units, step, width=x1 - x0)         # 範囲の幅と同じ幅 = 縮尺 1
+        assert info["size"] == [x1 - x0, y1 - y0]
+        untouched = (grid == rgb[y0:y1, x0:x1]).all(axis=2)                           # 線と字の画素のほかは、同じ範囲の元の画素
+        assert untouched.mean() > 0.9, (crop, units, untouched.mean())
 
 
 # ---- 描いたコマに重ねる印 -----------------------------------------------------------------

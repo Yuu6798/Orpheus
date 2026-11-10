@@ -456,7 +456,7 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx demo DIR [--width 960 --height 540 --duration 10 --fps 24] [--look]` | 合成素材と spec.json を作る（`--look` で夜向けの look の例を足す） |
 | `mv fx render SPEC [--variants base,layers,light,both] [--start S] [--duration D] [--out DIR] [--scale 1.0] [--no-grid] [--force] [--no-look] [--no-overlays]` | 版ごとの MP4 と 2×2 グリッドを run として出す |
 | `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look] [--no-overlays] [--guides [grid,lights,masks]] [--grid-step S] [--reference VIDEO] [--reference-offset S] [--reference-label TEXT]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし）。目盛りと基準の列は[見比べの補助](#見比べの補助目盛り基準の列比較動画) |
-| `mv fx guides IMAGE --out OUT.png [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
+| `mv fx guides IMAGE --out OUT.png\|.jpg [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
 | `mv fx clips PLAN.json [--out DIR] [--only ID,…] [--force]` | 計画（fx-clips/0.1）から、生成した動画に揺れ止めと色のゲインを掛けて書き、記録を残す（[クリップの下ごしらえ](#クリップの下ごしらえmv-fx-clips)） |
@@ -482,9 +482,10 @@ uv run mv fx guides depth.png --out grid_depth.png --units px --step 100      # 
 ```
 
 - spec を書く前に、光の位置・`camera.pivot` の箱・`assets.depth.regions` の四隅を元画像から読むための絵。縦線と x の値が緑、横線と y の値が黄。
-- `--crop` の範囲を幅 `--width`（既定 1600）に縮尺してから線と値を描く。`--step` を省くと、正規化座標では範囲の幅で 0.05（半分より広い）・0.02・0.01（0.15 以下）、画素では 100。
+- `--crop` の範囲を幅 `--width`（既定 1600）に縮尺してから線と値を描く。`--units px` の範囲は、渡した画素をそのまま使う（小数は切り捨て。以前は幅・高さで割って掛け直していて、1920 幅の 123 が 122 になるなど、1 画素ずれることがあった。正規化座標の切り方は変わらない）。`--step` を省くと、正規化座標では範囲の幅で 0.05（半分より広い）・0.02・0.01（0.15 以下）、画素では 100。
 - 正規化座標の目盛りは、実制作の格子の台本と同じ式で、同じ画像と範囲なら画素まで同じ絵になる（段階 1 の静止画で、全体・中くらい・狭い範囲の 3 通りを確かめた）。
 - 16 bit の画像（深度）は 257 で割った灰色、float の画像は 0..1 を 255 倍した灰色で見せる。アルファは捨てる（cv2 で読むのと同じ）。
+- `--out` の拡張子で形式が決まる: `.png`、または `.jpg`・`.jpeg`（品質 90。大きな絵を軽く渡すとき）。ほかの拡張子は止める。以前は `.jpg` を渡しても PNG の中身を書いていた（拡張子と中身の食い違い）。「画素まで同じ絵」は PNG のときの話で、JPEG は圧縮で画素が変わる。JPEG は合成素材で確かめた。
 
 **静止画シートの目盛り（`mv fx stills --guides`）**
 - 各版のマスに、元画像の正規化座標の格子を重ねる。cover の切り出しと、その時刻の camera（視差 1）で写すので、絵と一緒に動く。深度視差の変位は含めない。

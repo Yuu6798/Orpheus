@@ -13,7 +13,7 @@ import math
 import cv2
 import numpy as np
 
-from ..io import PipelineError
+from ..io import PipelineError, atomic_image, image_format
 from .assets import to_screen, width_scale
 
 X_COLOR = (0, 255, 0)          # RGB: 縦線と x の値（緑）
@@ -59,7 +59,11 @@ def image_grid(rgb, crop=None, units="norm", step=None, width=1600):
     if not (0 <= x0 < x1 <= scale_x and 0 <= y0 < y1 <= scale_y):
         raise PipelineError(f"--crop は画像の中の [x0 y0 x1 y1]（x0 < x1、y0 < y1）にしてください: {crop}"
                             f"（{'正規化座標 0..1' if units == 'norm' else f'画素 0..{full_width}x{height}'}）")
-    roi = rgb[int(y0 / scale_y * height):int(y1 / scale_y * height), int(x0 / scale_x * full_width):int(x1 / scale_x * full_width)]
+    if units == "norm":
+        left, top, right, bottom = int(x0 * full_width), int(y0 * height), int(x1 * full_width), int(y1 * height)
+    else:       # px は割って掛け直さない（123 / 1920 * 1920 は 122.99999999999999 になり、1 画素ずれる）。小数は切り捨て
+        left, top, right, bottom = int(x0), int(y0), int(x1), int(y1)
+    roi = rgb[top:bottom, left:right]
     if roi.shape[0] < 1 or roi.shape[1] < 1:
         raise PipelineError(f"--crop の範囲が 1 画素より小さくなります: {crop}")
     factor = width / roi.shape[1]
@@ -100,16 +104,15 @@ def load_viewable(path):
 
 
 def write_image_grid(image_path, out, crop=None, units="norm", step=None, width=1600):
-    """`mv fx guides`: 元画像に格子を重ねた PNG を out に書き、設定を返す。"""
+    """`mv fx guides`: 元画像に格子を重ねた絵を out に書き、設定を返す。形式は out の拡張子（.png か、.jpg・.jpeg の品質 90）。"""
     from pathlib import Path
-
-    from .compare import save_png_atomic
     if not 16 <= int(width) <= 8192:
         raise PipelineError(f"--width は 16〜8192 にしてください: {width}")
-    grid, info = image_grid(load_viewable(image_path), crop, units, step, int(width))
     out = Path(out).resolve()
-    save_png_atomic(grid, out)
-    return {"path": str(out), "image": str(Path(image_path)), **info}
+    kind = image_format(out)                          # 知らない拡張子は、画像を読む前に止める（.jpg に PNG の中身を書かない）
+    grid, info = image_grid(load_viewable(image_path), crop, units, step, int(width))
+    atomic_image(out, grid)
+    return {"path": str(out), "format": kind.lower(), "image": str(Path(image_path)), **info}
 
 
 def _screen_mapper(ctx, t):

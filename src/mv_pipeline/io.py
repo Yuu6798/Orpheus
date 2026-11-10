@@ -41,6 +41,43 @@ def atomic_json(path, data):
             os.unlink(tmp)
 
 
+IMAGE_FORMATS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG"}   # 見るための画像（mv sheet・mv fx guides）の拡張子 → Pillow の形式
+JPEG_QUALITY = 90
+JPEG_MAX_SIDE = 65535                                                # JPEG の規格の上限
+
+
+def image_format(path, option="--out"):
+    """拡張子から形式（"PNG" か "JPEG"）を決める。大文字小文字は見ない。ほかの拡張子は、中身と食い違う名前で書かないよう止める。"""
+    suffix = Path(path).suffix.lower()
+    if suffix not in IMAGE_FORMATS:
+        raise PipelineError(f"{option} の拡張子は {' / '.join(IMAGE_FORMATS)} にしてください: {Path(path).name}")
+    return IMAGE_FORMATS[suffix]
+
+
+def atomic_image(path, image, option="--out"):
+    """uint8 の画像（H×W×3 か H×W）を、拡張子で決めた形式（image_format。JPEG は品質 90）で一時名に書いて置き換える。形式を返す。
+
+    一時名は <名前>.tmp（mkstemp と違い、ふつうの権限のファイルになる。`mv sheet` の以前の書き方と同じ）。"""
+    from PIL import Image
+    path = Path(path)
+    kind = image_format(path, option)
+    height, width = image.shape[:2]
+    if kind == "JPEG" and max(width, height) > JPEG_MAX_SIDE:
+        raise PipelineError(f"JPEG は 1 辺 {JPEG_MAX_SIDE} 画素までです（{width}x{height}）。.png で書くか、画像を小さくしてください: {path.name}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "wb") as stream:
+            Image.fromarray(image).save(stream, format=kind, **({"quality": JPEG_QUALITY} if kind == "JPEG" else {}))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return kind
+
+
 def safe_path(root, value):
     if not isinstance(value, str) or not value or "\\" in value or ":" in value:
         raise PipelineError(f"Invalid relative path: {value!r}")
