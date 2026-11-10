@@ -3,6 +3,7 @@
 場と式は numpy だけなので、描画を使わないテストは cv2 なしで動く。素材はすべて合成（乱数の画と fx_synth の絵）。
 """
 import json
+import math
 
 import numpy as np
 import pytest
@@ -148,13 +149,15 @@ def test_composite_equals_the_private_burns_at_the_same_threshold():
 def test_the_ends_are_exactly_the_two_shots(changes):
     """p = 0 は前の画、p = 1 は今の画とバイト単位で同じ（xfade の重み 1・0 と同じ厳しさ。0〜255 の外の float でも、uint8 でも）。"""
     c = conf(**changes)
-    field = burn.field(c, SIZE)
+    real = burn.field(c, SIZE)
     for before, now in (planes(), [plane.clip(0, 255).astype(np.uint8) for plane in planes(8)]):
-        assert np.array_equal(burn.composite(before, now, field, 0.0, c), before.astype(np.float32))
-        assert np.array_equal(burn.composite(before, now, field, 1.0, c), now.astype(np.float32))
-        # 端のすぐ内側も、式の値がそのままつながる（端で絵が飛ばない）
-        assert np.abs(burn.composite(before, now, field, 1e-7, c) - before).max() < 1e-2
-        assert np.abs(burn.composite(before, now, field, 1 - 1e-7, c) - now).max() < 1e-2
+        # 場の値がちょうど 0 や 1 の画素でも同じ（式のままだと float の丸めで 1 段ずれうるので、端は式を通さずに返している）
+        for field in (real, np.zeros_like(real), np.ones_like(real)):
+            assert np.array_equal(burn.composite(before, now, field, 0.0, c), before.astype(np.float32))
+            assert np.array_equal(burn.composite(before, now, field, 1.0, c), now.astype(np.float32))
+            # 端のすぐ内側も、式の値がそのままつながる（端で絵が飛ばない）
+            assert np.abs(burn.composite(before, now, field, 1e-7, c) - before).max() < 1e-2
+            assert np.abs(burn.composite(before, now, field, 1 - 1e-7, c) - now).max() < 1e-2
 
 
 @pytest.mark.parametrize("changes", [{}, {"bias": 0.5, "from": [0.0, 1.0]}, {"edge": None, "soft": 0.2}, {"soft": 0.001, "edge": {"width": 0.3}}])
@@ -325,8 +328,25 @@ OLD_SHOTS = [{"spec": "a.json", "start": 0, "transition_in": {"type": "black", "
              {"spec": "c.json", "start": 2.0, "transition_in": {"type": "flash"}}]
 
 
+def frame_0_1(data, t, images):
+    """0.1 のつなぎ（black・xfade・flash）の式を、burn を知らない書き方でそのまま計算したコマ（実制作のレンダラのつなぎの行と同じ形）。"""
+    shots = data["shots"]
+    index = max(i for i, shot in enumerate(shots) if shot["start"] <= t)
+    shot, kind = shots[index], shots[index]["transition_in"]
+    image, since = images[index % 2].astype(np.float32), t - shot["start"]
+    if kind["type"] == "xfade" and t < shot["start"] + kind["duration_s"]:
+        a = sequence.ease(since / kind["duration_s"])
+        image = images[(index - 1) % 2].astype(np.float32) * (1 - a) + image * a
+    elif kind["type"] == "black" and t < shot["start"] + kind["duration_s"]:
+        image = image * sequence.ease(since / kind["duration_s"])
+    if kind["type"] == "flash" and since < kind["window_s"]:
+        image = image + (np.asarray(kind["color"], np.float32) - image) * (kind["strength"] * math.exp(-since * kind["rate"]))
+    return np.clip(image, 0, 255).astype(np.uint8)
+
+
 def test_a_0_1_timeline_reads_as_before(tmp_path):
-    """0.1 の timeline は 0.1 の schema で検証して読め、0.2 と書いた同じ timeline と同じ正規形・同じ計画・同じコマになる。"""
+    """0.1 の timeline は 0.1 の schema で検証して読め、0.2 と書いた同じ timeline と同じ正規形・同じ計画になる。
+    つないだコマは、burn を足す前のつなぎの式とバイト単位で同じ。"""
     write_shots(tmp_path)
     old = sequence.parse_timeline(timeline_dict(OLD_SHOTS, version="fx-timeline/0.1", look={"grain": {"sigma": 2.0}}), tmp_path)
     new = sequence.parse_timeline(timeline_dict(OLD_SHOTS, look={"grain": {"sigma": 2.0}}), tmp_path)
@@ -338,8 +358,7 @@ def test_a_0_1_timeline_reads_as_before(tmp_path):
         t = n / 12
         assert sequence.plan_frame(old.data, t) == sequence.plan_frame(new.data, t) and sequence.burn_at(old.data, t) is None
         layers, dim, flash = sequence.plan_frame(old.data, t)
-        assert np.array_equal(sequence.finish(sequence.blend([(images[i % 2], w) for i, _, w in layers], dim, flash)),
-                              sequence.finish(sequence.blend([(images[i % 2], w) for i, _, w in layers], dim, flash, None)))
+        assert np.array_equal(sequence.finish(sequence.blend([(images[i % 2], w) for i, _, w in layers], dim, flash)), frame_0_1(old.data, t, images)), n
 
 
 def test_the_0_1_schema_is_the_schema_before_burn():
