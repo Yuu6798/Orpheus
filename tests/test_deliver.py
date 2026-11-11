@@ -336,6 +336,29 @@ def test_split_refuses_names_that_break_the_bat(master, tmp_path, kwargs, messag
         deliver.split(master, tmp_path / "parts", **kwargs)
 
 
+def test_split_into_dot_keeps_the_record_beside_the_parts_folder(master, tmp_path, monkeypatch):
+    # "." の名前は空で、隣も "." なので、記録が名前の無い ".split.json" として片のフォルダの中にできていた
+    # （記録には元データのパスが入るので、片と一緒に渡ってしまう）
+    parts = tmp_path / "song_parts"
+    parts.mkdir()
+    monkeypatch.chdir(parts)
+    result = deliver.split(master, ".", 9000, "SONG_r1_master.mp4")
+    assert result["record"] == str(tmp_path / "song_parts.split.json") and (tmp_path / "song_parts.split.json").is_file()
+    assert not any(p.suffix == ".json" for p in parts.iterdir())
+
+
+def test_split_never_writes_over_the_master_even_with_force(segments, tmp_path):
+    # 元データの名前が片の名前と同じだと、片を書く置き換えで元データが消える
+    folder = tmp_path / "upload"
+    folder.mkdir()
+    deliver.join([segments], tmp_path / "song.mp4", tone(tmp_path / "song.wav"))
+    before = (tmp_path / "song.mp4").read_bytes()
+    (folder / "SONG.part00").write_bytes(before)
+    with pytest.raises(PipelineError, match="元データ SONG.part00 と同じ"):
+        deliver.split(folder / "SONG.part00", folder, 9000, "SONG", force=True)
+    assert (folder / "SONG.part00").read_bytes() == before
+
+
 def test_split_needs_a_faststart_master(master, tmp_path):
     slow = tmp_path / "slow.mp4"
     subprocess.run([media.ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-c", "copy", str(slow)], check=True)

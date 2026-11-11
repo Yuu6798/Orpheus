@@ -34,7 +34,8 @@ split（受け渡しの片。実制作の受け渡しの道具と同じ形）:
 - join_master.bat（CP932・CRLF）: copy /b で片をつなぎ、certutil の SHA-256 を照合して【OK】／【NG】を出す。--title は bat の
   見出しの行に入る（既定は NAME）。NAME は ASCII の英数字と ._- だけ（bat の文字コードと区切りに依らないように）。
 - <NAME の _master より前>_parts_SHA256SUMS.txt（片と元データの sha256）。
-- 片を順につないだ sha256 が元データと同じかを、その場で確かめる（bat は実行しない）。記録は DIR の隣の <DIR の名前>.split.json。
+- 片を順につないだ sha256 が元データと同じかを、その場で確かめる（bat は実行しない）。記録は DIR の隣の <DIR の名前>.split.json
+  （DIR を "." で渡しても、絶対パスにしてから名前と隣を決める）。片・bat・SHA256SUMS が元データと同じファイルになるなら、--force でも書かない。
 """
 import hashlib
 import os
@@ -373,6 +374,9 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
         raise PipelineError(f"--title の {title[error.start:error.end]!r} は CP932（bat の文字コード）で書けません") from error
     if part_bytes < 1:
         raise PipelineError(f"--part-bytes は 1 以上にしてください: {part_bytes}")
+    folder = out_dir.resolve()             # "." で渡されても、記録は片のフォルダの隣に、フォルダの名前で書く
+    if not folder.name:
+        raise PipelineError(f"--out には名前のあるフォルダを指定してください（記録をその隣の <フォルダの名前>.split.json に書くため）: {out_dir}")
     boxes = top_boxes(master)
     if "moov" not in boxes or "mdat" not in boxes or boxes.index("moov") > boxes.index("mdat"):
         raise PipelineError(f"{master.name} は moov が mdat より前にありません（faststart で書き直してください）: {boxes}")
@@ -385,6 +389,9 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
     bat = BAT.format(title=title, nbytes=total, parts=" ".join(parts), plus=" + ".join(parts), name=name, sha=digest)
     bat_bytes = bat.replace("\n", "\r\n").encode("cp932")
     targets = [out_dir / p for p in parts] + [out_dir / "join_master.bat", out_dir / _sums_name(name)]
+    if any(_same_file(target) == _same_file(master) for target in targets):     # 置き換えると元データが消える
+        raise PipelineError(f"片・bat・SHA256SUMS の名前が元データ {master.name} と同じになります。--name か --out を変えてください"
+                            "（元データは --force でも上書きしません）")
     if not force:
         clash = [t.name for t in targets if t.exists()]
         if clash:
@@ -418,7 +425,7 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
               "bat": {"name": "join_master.bat", "encoding": "cp932", "newline": "CRLF", "sha256": sha256(out_dir / "join_master.bat")},
               "sums": {"name": sums_path.name, "sha256": sha256(sums_path)},
               "join_check": {"ok": ok, "joined_sha256": joined.hexdigest(), "how": "片を順につないで sha256 を数えた（bat は実行していない）"}}
-    record_path = out_dir.parent / f"{out_dir.name}.split.json"
+    record_path = folder.parent / f"{folder.name}.split.json"
     atomic_json(record_path, record)
     return {"dir": str(out_dir), "parts": [r["name"] for r in records], "part_bytes": part_bytes, "bat": str(out_dir / "join_master.bat"),
             "sums": str(sums_path), "master_sha256": digest, "join_check": ok, "record": str(record_path)}
