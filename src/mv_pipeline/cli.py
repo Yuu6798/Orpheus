@@ -242,6 +242,31 @@ def _gate_parser(commands):
     flashes.add_argument("--out", type=Path, help="default: <video stem>_flash_report next to the video")
     flashes.add_argument("--delta", type=float, default=0.10, help="a change is a rise or fall of at least this from the last peak or valley (linear relative luminance 0-1)")
     flashes.add_argument("--max-per-s", type=float, default=3, help="most flashes allowed in any one-second window")
+    voice = sub.add_parser("voice", help="numbers only: where the vocal stem has voice (segments and the gaps between them), "
+                                         "to find line starts, ends and breaths")
+    voice.add_argument("vocals", type=Path)
+    voice.add_argument("--from", dest="start", type=float, default=0.0, help="start of the range in seconds (default 0)")
+    voice.add_argument("--to", dest="stop", type=float, help="end of the range in seconds (default: the end)")
+    voice.add_argument("--threshold-db", type=float, default=-32.0, help="voice when the level is above this, relative to the 95th percentile")
+    voice.add_argument("--gap-s", type=float, default=0.14, help="join segments closer than this")
+    voice.add_argument("--min-s", type=float, default=0.08, help="drop segments shorter than this")
+    voice.add_argument("--out", type=Path, help="also write the record (JSON) here")
+    voice.add_argument("--force", action="store_true", help="overwrite an --out whose contents differ")
+    notes = sub.add_parser("notes", help="numbers only: sung notes (pYIN, semitones), onsets and level dips in a range")
+    notes.add_argument("vocals", type=Path)
+    notes.add_argument("--from", dest="start", type=float, required=True)
+    notes.add_argument("--to", dest="stop", type=float, required=True)
+    notes.add_argument("--out", type=Path, help="also write the record (JSON) here")
+    notes.add_argument("--force", action="store_true", help="overwrite an --out whose contents differ")
+    repeat = sub.add_parser("repeat", help="numbers only: where the melody of --ref repeats inside --search (offset in seconds, match rate)")
+    repeat.add_argument("vocals", type=Path)
+    repeat.add_argument("--ref", type=float, nargs=2, required=True, metavar=("FROM", "TO"))
+    repeat.add_argument("--search", type=float, nargs=2, required=True, metavar=("FROM", "TO"))
+    repeat.add_argument("--top", type=int, default=3, help="how many best offsets to list (default 3)")
+    repeat.add_argument("--include-end", action="store_true",
+                        help="also compare the alignment that ends exactly at the end of --search (the production script skips it)")
+    repeat.add_argument("--out", type=Path, help="also write the record (JSON) here")
+    repeat.add_argument("--force", action="store_true", help="overwrite an --out whose contents differ")
 
 
 def _inspect_parser(commands):
@@ -441,6 +466,15 @@ def gate_command(args):
         report, out = flashes.run(args.video, args.out, args.delta, args.max_per_s)
         args.failed = 1 if report["status"] == "fail" else 0
         return flashes.summary(report, out)
+    if args.gate_command in ("voice", "notes", "repeat"):
+        from .gate import vocals
+        if args.gate_command == "voice":
+            record = vocals.voice(args.vocals, args.start, args.stop, args.threshold_db, args.gap_s, args.min_s)
+        elif args.gate_command == "notes":
+            record = vocals.notes(args.vocals, args.start, args.stop)
+        else:
+            record = vocals.repeat(args.vocals, tuple(args.ref), tuple(args.search), args.top, args.include_end)
+        return vocals.summary(record, vocals.save(record, args.out, args.vocals, args.force), args.out)
     from .gate import checks
     report, out = checks.run(args.config, args.out)
     args.failed = 1 if report["overall"] == "fail" else 0
