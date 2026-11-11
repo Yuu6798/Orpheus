@@ -53,6 +53,7 @@ def parser():
     _layer_parser(commands)
     _overlay_parser(commands)
     _deliver_parser(commands)
+    _audio_parser(commands)
     return p
 
 
@@ -590,6 +591,36 @@ def deliver_command(args):
     raise PipelineError(f"Unsupported deliver command: {args.deliver_command}")
 
 
+def _audio_parser(commands):
+    """mv audio（実験的）: 曲の音から作る記録（拍の格子）を、音源か analysis.json の隣の別ファイルに書く。"""
+    audio = commands.add_parser("audio", help="experimental: records made from the song audio (beat grid), written beside "
+                                              "the audio or analysis.json (estimated values)")
+    sub = audio.add_subparsers(dest="audio_command", required=True)
+    grid = sub.add_parser("grid", help="fit a constant-tempo beat grid to the onsets: beats, downbeats and drift (estimated)")
+    grid.add_argument("source", type=Path, help="audio file, or a project folder with analysis.json (then analysis.grid.json is "
+                                                "written beside it)")
+    grid.add_argument("--bpm-min", type=float, help="lowest bpm to try (searched in 0.02 steps)")
+    grid.add_argument("--bpm-max", type=float, help="bpm to stop before")
+    grid.add_argument("--bpm", type=float, help="use this grid instead of searching (with --phase): records beats, downbeats and drift")
+    grid.add_argument("--phase", type=float, help="time of beat 0 in seconds (with --bpm)")
+    grid.add_argument("--downbeat", choices=["onset", "chroma"], default="onset",
+                      help="how to pick the downbeat: onset strength per beat phase (default) or chord change on the 8th grid")
+    grid.add_argument("--beats-per-bar", type=int, default=4, help="beats per bar for the downbeat phase (default 4)")
+    grid.add_argument("--out", type=Path, help="record to write (default: <audio stem>.grid.json beside the audio, or "
+                                               "<project>/analysis.grid.json)")
+    grid.add_argument("--fair-refine", action="store_true",
+                      help="re-score the coarse best with the refine window before refining (default: the production way)")
+    grid.add_argument("--force", action="store_true", help="overwrite a record whose contents differ")
+
+
+def audio_command(args):
+    if args.audio_command == "grid":
+        from .audio import grid
+        return grid.run(args.source, args.bpm_min, args.bpm_max, args.out, args.beats_per_bar, args.fair_refine, args.force,
+                        args.bpm, args.phase, args.downbeat)
+    raise PipelineError(f"Unsupported audio command: {args.audio_command}")
+
+
 def overlay_command(args):
     _require_fx()      # 書き出しは fx の render（cv2 を import する）にある
     from .fx import overlay
@@ -614,7 +645,7 @@ def workflow_command(args):
 
 GROUP_COMMANDS = {"fx": fx_command, "dance": dance_command, "gate": gate_command,
                   "inspect": inspect_command, "workflow": workflow_command, "export": export_command, "overlay": overlay_command,
-                  "sheet": sheet_command, "layer": layer_command, "deliver": deliver_command}
+                  "sheet": sheet_command, "layer": layer_command, "deliver": deliver_command, "audio": audio_command}
 
 
 # ---- MV プロジェクトのコマンド（project_lock の中で動く） -----------------------
