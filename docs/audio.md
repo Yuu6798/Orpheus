@@ -86,6 +86,8 @@ uv run mv audio keys song.hits.json --spec spec.json --light lightning --base 0.
 - **強打（`strong`）**: ときどき光らせるもの（稲妻の明滅など）に使う、疎な一覧。
   - `onset_strength`（hop 512）の山を `peak_pick` で選ぶ。前後の最大 10・前後の平均 50 フレーム、間隔 20 フレーム（約 0.46 秒）、
     delta は `onset_strength` の 97 パーセンタイルの半分。
+  - 強さ 0 の山は除く。無音やほぼ無音の音源では 97 パーセンタイルが 0 になって delta も 0 になり、値 0 の平らな所が間隔ごとに
+    山に選ばれるため（そのままだと `mv audio keys` が無音の間に光る）。音のある曲では、選ばれる山はいつも 0 より大きい。
   - 時刻は、山のフレームの時刻に `--strong-shift-ms`（既定 −16.7）を足したもの。0 秒より前になったものは捨てる。
   - 強さは、山の `onset_strength` を `onset_strength` の 99 パーセンタイルで割った値。
 - **帯域差分の打点（`onsets`）**: カットを合わせるときなどに使う、強さつきの密な一覧。

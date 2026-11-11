@@ -52,6 +52,9 @@ def strong(y, rate, shift_s, librosa):
     """強打 [{t, strength}]（実制作の解析の台本の選び方。時刻は shift_s ずらし、0 秒より前は捨てる）。"""
     onset = librosa.onset.onset_strength(y=y, sr=rate, hop_length=STRONG_HOP)
     peaks = librosa.util.peak_pick(onset, delta=np.percentile(onset, STRONG_DELTA_PERCENTILE) * STRONG_DELTA_SCALE, **STRONG_PEAKS)
+    # 97 パーセンタイルが 0（無音・ほぼ無音）だと delta が 0 になり、値 0 の平らな所も間隔ごとに山に選ばれる。強さ 0 の山は除く
+    # （delta が 0 より大きければ、選ばれる山はいつも 0 より大きいので、実制作の音源の結果は変わらない）
+    peaks = peaks[onset[peaks] > 0]
     times = librosa.frames_to_time(peaks, sr=rate, hop_length=STRONG_HOP) + shift_s
     scale = np.percentile(onset, STRENGTH_PERCENTILE) + 1e-9
     return [{"t": float(t), "strength": float(onset[p] / scale)} for t, p in zip(times, peaks) if t >= 0]

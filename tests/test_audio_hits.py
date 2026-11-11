@@ -94,6 +94,20 @@ def test_the_default_shifts_put_the_hits_on_the_clicks(tmp_path):
     assert len(strong) >= 10 and np.abs(strong).max() < 0.02 and abs(strong.mean()) < abs(strong_raw.mean())
 
 
+def test_silence_gives_no_strong_hits(tmp_path):
+    # 97 パーセンタイルが 0（無音・ほぼ無音）だと delta が 0 になり、値 0 のフレームが強打（強さ 0）に選ばれて、keys が無音の間に光っていた
+    silent = tmp_path / "silent.wav"
+    soundfile.write(str(silent), np.zeros(RATE * 5, np.float32), RATE)
+    assert hits.estimate(silent)["strong"] == []
+    rng = np.random.default_rng(0)
+    y = np.zeros(RATE * 30, np.float32)                       # 30 秒のうち 12 秒に 1 回だけ鳴る
+    i, n = int(12.0 * RATE), int(0.08 * RATE)
+    y[i:i + n] += (0.5 * np.exp(-np.arange(n) / (0.015 * RATE)) * rng.standard_normal(n)).astype(np.float32)
+    soundfile.write(str(tmp_path / "one.wav"), y, RATE)
+    found = hits.estimate(tmp_path / "one.wav")["strong"]
+    assert len(found) == 1 and abs(found[0]["t"] - 12.0) < 0.1 and found[0]["strength"] > 0
+
+
 def test_grid_positions_equal_the_production_formula(tmp_path):
     audio = calibration_clicks(tmp_path / "clicks.wav")
     grid.run(audio, bpm=60 / 0.34488, phase=1.0)
