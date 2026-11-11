@@ -56,6 +56,8 @@ uv run mv audio grid projects/demo --bpm 174 --phase 0.02 --downbeat chroma   # 
 出力の既定は、音源なら `<音源の名前>.grid.json`（音源の隣）、analysis.json のあるフォルダを渡せば `analysis.grid.json`（analysis.json
 の隣。音源の sha256 が analysis.json と違えば止める）。同じ中身なら書き直さず `unchanged`、中身が違えば `--force` が要る。
 日時は書かないので、同じ入力からは同じバイト列になる。
+`--out` が入力（音源と、フォルダを渡したときの analysis.json）と同じファイルなら、`--force` でも書かない。記録は、同じフォルダに
+新しく作った一時ファイル（ランダムな名前）に書いてから置き換える（既にある同じ名前のファイルや、リンクの先は書き換えない）。
 
 | 欄 | 中身 |
 |---|---|

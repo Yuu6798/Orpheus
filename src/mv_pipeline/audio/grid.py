@@ -27,6 +27,8 @@
 beats_s（拍の時刻）と downbeats（小節の頭の時刻）を持つ。
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -282,13 +284,20 @@ def _source(source):
     return source, source.name, source.with_name(source.stem + ".grid.json")
 
 
+def _same_file(path):
+    return os.path.normcase(str(Path(path).resolve()))
+
+
 def run(source, bpm_min=None, bpm_max=None, out=None, beats_per_bar=4, fair_refine=False, force=False, bpm=None, phase=None,
         downbeat="onset"):
     """格子を推定して記録を書く。同じ中身のファイルがあれば unchanged、違えば --force が要る。"""
     path, recorded, default_out = _source(source)
     out = Path(out) if out else default_out
-    if out.exists() and out.resolve() == path.resolve():
-        raise PipelineError(f"--out が音源と同じファイルです: {out}")
+    inputs = {_same_file(path): "音源"}
+    if Path(source).is_dir():
+        inputs[_same_file(Path(source) / "analysis.json")] = "analysis.json"
+    if _same_file(out) in inputs:          # 置き換えると入力が消える（--force でも書かない）
+        raise PipelineError(f"--out が{inputs[_same_file(out)]}と同じファイルです（入力は --force でも上書きしません）: {out}")
     record = estimate(path, bpm_min, bpm_max, beats_per_bar, fair_refine, bpm, phase, downbeat)
     record["audio"] = {"path": recorded, **record["audio"]}
     text = json.dumps(record, ensure_ascii=False, indent=1, allow_nan=False) + "\n"
@@ -300,9 +309,16 @@ def run(source, bpm_min=None, bpm_max=None, out=None, beats_per_bar=4, fair_refi
             raise PipelineError(f"{out} は中身の違うファイルとして既にあります。置き換えるなら --force を付けてください")
     if state == "written":
         out.parent.mkdir(parents=True, exist_ok=True)
-        temporary = out.with_name(out.name + ".tmp")
-        temporary.write_text(text, encoding="utf-8", newline="\n")
-        temporary.replace(out)
+        # 新しく作った一時ファイル（ランダムな名前）から置き換える。決まった名前（<名前>.tmp）だと、既にある同じ名前のファイルを
+        # 消したり、それが音源へのリンクなら音源を書き換えたりする
+        fd, temporary = tempfile.mkstemp(dir=out.parent, prefix=f".{out.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(text)
+            os.replace(temporary, out)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     drift_info = record["drift"]
     return {"grid": str(out), "state": state, "estimated": True, "mode": record["fit"]["mode"], "bpm": record["bpm"],
             "period_s": record["period_s"], "phase_s": record["phase_s"], "beats_per_bar": beats_per_bar,

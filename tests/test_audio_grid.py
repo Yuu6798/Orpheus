@@ -184,6 +184,29 @@ def test_a_project_folder_writes_beside_analysis_json(tmp_path):
     assert code == 1 and "analysis.json" in err
 
 
+def test_out_never_replaces_analysis_json_even_with_force(tmp_path):
+    # 確かめていたのは音源だけで、--out analysis.json --force だと、プロジェクトの analysis.json（歌詞など）が格子で置き換わっていた
+    project = tmp_path / "project"
+    (project / "audio").mkdir(parents=True)
+    audio = clicks(project / "audio" / "song.wav")
+    (project / "analysis.json").write_text(json.dumps({"audio": {"path": "audio/song.wav", "sha256": sha256(audio)},
+                                                       "lyrics": [{"id": "L1", "text": "keep me"}]}), encoding="utf-8")
+    before = (project / "analysis.json").read_bytes()
+    code, _, err = run_cli("audio", "grid", project, "--bpm", "120", "--phase", "0.25", "--out", project / "analysis.json", "--force")
+    assert code == 1 and "--out がanalysis.jsonと同じ" in err and (project / "analysis.json").read_bytes() == before
+
+
+def test_the_record_is_written_through_a_new_temporary_file(tmp_path):
+    # 決まった名前 <名前>.tmp に書いてから置き換えていたので、既にある同じ名前のファイルを書き換えて消していた
+    audio = clicks(tmp_path / "song.wav")
+    keep = tmp_path / "song.grid.json.tmp"
+    keep.write_text("someone else's file", encoding="utf-8")
+    code, _, err = run_cli("audio", "grid", audio, "--bpm", "120", "--phase", "0.25")
+    assert code == 0, err
+    assert keep.read_text(encoding="utf-8") == "someone else's file" and (tmp_path / "song.grid.json").is_file()
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == [keep.name]
+
+
 def test_a_rerun_is_unchanged_and_other_contents_need_force(tmp_path):
     audio = clicks(tmp_path / "song.wav")
     args = ("audio", "grid", audio, "--bpm", "120", "--phase", "0.25")
