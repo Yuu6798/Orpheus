@@ -172,6 +172,9 @@ def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out
         inputs[_same_file(audio)] = Path(audio).name
     if _same_file(out) in inputs:          # 置き換えると入力が消える（区間のフォルダに書く、--audio に動画を渡すなど）
         raise PipelineError(f"--out {out.name} は入力（{inputs[_same_file(out)]}）と同じファイルです。入力は --force でも上書きしません")
+    record_path = out.with_name(f"{out.stem}.deliver.json")
+    if _same_file(record_path) in inputs:  # 記録を書くと入力が JSON で置き換わる
+        raise PipelineError(f"記録 {record_path.name} が入力（{inputs[_same_file(record_path)]}）と同じファイルになります。--out の名前を変えてください")
     ranges = _ranges(segments)
     infos = [probe.inspect(p)["video"] for p in segments]
     keys = {(i["codec"], i["pix_fmt"], i["width"], i["height"], i["fps"]) for i in infos}
@@ -235,7 +238,6 @@ def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out
               "ffmpeg": _ffmpeg_info(), "commands": [[str(part) for part in command[1:]] for command in commands],
               "master": {"path": str(out), "bytes": out.stat().st_size, "sha256": sha256(out), "state": state},
               "check": check, "technical_pass": check["pass"]}
-    record_path = out.with_name(f"{out.stem}.deliver.json")
     atomic_json(record_path, record)
     return {"master": str(out), "sha256": record["master"]["sha256"], "bytes": record["master"]["bytes"], "state": state,
             "frames": total, "fps": fps, "duration_s": record["duration_s"], "segments": len(records),
@@ -274,6 +276,9 @@ def review_copy(master, out, limit=REVIEW_LIMIT, target=REVIEW_TARGET, maxrate="
         raise PipelineError(f"--out は .mp4 にしてください: {out.name}")
     if _same_file(out) == _same_file(master):
         raise PipelineError("--out が元データと同じファイルです")
+    record_path = out.with_name(f"{out.stem}.review.json")
+    if _same_file(record_path) == _same_file(master):    # 記録を書くと元データが JSON で置き換わる
+        raise PipelineError(f"記録 {record_path.name} が元データと同じファイルになります。--out の名前を変えてください")
     if not target > 0 or not limit > 0:
         raise PipelineError(f"--target-bytes と --limit-bytes は 0 より大きくしてください: {target}, {limit}")
     if threads < 0:
@@ -319,7 +324,6 @@ def review_copy(master, out, limit=REVIEW_LIMIT, target=REVIEW_TARGET, maxrate="
               "ffmpeg": _ffmpeg_info(), "commands": [[str(part) for part in command[1:]] for command in commands],
               "review": {"path": str(out), "bytes": out.stat().st_size, "sha256": sha256(out), "state": state},
               "ssim_vs_master": ssim, "check": check, "technical_pass": check["pass"]}
-    record_path = out.with_name(f"{out.stem}.review.json")
     atomic_json(record_path, record)
     return {"review": str(out), "bytes": record["review"]["bytes"], "sha256": record["review"]["sha256"], "state": state,
             "method": method, "ssim_vs_master": ssim, "repeatable": record["repeatable"], "frames": frames,
@@ -403,8 +407,9 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
     bat = BAT.format(title=title, nbytes=total, parts=" ".join(parts), plus=" + ".join(parts), name=name, sha=digest)
     bat_bytes = bat.replace("\n", "\r\n").encode("cp932")
     targets = [out_dir / p for p in parts] + [out_dir / "join_master.bat", out_dir / _sums_name(name)]
-    if any(_same_file(target) == _same_file(master) for target in targets):     # 置き換えると元データが消える
-        raise PipelineError(f"片・bat・SHA256SUMS の名前が元データ {master.name} と同じになります。--name か --out を変えてください"
+    record_path = folder.parent / f"{folder.name}.split.json"
+    if any(_same_file(target) == _same_file(master) for target in targets + [record_path]):     # 置き換えると元データが消える
+        raise PipelineError(f"片・bat・SHA256SUMS・記録の名前が元データ {master.name} と同じになります。--name か --out を変えてください"
                             "（元データは --force でも上書きしません）")
     if not force:
         clash = [t.name for t in targets if t.exists()]
@@ -437,7 +442,6 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
               "bat": {"name": "join_master.bat", "encoding": "cp932", "newline": "CRLF", "sha256": sha256(out_dir / "join_master.bat")},
               "sums": {"name": sums_path.name, "sha256": sha256(sums_path)},
               "join_check": {"ok": ok, "joined_sha256": joined.hexdigest(), "how": "片を順につないで sha256 を数えた（bat は実行していない）"}}
-    record_path = folder.parent / f"{folder.name}.split.json"
     atomic_json(record_path, record)
     return {"dir": str(out_dir), "parts": [r["name"] for r in records], "part_bytes": part_bytes, "bat": str(out_dir / "join_master.bat"),
             "sums": str(sums_path), "master_sha256": digest, "join_check": ok, "record": str(record_path)}

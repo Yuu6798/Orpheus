@@ -26,7 +26,7 @@ uv run mv deliver split render_r3/song_master.mp4 --out upload/master_parts --ti
    - AAC 192k・48kHz にする。
 4. **元データ**: 映像と音を `-c copy` で合わせ、映像の長さで切り、faststart（先頭に目次）で書く。
    - 既に同じ名前のファイルがあって中身が違えば、`--force` を付けない限り書かない。同じ中身なら `unchanged`。
-   - `--out` が入力（区間の動画・`--audio`）と同じファイルなら、`--force` でも書かない（置き換えると入力が消えるため）。
+   - `--out` か記録（`<名前>.deliver.json`）が入力（区間の動画・`--audio`）と同じファイルなら、`--force` でも書かない（置き換えると入力が消えるため）。
    - 作業のファイルは出力の隣の一時フォルダに作り、終わったら消す。
 5. **記録** `<元データの名前>.deliver.json`（`deliver-join/0.1`、`contracts/` の外）:
    - 区間（パス・sha256・コマ数・名前の区間）と、音（パス・sha256・切り出し・フェード）。
@@ -51,7 +51,7 @@ uv run mv deliver split render_r3/song_master.mp4 --out upload/master_parts --ti
   - 既定の `--threads 1` は、毎回同じバイト列になる。そのかわり 2 パスに時間がかかる（1080×1920・747 コマで約 2 分）。
   - `--threads 0` は ffmpeg に任せる（実制作と同じ。速いが毎回変わる）。記録の `repeatable` に、どちらだったかを残す。
 - 記録 `<名前>.review.json`（`deliver-review/0.1`）: 元データ、作り方（写す / 2 パスとビットレート）、設定、ffmpeg とコマンド、
-  確認用の bytes と sha256、SSIM、構造検査。中身の違うファイルが既にあれば `--force` が要る。
+  確認用の bytes と sha256、SSIM、構造検査。中身の違うファイルが既にあれば `--force` が要る。`--out` か記録が元データと同じファイルなら止める。
 
 ## 受け渡しの片（`mv deliver split`）
 
@@ -67,7 +67,7 @@ uv run mv deliver split render_r3/song_master.mp4 --out upload/master_parts --ti
 - 片を順につないだ sha256 が元データと同じかを、その場で確かめる（bat は実行しない）。
 - 記録は片のフォルダの隣の `<フォルダの名前>.split.json`（`deliver-split/0.1`）。片のフォルダには受け渡すものだけを置く。
   `--out .` のように渡しても、フォルダを絶対パスにしてから名前と隣を決める（記録には元データのパスが入るので、片と一緒に渡らないように）。
-  片・bat・SHA256SUMS の名前が元データそのものになるときは、`--force` でも書かない。
+  片・bat・SHA256SUMS・記録の名前が元データそのものになるときは、`--force` でも書かない。
 - 片・bat・SHA256SUMS は、同じフォルダに新しく作った一時ファイル（ランダムな名前）に書いてから置き換える。
   既にある同じ名前のファイル（`<名前>.part00.tmp` など）や、リンクの先は書き換えない。
   同じ名前のファイルが既にあれば `--force` が要る。

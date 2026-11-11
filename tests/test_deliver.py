@@ -383,6 +383,26 @@ def test_split_does_not_write_through_a_link_at_a_temporary_name(master, tmp_pat
     assert master.read_bytes() == before
 
 
+def test_records_never_replace_an_input(segments, master, tmp_path):
+    # 記録（<名前>.deliver.json・<名前>.review.json・<フォルダの名前>.split.json）が入力と同じファイルだと、入力が JSON で置き換わっていた
+    one = sorted(segments.glob("seg_*.mp4"))[0]
+    clip = tmp_path / "m.deliver.json"
+    clip.write_bytes(one.read_bytes())
+    with pytest.raises(PipelineError, match="記録 m.deliver.json"):
+        deliver.join([clip], tmp_path / "m.mp4")
+    assert clip.read_bytes() == one.read_bytes() and not (tmp_path / "m.mp4").exists()
+    copy = tmp_path / "r.review.json"
+    copy.write_bytes(master.read_bytes())
+    with pytest.raises(PipelineError, match="記録 r.review.json"):
+        deliver.review_copy(copy, tmp_path / "r.mp4")
+    assert copy.read_bytes() == master.read_bytes() and not (tmp_path / "r.mp4").exists()
+    named_like_record = tmp_path / "parts.split.json"
+    named_like_record.write_bytes(master.read_bytes())
+    with pytest.raises(PipelineError, match="記録の名前が元データ"):
+        deliver.split(named_like_record, tmp_path / "parts", 9000, "SONG_r1_master.mp4")
+    assert named_like_record.read_bytes() == master.read_bytes() and not (tmp_path / "parts").exists()
+
+
 def test_split_needs_a_faststart_master(master, tmp_path):
     slow = tmp_path / "slow.mp4"
     subprocess.run([media.ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-c", "copy", str(slow)], check=True)
