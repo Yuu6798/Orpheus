@@ -28,6 +28,8 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv layer render` | Remotion の透過レイヤーの描画を工程として包み、版・sha256・ブラウザー・描画時間・決定論の確認を台帳に残す | 実験的 | [remotion-props › 台帳](docs/remotion-props.md#描画を台帳に載せるmv-layer-render) |
 | `mv export subtitles` | 歌詞の行の時刻から、字幕ファイル（SRT・WebVTT・LRC）と動画の概要欄に貼る歌詞を書く | 実験的 | [subtitles](docs/subtitles.md) |
 | `mv audio grid` | 曲の音の立ち上がりに一定のテンポの格子を当てはめ、拍と小節の頭の時刻を推定して、音源か analysis.json の隣に書く（dance・fx-timeline の `beats` がそのまま読める。値は推定） | 実験的 | [audio](docs/audio.md) |
+| `mv audio hits` | 曲の音から、強打（ときどき光らせるものに使う疎な一覧）と、帯域差分の打点（強さつきの密な一覧）の時刻を推定して、音源か analysis.json の隣に書く（格子の記録を渡せば小節と拍の位置も。値は推定） | 実験的 | [audio](docs/audio.md) |
+| `mv audio keys` | 打点の記録から fx-shot の光の強さのキー（稲妻の明滅）を作り、その光のキーだけを置き換えた spec を隣に書く | 実験的 | [audio](docs/audio.md) |
 | `mv fx` | 1 枚絵から、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる（深度とマスクは任意。無ければ、それを使う機能だけが使えない） | 実験的 | [fx](docs/fx.md) |
 | `mv fx timeline` | いくつもの fx のショットを、カット・クロスフェード・黒・フラッシュ・焼け抜けでつないで 1 本にする。`--hooks` で、炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒などの演出の部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`）を掛ける | 実験的 | [fx › timeline](docs/fx.md#timeline複数のショットをつなぐfx-timeline02)、[演出の hooks](docs/fx.md#演出の-hooks火空と天気明かり) |
 | `mv fx guides` | 素材の絵に座標の目盛りを重ねて、光や炎を置く位置を読む | 実験的 | [fx › 見比べの補助](docs/fx.md#見比べの補助目盛り基準の列比較動画) |
