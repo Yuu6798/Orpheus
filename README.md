@@ -30,7 +30,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv fx` | 1 枚絵から、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる（深度とマスクは任意。無ければ、それを使う機能だけが使えない） | 実験的 | [fx](docs/fx.md) |
 | `mv fx timeline` | いくつもの fx のショットを、カット・クロスフェード・黒・フラッシュ・焼け抜けでつないで 1 本にする。`--hooks` で、炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒などの演出の部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`）を掛ける | 実験的 | [fx › timeline](docs/fx.md#timeline複数のショットをつなぐfx-timeline02)、[演出の hooks](docs/fx.md#演出の-hooks火空と天気明かり) |
 | `mv fx guides` | 素材の絵に座標の目盛りを重ねて、光や炎を置く位置を読む | 実験的 | [fx › 見比べの補助](docs/fx.md#見比べの補助目盛り基準の列比較動画) |
-| `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する | 実験的 | [fx › legacy 接続](docs/fx.md#legacy-接続) |
+| `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する。`--cuts` で区間を同時に描き、`mv deliver join` でつなぐ | 実験的 | [fx › legacy 接続](docs/fx.md#legacy-接続) |
 | `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
 | `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）、歌詞の行・秒の確認表、透過連番から起こす timeline、完成動画の明滅の回数（`mv gate flashes`。規格への適合は判定しない） | 実験的 | [gate](docs/gate.md) |

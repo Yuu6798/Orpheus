@@ -120,9 +120,14 @@ def _fx_parser(commands):
     legacy = sub.add_parser("legacy", help="run an external production renderer and record it as a run")
     legacy.add_argument("--renderer", type=Path, required=True)
     legacy.add_argument("--config", type=Path, required=True)
-    legacy.add_argument("--start", type=float, default=0.0)
-    legacy.add_argument("--duration", type=float, required=True)
+    legacy.add_argument("--start", type=float, help="seconds (default 0; not with --cuts)")
+    legacy.add_argument("--duration", type=float, help="seconds (required unless --cuts is given)")
+    legacy.add_argument("--cuts", type=int, nargs="+", metavar="FRAME",
+                        help="frame numbers N0 N1 ... Nk: render [N0, N1), [N1, N2), ... as seg_<first>_<end>.mp4 in one run, "
+                             "several at once (needs --units frames and --fps); the run folder can be passed to mv deliver join")
+    legacy.add_argument("--jobs", type=int, help="with --cuts: how many segments run at once (default: all, up to the CPU count)")
     legacy.add_argument("--python", help="interpreter for the renderer (default: this one)")
+    legacy.add_argument("--python-flags", help='arguments for the interpreter before the renderer, e.g. --python-flags="-I -X utf8"')
     legacy.add_argument("--width", type=int)
     legacy.add_argument("--height", type=int)
     legacy.add_argument("--fps", type=float)
@@ -339,8 +344,20 @@ def fx_command(args):
         return runs.accept(args.run_dir, args.variant, args.decision, args.by, args.note)
     if command == "legacy":
         from .fx import legacy
-        return legacy.run_legacy(args.renderer, args.config, args.start, args.duration, args.python, args.width,
-                                 args.height, args.fps, args.out, args.timeout, args.cwd, _progress, args.units)
+        if args.cuts is not None:
+            if args.start is not None or args.duration is not None:
+                raise PipelineError("--cuts は区間を区切りのフレーム番号で決めるので、--start・--duration と一緒には使えません")
+            if args.units != "frames":
+                raise PipelineError("--cuts はフレーム番号の区切りです。レンダラがフレーム番号で受け取る形（--units frames）にしてください")
+            return legacy.run_segments(args.renderer, args.config, args.cuts, args.fps, args.python, args.width, args.height,
+                                       args.out, args.timeout, args.cwd, _progress, args.python_flags, args.jobs)
+        if args.jobs is not None:
+            raise PipelineError("--jobs は --cuts（区間を並べて描く）のときだけ使えます")
+        if args.duration is None:
+            raise PipelineError("--duration が要ります（区間を並べて描くなら --cuts）")
+        return legacy.run_legacy(args.renderer, args.config, 0.0 if args.start is None else args.start, args.duration,
+                                 args.python, args.width, args.height, args.fps, args.out, args.timeout, args.cwd, _progress,
+                                 args.units, args.python_flags)
     if command == "timeline":
         from .fx import sequence
         if args.timeline_command == "plan":                 # 描かないので cv2 は要らない

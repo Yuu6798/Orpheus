@@ -569,7 +569,8 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
 | `mv fx points PLAN.json [--out DIR]` | 計画（fx-points/0.1）から、同じ形の小物の位置を種の型紙の照合で拾い、位置の表・閲覧用の絵・型紙を書く（[繰り返し物の位置](#繰り返し物の位置mv-fx-points)） |
 | `mv fx clips PLAN.json [--out DIR] [--only ID,…] [--force]` | 計画（fx-clips/0.1）から、生成した動画に揺れ止めと色のゲインを掛けて書き、記録を残す（[クリップの下ごしらえ](#クリップの下ごしらえmv-fx-clips)） |
-| `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
+| `mv fx legacy --renderer PATH --config CFG --duration D [--start S] [--python EXE] [--python-flags "…"] [--width W --height H --fps F] [--out DIR] [--timeout SEC] [--cwd DIR]` | 外部の実制作レンダラを呼んで run として記録する |
+| `mv fx legacy --renderer PATH --config CFG --units frames --fps F --cuts N0 N1 … Nk [--jobs J] […]` | 区間 [N0, N1)・[N1, N2) … を同時に描き、1 つの run に `seg_<最初>_<終わり>.mp4` として並べる（[区間を並べて描く](#区間を並べて描く--cuts)） |
 | `mv fx accept RUN_DIR --variant V --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を `acceptance.jsonl` に追記する（timeline の run は `--variant timeline`） |
 | `mv fx timeline demo DIR [--width 320 --height 180 --duration 6 --fps 24]` | spec のショット 3 つ・動画のショット 1 つ（合成の動画をループ）と、black・xfade・flash でつなぐ timeline.json（fx-timeline/0.1）を作る（[timeline](#timeline複数のショットをつなぐfx-timeline02)） |
 | `mv fx timeline plan TIMELINE` | ショット・つなぎ・秒・いちばん近い拍の表（描かない。fx extra なしで動く） |
@@ -661,6 +662,10 @@ argv は `[python, renderer, config, "seg", start, end, out]`（`end = start + d
   - 実制作レンダラの多くはこちらの形で受け取る。`--fps` が無いと拒否する。
   - manifest の `interval` に `units` と、フレームのときは `frame_range` が残る。
 
+- **インタープリタ**: `--python`（既定はこの Python）。フォルダを含む相対パスは、今いるフォルダから見て存在すれば絶対パスにする
+  （子はレンダラの作業ディレクトリで起動するので、そのままだとそこからの相対で探されて見つからない）。venv の python のリンクはたどらない。
+  `--python-flags="-I -X utf8"` で、インタープリタの引数をレンダラの前に置ける（argv は `[python, -I, -X, utf8, renderer, …]`。値が `-` で
+  始まるので `=` で書く）。
 - 記録: renderer と config の sha256、argv、終了コード、所要時間、作業ディレクトリ（既定はレンダラのあるディレクトリ。`--cwd` で変更）。
 - ログ: 子の標準出力・標準エラーを描画中に逐次 `legacy.log` へ書く（子の Python は `PYTHONUNBUFFERED=1`）。
 - 検査: フレーム数は `round(D×fps)` から**最大 2 少ないまで**許容（実務の `-shortest`）、多いのは不合格。寸法・fps は `--width/--height/--fps` を指定したときだけ照合
@@ -669,6 +674,42 @@ argv は `[python, renderer, config, "seg", start, end, out]`（`end = start + d
 - `--timeout` 既定は `max(600, 120×duration)` 秒。超えたら子プロセスごと止めて `failed`。
 - **キャッシュしない**: 設定が参照する素材などレンダラの隠れた入力を fx は知らないため、毎回実行する（`index.json` に入らない）。
 - 失敗しても `legacy.mp4` は作らず、過去の run は変えない。run の版名は `legacy`（`fx accept --variant legacy` で判定できる）。
+
+### 区間を並べて描く（`--cuts`）
+
+長い区間を、区切りのフレーム番号で分けて同時に描く。実制作の区間の並列描画（区切りごとにレンダラを `seg 最初 終わり out.mp4` で同時に
+起動し、`seg_<最初>_<終わり>.mp4` を並べる台本）と同じ呼び方で、描いた区間は `mv deliver join` でそのままつなげる。
+
+```sh
+uv run mv fx legacy --renderer /path/to/renderer.py --config /path/to/config.json --units frames --fps 30 \
+    --cuts 3981 4106 4231 4356 4481 4606 4728 --python-flags="-I -X utf8" --out fx_runs      # 6 区間を同時に
+uv run mv deliver join fx_runs/<run_id> --out song_master.mp4 --audio song.wav --audio-start 132.7 --fade-out 0.5
+```
+
+- 区間は `[N0, N1)`・`[N1, N2)` …（終わりのコマは含まない）。区切りは 0 以上の整数で、増えていく順。`--units frames` と `--fps` が要り、
+  `--start`・`--duration` とは一緒に使わない。区間ごとの argv は `[python, *flags, renderer, config, "seg", 最初, 終わり, out]`。
+- `--jobs`（既定は区間の数。CPU の数まで）の数だけ同時に動かし、終わった所から次の区間を始める。`--timeout` は区間ごと
+  （既定 `max(600, 120×区間の秒)`）。
+- **1 つの run にまとめる**: fx の run は描いている間 `--out` のロックを持つので、区間ごとに別の run は同じ `--out` で同時に開けない。
+  run のフォルダに `seg_<最初>_<終わり>.mp4`（5 桁。最後のコマが 5 桁を超えれば全部その桁にそろえ、名前の順 = 時間の順を保つ）と、
+  区間ごとのログ `seg_<最初>_<終わり>.log`（先頭に argv、続けて子の出力）を並べる。描いている間の出力は `partial_*.mp4`。
+- 記録（`manifest.json`）: `legacy`（renderer と config の sha256・python・python_flags・cwd・jobs・終了コード・所要時間）、`interval`
+  （`cuts`・`frame_range`・合計のコマ数）、`segments`（区間ごとの argv・終了コード・秒・コマ数・sha256・構造検査）。`variants` は空
+  （判定はつないだ元データで行う）。キャッシュしない。
+- **検査**: 区間のコマ数は `終わり − 最初` にぴったり（つないだときにすき間・重なりを作らないため。1 本のときの 2 コマの許容は無い）。
+  寸法は `--width/--height` を渡したときだけ、fps は `--fps` と照合する。全復号でエラーが無いこと。
+- **失敗したとき**: 1 区間でも終了コードが 0 でない・timeout・出力が無ければ、動いている区間を子プロセスごと止め、まだの区間は始めない
+  （記録の `error` に「ほかの区間が失敗したため止めました／描いていません」）。構造検査に 1 区間でも落ちたら、どの区間も最終名にしない。
+  どちらも途中の `partial_*.mp4` は消し、ログは残す。run は failed で、`mv deliver join` に渡しても区間が無いので止まる。
+
+**実制作との比較**（縦の Shorts 2 本。どちらも 6 区間で、実制作の区切りと同じ）:
+- 実制作の並列描画の台本を今の環境で動かした区間と、`mv fx legacy --cuts`（同じ Python・`-I -X utf8`）の区間は、6 区間ともバイト単位で同じだった。
+- 実制作が描いた当時の区間とは、今の環境では違った（復号した絵で平均 1.5 の差）。レンダラの絵は opencv の版で変わり
+  （当時 4.14.0.94、今 5.0.0.93）、ffmpeg は同じ実行ファイルだった（imageio-ffmpeg の 2 つの版が同じ ffmpeg 7.1 を持つ）。
+  当時の版の opencv を入れた Python を `--python` に渡すと、`mv fx legacy --cuts` の区間は 2 本とも当時の区間とバイト単位で同じになり、
+  その run のフォルダを `mv deliver join`（同じ音の切り出しとフェード）に渡した元データも、実制作の記録の sha256 と同じだった
+  （63,332,051 バイトと 78,586,291 バイト）。同じバイト列を得るには、描いた時と同じライブラリの版で動かす。
+- 時間は 1 本目の 6 区間で、実制作の台本が 1.5 分、`mv fx legacy --cuts` が 110 秒（区間ごとに全コマを復号して検査する分が加わる）。
 
 ## overlay（透過レイヤーの重ね合わせ・FX-LYRIC-1）
 
