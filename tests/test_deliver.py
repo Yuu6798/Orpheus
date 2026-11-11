@@ -359,6 +359,30 @@ def test_split_never_writes_over_the_master_even_with_force(segments, tmp_path):
     assert (folder / "SONG.part00").read_bytes() == before
 
 
+def test_split_writes_through_new_temporary_files(master, tmp_path):
+    # 片は決まった名前 <名前>.partNN.tmp に書いてから置き換えていたので、同じ名前の既にあるファイルを --force なしで書き換えて消していた
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    keep = parts / "SONG_r1_master.mp4.part00.tmp"
+    keep.write_bytes(b"someone else's file")
+    result = deliver.split(master, parts, 9000, "SONG_r1_master.mp4")
+    assert keep.read_bytes() == b"someone else's file" and result["join_check"]
+    assert [p.name for p in parts.iterdir() if p.name.endswith(".tmp")] == [keep.name]       # 自分の一時ファイルは残さない
+
+
+def test_split_does_not_write_through_a_link_at_a_temporary_name(master, tmp_path):
+    # その一時ファイルの名前が元データへのリンクだと、リンクの先の元データを書き換えていた
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    before = master.read_bytes()
+    try:
+        os.symlink(master, parts / "SONG_r1_master.mp4.part00.tmp")
+    except (OSError, NotImplementedError):
+        pytest.skip("この環境ではファイルのシンボリックリンクを作れない")
+    assert deliver.split(master, parts, 9000, "SONG_r1_master.mp4")["join_check"]
+    assert master.read_bytes() == before
+
+
 def test_split_needs_a_faststart_master(master, tmp_path):
     slow = tmp_path / "slow.mp4"
     subprocess.run([media.ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-c", "copy", str(slow)], check=True)

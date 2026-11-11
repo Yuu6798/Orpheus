@@ -350,6 +350,20 @@ def top_boxes(path):
     return out
 
 
+def _write_new(path, data):
+    """data を、同じフォルダに新しく作った一時ファイル（ランダムな名前。既にあるファイルやリンクには作らない）に書いてから、
+    path へ置き換える。決まった名前（<名前>.tmp）だと、既にある同じ名前のファイルを書き換えて消したり、それが元データへの
+    リンクなら元データを書き換えたりする。path がリンクなら、リンクそのものを置き換える（リンクの先は書き換えない）。"""
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _sums_name(name):
     """片の SHA256SUMS の名前（実制作と同じく、NAME の _master より前。_master が無ければ拡張子の前）。"""
     stem = name.rsplit("_master", 1)[0] if "_master" in name else Path(name).stem
@@ -402,14 +416,12 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
         for part in parts:
             data = stream.read(part_bytes)
             target = out_dir / part
-            temporary = target.with_name(target.name + ".tmp")
-            temporary.write_bytes(data)
-            os.replace(temporary, target)
+            _write_new(target, data)
             records.append({"name": part, "bytes": len(data), "sha256": sha256(target)})
-    (out_dir / "join_master.bat").write_bytes(bat_bytes)
+    _write_new(out_dir / "join_master.bat", bat_bytes)
     sums = "".join(f"{r['sha256']}  {r['name']}\n" for r in records) + f"{digest}  {name}\n"
     sums_path = out_dir / _sums_name(name)
-    sums_path.write_bytes(sums.encode("utf-8"))
+    _write_new(sums_path, sums.encode("utf-8"))
     joined = hashlib.sha256()
     for part in parts:
         with (out_dir / part).open("rb") as stream:
