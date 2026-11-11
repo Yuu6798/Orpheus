@@ -24,7 +24,13 @@ FAKE = textwrap.dedent('''
     cfg = json.load(open(config))
     fps, width, height = cfg.get("fps", 12), cfg.get("width", 64), cfg.get("height", 36)
     print("cwd=" + os.getcwd())
+    print("utf8_mode=%d" % sys.flags.utf8_mode)
     print("phase1 start=%s end=%s" % (start, end))   # flush しない: 逐次ログは fx が PYTHONUNBUFFERED を付けて初めて読める
+    if cfg.get("trace_dir"):                          # 区間ごとの始まりと終わりの時刻（同時に動いた本数を数える）
+        open(os.path.join(cfg["trace_dir"], start + ".start"), "w").write(repr(time.time()))
+    if cfg.get("fail_start") == start:                # この区間だけすぐ失敗する
+        print("boom: segment failed", file=sys.stderr)
+        sys.exit(3)
     if cfg.get("child_pid_file"):
         child = subprocess.Popen([sys.executable, "-c", "import os, time; open(%r, 'w').write(str(os.getpid())); time.sleep(60)" % cfg["child_pid_file"]])
         open(cfg["child_pid_file"] + ".parent", "w").write(str(os.getpid()))
@@ -48,6 +54,8 @@ FAKE = textwrap.dedent('''
         proc.stdin.write(bytes((i * 11 + k) % 256 for k in range(width * height * 3)))
     proc.stdin.close()
     assert proc.wait() == 0
+    if cfg.get("trace_dir"):
+        open(os.path.join(cfg["trace_dir"], start + ".end"), "w").write(repr(time.time()))
 ''')
 
 
@@ -325,3 +333,156 @@ def test_frame_units_need_fps(work):
 
 def test_numbers_are_passed_without_float_noise():
     assert legacy._number(0) == "0.0" and legacy._number(0.1 + 0.2) == "0.3" and legacy._number(10) == "10.0"
+
+
+# ---- 区間を並べて描く（--cuts） -------------------------------------------------------------------------
+
+def cuts_cli(studio, *cuts, extra=(), out=None):
+    return run_cli("fx", "legacy", "--renderer", studio / "render_fake.py", "--config", studio / "config.json",
+                   "--fps", "12", "--units", "frames", "--cuts", *[str(c) for c in cuts], "--out", out or studio / "runs", *extra)
+
+
+def test_cuts_render_every_segment_in_one_run_and_the_folder_joins(work, tmp_path):
+    studio, config = work
+    config(fps=12, units="frames")
+    code, result, err = cuts_cli(studio, 0, 5, 12, 20, extra=("--jobs", "2"))
+    assert code == 0, err
+    run_dir = studio / "runs" / result["run_id"]
+    names = ["seg_00000_00005", "seg_00005_00012", "seg_00012_00020"]
+    assert [os.path.basename(s["file"]) for s in result["segments"]] == [n + ".mp4" for n in names]
+    assert [s["frames"] for s in result["segments"]] == [5, 7, 8] and result["frames"] == 20 and result["jobs"] == 2
+    manifest = read_json(run_dir / "manifest.json")
+    assert manifest["kind"] == "legacy" and manifest["status"] == "succeeded" and manifest["technical_pass"] is True
+    assert manifest["variants"] == {} and manifest["legacy"]["jobs"] == 2 and manifest["legacy"]["exit_code"] == 0
+    assert manifest["interval"] == {"start": 0.0, "duration": 20 / 12, "fps": 12.0, "frames": 20, "units": "frames",
+                                    "frame_range": [0, 20], "cuts": [0, 5, 12, 20]}
+    for name, item, (a, b) in zip(names, manifest["segments"], [(0, 5), (5, 12), (12, 20)]):
+        assert item["file"] == name + ".mp4" and item["log"] == name + ".log" and item["frame_range"] == [a, b]
+        assert item["argv"] == [sys.executable, str(studio / "render_fake.py"), str(studio / "config.json"), "seg", str(a), str(b),
+                                str(run_dir / f"partial_{a:05d}_{b:05d}.mp4")]
+        assert item["exit_code"] == 0 and item["error"] is None and item["technical_pass"] is True and item["frames"] == b - a
+        assert item["sha256"] == sha256(run_dir / item["file"]) and probe.decode(run_dir / item["file"], "v")["frames"] == b - a
+        log = (run_dir / item["log"]).read_text(encoding="utf-8")
+        assert log.startswith("20") and f" $ {sys.executable}" in log and f"phase1 start={a} end={b}" in log
+    assert not list(run_dir.glob("partial_*")) and not (studio / "runs" / "index.json").exists()   # キャッシュしない
+    code, joined, err = run_cli("deliver", "join", run_dir, "--out", tmp_path / "master.mp4")
+    assert code == 0, err
+    assert joined["frames"] == 20 and joined["segments"] == 3 and joined["technical_pass"] is True
+
+
+def test_cuts_run_at_most_jobs_segments_at_once(work, tmp_path):
+    studio, config = work
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    config(fps=12, units="frames", sleep=1.5, trace_dir=str(trace))
+    code, result, err = cuts_cli(studio, 0, 2, 4, 6, 8, extra=("--jobs", "2"))
+    assert code == 0, err
+    spans = [(float((trace / f"{a}.start").read_text()), float((trace / f"{a}.end").read_text())) for a in (0, 2, 4, 6)]
+    most = max(sum(1 for s, e in spans if s <= t < e) for t, _ in spans)
+    assert most == 2                                                          # 2 本ずつ（1 本ずつでも、全部同時でもない）
+
+
+def test_a_failed_segment_stops_the_others_and_leaves_no_segment_videos(work):
+    studio, config = work
+    config(fps=12, units="frames", sleep=8, fail_start="5")
+    started = time.monotonic()
+    code, result, err = cuts_cli(studio, 0, 5, 12, 20, extra=("--jobs", "2"))
+    assert code == 1 and result is None and "区間 5-12" in err and "終了コード 3" in err and "boom: segment failed" in err
+    assert time.monotonic() - started < 7                                     # 眠っている区間 0-5 を待たずに止めた
+    (run_dir,) = [d for d in (studio / "runs").iterdir() if d.is_dir()]
+    manifest = read_json(run_dir / "manifest.json")
+    assert manifest["status"] == "failed" and "区間 5-12" in manifest["error"] and manifest["legacy"]["exit_code"] == 3
+    first, failed, never = manifest["segments"]
+    assert failed["exit_code"] == 3 and "終了コード 3" in failed["error"]
+    assert first["exit_code"] is None and first["error"] == "ほかの区間が失敗したため止めました"
+    assert never["exit_code"] is None and never["error"] == "ほかの区間が失敗したため描いていません"
+    assert not list(run_dir.glob("*.mp4"))                                    # 最終名も途中の出力も残さない
+    assert (run_dir / "seg_00005_00012.log").is_file() and not (run_dir / "seg_00012_00020.log").exists()
+
+
+def test_segment_frame_counts_must_be_exact(work):
+    studio, config = work
+    config(fps=12, units="frames", extra=-1)                                  # 1 本のときは 2 コマ少ないまで通るが、区間は通さない
+    code, _, err = cuts_cli(studio, 0, 6, 12)
+    assert code == 1 and "技術検査" in err and "フレーム数が違います" in err
+    (run_dir,) = [d for d in (studio / "runs").iterdir() if d.is_dir()]
+    manifest = read_json(run_dir / "manifest.json")
+    assert manifest["status"] == "failed" and [s["technical_pass"] for s in manifest["segments"]] == [False, False]
+    assert not list(run_dir.glob("*.mp4"))
+
+
+def test_segment_names_widen_past_five_digits(work):
+    studio, config = work
+    config(fps=12, units="frames")
+    code, result, err = cuts_cli(studio, 99998, 100000, 100003)
+    assert code == 0, err
+    assert [os.path.basename(s["file"]) for s in result["segments"]] == ["seg_099998_100000.mp4", "seg_100000_100003.mp4"]
+
+
+def test_python_flags_go_between_the_interpreter_and_the_renderer(work):
+    studio, config = work
+    config(fps=12)
+    code, result, err = legacy_cli(studio, "--python-flags=-X utf8")
+    assert code == 0, err
+    manifest = read_json(studio / "runs" / result["run_id"] / "manifest.json")
+    assert manifest["legacy"]["argv"][:4] == [sys.executable, "-X", "utf8", str(studio / "render_fake.py")]
+    assert manifest["legacy"]["python_flags"] == ["-X", "utf8"]
+    assert "utf8_mode=1" in (studio / "runs" / result["run_id"] / "legacy.log").read_text(encoding="utf-8")
+    config(fps=12, units="frames")
+    code, result, err = cuts_cli(studio, 0, 3, 6, extra=("--python-flags=-X utf8",))
+    assert code == 0, err
+    manifest = read_json(studio / "runs" / result["run_id"] / "manifest.json")
+    assert all(s["argv"][1:3] == ["-X", "utf8"] for s in manifest["segments"]) and manifest["legacy"]["python_flags"] == ["-X", "utf8"]
+    assert "utf8_mode=1" in (studio / "runs" / result["run_id"] / "seg_00000_00003.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("args, message", [
+    (("--cuts", "0", "6", "--duration", "1"), "--duration"),
+    (("--cuts", "0", "6", "--start", "0"), "--start"),
+    (("--cuts", "0"), "2 つ以上"),
+    (("--cuts", "0", "6", "6"), "増えていく"),
+    (("--cuts", "6", "3"), "増えていく"),
+    (("--cuts", "0", "6", "--jobs", "0"), "--jobs"),
+    (("--cuts", "0", "6", "--python-flags= "), "--python-flags"),
+])
+def test_bad_cuts_are_reported_before_anything_runs(work, args, message):
+    studio, _ = work
+    code, _, err = run_cli("fx", "legacy", "--renderer", studio / "render_fake.py", "--config", studio / "config.json",
+                           "--fps", "12", "--units", "frames", "--out", studio / "runs", *args)
+    assert code == 1 and message in err
+    assert not (studio / "runs").exists() or not [d for d in (studio / "runs").iterdir() if d.is_dir()]
+
+
+def test_cuts_need_frame_units_and_fps_and_jobs_need_cuts(work):
+    studio, _ = work
+    base = ("fx", "legacy", "--renderer", studio / "render_fake.py", "--config", studio / "config.json", "--out", studio / "runs")
+    code, _, err = run_cli(*base, "--fps", "12", "--cuts", "0", "6")
+    assert code == 1 and "--units frames" in err
+    code, _, err = run_cli(*base, "--units", "frames", "--cuts", "0", "6")
+    assert code == 1 and "--fps" in err
+    code, _, err = run_cli(*base, "--duration", "1", "--jobs", "2")
+    assert code == 1 and "--jobs" in err
+    code, _, err = run_cli(*base)
+    assert code == 1 and "--duration" in err
+    with pytest.raises(PipelineError, match="整数"):
+        legacy.segment_ranges([0, 2.5])
+
+
+def test_a_relative_python_path_is_read_from_the_current_folder_not_the_renderers(work, tmp_path, monkeypatch):
+    studio, config = work
+    config(fps=12)
+    here = tmp_path / "here"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    relative = os.path.relpath(sys.executable, here)                          # フォルダを含む相対パス
+    assert os.path.dirname(relative)
+    code, result, err = legacy_cli(studio, "--python", relative)
+    assert code == 0, err
+    argv = read_json(studio / "runs" / result["run_id"] / "manifest.json")["legacy"]["argv"]
+    assert argv[0] == os.path.abspath(relative) and os.path.isabs(argv[0])  # リンクはたどらない（venv の python のまま）
+    config(fps=12, units="frames")
+    code, result, err = cuts_cli(studio, 0, 3, 6, extra=("--python", relative))
+    assert code == 0, err
+    segments = read_json(studio / "runs" / result["run_id"] / "manifest.json")["segments"]
+    assert all(s["argv"][0] == os.path.abspath(relative) for s in segments)
+    assert legacy._interpreter("python") == "python" and legacy._interpreter(None) == sys.executable   # 名前だけは PATH から探す
