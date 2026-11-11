@@ -128,7 +128,8 @@ uv run mv audio keys song.hits.json --spec spec.json --light lightning --base 0.
 
 打点の記録から、fx-shot の光（`lights[]`）の強さ（`intensity`）のキーを作る。もとの spec は変えず、その光の `intensity` だけを
 置き換えた spec を、もとの spec と同じフォルダに書く（既定は `<spec の名前>_keys.json`。素材の相対パスは spec のフォルダから
-読むので、ほかのフォルダには書かない）。手で打っていた稲光の明滅を、打点から作るためのもの。
+読むので、ほかのフォルダには書かない）。手で打っていた稲光の明滅を、打点から作るためのもの。`--out` は入力（spec・打点の
+記録と、spec が使う素材の base・depth・マスク・音・overlays）と同じファイルにできない（`--force` でも）。
 
 ```sh
 uv run mv audio keys audio.hits.json --spec spec.json --light lightning --base 0.12

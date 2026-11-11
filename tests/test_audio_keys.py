@@ -8,6 +8,7 @@ import math
 import wave
 
 import pytest
+from PIL import Image
 
 from fx_synth import make_project, run_cli
 from mv_pipeline.audio import keys
@@ -155,3 +156,19 @@ def test_refusals(tmp_path):
     assert code == 1 and "audio-hits/0.1" in err
     with pytest.raises(PipelineError, match="--from"):
         keys.run(hits_path, spec, "flame", source="loud")
+
+
+def test_the_spec_assets_are_never_replaced(tmp_path):
+    # --out が spec の素材（音・画像・マスク・overlays）だと、--force で素材が JSON に置き換わっていた
+    spec, hits_path = _project(tmp_path)
+    data = json.loads(spec.read_text(encoding="utf-8"))
+    data["schema_version"], data["overlays"] = fxspec.SCHEMA_VERSION, [{"image": "card.png", "start_s": 0.0, "end_s": 1.0}]
+    spec.write_text(json.dumps(data), encoding="utf-8")
+    Image.new("RGBA", (160, 90)).save(tmp_path / "card.png")
+    for name, role in (("audio.wav", "audio"), ("base.png", "base"), ("depth.png", "depth"), ("mask_subject.png", "mask:subject"),
+                       ("mask_ground.png", "mask:ground"), ("card.png", "overlays")):
+        before = (tmp_path / name).read_bytes()
+        code, _, err = run_cli("audio", "keys", hits_path, "--spec", spec, "--light", "flame", "--out", tmp_path / name, "--force")
+        assert code == 1 and f"spec の素材（{role}）と同じ" in err and (tmp_path / name).read_bytes() == before, (name, err)
+    code, result, err = run_cli("audio", "keys", hits_path, "--spec", spec, "--light", "flame")
+    assert code == 0 and result["state"] == "written", err

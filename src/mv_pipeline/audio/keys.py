@@ -13,6 +13,7 @@
   （fx はキーの間を直線で補うので、コマの時刻の値は変わらない）。
 - start（ショットの 0 秒が曲の何秒か）は、spec の audio が打点の記録と同じ音源（sha256）なら audio.offset_s。違えば --start が要る。
 出力の spec は、もとの spec と同じフォルダに置く（素材の相対パスは spec のフォルダから読むため）。既定は `<spec の名前>_keys.json`。
+入力（spec・打点の記録と、spec の素材の base・depth・マスク・音・overlays）と同じファイルには、--force でも書かない。
 光には、作り方の記録 x_audio_keys を付ける。
 """
 import bisect
@@ -140,7 +141,11 @@ def run(hits_path, spec_path, light, out=None, start=None, source="strong", min_
     out = Path(out) if out else spec_path.with_name(f"{spec_path.stem}_keys{spec_path.suffix}")
     if files.same_file(out.parent) != files.same_file(spec_path.parent):
         raise PipelineError(f"--out は spec と同じフォルダに置いてください（素材の相対パスは spec のフォルダから読むため）: {out}")
-    files.refuse_inputs(out, {files.same_file(spec_path): "spec", files.same_file(hits_path): "打点の記録"})
+    inputs = {files.same_file(spec_path): "spec", files.same_file(hits_path): "打点の記録"}
+    # spec の素材（base・depth・マスク・音・overlays）も入力。置き換えると、もとの spec も出力の spec も壊れる
+    for role, rel in [*fxspec.asset_refs(spec.data).items(), *(("overlays", entry["source"]) for entry in spec.data["overlays"])]:
+        inputs.setdefault(files.same_file(spec.resolve(rel)), f"spec の素材（{role}）")
+    files.refuse_inputs(out, inputs)
     state = files.write_json(out, patched, force, indent=2)
     return {"spec": str(out), "state": state, "estimated": True, "light": light, "from": source, "start_s": start, "fps": fps,
             "frames": frames, "keys": len(made), "peak": peak, "hits_used_s": [round(t, 3) for t in used]}
