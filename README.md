@@ -34,7 +34,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する。`--cuts` で区間を同時に描き、`mv deliver join` でつなぐ | 実験的 | [fx › legacy 接続](docs/fx.md#legacy-接続) |
 | `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
-| `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）、歌詞の行・秒の確認表、透過連番から起こす timeline、完成動画の明滅の回数（`mv gate flashes`。規格への適合は判定しない） | 実験的 | [gate](docs/gate.md) |
+| `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）、歌詞の行・秒の確認表、透過連番から起こす timeline、完成動画の明滅の回数（`mv gate flashes`。規格への適合は判定しない）、分離ボーカルの声の区間・音符・旋律の繰り返しのずれ（`mv gate voice`・`notes`・`repeat`。数字だけ） | 実験的 | [gate](docs/gate.md) |
 | `mv inspect` | 生成動画の異常候補をコマと秒で見つけ、分類し、設定画と照合して修正計画を書く | 実験的 | [inspect](docs/inspect.md) |
 | `mv sheet` | 動画や透過連番の指定時刻・出来事のコマを 1 枚に並べて見る（合否なしの閲覧用） | 実験的 | [sheet](docs/sheet.md) |
 | `mv deliver` | 描いた区間の動画を再エンコードせずにつなぎ、音を付けて元データの MP4 にする。確認用の小さい版（2 パス）と、受け渡しの片（結合の bat と SHA256SUMS つき）も作る | 実験的 | [deliver](docs/deliver.md) |
