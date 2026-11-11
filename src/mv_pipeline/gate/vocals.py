@@ -3,7 +3,7 @@
 
     mv gate voice  VOCALS [--from A] [--to B] [--threshold-db -32] [--gap-s 0.14] [--min-s 0.08] [--out FILE]
     mv gate notes  VOCALS --from A --to B [--out FILE]
-    mv gate repeat VOCALS --ref A B --search C D [--top 3] [--out FILE]
+    mv gate repeat VOCALS --ref A B --search C D [--top 3] [--include-end] [--out FILE]
 
 - voice（実制作の声の区間の台本）: 元のサンプリング周波数のまま読み、左右を平均したモノの [A, B) を、librosa の rms（窓 30 ms・
   hop 10 ms。窓の中央がそのコマの時刻）で dB にして、95 パーセンタイルを 0 dB とする。threshold を超えるコマの続きを区間にし、
@@ -16,6 +16,7 @@
   あるずらし方だけを数え、半音の差（12 半音の差は折り返す）が 1 未満のコマの割合（一致率。小数 3 桁）を出す。
   ずれ = 探す区間の頭 + ずらしたコマ × 0.01 − 基準の区間の頭（秒、2 桁）。一致率の高い順（同じなら、ずれの大きい順）。
   実制作の目安: 一致率 0.9 前後なら確度が高く、0.6 前後は補助。
+  既定は実制作の台本と同じく、探す区間の終わりにぴったり合うずらし方（最後の 1 つ）は比べない。include_end（`--include-end`）なら比べる。
 """
 import math
 from pathlib import Path
@@ -205,10 +206,14 @@ def notes(path, start, stop):
             "dips": [{"start": a, "end": b} for a, b in dips(y, start)]}
 
 
-def match(reference, candidate, ref_start, search_start):
-    """基準の音程の並びを候補の中でずらした一致率とずれ [(一致率, ずれ秒)]（実制作の台本の match と同じ。高い順）。"""
+def match(reference, candidate, ref_start, search_start, include_end=False):
+    """基準の音程の並びを候補の中でずらした一致率とずれ [(一致率, ずれ秒)]（実制作の台本の match と同じ。高い順）。
+
+    台本は、候補の終わりにぴったり合うずらし方（最後の 1 つ）を比べない（範囲の上限が 1 つ足りない）。既定はそのまま。
+    include_end なら最後の 1 つも比べる（繰り返しが候補の終わりにぴったり来るときや、候補と基準のコマの数が同じときに要る）。
+    """
     best = []
-    for shift in range(0, len(candidate) - len(reference)):
+    for shift in range(0, len(candidate) - len(reference) + (1 if include_end else 0)):
         x = candidate[shift:shift + len(reference)]
         ok = ~np.isnan(reference) & ~np.isnan(x)
         if ok.sum() < MATCH_OVERLAP * len(reference):
@@ -220,8 +225,12 @@ def match(reference, candidate, ref_start, search_start):
     return best
 
 
-def repeat(path, ref, search, top=MATCH_TOP):
-    """同じ旋律の繰り返しのずれの記録（gate-repeat/0.1）。ref・search は (始め, 終わり) の秒。"""
+def repeat(path, ref, search, top=MATCH_TOP, include_end=False):
+    """同じ旋律の繰り返しのずれの記録（gate-repeat/0.1）。ref・search は (始め, 終わり) の秒。
+
+    include_end なら、探す区間の終わりにぴったり合うずらし方も比べる（既定は実制作の台本と同じく比べない）。
+    """
+    include_end = bool(include_end)
     _, info = _soundfile(path)
     duration = info.frames / info.samplerate
     ref = _range(*ref, duration, "--ref")
@@ -232,11 +241,11 @@ def repeat(path, ref, search, top=MATCH_TOP):
         raise PipelineError("--search の区間は --ref の区間より長くしてください（基準をずらしながら比べるため）")
     reference, _ = pitch(path, *ref)
     candidate, _ = pitch(path, *search)
-    found = match(reference, candidate, ref[0], search[0])
+    found = match(reference, candidate, ref[0], search[0], include_end)
     return {"schema_version": "gate-repeat/0.1", "estimated": True, "vocals": _vocals(path, info), "ref_s": list(ref),
             "search_s": list(search),
             "settings": {"sample_rate": NOTE_RATE, "hop": NOTE_HOP, "min_overlap": MATCH_OVERLAP, "within_semitones": MATCH_SEMITONES,
-                         "octave_fold": 12},
+                         "octave_fold": 12, "include_end": include_end},
             "shifts_compared": len(found), "matches": [{"rate": rate, "offset_s": offset} for rate, offset in found[:top]]}
 
 

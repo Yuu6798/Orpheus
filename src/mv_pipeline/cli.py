@@ -263,6 +263,8 @@ def _gate_parser(commands):
     repeat.add_argument("--ref", type=float, nargs=2, required=True, metavar=("FROM", "TO"))
     repeat.add_argument("--search", type=float, nargs=2, required=True, metavar=("FROM", "TO"))
     repeat.add_argument("--top", type=int, default=3, help="how many best offsets to list (default 3)")
+    repeat.add_argument("--include-end", action="store_true",
+                        help="also compare the alignment that ends exactly at the end of --search (the production script skips it)")
     repeat.add_argument("--out", type=Path, help="also write the record (JSON) here")
     repeat.add_argument("--force", action="store_true", help="overwrite an --out whose contents differ")
 
@@ -471,7 +473,7 @@ def gate_command(args):
         elif args.gate_command == "notes":
             record = vocals.notes(args.vocals, args.start, args.stop)
         else:
-            record = vocals.repeat(args.vocals, tuple(args.ref), tuple(args.search), args.top)
+            record = vocals.repeat(args.vocals, tuple(args.ref), tuple(args.search), args.top, args.include_end)
         return vocals.summary(record, vocals.save(record, args.out, args.vocals, args.force), args.out)
     from .gate import checks
     report, out = checks.run(args.config, args.out)

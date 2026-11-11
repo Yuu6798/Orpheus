@@ -153,7 +153,7 @@ uv run mv gate flashes final.mp4 [--out DIR] [--delta 0.10] [--max-per-s 3]
 ```sh
 uv run mv gate voice vocals.flac [--from 0 --to 60] [--threshold-db -32] [--gap-s 0.14] [--min-s 0.08]
 uv run mv gate notes vocals.flac --from 21.0 --to 26.5
-uv run mv gate repeat vocals.flac --ref 66.0 72.0 --search 125 140
+uv run mv gate repeat vocals.flac --ref 66.0 72.0 --search 125 140 [--top 3] [--include-end]
 ```
 
 - 結果は stdout の JSON（記録の全部）。`--out` を付けたときだけファイルにも書く（ボーカルと同じファイルには書かない。中身の違う
@@ -179,6 +179,11 @@ uv run mv gate repeat vocals.flac --ref 66.0 72.0 --search 125 140
     ずれ = 探す範囲の頭 + ずらした量 − 基準の範囲の頭（秒、2 桁）。
   - `matches`: 一致率の高い順に `--top` 件（同じ一致率なら、ずれの大きい順）。実制作の目安では、一致率 0.9 前後なら確度が高く、
     0.6 前後は補助。
+  - 既定では、実制作の台本と同じく、探す範囲の終わりにぴったり合うずらし方（最後の 1 つ）は比べない。
+    - 繰り返しが探す範囲の終わりにぴったり来ると、正解より 10 ms 前が 1 位になる。合成の旋律では、正解の 5.37 秒（一致率 1.0）の
+      代わりに 5.36 秒（0.987）が出た。
+    - 探す範囲が基準より 10 ms 足らず長いだけだと、比べるずらし方が 1 つも無い（`shifts_compared` が 0 で、`matches` が空）。
+    - `--include-end` を付けると、最後の 1 つも比べる。付けないときは、探す範囲を繰り返しの前後に余裕を持たせて取る。
 - **合成の声で確かめたこと**（2026-11-11）:
   - 実制作の台本をそのまま写した関数と、44100 Hz・48000 Hz の合成の旋律（倍音のある音で G4・A4・B4・C5・B4・A4 を 0.25 秒ずつ、
     2 回）で、区間・音符・立ち上がり・谷・繰り返しのずれと一致率が値まで同じ。

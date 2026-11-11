@@ -158,6 +158,25 @@ def test_notes_find_the_sung_pitches_and_the_repeat_offset(sung):
     assert found["matches"][0] == {"rate": 1.0, "offset_s": round(STARTS[1] - STARTS[0], 2)}
 
 
+def test_include_end_also_compares_the_alignment_that_ends_at_the_end_of_search(sung):
+    # 台本は、探す区間の終わりにぴったり合うずらし方（最後の 1 つ）を比べない。既定はそのまま（台本と同じ値）で、
+    # --include-end なら比べる。2 回目の旋律（6.37〜7.87 秒）がちょうど探す区間の終わりに来る場合と、コマの数が同じ場合
+    end = round(STARTS[1] + len(PHRASE) * NOTE_S, 2)
+    reference, _ = vocals.pitch(sung, 1.0, 2.5)
+    candidate, _ = vocals.pitch(sung, 4.0, end)
+    plain = vocals.match(reference, candidate, 1.0, 4.0)
+    assert plain[:3] == _production_match(str(sung), 1.0, 2.5, 4.0, end)
+    assert plain[0][1] == 5.36 and plain[0][0] < 1.0                     # 正解の 5.37 秒が漏れ、10 ms 前が 1 位になる
+    full = vocals.match(reference, candidate, 1.0, 4.0, include_end=True)
+    assert full[0] == (1.0, 5.37) and len(full) == len(plain) + 1
+    tight, _ = vocals.pitch(sung, STARTS[1], end + 0.005)                 # 基準より 5 ms 長いだけで、コマの数は同じ
+    assert len(tight) == len(reference) and vocals.match(reference, tight, 1.0, STARTS[1]) == []
+    assert vocals.match(reference, tight, 1.0, STARTS[1], include_end=True) == [(1.0, 5.37)]
+    code, result, err = run_cli("gate", "repeat", sung, "--ref", "1.0", "2.5", "--search", "4", end, "--top", "1", "--include-end")
+    assert code == 0 and result["matches"] == [{"rate": 1.0, "offset_s": 5.37}] and result["settings"]["include_end"] is True, err
+    assert vocals.repeat(sung, (1.0, 2.5), (4.0, end))["settings"]["include_end"] is False
+
+
 def test_voice_heads_come_about_10_ms_early_on_the_demo_voice(tmp_path):
     # mv gate demo の声の代役（立ち上がり 30 ms）。窓 30 ms の中央の時刻で数えるので、区間の頭は正解の約 10 ms 前
     code, _, err = run_cli("gate", "demo", tmp_path / "demo")
