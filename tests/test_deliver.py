@@ -210,3 +210,220 @@ def test_fx_fingerprint_covers_the_shared_writer(monkeypatch, tmp_path):
         return data + b"#" if self.name == "encode.py" else data
     monkeypatch.setattr(fx.Path, "read_bytes", changed)
     assert fx.fingerprint() != before
+
+
+# ---- 確認用の小さい版（review-copy） -------------------------------------------------------------------
+
+def ref_two_pass(master, out, vb, work, threads=None):
+    """実制作の仕上げの 2 パス（引数をそのまま写したもの。threads を渡すと -c:v libx264 の後に -threads を足す）。"""
+    def run(args):
+        subprocess.run([media.ffmpeg(), '-y', '-hide_banner', '-loglevel', 'error'] + args, check=True)
+    plog = str(work / '2pass_ref')
+    extra = ['-threads', str(threads)] if threads is not None else []
+    run(['-i', str(master), '-c:v', 'libx264', *extra, '-preset', 'slow', '-b:v', str(vb), '-maxrate', '11M', '-bufsize', '22M',
+         '-pix_fmt', 'yuv420p', '-pass', '1', '-passlogfile', plog, '-an', '-f', 'null', os.devnull])
+    run(['-i', str(master), '-c:v', 'libx264', *extra, '-preset', 'slow', '-b:v', str(vb), '-maxrate', '11M', '-bufsize', '22M',
+         '-pix_fmt', 'yuv420p', '-pass', '2', '-passlogfile', plog, '-c:a', 'copy', '-movflags', '+faststart', str(out)])
+    return out
+
+
+@pytest.fixture
+def master(segments, tmp_path):
+    out = tmp_path / "master.mp4"
+    deliver.join([segments], out, tone(tmp_path / "song.wav"))
+    return out
+
+
+def test_review_copy_under_the_limit_is_the_master_itself(master, tmp_path):
+    result = deliver.review_copy(master, tmp_path / "review.mp4")
+    assert (tmp_path / "review.mp4").read_bytes() == master.read_bytes()
+    assert "そのまま" in result["method"] and result["ssim_vs_master"] == 1.0 and result["repeatable"] and result["technical_pass"]
+    record = read_json(tmp_path / "review.review.json")
+    assert record["schema_version"] == "deliver-review/0.1" and record["commands"] == [] and record["settings"]["video_bitrate"] is None
+
+
+def test_two_pass_follows_the_private_commands_and_one_thread_repeats(master, tmp_path):
+    first = deliver.review_copy(master, tmp_path / "a.mp4", limit=1, target=60_000)
+    again = deliver.review_copy(master, tmp_path / "b.mp4", limit=1, target=60_000)
+    assert first["sha256"] == again["sha256"] and first["repeatable"]                    # 1 スレッドは毎回同じバイト列
+    vb = int((60_000 * 8 / (18 / FPS) - 192e3) * 0.985)
+    assert first["method"] == f"2 パス {vb / 1e6:.2f} Mbps（maxrate 11M）" and 0.5 < first["ssim_vs_master"] <= 1.0
+    work = tmp_path / "ref"
+    work.mkdir()
+    ref = ref_two_pass(master, work / "ref.mp4", vb, work, threads=1)
+    assert sha256(ref) == first["sha256"]
+    record = read_json(tmp_path / "a.review.json")
+    assert record["settings"]["video_bitrate"] == vb and record["commands"][0][-3:] == ["-f", "null", os.devnull]
+    assert probe.decode(tmp_path / "a.mp4", "v")["frames"] == 18 and probe.inspect(tmp_path / "a.mp4")["audio"] is not None
+    auto = deliver.review_copy(master, tmp_path / "c.mp4", limit=1, target=60_000, threads=0)
+    assert not auto["repeatable"] and "-threads" not in read_json(tmp_path / "c.review.json")["commands"][0]
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"out": "x.mov"}, ".mp4"),
+    ({"threads": -1}, "--threads"),
+    ({"target": 0}, "0 より大きく"),
+    ({"limit": 1, "target": 1000}, "ビットレート"),
+])
+def test_review_copy_stops_with_the_cause(master, tmp_path, kwargs, message):
+    out = tmp_path / kwargs.pop("out", "r.mp4")
+    with pytest.raises(PipelineError, match=message):
+        deliver.review_copy(master, out, **kwargs)
+    with pytest.raises(PipelineError, match="同じファイル"):
+        deliver.review_copy(master, master)
+
+
+# ---- 受け渡しの片（split） --------------------------------------------------------------------------
+
+REF_BAT = '''@echo off
+rem {title} の元データ（{nbytes:,} バイト）を片から結合して SHA-256 を照合します（このフォルダで実行）
+cd /d "%~dp0"
+for %%F in ({parts}) do if not exist "%%F" (echo 見つからない片があります: %%F & pause & exit /b 1)
+copy /y /b {plus} {name} >nul
+if errorlevel 1 (echo 片を結合できませんでした & pause & exit /b 1)
+certutil -hashfile {name} SHA256
+echo 期待する SHA-256: {sha}
+certutil -hashfile {name} SHA256 | findstr /i /c:"{sha}" >nul
+if errorlevel 1 (echo 【NG】一致しません。片がそろっているか確かめてください) else (echo 【OK】一致しました。{name} が元の動画です)
+pause
+'''
+
+
+def ref_split(master, odir, name, title, part):
+    """実制作の受け渡しの道具の片・bat・SHA256SUMS（書き方をそのまま写したもの。bat の実行は除く）。"""
+    os.makedirs(odir, exist_ok=True)
+    parts = []
+    with open(master, 'rb') as f:
+        for i, b in enumerate(iter(lambda: f.read(part), b'')):
+            pn = f'{name}.part{i:02d}'
+            open(os.path.join(odir, pn), 'wb').write(b)
+            parts.append(pn)
+    nbytes, msha = os.path.getsize(master), sha256(master)
+    with open(os.path.join(odir, 'join_master.bat'), 'w', encoding='cp932', newline='\r\n') as f:
+        f.write(REF_BAT.format(title=title, nbytes=nbytes, parts=' '.join(parts), plus=' + '.join(parts), name=name, sha=msha))
+    sums_p = os.path.join(odir, name.rsplit('_master', 1)[0] + '_parts_SHA256SUMS.txt')
+    psha = {p: sha256(os.path.join(odir, p)) for p in parts}
+    open(sums_p, 'w', encoding='utf-8', newline='\n').write(''.join(f'{h}  {p}\n' for p, h in psha.items()) + f'{msha}  {name}\n')
+    return parts
+
+
+def test_split_writes_the_same_parts_bat_and_sums_as_the_private_tool(master, tmp_path):
+    result = deliver.split(master, tmp_path / "parts", 9000, "SONG_r1_master.mp4", "テスト Shorts r1")
+    ref = ref_split(master, tmp_path / "ref", "SONG_r1_master.mp4", "テスト Shorts r1", 9000)
+    assert [os.path.basename(p) for p in result["parts"]] == ref and len(ref) >= 2
+    for name in ref + ["join_master.bat", "SONG_r1_parts_SHA256SUMS.txt"]:
+        assert (tmp_path / "parts" / name).read_bytes() == (tmp_path / "ref" / name).read_bytes(), name
+    assert b"".join((tmp_path / "parts" / p).read_bytes() for p in ref) == master.read_bytes() and result["join_check"]
+    bat = (tmp_path / "parts" / "join_master.bat").read_bytes()
+    assert b"\r\n" in bat and b"\n" not in bat.replace(b"\r\n", b"") and "テスト Shorts r1".encode("cp932") in bat
+    record = read_json(tmp_path / "parts.split.json")
+    assert record["schema_version"] == "deliver-split/0.1" and record["master"]["top_boxes"][:2] == ["ftyp", "moov"]
+    with pytest.raises(PipelineError, match="--force"):
+        deliver.split(master, tmp_path / "parts", 9000, "SONG_r1_master.mp4")
+    assert deliver.split(master, tmp_path / "parts", 9000, "SONG_r1_master.mp4", force=True)["join_check"]
+    assert deliver.split(master, tmp_path / "plain")["sums"].endswith("master_parts_SHA256SUMS.txt")     # _master の無い名前
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"name": "has space.mp4"}, "ASCII"),
+    ({"name": "曲.mp4"}, "ASCII"),
+    ({"title": "A & B"}, "使えない字"),
+    ({"title": "☀️"}, "CP932"),
+    ({"part_bytes": 0}, "1 以上"),
+])
+def test_split_refuses_names_that_break_the_bat(master, tmp_path, kwargs, message):
+    with pytest.raises(PipelineError, match=message):
+        deliver.split(master, tmp_path / "parts", **kwargs)
+
+
+def test_split_into_dot_keeps_the_record_beside_the_parts_folder(master, tmp_path, monkeypatch):
+    # "." の名前は空で、隣も "." なので、記録が名前の無い ".split.json" として片のフォルダの中にできていた
+    # （記録には元データのパスが入るので、片と一緒に渡ってしまう）
+    parts = tmp_path / "song_parts"
+    parts.mkdir()
+    monkeypatch.chdir(parts)
+    result = deliver.split(master, ".", 9000, "SONG_r1_master.mp4")
+    assert result["record"] == str(tmp_path / "song_parts.split.json") and (tmp_path / "song_parts.split.json").is_file()
+    assert not any(p.suffix == ".json" for p in parts.iterdir())
+
+
+def test_split_never_writes_over_the_master_even_with_force(segments, tmp_path):
+    # 元データの名前が片の名前と同じだと、片を書く置き換えで元データが消える
+    folder = tmp_path / "upload"
+    folder.mkdir()
+    deliver.join([segments], tmp_path / "song.mp4", tone(tmp_path / "song.wav"))
+    before = (tmp_path / "song.mp4").read_bytes()
+    (folder / "SONG.part00").write_bytes(before)
+    with pytest.raises(PipelineError, match="元データ SONG.part00 と同じ"):
+        deliver.split(folder / "SONG.part00", folder, 9000, "SONG", force=True)
+    assert (folder / "SONG.part00").read_bytes() == before
+
+
+def test_split_writes_through_new_temporary_files(master, tmp_path):
+    # 片は決まった名前 <名前>.partNN.tmp に書いてから置き換えていたので、同じ名前の既にあるファイルを --force なしで書き換えて消していた
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    keep = parts / "SONG_r1_master.mp4.part00.tmp"
+    keep.write_bytes(b"someone else's file")
+    result = deliver.split(master, parts, 9000, "SONG_r1_master.mp4")
+    assert keep.read_bytes() == b"someone else's file" and result["join_check"]
+    assert [p.name for p in parts.iterdir() if p.name.endswith(".tmp")] == [keep.name]       # 自分の一時ファイルは残さない
+
+
+def test_split_does_not_write_through_a_link_at_a_temporary_name(master, tmp_path):
+    # その一時ファイルの名前が元データへのリンクだと、リンクの先の元データを書き換えていた
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    before = master.read_bytes()
+    try:
+        os.symlink(master, parts / "SONG_r1_master.mp4.part00.tmp")
+    except (OSError, NotImplementedError):
+        pytest.skip("この環境ではファイルのシンボリックリンクを作れない")
+    assert deliver.split(master, parts, 9000, "SONG_r1_master.mp4")["join_check"]
+    assert master.read_bytes() == before
+
+
+def test_records_never_replace_an_input(segments, master, tmp_path):
+    # 記録（<名前>.deliver.json・<名前>.review.json・<フォルダの名前>.split.json）が入力と同じファイルだと、入力が JSON で置き換わっていた
+    one = sorted(segments.glob("seg_*.mp4"))[0]
+    clip = tmp_path / "m.deliver.json"
+    clip.write_bytes(one.read_bytes())
+    with pytest.raises(PipelineError, match="記録 m.deliver.json"):
+        deliver.join([clip], tmp_path / "m.mp4")
+    assert clip.read_bytes() == one.read_bytes() and not (tmp_path / "m.mp4").exists()
+    copy = tmp_path / "r.review.json"
+    copy.write_bytes(master.read_bytes())
+    with pytest.raises(PipelineError, match="記録 r.review.json"):
+        deliver.review_copy(copy, tmp_path / "r.mp4")
+    assert copy.read_bytes() == master.read_bytes() and not (tmp_path / "r.mp4").exists()
+    named_like_record = tmp_path / "parts.split.json"
+    named_like_record.write_bytes(master.read_bytes())
+    with pytest.raises(PipelineError, match="記録の名前が元データ"):
+        deliver.split(named_like_record, tmp_path / "parts", 9000, "SONG_r1_master.mp4")
+    assert named_like_record.read_bytes() == master.read_bytes() and not (tmp_path / "parts").exists()
+
+
+def test_split_refuses_a_join_script_longer_than_cmd_reads(master, tmp_path):
+    # bat は片の名前を 1 行の for と copy に並べる。片が多いとその行が cmd の上限 8,191 字を超え、受け取った人が元に戻せなかった
+    part = master.stat().st_size // 400 + 1                     # 約 400 本（1 行が 1 万字ほど）
+    with pytest.raises(PipelineError, match="8,191"):
+        deliver.split(master, tmp_path / "parts", part, "SONG_r1_master.mp4")
+    assert not (tmp_path / "parts").exists()
+    result = deliver.split(master, tmp_path / "ok", master.stat().st_size // 100 + 1, "SONG_r1_master.mp4")     # 約 100 本は書ける
+    bat = (tmp_path / "ok" / "join_master.bat").read_bytes().decode("cp932")
+    assert result["join_check"] and max(len(line) for line in bat.split("\r\n")) <= deliver.CMD_LINE_LIMIT
+
+
+def test_split_needs_a_faststart_master(master, tmp_path):
+    slow = tmp_path / "slow.mp4"
+    subprocess.run([media.ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-c", "copy", str(slow)], check=True)
+    assert deliver.top_boxes(slow).index("mdat") < deliver.top_boxes(slow).index("moov")
+    with pytest.raises(PipelineError, match="faststart"):
+        deliver.split(slow, tmp_path / "parts")
+
+
+def test_cli_review_copy_and_split(master, tmp_path):
+    code, result, err = run_cli("deliver", "review-copy", master, "--out", tmp_path / "r.mp4")
+    assert code == 0 and result["technical_pass"], err
+    code, result, err = run_cli("deliver", "split", master, "--out", tmp_path / "parts", "--part-bytes", "8000", "--title", "試し")
+    assert code == 0 and result["join_check"] and len(result["parts"]) >= 2, err
