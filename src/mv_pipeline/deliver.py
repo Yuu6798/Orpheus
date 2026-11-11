@@ -33,6 +33,7 @@ split（受け渡しの片。実制作の受け渡しの道具と同じ形）:
 - 元データを確かめる（moov が mdat より前の faststart、映像の流れ）。--part-bytes（25,000,000）ごとに <NAME>.partNN へ切る。
 - join_master.bat（CP932・CRLF）: copy /b で片をつなぎ、certutil の SHA-256 を照合して【OK】／【NG】を出す。--title は bat の
   見出しの行に入る（既定は NAME）。NAME は ASCII の英数字と ._- だけ（bat の文字コードと区切りに依らないように）。
+  bat の行が cmd の上限（8,191 字）を超える片の数になるときは、何も書く前に止める。
 - <NAME の _master より前>_parts_SHA256SUMS.txt（片と元データの sha256）。
 - 片を順につないだ sha256 が元データと同じかを、その場で確かめる（bat は実行しない）。記録は DIR の隣の <DIR の名前>.split.json
   （DIR を "." で渡しても、絶対パスにしてから名前と隣を決める）。片・bat・SHA256SUMS が元データと同じファイルになるなら、--force でも書かない。
@@ -56,6 +57,7 @@ SPLIT_SCHEMA = "deliver-split/0.1"
 FADE_IN_S, FADE_OUT_S = 0.02, 0.25          # 実制作の仕上げと fx の書き出しの既定
 REVIEW_LIMIT, REVIEW_TARGET = 28_000_000, 27_000_000      # 確認用: これ未満ならそのまま / 2 パスの目標（バイト）
 PART_BYTES = 25_000_000
+CMD_LINE_LIMIT = 8191                     # Windows の cmd が 1 行に読める字数（bat の行にも掛かる）
 _SEGMENT = re.compile(r"seg_(\d+)_(\d+)\.mp4", re.IGNORECASE)
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
 _TITLE_BAD = set('&|<>^%"\r\n')
@@ -405,6 +407,10 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
     parts = [f"{name}.part{i:0{width}d}" for i in range(count)]
     digest = sha256(master)
     bat = BAT.format(title=title, nbytes=total, parts=" ".join(parts), plus=" + ".join(parts), name=name, sha=digest)
+    longest = max(len(line) for line in bat.splitlines())
+    if longest > CMD_LINE_LIMIT:            # 片の名前を 1 行の for と copy に並べるので、片が多いと cmd が読めない行になる
+        raise PipelineError(f"結合の bat の行が {longest:,} 字になり、Windows の cmd の上限 {CMD_LINE_LIMIT:,} 字を超えます（片 {count} 本）。"
+                            "--part-bytes を大きくするか、--name を短くしてください")
     bat_bytes = bat.replace("\n", "\r\n").encode("cp932")
     targets = [out_dir / p for p in parts] + [out_dir / "join_master.bat", out_dir / _sums_name(name)]
     record_path = folder.parent / f"{folder.name}.split.json"

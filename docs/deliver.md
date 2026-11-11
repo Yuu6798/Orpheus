@@ -62,6 +62,8 @@ uv run mv deliver split render_r3/song_master.mp4 --out upload/master_parts --ti
   名前は ASCII の英数字と `. _ -` だけ（bat の文字コードと区切りに左右されないように）。
 - `join_master.bat`（CP932・CRLF）: `copy /b` で片をつなぎ、`certutil` の SHA-256 を照合して【OK】／【NG】を出す。
   `--title` は bat の見出しの行に入る（既定は名前）。`& | < > ^ % "` と改行、CP932 で書けない字は使えない。
+  bat は片の名前を 1 行の `for` と `copy` に並べるので、その行が Windows の cmd の上限（8,191 字）を超える片の数になるときは、
+  何も書く前に止める（25,000,000 バイトの片で 18 字の名前なら、およそ 280 本・7GB まで）。`--part-bytes` を大きくするか、名前を短くする。
 - `<名前の _master より前>_parts_SHA256SUMS.txt`: 片ごとと元データの sha256（`sha256sum -c` で確かめられる形）。
   名前に `_master` が無ければ、拡張子の前の名前を使う。
 - 片を順につないだ sha256 が元データと同じかを、その場で確かめる（bat は実行しない）。

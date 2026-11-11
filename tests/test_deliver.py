@@ -403,6 +403,17 @@ def test_records_never_replace_an_input(segments, master, tmp_path):
     assert named_like_record.read_bytes() == master.read_bytes() and not (tmp_path / "parts").exists()
 
 
+def test_split_refuses_a_join_script_longer_than_cmd_reads(master, tmp_path):
+    # bat は片の名前を 1 行の for と copy に並べる。片が多いとその行が cmd の上限 8,191 字を超え、受け取った人が元に戻せなかった
+    part = master.stat().st_size // 400 + 1                     # 約 400 本（1 行が 1 万字ほど）
+    with pytest.raises(PipelineError, match="8,191"):
+        deliver.split(master, tmp_path / "parts", part, "SONG_r1_master.mp4")
+    assert not (tmp_path / "parts").exists()
+    result = deliver.split(master, tmp_path / "ok", master.stat().st_size // 100 + 1, "SONG_r1_master.mp4")     # 約 100 本は書ける
+    bat = (tmp_path / "ok" / "join_master.bat").read_bytes().decode("cp932")
+    assert result["join_check"] and max(len(line) for line in bat.split("\r\n")) <= deliver.CMD_LINE_LIMIT
+
+
 def test_split_needs_a_faststart_master(master, tmp_path):
     slow = tmp_path / "slow.mp4"
     subprocess.run([media.ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(master), "-c", "copy", str(slow)], check=True)
