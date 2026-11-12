@@ -4,6 +4,7 @@
 - contracts/ の入出力契約を無断変更しない。
 - 推定を実測扱いしない。合成素材のテストと実曲の評価を区別する。
 - 歌詞付き MV / 音楽に合わせるダンス編集は `mv workflow plan` で用途と必要工程を確認する。制作後は同じ入力の `mv workflow check` を実行し、未実施・未確認を完了扱いにしない。意図した省略は理由付きで記録し、検査の失敗や作品採用と混同しない（`docs/workflow.md`、`examples/workflow/`）。
+- fx / dance に無い描き方を自前のスクリプトで書く前に `docs/external-renderer.md` を読む（既にある部品の表と色の罠。書き出しは `mv_pipeline.encode.write_video`）。
 - 制作を採点器開発で止めない。
 - 依頼のない送信・公開をしない。素材・鍵・モデル・動画をGitに入れない。
 - Pythonの検証は `uv run pytest`、描画コードは `pnpm typecheck`。
