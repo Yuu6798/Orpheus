@@ -12,7 +12,7 @@
 ## 検証・依存
 
 - 変更は PR 前に `uv run pytest` / `pnpm typecheck` / `pnpm test` を通す。fx のテストは `uv sync --locked --extra analysis --extra fx` の環境が前提（fx extra が無いと cv2 を使うテストは黙って skip されて緑になる）。描画に触れたら `mv demo → render → verify` も、fx に触れたら `mv fx demo → fx render`（`technical_pass` を確認）も実行する。CI も同じ 3 点 + 合成素材の実描画 + fx の smoke + `pip-audit` を回す。
-- fx / dance に無い描き方を自前のスクリプトで書く前に `docs/external-renderer.md` を読む（既にある部品の表と、色の罠。書き出しは `mv_pipeline.encode.write_video` を使い、ffmpeg の引数を自分で書かない）。2026-11-10 と 2026-11-11 の 2 回、読まずに書いて同じ色の罠を踏んだ。
+- fx / dance に無い描き方を自前のスクリプトで書く前に `docs/external-renderer.md` を読む（既にある部品の表と、色の罠。書き出しは `mv_pipeline.encode.write_video` を使い、ffmpeg の引数を自分で書かない）。2026-11-10 と 2026-11-11 の 2 回、自前の書き出しで同じ色の罠を踏んだ（2 回目は、このページがあったのに読んでいなかった）。
 - 依存は `uv.lock` / `pnpm-lock.yaml` で固定し、直接依存は exact pin。依存を変えたら lock も同じ PR で更新する。
 - uv は 0.13.5 以上（GHSA-hq85-5cpj-mr62。`pyproject.toml` の `required-version` と CI の `UV_VERSION` を揃える）。
 - GitHub Actions は commit SHA 固定＋版コメント。更新は Dependabot（cooldown 7 日）に任せる。
