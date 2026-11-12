@@ -122,6 +122,14 @@ uv run mv workflow restore projects/song-a/workflow.json beats
 
 省略できるのは、未完了の `beats` と `lyrics` の工程。省略理由は計画と結果に残り、検査の成功へ変換されない。既に観測した失敗も省略理由だけでは合格にならない。`restore` はその工程を再び完了条件に戻す。`accepted` は常に別の判断で、工程検査から自動で true にしない。
 
+### 自前の描画で作った制作は `lyric-mv` の工程に載らない
+
+リポジトリの外で自前の描画スクリプトを使って作った制作は、いまの `lyric-mv` の工程に載らない。2026-11-12、完成していた制作（自前の描画・外部のツールの歌詞の連番・手書きの ffmpeg）に、制作のあとで `mv workflow plan --purpose lyric-mv` と `mv workflow check` を掛けると、全体は `incomplete`・終了コード 1、必要な 7 工程（`inputs`・`beats`・`lyrics`・`direction`・`assets`・`render`・`verification`）はすべて `pending` だった。検査はプロジェクトのフォルダの中だけを見るので、外で描いた動画・外で推定した歌詞の時刻・外の拍の格子を登録する口が無い。`workflow omit` は未完了の `beats` と `lyrics` を「意図して使わない」と記録するもので、「外で済ませた」とは違う。
+
+- いまの扱い: `incomplete` の結果をそのまま報告し、外で行ったこと・確かめていないことは言葉で添える。`workflow omit` で埋めない（上の規則は「省略できるのは、未完了の `beats` と `lyrics` の工程」で、意図して使わない工程のためのもの）。
+- これは既知の足りない点で、機能を足すと決めたものではない（判断はユーザー。`.claude/memory/STATUS.md` の WORKFLOW-EXT-1）。
+- 事例は [external-renderer › 事例（2026-11-11）](external-renderer.md#事例2026-11-11)。
+
 ## 5. 検品（mv inspect）の記録をつなぐ
 
 `mv inspect`（`docs/inspect.md`）は独立した検品のコマンドで、既定の工程には入らない（前からの計画と結果はそのまま）。検品をしたかを制作の記録に残すときは、計画で検品の行を足すか、確認のときに検品の報告を渡す。

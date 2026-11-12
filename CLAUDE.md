@@ -22,6 +22,8 @@ uv run model3d run projects/model3d-demo/recipe_generate.json   # 設定画 → 
 
 Windows でスマート アプリ コントロールがオンの PC は、uv が入れる署名なしの Python が止められる。.venv を新しく作るときだけ、AppData の外に置いた署名つき Python を `--python` で渡す（手順は docs/dependencies.md の 2026-10-30 節）。できた .venv では上の uv のコマンドがそのまま動く（pnpm は未確認）。
 
+クラウドのコンテナなどで uv が 0.13.5 未満なら、`pip install -U "uv>=0.13.5"` で入れ直してから始める（システムの Python が断るときは `--user --break-system-packages` を足す。2026-11-12 にクラウドのコンテナで確認）。古い uv を理由に、リポジトリの道具（`mv workflow`・`mv overlay`・`mv audio`・`mv gate` など）を使わずに進めない。
+
 ## Session Memory（引き継ぎ）
 
 - セッション開始時に `.claude/memory/_index.md` と `.claude/memory/STATUS.md` を読み、直近の日付ファイルで詳細を確かめる。
