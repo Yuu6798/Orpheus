@@ -6,7 +6,7 @@
 from pathlib import Path
 
 from ..io import ToolError, read_json
-from . import StepResult, register, require
+from . import StepResult, number, register, require
 from .blender_ops import blender_addons
 from .motion_ops import _blender, _bone_prefix, _timeout
 
@@ -58,4 +58,91 @@ def motion_rig(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
                    "mapped": report.get("mapped"), "renamed": report.get("renamed"), "unmapped": sorted(report.get("unmapped") or {}),
                    "removed_scenes": report.get("removed_scenes")}
+    return StepResult(observations=[observation])
+
+
+APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_apply_motion.py"
+APPLY_PARAMETERS = {"blender", "addons", "blender_extensions", "fps", "armature", "timeout"}
+
+
+def _check(parameters, allowed, outputs, required, operation):
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    missing = [name for name in required if name not in outputs]
+    if missing:
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+    armature = parameters.get("armature", "")
+    if not isinstance(armature, str):
+        raise ToolError(f"armature はアーマチュアの名前（文字列）にしてください: {armature!r}")
+    return armature
+
+
+@register("vrm.apply_motion", inputs=("character", "motion", "bone_map"), outputs=("blend", "report"), cacheable=False,
+          summary="作業コピー（vrm.motion_rig）で付けた動き（motion の .blend。motion.retarget などの出力）を、元の VRM のキャラの "
+                  ".blend（character）へ戻す（Blender の中で）。骨の名前は bone_map の逆で元へ戻し、キャラに無い骨の動きがあれば止まる。"
+                  "コマの範囲は動きのキーの範囲、fps は motion の .blend のシーン（fps で上書き可）。VRM の設定と材質はキャラのまま")
+def apply_motion(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    require(inputs, ("character", "motion", "bone_map"), "vrm.apply_motion")
+    armature = _check(parameters, APPLY_PARAMETERS, outputs, ("blend", "report"), "vrm.apply_motion")
+    fps = None if parameters.get("fps") is None else number(parameters, "fps", minimum=0, exclusive=True)
+    blender = _blender(parameters, context, "vrm.apply_motion")
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    args = ["--character", inputs["character"], "--motion", inputs["motion"], "--bone-map", inputs["bone_map"],
+            "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    if fps is not None:
+        args += ["--fps", repr(float(fps))]
+    if armature:
+        args += ["--armature", armature]
+    record = launcher.run_blender(blender, APPLY_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "vrm_apply_motion", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
+                   "curves": report.get("curves"), "curves_renamed": report.get("curves_renamed"), "frames": report.get("frames"),
+                   "fps": report.get("fps")}
+    return StepResult(observations=[observation])
+
+
+BAKE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_bake_springs.py"
+BAKE_PARAMETERS = {"blender", "addons", "blender_extensions", "settle_s", "rate", "no_spring", "armature", "timeout"}
+
+
+@register("vrm.bake_springs", inputs=("blend", "overrides"), outputs=("blend", "report"), cacheable=False,
+          summary="動きを付けた VRM のキャラ（blend）の揺れもの（VRM 1.0 のばね）を、VRM Add-on の計算を 1/rate 秒（既定 1/60）刻みで"
+                  "進めて、コマごとの骨の回転のキーに焼く（Blender の中で）。最初のコマで settle_s 秒（既定 2）落ち着かせる。"
+                  "overrides（JSON）で硬さ・重力・当たり判定をこの .blend の中だけ上書きし、no_spring に挙げた文字を名前に含む揺れものは"
+                  "動かさない。元のファイルは変えない")
+def bake_springs(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher, vrm_bake_springs
+    require(inputs, ("blend",), "vrm.bake_springs")
+    armature = _check(parameters, BAKE_PARAMETERS, outputs, ("blend", "report"), "vrm.bake_springs")
+    settle = number(parameters, "settle_s", 2.0, minimum=0)
+    rate = number(parameters, "rate", 60.0, minimum=0, exclusive=True)
+    no_spring = _names(parameters, "no_spring")
+    if "overrides" in inputs:
+        try:
+            vrm_bake_springs.check_overrides(read_json(inputs["overrides"]))
+        except ValueError as error:
+            raise ToolError(f"vrm.bake_springs の overrides: {error}") from error
+    blender = _blender(parameters, context, "vrm.bake_springs")
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    # 揺れものの計算を読むアドオン（挙げたもののうち、名前の最後が vrm のもの）
+    module = next((name for name in addons if name.rsplit(".", 1)[-1] == "vrm"), VRM_ADDON)
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--settle", repr(float(settle)), "--rate", repr(float(rate)), "--addon-module", module]
+    if "overrides" in inputs:
+        args += ["--overrides", inputs["overrides"]]
+    if no_spring:
+        args += ["--no-spring", ",".join(no_spring)]
+    if armature:
+        args += ["--armature", armature]
+    record = launcher.run_blender(blender, BAKE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "vrm_bake_springs", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
+                   "frames": report.get("frames"), "joints": report.get("joints"), "still_joints": report.get("still_joints"),
+                   "steps": report.get("steps"), "overridden": sorted(report.get("overridden") or {})}
     return StepResult(observations=[observation])
