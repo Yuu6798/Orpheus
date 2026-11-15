@@ -112,11 +112,14 @@ def main(argv=None):
         except ValueError as error:
             raise SystemExit(str(error)) from error
 
-    # motion の .blend のシーンの fps と、points の何コマ目かの印を先に読む
+    # motion の .blend のシーンの fps と、points の何コマ目かの印と、骨の回転の持ち方を先に読む
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.motion))
     source = bpy.context.scene
     motion_fps = source.render.fps / source.render.fps_base
     points_frames = list(source["model3d_points_frames"]) if "model3d_points_frames" in source else None
+    source_armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE"]
+    # motion.retarget はファイルの最初のアーマチュアを動かし、骨をクォータニオンの回転にする
+    modes = {bone.name: bone.rotation_mode for bone in source_armatures[0].pose.bones} if source_armatures else {}
 
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.character))
     scene = bpy.context.scene
@@ -148,6 +151,22 @@ def main(argv=None):
         if extra is not action:
             bpy.data.actions.remove(extra)
 
+    # キャラにもとからある動き（アクション・NLA）は外す（motion.retarget と同じ。残すと新しい動きに混ざる）。
+    # ドライバーはリグの仕組みなので残す
+    cleared = None
+    if armature.animation_data is not None:
+        old = armature.animation_data
+        cleared = {"action": old.action.name if old.action else None, "nla_tracks": len(old.nla_tracks)}
+        old.action = None
+        for track in list(old.nla_tracks):
+            old.nla_tracks.remove(track)
+    # 骨の回転の持ち方を動きの側にそろえる（クォータニオンのキーは、オイラーや軸角の骨では使われない）
+    changed_modes = 0
+    for name, mode in modes.items():
+        bone = armature.pose.bones.get(inverse.get(name, name))
+        if bone is not None and bone.rotation_mode != mode:
+            bone.rotation_mode = mode
+            changed_modes += 1
     animation = armature.animation_data_create()
     animation.action = action
     if getattr(action, "slots", None) and len(action.slots):
@@ -173,7 +192,8 @@ def main(argv=None):
     report = {"schema_version": "model3d-vrm-apply-motion/0.1", "blender": bpy.app.version_string, "armature": armature.name,
               "action": action.name, "curves": len(fcurves_of(action)), "curves_renamed": renamed, "frames": [first, last],
               "fps": scene.render.fps / scene.render.fps_base, "motion_fps": motion_fps,
-              "points_frames": len(points_frames) if points_frames is not None else None}
+              "points_frames": len(points_frames) if points_frames is not None else None,
+              "cleared_animation": cleared, "rotation_modes_changed": changed_modes}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
