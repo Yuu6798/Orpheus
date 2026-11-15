@@ -408,10 +408,12 @@ def test_check_vrm_fails_on_what_vrm_1_requires():
     document["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["chest"] = {"node": 99}
     document["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["neck"] = {"node": 0}
     document["extensions"]["VRMC_springBone"]["springs"][0]["joints"].append({"node": -1})
+    document["extensions"]["VRMC_springBone"]["springs"][0]["colliderGroups"] = [3]
+    document["extensions"]["VRMC_springBone"]["colliderGroups"][0]["colliders"] = [0, 7]
     report = vrm.inspect(_glb(document))
     text = " / ".join(report["failures"])
     assert report["pass"] is False and report["missing_human_bones"] == ["leftHand"]
-    for part in ("specVersion", "authors", "licenseUrl", "leftHand", "chest", "neck", "hair"):
+    for part in ("specVersion", "authors", "licenseUrl", "leftHand", "chest", "neck", "hair", "当たりの組 0", "colliderGroups"):
         assert part in text, part
     assert vrm.inspect(_glb({"asset": {"version": "2.0"}}))["failures"] == ["VRMC_vrm（VRM 1.0 の拡張）がありません"]
     with pytest.raises(ToolError, match="GLB"):
@@ -494,6 +496,13 @@ def test_vrm_export_writes_the_vrm_and_checks_it(tmp_path):
     assert json.loads(Path(artifacts["check"]).read_text(encoding="utf-8"))["pass"] is True
     observation = result["steps"]["export"]["observations"][0]
     assert observation["check_pass"] is True and observation["human_bones"] == 15 and observation["textures"] == 1
+    # メタも JPEG も挙げなければ、台本にはどちらも渡さない
+    plain = {**step, "id": "plain", "inputs": {"blend": "$inputs.asset"}, "parameters": {"blender": str(blender)}}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm-export",
+                                           "inputs": {"asset": {"path": "asset.blend"}}, "steps": [plain]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    argv = json.loads(Path(result["steps"]["plain"]["artifacts"]["report"]).read_text(encoding="utf-8"))["argv"]
+    assert result["status"] == "succeeded" and not {"--meta", "--jpeg-quality", "--textures"} & set(argv)
     # 書き出した VRM が検査に通らなければ needs_review（strict なら失敗）
     (tmp_path / "made.vrm").write_bytes(_glb(_vrm_document(meta={})))
     assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["status"] == "needs_review"

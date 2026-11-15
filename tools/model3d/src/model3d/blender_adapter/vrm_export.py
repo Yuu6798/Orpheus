@@ -44,6 +44,12 @@ def texture_name(image_name, taken):
     return name
 
 
+def alpha_mode(material):
+    """材質の透過の扱い（VRM の MToon の alpha_mode。OPAQUE・MASK・BLEND）。MToon の設定が無い材質は透過ありとみなす。"""
+    mtoon = getattr(getattr(material, "vrm_addon_extension", None), "mtoon1", None)
+    return getattr(mtoon, "alpha_mode", None) or "UNKNOWN"
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -73,6 +79,7 @@ def main(argv=None):
         bone.location = (0, 0, 0)
         bone.rotation_quaternion = (1, 0, 0, 0)
         bone.rotation_euler = (0, 0, 0)
+        bone.rotation_axis_angle = (0, 0, 1, 0)
         bone.scale = (1, 1, 1)
     bpy.context.view_layer.update()
     report = {"schema_version": "model3d-vrm-export/0.1", "blender": bpy.app.version_string, "armature": armature.name}
@@ -89,10 +96,17 @@ def main(argv=None):
     if a.jpeg_quality > 0:
         folder = os.path.abspath(a.textures)
         os.makedirs(folder, exist_ok=True)
-        used = {node.image for material in bpy.data.materials if material.node_tree
-                for node in material.node_tree.nodes if node.type == "TEX_IMAGE" and node.image and node.image.size[0] > 0}
+        users = {}
+        for material in bpy.data.materials:
+            if material.node_tree:
+                for node in material.node_tree.nodes:
+                    if node.type == "TEX_IMAGE" and node.image and node.image.size[0] > 0:
+                        users.setdefault(node.image, []).append(material)
         converted, taken = [], set()
-        for image in sorted(used, key=lambda item: item.name):
+        for image in sorted(users, key=lambda item: item.name):
+            if image.channels == 4 and any(alpha_mode(material) != "OPAQUE" for material in users[image]):
+                # 透過を使う材質の絵（JPEG は透過を持たない）。変えて書き出しはするが、報告に残す（工程が要確認にする）
+                report.setdefault("alpha_dropped", []).append(image.name)
             path = os.path.join(folder, texture_name(image.name, taken))
             image.file_format = "JPEG"
             image.save(filepath=path, quality=a.jpeg_quality)

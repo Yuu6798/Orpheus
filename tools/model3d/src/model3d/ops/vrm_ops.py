@@ -180,12 +180,16 @@ def export(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
                    "vrm_bytes": report.get("vrm_bytes"), "meta_copied": report.get("meta_copied"),
                    "textures": len(report.get("textures") or []), "check_pass": checked["pass"],
-                   "human_bones": checked["human_bones"], "springs": len(checked["springs"])}
-    if checked["pass"]:
+                   "human_bones": checked["human_bones"], "springs": len(checked["springs"]),
+                   "alpha_dropped": report.get("alpha_dropped", [])}
+    # 透過を使う材質の絵を JPEG にしたもの（透過が消える）は、検査の不合格と同じく要確認にする
+    problems = [f"VRM の検査: {f}" for f in checked["failures"]]
+    problems += [f"透過を使う材質の絵を JPEG にしました（透過が消える）: {name}" for name in observation["alpha_dropped"]]
+    if not problems:
         return StepResult(observations=[observation])
     if parameters.get("strict"):
-        raise ToolError("vrm.export: 書き出した VRM の検査が不合格です: " + "; ".join(checked["failures"]))
-    return StepResult(observations=[observation], unresolved=[f"VRM の検査: {f}" for f in checked["failures"]], review=True)
+        raise ToolError("vrm.export: " + "; ".join(problems))
+    return StepResult(observations=[observation], unresolved=problems, review=True)
 
 
 @register("check.vrm", inputs=("vrm",), outputs=("report",),

@@ -78,6 +78,11 @@ def inspect(data, where="VRM"):
         for number, collider in enumerate(colliders):
             if not _node((collider or {}).get("node"), nodes):
                 failures.append(f"当たり判定 {number} の node が範囲の外です: {(collider or {}).get('node')!r}")
+        groups = springs.get("colliderGroups") or []
+        for number, group in enumerate(groups):          # 当たりの組が指す当たり判定の番号
+            bad = [index for index in (group or {}).get("colliders") or [] if not _node(index, len(colliders))]
+            if bad:
+                failures.append(f"当たりの組 {number} の colliders が範囲の外です: {bad}")
         for spring in springs.get("springs") or []:
             joints = spring.get("joints") or []
             report["springs"].append(spring.get("name"))
@@ -85,6 +90,9 @@ def inspect(data, where="VRM"):
             bad = [joint.get("node") for joint in joints if not _node((joint or {}).get("node"), nodes)]
             if bad:
                 failures.append(f"揺れもの {spring.get('name')!r} の関節の node が範囲の外です: {bad}")
+            bad = [index for index in spring.get("colliderGroups") or [] if not _node(index, len(groups))]
+            if bad:
+                failures.append(f"揺れもの {spring.get('name')!r} の colliderGroups が範囲の外です: {bad}")
     report["bin_bytes"] = len(blob) if blob is not None else None
     report["failures"] = failures
     report["pass"] = not failures
