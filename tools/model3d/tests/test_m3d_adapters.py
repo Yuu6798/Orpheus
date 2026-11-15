@@ -195,8 +195,28 @@ def test_blender_launcher_passes_the_extensions_folder_and_records_the_addons(tm
     with pytest.raises(ToolError, match="アドオンを有効にできませんでした: bl_ext.user_default.missing"):
         launcher.run_blender(wrapper, script, args=[tmp_path / "x.json"], addons=["bl_ext.user_default.missing"],
                              extensions=extensions, log=tmp_path / "missing.log")
-    with pytest.raises(ToolError, match="factory_startup"):           # 利用者の設定で起動してアドオンを足すことはしない
-        launcher.run_blender(wrapper, script, args=[tmp_path / "y.json"], addons=["bl_ext.user_default.vrm"], factory_startup=False)
+    for options in ({"factory_startup": False}, {"background": False}):   # 利用者の設定・画面のある起動ではアドオンを足さない
+        with pytest.raises(ToolError, match="background と factory_startup"):
+            launcher.run_blender(wrapper, script, args=[tmp_path / "y.json"], addons=["bl_ext.user_default.vrm"], **options)
+
+
+def test_blender_addons_reads_the_parameter_before_the_tool_and_checks_both(tmp_path):
+    from model3d.ops.blender_ops import blender_addons
+    extensions = _extensions(tmp_path)
+
+    class Context:
+        tools, recipe_dir = {"blender_extensions": str(extensions)}, tmp_path
+
+    assert blender_addons({}, Context(), default=("bl_ext.user_default.vrm",)) == (("bl_ext.user_default.vrm",), extensions)
+    assert blender_addons({"blender_extensions": "ext"}, Context())[1] == (tmp_path / "ext").resolve()     # recipe からの相対
+    for bad in ("", 3):                                                    # 空や文字列でない値は、--tool に落とさず止める
+        with pytest.raises(ToolError, match="blender_extensions"):
+            blender_addons({"blender_extensions": bad}, Context())
+    Context.tools = {"blender_extensions": "ext"}                          # --tool の値は絶対パスに限る
+    with pytest.raises(ToolError, match="絶対パス"):
+        blender_addons({}, Context())
+    Context.tools = {}
+    assert blender_addons({"addons": None}, Context()) == ((), None)
 
 
 def test_run_script_operation_takes_addons_and_the_extensions_folder(tmp_path):

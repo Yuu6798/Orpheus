@@ -7,17 +7,18 @@ from . import StepResult, register
 
 
 def blender_addons(parameters, context, default=()):
-    """工程のアドオンの指定。addons（モジュール名の並び。省くと default）と、拡張機能のフォルダ（パラメーター blender_extensions か
-    `model3d run --tool blender_extensions=DIR`。recipe からの相対パスも可）。(addons, extensions) を返す。"""
+    """工程のアドオンの指定。addons（モジュール名の並び。省くと default）と、拡張機能のフォルダ（パラメーター blender_extensions。
+    recipe からの相対パスも可。無ければ `model3d run --tool blender_extensions=DIR` の絶対パス）。(addons, extensions) を返す。"""
     addons = launcher.check_addons(parameters.get("addons", default))
-    extensions = parameters.get("blender_extensions") or (getattr(context, "tools", None) or {}).get("blender_extensions")
-    if extensions is not None:
+    if "blender_extensions" in parameters:
+        extensions = parameters["blender_extensions"]
         if not isinstance(extensions, str) or not extensions:
             raise ToolError(f"blender_extensions は拡張機能のフォルダのパス（文字列）にしてください: {extensions!r}")
         recipe_dir = getattr(context, "recipe_dir", None)
-        extensions = resolve_path(recipe_dir, extensions) if recipe_dir is not None else extensions
-        extensions = launcher.check_extensions(extensions)
-    return addons, extensions
+        return addons, launcher.check_extensions(resolve_path(recipe_dir, extensions) if recipe_dir is not None else extensions)
+    extensions = (getattr(context, "tools", None) or {}).get("blender_extensions")
+    # --tool の値は、--tool blender=PATH と同じく存在する絶対パスに限る（recipe のフォルダからは読まない）
+    return addons, launcher.check_extensions(extensions) if extensions is not None else None
 
 
 @register("blender.run_script", cacheable=False,

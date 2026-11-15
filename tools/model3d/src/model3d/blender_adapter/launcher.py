@@ -24,7 +24,8 @@ def addon_code(addons):
 
     `--addons` の起動引数でも有効にはなるが、利用者の設定の一覧に載らないので、読み込みの後の処理（load_post）で
     アドオンの設定を探すもの（VRM Add-on 4.10.5）がエラーを出す。default_set=True で一覧に載せる。
-    --factory-startup の起動では、利用者の設定のファイルは保存されない（Blender 5.2.4 で確かめた。2026-11-16）。
+    裏の起動（--background --factory-startup）では、利用者の設定のファイルは保存されない（Blender 5.2.4 で確かめた。2026-11-16）。
+    それ以外の起動でアドオンを挙げることは run_blender が止める。
     """
     return ("import addon_utils\n"
             f"modules = {list(addons)!r}\n"
@@ -149,9 +150,10 @@ def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cw
     if blend is not None and not Path(blend).is_file():
         raise ToolError(f".blend が見つかりません: {blend}")
     addons, extensions = check_addons(addons), check_extensions(extensions)
-    if addons and not factory_startup:
-        # 前置きはアドオンを利用者の設定の一覧に載せる。利用者の設定で起動すると、それが利用者の設定に残りうる
-        raise ToolError("アドオンを挙げるときは factory_startup のままにしてください（利用者の設定を書き換えないため）")
+    if addons and not (factory_startup and background):
+        # 前置きはアドオンを利用者の設定の一覧に載せる。利用者の設定で起動すると、それが利用者の設定に残りうる。
+        # 設定のファイルを書かないことは、裏の起動（--background --factory-startup）でだけ確かめた
+        raise ToolError("アドオンを挙げるときは background と factory_startup のままにしてください（利用者の設定を書き換えないため）")
     argv = argv_for(blender, script, blend, args, background, factory_startup, addons)
     began = time.monotonic()
     environment = {**os.environ, "PYTHONUNBUFFERED": "1"}
@@ -173,7 +175,8 @@ def run_blender(blender, script, blend=None, args=(), log=None, timeout=None, cw
     if extensions is not None:
         record["extensions"] = str(extensions)
     if completed.returncode and addons and "model3d: add-on not enabled:" in completed.stdout + completed.stderr:
-        missing = re.search(r"model3d: add-on not enabled: ([^\r\n']*)", completed.stdout + completed.stderr)
+        # 例外の行だけを読む（Blender は失敗した前置きの式も書き出し、そこにも同じ文がある）
+        missing = re.search(r"RuntimeError: model3d: add-on not enabled: ([^\r\n']+)", completed.stdout + completed.stderr)
         where = f"拡張機能のフォルダ {extensions} とモジュール名" if extensions is not None else "拡張機能のフォルダ（extensions）とモジュール名"
         raise ToolError(f"Blender でアドオンを有効にできませんでした: {missing.group(1) if missing else ', '.join(addons)}"
                         f"（{where}を確かめてください{f'。ログ: {log}' if log else ''}）")
