@@ -194,6 +194,10 @@ def main(argv=None):
         if scene is not keep[0]:
             removed.append(scene.name)
             bpy.data.scenes.remove(scene)
+    # ほかのアーマチュアは作業コピーに持ち込まない（motion.retarget ほかの工程は、ファイルの最初のアーマチュアを使う）
+    other_armatures = sorted(obj.name for obj in bpy.data.objects if obj.type == "ARMATURE" and obj != armature)
+    for name in other_armatures:
+        bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
 
     skip = {}
     if skip_meshes:
@@ -217,6 +221,7 @@ def main(argv=None):
     report = {"schema_version": "model3d-vrm-motion-rig/0.1", "blender": bpy.app.version_string, "armature": armature.name,
               "bones": len(bones), "mapped": len(mapping), "renamed": renamed, "unmapped": unmapped,
               "vertex_groups_renamed": groups, "kept_scene": keep[0].name, "removed_scenes": removed,
+              "removed_armatures": other_armatures,
               "meshes": [[obj.name, len(obj.data.vertices)] for obj in bpy.data.objects if obj.type == "MESH"],
               "hips_parent": hips.parent.name if hips.parent else None, "skip": skip}
     for path, value in ((a.bone_map, data), (a.report, report)):
