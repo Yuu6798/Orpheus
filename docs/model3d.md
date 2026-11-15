@@ -30,7 +30,8 @@ uv run model3d --version
 ```
 
 依存は numpy・jsonschema・Pillow（ルートと同じ版）。Blender（r6 の再現では 4.5.15 を固定）・生成器・リギングは別プロセスで、
-`--tool blender=PATH` や設定 JSON の argv で渡す。
+`--tool blender=PATH` や設定 JSON の argv で渡す。VRM の道筋は Blender 5.2 と VRM Add-on が基準
+（[Blender 5.2 と VRM Add-on](#blender-52-と-vrm-add-on)）。
 
 **開発者へ**: `tools/model3d/tests` のテストは `--extra model3d` で同期していない環境では `importorskip` で**黙って skip され、緑のまま終わる**。
 model3d に触れたら必ず `--extra model3d` の環境で `uv run pytest` を回す（CI は extra あり）。
@@ -643,6 +644,7 @@ uv run model3d frames compare 左のフォルダ 右のフォルダ --view view.
   - `--python-exit-code 1`: `--python` より前に置く。
   
   起動の argv・版の記録・観測の整形は、代役のプロセスでテストした。
+  アドオン（VRM Add-on など）が要るときは `--addon` と `--extensions`（下の「Blender 5.2 と VRM Add-on」）。
   
   2026-11-06 に、Windows の Blender 4.5.15 で次を確かめた（実測）。
   - スクリプトの実行（終了コード 0）、例外での終了コード 1、UTF-8 のログ（日本語も）、版の記録。
@@ -664,6 +666,47 @@ uv run model3d frames compare 左のフォルダ 右のフォルダ --view view.
   この CLI は保存済みの解析結果を変換する入口であり、REA 本体の解析実行や制作工程の自動回復は行わない。
 - 2026-11-03 の再構成の実験一式（Blockbench の原本・再構成コード・REA の生出力）は**リポジトリに入れない**。Blockbench 由来の部分が
   GPL-3.0-or-later で、このリポジトリの LICENSE（Apache-2.0、2026-11-06 に決定）での配布と両立しないため。JSCAD（MIT）の原本出力の合成部品だけをテストに取り込んだ。
+
+## Blender 5.2 と VRM Add-on
+
+2026-11-16 に、ユウが 3D の道筋の基準を **VRM と Blender 5.2** に決めた（これまでの制作で、VRM と Blender 5.2 で作った 2 作目の
+VRM のダンスの成果物がいちばんよかったため）。キャラは VRM（人型の骨の割り当て・MToon の材質・揺れもの）で持ち、Blender 5.2 と
+VRM Add-on で動かす。今ある Blender の工程は 4.5.15 で確かめたもので、5.2 で確かめたものは下に書いたものだけ。
+
+**アドオンを有効にして起動する**:
+- CLI は `model3d blender observe|script` の `--addon MODULE`（くり返し可）と `--extensions DIR`。
+- 工程は `blender.run_script` の `addons`（モジュール名の並び）と `blender_extensions`（recipe からの相対パスも可。
+  `model3d run --tool blender_extensions=DIR` でも渡せる）。
+- 利用者の設定は読まない（`--factory-startup` のまま）。.blend を読む前に、前置き（`--python-expr`）で挙げたアドオンだけを有効にする。
+  有効にならなければ、.blend を読む前に終了コード 1 で止まり、工程は失敗する。
+- 拡張機能（Blender 4.2 以降）のモジュール名は `bl_ext.<リポジトリ>.<id>`。手元のフォルダに入れた VRM Add-on は `bl_ext.user_default.vrm`
+  （`<フォルダ>/user_default/vrm/`）。フォルダは環境変数 `BLENDER_USER_EXTENSIONS` で Blender に渡す。
+- 記録（工程の観測と CLI の出力）に、アドオンのモジュール名・版・ライセンス（拡張機能の `blender_manifest.toml` から読む）と、
+  拡張機能のフォルダが残る。
+
+**確かめたこと**（Windows の Blender 5.2.4 LTS と VRM Add-on 4.10.5、2026-11-16。実測）:
+- 前置きで VRM Add-on が有効になり、VRM のキャラの .blend（骨 131 本）で人型の骨の割り当て（`vrm_addon_extension.vrm1.humanoid`）が
+  読めた。同じ .blend の観測（`model3d blender observe`。骨とウェイトのあるキャラを本物の Blender で観測したのは初めて）は 242 件の事実で、
+  Observation3D の契約に通った。
+- 無いアドオンを挙げると、.blend を読む前に終了コード 1 で止まった。
+- 利用者の設定のファイル（userpref.blend）は書かれなかった。拡張機能のフォルダには、Blender が `.cache/compat.dat` を書く。
+  共有の設定のフォルダを指さず、写しを指す。
+- Blender の起動引数 `--addons` でも有効にはなるが、利用者の設定の一覧に載らないので、VRM Add-on の読み込みの後の処理が
+  「No add-on preferences for bl_ext.user_default.vrm」のエラーを出した。前置きで有効にするのはそのため。
+- `motion.retarget` を、2 作目の VRM のダンスと同じ入力（720 コマ・骨 131 本。骨の名前を Mixamo 式に付け替えた作業コピー）と
+  同じ設定で、Blender 5.2.4 で回した。Blender 4.5.15 で作った採用版と、pose の npz の骨の行列（全コマ・全部の骨）と基本の姿勢
+  （rest・tail）はバイト単位で同じ、直したコマ（27）と検査の要約も同じだった。world と frames は値が同じで型だけが違う
+  （5.2.4 では float32 と int64。4.5.15 では float64 と int32。Blender に入っている numpy の版の違い）。アドオンは要らない。
+  かかった時間は約 9 分（同時に別の検査を回していたので、4.5.15 と速さは比べていない）。
+
+**版の違い**（Blender 5.2.4 で確かめた）:
+- EEVEE の名前は `BLENDER_EEVEE`（4.2〜4.5 は `BLENDER_EEVEE_NEXT`。5.2.4 で `BLENDER_EEVEE_NEXT` を入れると TypeError）。
+- 合成は `scene.compositing_node_group`（`scene.node_tree` は無い）。
+- アクションの F カーブは層（`layers` → `strips` → `channelbags`）からだけ読める（`Action.fcurves` は無い）。
+- `render.stage` は、5.x では舞台を組む前に止まる（EEVEE の名前と合成の API が変わったため。描き方は 4.5.15 でだけ確かめた）。
+
+**ライセンス**: VRM Add-on 4.10.5 のライセンス表記は MIT と GPL-3.0-or-later の両方（`blender_manifest.toml`）。model3d は外の道具として
+Blender の中で呼ぶだけで、アドオンのコードは写さない（このリポジトリは Apache-2.0）。アドオン本体もリポジトリに入れない。
 
 ## 推定した 3D の点を整える
 
@@ -852,6 +895,8 @@ uv run model3d frames compare 左のフォルダ 右のフォルダ --view view.
     - 直したコマ: 34
     - 検査の要約: 同じ
   - 101 コマで約 96 秒。
+- 2026-11-16 に、別のキャラ（VRM の骨を付け替えた作業コピー）の 720 コマを Blender 5.2.4 で移し、4.5.15 の結果と骨の行列が
+  バイト単位で同じだった（[Blender 5.2 と VRM Add-on](#blender-52-と-vrm-add-on)）。
 
 ## 前腕のねじれを分け直す
 
@@ -1691,7 +1736,7 @@ Blender での30秒描画と最終品質の全編出力は、まだこの経路�
 
 - **既存制作 worker の接続は限定的**。元 GLB／分割 GLB／FBX、採用済みのウェイト・法線・動作・補正を再利用する。
   `dance-recipe` は確認済みの配置と CLI 契約に対応し、任意の作品へ自動適応するものではない。素材・preset 自体は Git に入れない。
-- **汎用 Blender 観測は、既定のシーンでだけ確かめた。生成器と別メッシュへのリギングは未検証**。既存 worker の再実行とは区別する。
+- **汎用 Blender 観測は、既定のシーン（4.5.15）と VRM のキャラの .blend（5.2.4。アドオンを有効にして）でだけ確かめた。生成器と別メッシュへのリギングは未検証**。既存 worker の再実行とは区別する。
 - **別メッシュへの転送（CorrespondenceMap の処理）・揺れのベイクと再開・30 秒の動作検査・GLB 書き出しは未実装**。部品のラベルを、同じ座標の別のメッシュへ面の重心の近さで移すこと（`mesh.transfer_parts`）だけはできる。
 - 面領域は部品の名前と頂点構成に結び付けて持ち、工程の `select` で対象の面だけを加工できるが、**部位の自動分割（髪・顔・衣装を分ける処理）は無い**。
   部品の区別は名前だけで、同じ名前・同じ頂点構成の別のメッシュ（取り違えたファイルなど）は見分けられない。

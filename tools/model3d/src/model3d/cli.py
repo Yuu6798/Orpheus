@@ -187,6 +187,10 @@ def parser():
     script.add_argument("--blend", type=Path)
     script.add_argument("--timeout", type=float)
     script.add_argument("args", nargs="*")
+    for command in (observe, script):
+        command.add_argument("--addon", action="append", default=[], metavar="MODULE",
+                             help="add-on to enable before the .blend is read (repeatable, e.g. bl_ext.user_default.vrm)")
+        command.add_argument("--extensions", type=Path, help="extensions folder for BLENDER_USER_EXTENSIONS (Blender writes .cache there)")
 
     frames = commands.add_parser("frames", help="compare two folders of rendered frames (f<T>.png) or two frames lists")
     frames_sub = frames.add_subparsers(dest="frames_command", required=True)
@@ -433,16 +437,17 @@ def command(args):
         return {"out": str(args.out.resolve()), "evidence": count, "limitations": len(data.get("limitations", []))}
     if args.command == "blender":
         from .blender_adapter import launcher
+        addons = {"addons": tuple(args.addon), "extensions": args.extensions.resolve() if args.extensions else None}
         if args.blender_command == "observe":
             extra = ["--out", str(args.out.resolve()), "--units", args.units]
             if args.objects:
                 extra += ["--objects", *args.objects]
             record = launcher.run_blender(args.blender.resolve(), launcher.OBSERVE_SCRIPT, args.blend.resolve(), extra,
-                                          log=args.out.resolve().with_suffix(".log"), timeout=args.timeout)
+                                          log=args.out.resolve().with_suffix(".log"), timeout=args.timeout, **addons)
             contracts.load("observation", args.out)
             return {"out": str(args.out.resolve()), **record}
         return launcher.run_blender(args.blender.resolve(), args.script.resolve(), args.blend.resolve() if args.blend else None,
-                                    args.args, timeout=args.timeout)
+                                    args.args, timeout=args.timeout, **addons)
     if args.command == "frames":
         from . import checks
         sides = {side: checks.frame_files(path) for side, path in (("left", args.left), ("right", args.right))}

@@ -1,5 +1,6 @@
 """別プロセスの接続、Blender の argv と観測の整形、REA の根拠。Blender 本体は無いので起動はしない。"""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -80,6 +81,164 @@ def test_blender_argv_order_and_validation(tmp_path):
     with pytest.raises(ToolError, match="スクリプト"):
         launcher.run_blender(fake, tmp_path / "missing.py")
     assert launcher.blender_version(tmp_path / "nope") is None
+
+
+def test_blender_argv_enables_addons_before_the_blend_is_read():
+    """アドオンは .blend より前の前置きで有効にする（読み込みの後の処理が動く前に）。挙げないときの argv は前と同じ。"""
+    argv = launcher.argv_for("/opt/blender", "/x/s.py", "/x/scene.blend", ["--out", "o.json"], addons=("bl_ext.user_default.vrm",))
+    boot = launcher.addon_bootstrap(("bl_ext.user_default.vrm",))
+    assert argv == ["/opt/blender", "--background", "--factory-startup", "--python-exit-code", "1", "--python-expr", boot,
+                    "/x/scene.blend", "--python", "/x/s.py", "--", "--out", "o.json"]
+    assert "\n" not in boot and "\r" not in boot          # Windows の .cmd を通しても命令が切れない 1 行
+    assert launcher.argv_for("/opt/blender", "/x/s.py", "/x/scene.blend", addons=()) == launcher.argv_for("/opt/blender", "/x/s.py",
+                                                                                                         "/x/scene.blend")
+
+
+def _run_bootstrap(addons, enabled):
+    """前置きを、addon_utils の代役（enabled に入っている名前だけ有効になる）で実行する。"""
+    import types
+    calls = []
+    fake = types.ModuleType("addon_utils")
+    fake.enable = lambda name, default_set, persistent: calls.append((name, default_set, persistent))
+    fake.check = lambda name: (name in enabled, name in enabled)
+    saved = sys.modules.get("addon_utils")
+    sys.modules["addon_utils"] = fake
+    try:
+        exec(launcher.addon_bootstrap(addons), {})
+    finally:
+        if saved is None:
+            del sys.modules["addon_utils"]
+        else:
+            sys.modules["addon_utils"] = saved
+    return calls
+
+
+def test_addon_bootstrap_enables_into_the_preferences_and_stops_when_one_is_missing():
+    calls = _run_bootstrap(("bl_ext.user_default.vrm", "rigify"), {"bl_ext.user_default.vrm", "rigify"})
+    assert calls == [("bl_ext.user_default.vrm", True, True), ("rigify", True, True)]     # default_set=True で設定の一覧に載せる
+    with pytest.raises(RuntimeError, match="model3d: add-on not enabled: bl_ext.user_default.nothere"):
+        _run_bootstrap(("bl_ext.user_default.vrm", "bl_ext.user_default.nothere"), {"bl_ext.user_default.vrm"})
+
+
+@pytest.mark.parametrize("addons, message", [
+    ("bl_ext.user_default.vrm", "並び"),
+    (["bl_ext.user_default.vrm", "bl_ext.user_default.vrm"], "重なって"),
+    (["bl_ext.user default.vrm"], "モジュール名"),
+    (["vrm;import os"], "モジュール名"),
+    ([3], "モジュール名"),
+])
+def test_addon_names_are_checked(addons, message):
+    with pytest.raises(ToolError, match=message):
+        launcher.check_addons(addons)
+
+
+def test_extensions_folder_must_be_an_existing_absolute_folder(tmp_path):
+    assert launcher.check_extensions(None) is None and launcher.check_extensions(tmp_path) == tmp_path
+    for bad in ("relative/ext", tmp_path / "missing"):
+        with pytest.raises(ToolError, match="拡張機能のフォルダ"):
+            launcher.check_extensions(bad)
+
+
+def test_addon_record_reads_the_extension_manifest(tmp_path):
+    folder = tmp_path / "user_default" / "vrm"
+    folder.mkdir(parents=True)
+    (folder / "blender_manifest.toml").write_text('schema_version = "1.0.0"\nid = "vrm"\nversion = "4.10.5"\n'
+                                                  'license = ["SPDX:MIT", "SPDX:GPL-3.0-or-later"]\n', encoding="utf-8")
+    assert launcher.addon_record("bl_ext.user_default.vrm", tmp_path) == {
+        "module": "bl_ext.user_default.vrm", "version": "4.10.5", "license": ["SPDX:MIT", "SPDX:GPL-3.0-or-later"]}
+    assert launcher.addon_record("bl_ext.user_default.vrm") == {"module": "bl_ext.user_default.vrm", "version": None}
+    assert launcher.addon_record("bl_ext.blender_org.vrm", tmp_path)["version"] is None        # フォルダに無い
+    assert launcher.addon_record("rigify", tmp_path)["version"] is None                         # 古い形式のアドオン
+    (folder / "blender_manifest.toml").write_text("version = [broken", encoding="utf-8")
+    assert launcher.addon_record("bl_ext.user_default.vrm", tmp_path)["version"] is None
+
+
+# 代役の Blender: 受け取った argv と BLENDER_USER_EXTENSIONS を -- の後ろの最初のファイルに書く。前置きに
+# bl_ext.user_default.missing があれば、本物の前置きと同じ文で失敗する
+ADDON_STAND_IN = r'''
+import json, os, sys
+if "--version" in sys.argv:
+    print("Blender 5.2.4 LTS")
+    sys.exit(0)
+expr = sys.argv[sys.argv.index("--python-expr") + 1] if "--python-expr" in sys.argv else ""
+if "bl_ext.user_default.missing" in expr:
+    print("RuntimeError: model3d: add-on not enabled: bl_ext.user_default.missing", file=sys.stderr)
+    sys.exit(1)
+out = sys.argv[sys.argv.index("--") + 1]
+json.dump({"argv": sys.argv[1:], "extensions": os.environ.get("BLENDER_USER_EXTENSIONS")}, open(out, "w", encoding="utf-8"))
+'''
+
+
+def _extensions(tmp_path):
+    folder = tmp_path / "ext" / "user_default" / "vrm"
+    folder.mkdir(parents=True)
+    (folder / "blender_manifest.toml").write_text('version = "4.10.5"\nlicense = ["SPDX:MIT"]\n', encoding="utf-8")
+    return tmp_path / "ext"
+
+
+def test_blender_launcher_passes_the_extensions_folder_and_records_the_addons(tmp_path):
+    wrapper = stand_in_executable(tmp_path, "blender", ADDON_STAND_IN)
+    script = tmp_path / "s.py"
+    script.write_text("", encoding="utf-8")
+    extensions = _extensions(tmp_path)
+    record = launcher.run_blender(wrapper, script, args=[tmp_path / "seen.json"], addons=["bl_ext.user_default.vrm"],
+                                  extensions=extensions, log=tmp_path / "b.log")
+    seen = json.loads((tmp_path / "seen.json").read_text(encoding="utf-8"))
+    assert seen["extensions"] == str(extensions)
+    assert seen["argv"][seen["argv"].index("--python-expr") + 1] == launcher.addon_bootstrap(["bl_ext.user_default.vrm"])
+    assert record["addons"] == [{"module": "bl_ext.user_default.vrm", "version": "4.10.5", "license": ["SPDX:MIT"]}]
+    assert record["extensions"] == str(extensions) and record["blender_version"] == "5.2.4"
+    plain = launcher.run_blender(wrapper, script, args=[tmp_path / "plain.json"])
+    assert "addons" not in plain and "extensions" not in plain                                  # 挙げないときの記録は前と同じ
+    assert json.loads((tmp_path / "plain.json").read_text(encoding="utf-8"))["extensions"] in (None, os.environ.get(
+        "BLENDER_USER_EXTENSIONS"))
+    with pytest.raises(ToolError, match="アドオンを有効にできませんでした: bl_ext.user_default.missing"):
+        launcher.run_blender(wrapper, script, args=[tmp_path / "x.json"], addons=["bl_ext.user_default.missing"],
+                             extensions=extensions, log=tmp_path / "missing.log")
+    with pytest.raises(ToolError, match="factory_startup"):           # 利用者の設定で起動してアドオンを足すことはしない
+        launcher.run_blender(wrapper, script, args=[tmp_path / "y.json"], addons=["bl_ext.user_default.vrm"], factory_startup=False)
+
+
+def test_run_script_operation_takes_addons_and_the_extensions_folder(tmp_path):
+    from model3d import executor
+    wrapper = stand_in_executable(tmp_path, "blender", ADDON_STAND_IN)
+    (tmp_path / "s.py").write_text("", encoding="utf-8")
+    _extensions(tmp_path)
+    step = {"id": "vrm", "operation": "blender.run_script", "outputs": {"seen": "seen.json"},
+            "parameters": {"blender": str(wrapper), "script": "s.py", "args": ["{seen}"], "addons": ["bl_ext.user_default.vrm"],
+                           "blender_extensions": "ext"}}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm", "inputs": {}, "steps": [step]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    observation = result["steps"]["vrm"]["observations"][0]
+    assert observation["addons"][0]["version"] == "4.10.5" and observation["extensions"] == str((tmp_path / "ext").resolve())
+    seen = json.loads(Path(result["steps"]["vrm"]["artifacts"]["seen"]).read_text(encoding="utf-8"))
+    assert seen["extensions"] == str((tmp_path / "ext").resolve())
+    # 拡張機能のフォルダは --tool blender_extensions=DIR でも渡せる
+    del step["parameters"]["blender_extensions"]
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm", "inputs": {}, "steps": [step]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs", tools={"blender_extensions": str(tmp_path / "ext")})
+    assert result["status"] == "succeeded", result
+    assert result["steps"]["vrm"]["observations"][0]["extensions"] == str((tmp_path / "ext").resolve())
+    step["parameters"]["addons"] = "bl_ext.user_default.vrm"
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm", "inputs": {}, "steps": [step]})
+    assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["status"] == "failed"
+
+
+def test_blender_script_command_takes_addon_and_extensions(tmp_path):
+    from m3d_helpers import run_cli
+    wrapper = stand_in_executable(tmp_path, "blender", ADDON_STAND_IN)
+    (tmp_path / "s.py").write_text("", encoding="utf-8")
+    extensions = _extensions(tmp_path)
+    code, result, _ = run_cli("blender", "script", "--blender", wrapper, "--script", tmp_path / "s.py", "--addon", "bl_ext.user_default.vrm",
+                              "--extensions", extensions, tmp_path / "seen.json")
+    assert code == 0 and result["addons"][0]["version"] == "4.10.5" and result["extensions"] == str(extensions.resolve())
+
+
+def test_stage_render_stops_on_blender_5_before_building_the_stage():
+    from model3d.blender_adapter import stage_render
+    assert stage_render.version_problem((4, 5, 15)) is None
+    assert "5.2.4" in stage_render.version_problem((5, 2, 4)) and "4.5.15" in stage_render.version_problem((5, 0, 0))
 
 
 def test_blender_launcher_runs_a_stand_in_and_records_version(tmp_path):
