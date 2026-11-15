@@ -62,6 +62,8 @@ def test_bone_map_reports_missing_bones_and_rejects_double_assignment():
         vrm_motion_rig.bone_map(doubled)
     with pytest.raises(ValueError, match="知らない人型の骨の役割"):
         vrm_motion_rig.bone_map({**_charakit_like_assignment(), "tail": "tail"})
+    with pytest.raises(ValueError, match="目・あご"):                   # あごを頭の骨に割り当てたもの
+        vrm_motion_rig.bone_map({**_charakit_like_assignment(), "jaw": "head"})
 
 
 def test_bone_map_keeps_bones_that_already_have_mixamo_names():
@@ -132,6 +134,8 @@ def test_motion_rig_passes_the_character_and_enables_the_vrm_addon(tmp_path):
     assert tail[tail.index("--bone-prefix") + 1] == "mixamorig:" and tail[tail.index("--armature") + 1] == "Rig"
     assert tail[tail.index("--skip-meshes") + 1] == "Hair" and Path(tail[tail.index("--skip") + 1]).name == "skip.npz"
     assert Path(tail[tail.index("--character") + 1]).name == "avatar.blend"
+    assert Path(tail[tail.index("--bone-map") + 1]) == Path(step["artifacts"]["bone_map"])
+    assert Path(tail[tail.index("--out-blend") + 1]) == Path(step["artifacts"]["blend"])
     with np.load(step["artifacts"]["skip"]) as data:
         assert data["Hair"].all()
     observation = step["observations"][0]

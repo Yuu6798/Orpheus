@@ -84,6 +84,9 @@ def bone_map(assigned, prefix="mixamorig:"):
             raise ValueError(f"骨 {bone} が人型の 2 つの役割に割り当てられています（{role} と、{mapping[bone]} にした役割）")
         mapping[bone] = prefix + mixamo
     unmapped = {role: assigned[role] for role in UNMAPPED_ROLES if assigned.get(role)}
+    doubled = sorted(role for role, bone in unmapped.items() if bone in mapping)
+    if doubled:
+        raise ValueError(f"付け替える骨が、目・あごの役割にも割り当てられています: {doubled}")
     unknown = sorted(set(assigned) - set(VRM_TO_MIXAMO) - set(UNMAPPED_ROLES))
     if unknown:
         raise ValueError(f"知らない人型の骨の役割: {unknown}")
@@ -161,20 +164,26 @@ def main(argv=None):
     if conflicts:
         raise SystemExit(f"付け替えた名前が、ほかの骨の名前とぶつかります: {conflicts}")
 
+    # その骨で動くメッシュ（アーマチュアのモディファイアか、アーマチュアを親にした変形）
     deformed = [obj for obj in bpy.data.objects if obj.type == "MESH"
-                and any(m.type == "ARMATURE" and m.object == armature for m in obj.modifiers)]
+                and (any(m.type == "ARMATURE" and m.object == armature for m in obj.modifiers)
+                     or (obj.parent == armature and obj.parent_type == "ARMATURE"))]
     before = {obj.name: {group.name for group in obj.vertex_groups} for obj in deformed}
     renamed = 0
     for old, new in mapping.items():
         if old != new:
             bones[old].name = new
             renamed += 1
-    groups = {}
+    groups, stale = {}, {}
     for obj in deformed:
         names = {group.name for group in obj.vertex_groups}
-        groups[obj.name] = len([new for old, new in mapping.items() if old != new and old in before[obj.name] and new in names])
-    if renamed and deformed and not any(groups.values()):
-        raise SystemExit("骨の名前に合わせて頂点グループの名前が付け替わっていません")
+        expected = [old for old, new in mapping.items() if old != new and old in before[obj.name]]
+        groups[obj.name] = len([old for old in expected if mapping[old] in names])
+        left = sorted(old for old in expected if old in names)
+        if left:
+            stale[obj.name] = left
+    if stale:                                             # メッシュごとに、付け替えるはずの頂点グループが 1 つも残っていないこと
+        raise SystemExit(f"骨の名前に合わせて頂点グループの名前が付け替わっていません: {stale}")
 
     # キャラの骨のあるシーンだけを残す（作業用のシーンが残っているファイルがある）
     keep = [scene for scene in bpy.data.scenes if armature.name in scene.objects]
