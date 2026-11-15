@@ -708,6 +708,54 @@ VRM Add-on で動かす。今ある Blender の工程は 4.5.15 で確かめた�
 **ライセンス**: VRM Add-on 4.10.5 のライセンス表記は MIT と GPL-3.0-or-later の両方（`blender_manifest.toml`）。model3d は外の道具として
 Blender の中で呼ぶだけで、アドオンのコードは写さない（このリポジトリは Apache-2.0）。アドオン本体もリポジトリに入れない。
 
+## VRM のキャラを動かす
+
+VRM のキャラ（VRM Add-on で読み込んだ .blend）を、model3d の動きの工程で動かす道筋。2 作目の VRM のダンスで、リポジトリの外の
+台本で通した手順を工程にしたもの。工程の `vrm.*` は、どれも VRM Add-on を有効にして Blender を起動する（既定
+`addons: ["bl_ext.user_default.vrm"]`。拡張機能のフォルダは `blender_extensions` か `--tool blender_extensions=DIR`）。
+
+1. `vrm.motion_rig`: 骨の名前を Mixamo 式に付け替えた作業コピーと、名前の対応表を作る（下）。
+2. 作業コピーへ動きを移す（`motion.prepare_keypoints` → `check.motion` → `motion.retarget`。Mixamo 式の骨の名前を前提にする
+   ほかの動きの工程も、作業コピーで使える）。
+
+### 骨の名前を Mixamo 式に付け替える（`vrm.motion_rig`）
+
+- 入力 `character`: VRM のキャラの .blend（VRM 1.0。VRM Add-on の人型の骨の割り当て入り）。
+- 人型の骨の割り当て（`vrm_addon_extension.vrm1.humanoid`）から、model3d が役割を知っている骨（`semantic.MIXAMO_ROLES`）だけを
+  Mixamo 式の名前（`bone_prefix` ＋ 名前。既定の接頭辞は `mixamorig:`）に付け替える。
+
+  | VRM 1.0 の人型の骨 | Mixamo の名前 |
+  |---|---|
+  | hips・spine・chest・upperChest・neck・head | Hips・Spine・Spine1・Spine2・Neck・Head |
+  | left／right の Shoulder・UpperArm・LowerArm・Hand | Left／Right の Shoulder・Arm・ForeArm・Hand |
+  | left／right の UpperLeg・LowerLeg・Foot・Toes | Left／Right の UpLeg・Leg・Foot・ToeBase |
+  | 親指の Metacarpal・Proximal・Distal | HandThumb1・2・3 |
+  | 人差し指・中指・薬指・小指の Proximal・Intermediate・Distal | HandIndex・HandMiddle・HandRing・HandPinky の 1・2・3 |
+
+  - 目とあご（leftEye・rightEye・jaw）は付け替えず、報告の `unmapped` に残す。
+  - `motion.retarget` が要る骨（腰・背骨 3 本・首・頭・腕と脚の 12 本。upperChest も要る）に割り当てが無ければ止まる。指とつま先は無くてもよい。
+  - 付け替えた名前がほかの骨の名前とぶつかるとき（Blender は `.001` を付けてずらす）は、付け替える前に止まる。すでに Mixamo 式の
+    名前の骨（Mixamo 式の骨から VRM にしたキャラ）は、そのまま（付け替えの数 0）。
+- 骨の名前を変えると、その骨で動くメッシュの頂点グループの名前も Blender が付け替える（骨を付け替えたのに 1 つも付け替わらなければ止まる）。
+- キャラの骨のあるシーンだけを残す（作業用のシーンがほかにあるファイルがある）。元のファイルは変えない。
+- 出力:
+  - `blend`: 作業コピー
+  - `bone_map`: `model3d-vrm-bone-map/0.1`（`prefix`・`map`（元の名前 → 付け替えた名前。上の表の並び）・`humanoid`・`unmapped`）
+  - `report`: `model3d-vrm-motion-rig/0.1`（付け替えた骨の数、メッシュごとの付け替わった頂点グループの数、残したシーン、消したシーン）
+  - `skip`（`skip_meshes` を挙げたとき）: 挙げたメッシュの頂点をすべて真にした npz。`motion.retarget` の `skip_vertices` に渡すと、
+    髪の前に手があるだけで胴への刺さりと判定しない。
+
+**確かめたこと**（Windows の Blender 5.2.4 と VRM Add-on 4.10.5、2026-11-16。実測）: 2 作目の VRM のダンスのキャラ（骨 131 本・メッシュ 11）で、
+リポジトリの外の台本（決めた名前の表で付け替える）と同じ入力から作った作業コピーと比べた。
+- 対応表の `map`（52 本）が、並びまで同じ。目の 2 本は `unmapped` に残った。
+- 作業コピーのシーン・物・骨（名前・親・基本の姿勢）・メッシュごとの頂点グループの名前と並び・頂点の数・モディファイアが同じ。
+- `skip` の npz の値が同じ（髪の 24,943 頂点）。
+- 制作で使った作業コピー（元のモデルから作ったもの）とも、骨・頂点グループ・シーン・物が同じ。
+
+**限界**: VRM 0.x の人型の骨は未対応（VRM 1.0 だけ）。割り当てが正しいかは確かめない（VRM Add-on の割り当てをそのまま使う）。
+付け替えるのは骨と頂点グループの名前だけで、VRM Add-on の設定の中の骨の名前（人型の骨の割り当て・揺れもの）は作業コピーでは
+古い名前のまま。作業コピーは動きを付けるためだけに使い、VRM として書き出さない。
+
 ## 推定した 3D の点を整える
 
 `motion.prepare_keypoints` は、動画から推定した人の 3D の点を、キャラに載せる前に整える（ツールキットの段 1 の最初の工程）。
