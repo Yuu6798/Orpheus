@@ -88,6 +88,32 @@ def fps_settings(fps):
     return whole, whole / fps
 
 
+REST_POSE = {"location": (0.0, 0.0, 0.0), "rotation_quaternion": (1.0, 0.0, 0.0, 0.0), "rotation_euler": (0.0, 0.0, 0.0),
+             "rotation_axis_angle": (0.0, 0.0, 1.0, 0.0)}
+
+
+def reset_pose(bone):
+    """骨の位置と回転を基本の姿勢に戻す（motion.retarget が移す前にするのと同じ。大きさは変えない）。戻したら True。"""
+    changed = any(tuple(float(v) for v in getattr(bone, name)) != value for name, value in REST_POSE.items())
+    for name, value in REST_POSE.items():
+        setattr(bone, name, value)
+    return changed
+
+
+def use_scene_of(bpy, armature):
+    """アーマチュアのあるシーンを今のシーンにして返す（作業用のシーンを開いたまま保存されたファイルがある。vrm_bake_springs.py に
+    同じ写しがある）。裏の起動でも、読み込んだファイルの窓のシーンを替えれば bpy.context.scene が替わる（Blender 5.2.4 で確かめた）。"""
+    scenes = [scene for scene in bpy.data.scenes if armature.name in scene.objects]
+    if not scenes:
+        raise SystemExit(f"アーマチュア {armature.name} の入ったシーンがありません")
+    if bpy.context.scene not in scenes:
+        window = bpy.context.window or next(iter(bpy.context.window_manager.windows), None)
+        if window is None:
+            raise SystemExit(f"アーマチュア {armature.name} のシーン {scenes[0].name} に切り替えられません（窓がありません）")
+        window.scene = scenes[0]
+    return bpy.context.scene
+
+
 def fcurves_of(action):
     """層つきのアクション（Blender 4.4 以降。5.x はこれだけ）と、古い形式の両方から F カーブを集める。"""
     curves = []
@@ -118,15 +144,15 @@ def main(argv=None):
     motion_fps = source.render.fps / source.render.fps_base
     points_frames = list(source["model3d_points_frames"]) if "model3d_points_frames" in source else None
     source_armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE"]
-    # motion.retarget はファイルの最初のアーマチュアを動かし、骨をクォータニオンの回転にする
+    # motion.retarget はファイルの最初のアーマチュアを動かし、骨をクォータニオンの回転にする。骨ごとの回転の持ち方を控えておく
     modes = {bone.name: bone.rotation_mode for bone in source_armatures[0].pose.bones} if source_armatures else {}
 
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.character))
-    scene = bpy.context.scene
     armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE" and (not a.armature or obj.name == a.armature)]
     if len(armatures) != 1:
         raise SystemExit(f"キャラのアーマチュアが {len(armatures)} 個あります（--armature で選んでください）")
     armature = armatures[0]
+    scene = use_scene_of(bpy, armature)
 
     before = set(bpy.data.actions.keys())
     with bpy.data.libraries.load(os.path.abspath(a.motion), link=False) as (data_from, data_to):
@@ -160,13 +186,16 @@ def main(argv=None):
         old.action = None
         for track in list(old.nla_tracks):
             old.nla_tracks.remove(track)
-    # 骨の回転の持ち方を動きの側にそろえる（クォータニオンのキーは、オイラーや軸角の骨では使われない）
+    # 骨の回転の持ち方を動きの側にそろえ（クォータニオンのキーは、オイラーや軸角の骨では使われない）、motion.retarget が移す前に
+    # するのと同じく、回転と位置を基本の姿勢に戻す（キーの無いほかの骨の位置などが、元のキャラの姿勢のまま残らないように。
+    # 大きさは motion.retarget と同じく変えない）
     changed_modes = 0
     for name, mode in modes.items():
         bone = armature.pose.bones.get(inverse.get(name, name))
         if bone is not None and bone.rotation_mode != mode:
             bone.rotation_mode = mode
             changed_modes += 1
+    reset_bones = sum(reset_pose(bone) for bone in armature.pose.bones)
     animation = armature.animation_data_create()
     animation.action = action
     if getattr(action, "slots", None) and len(action.slots):
@@ -193,7 +222,8 @@ def main(argv=None):
               "action": action.name, "curves": len(fcurves_of(action)), "curves_renamed": renamed, "frames": [first, last],
               "fps": scene.render.fps / scene.render.fps_base, "motion_fps": motion_fps,
               "points_frames": len(points_frames) if points_frames is not None else None,
-              "cleared_animation": cleared, "rotation_modes_changed": changed_modes}
+              "cleared_animation": cleared, "rotation_modes_changed": changed_modes, "pose_reset_bones": reset_bones,
+              "scene": scene.name}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

@@ -96,6 +96,20 @@ def bone_span(data_path):
     return None
 
 
+def use_scene_of(bpy, armature):
+    """アーマチュアのあるシーンを今のシーンにして返す（作業用のシーンを開いたまま保存されたファイルがある。vrm_apply_motion.py に
+    同じ写しがある）。裏の起動でも、読み込んだファイルの窓のシーンを替えれば bpy.context.scene が替わる（Blender 5.2.4 で確かめた）。"""
+    scenes = [scene for scene in bpy.data.scenes if armature.name in scene.objects]
+    if not scenes:
+        raise SystemExit(f"アーマチュア {armature.name} の入ったシーンがありません")
+    if bpy.context.scene not in scenes:
+        window = bpy.context.window or next(iter(bpy.context.window_manager.windows), None)
+        if window is None:
+            raise SystemExit(f"アーマチュア {armature.name} のシーン {scenes[0].name} に切り替えられません（窓がありません）")
+        window.scene = scenes[0]
+    return bpy.context.scene
+
+
 def keys_of(text):
     return [key.strip() for key in text.split(",") if key.strip()]
 
@@ -138,12 +152,12 @@ def main(argv=None):
                          f"{error}") from error
 
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
-    scene = bpy.context.scene
     armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE" and (not a.armature or obj.name == a.armature)
                  and len(obj.data.vrm_addon_extension.spring_bone1.springs)]
     if len(armatures) != 1:
         raise SystemExit(f"揺れもののあるアーマチュアが {len(armatures)} 個あります（--armature で選んでください）")
     armature = armatures[0]
+    scene = use_scene_of(bpy, armature)
     action = armature.animation_data.action if armature.animation_data else None
     if action is None:
         raise SystemExit(f"{armature.name} に動き（アクション）がありません")

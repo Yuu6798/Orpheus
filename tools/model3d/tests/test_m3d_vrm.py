@@ -190,13 +190,44 @@ def test_inverse_map_and_renamed_paths():
 
 def test_both_scripts_carry_the_same_data_path_reader():
     import inspect
-    assert inspect.getsource(vrm_apply_motion.bone_span) == inspect.getsource(vrm_bake_springs.bone_span).replace(
-        "vrm_apply_motion.py", "vrm_bake_springs.py")
-    for bad in ({}, {"map": {}}, {"map": {"a": 1}}, []):
-        with pytest.raises(ValueError, match="map"):
-            vrm_apply_motion.inverse_map(bad)
-    with pytest.raises(ValueError, match="2 つの骨"):
-        vrm_apply_motion.inverse_map({"map": {"a": "mixamorig:Hips", "b": "mixamorig:Hips"}})
+    for name in ("bone_span", "use_scene_of"):
+        assert inspect.getsource(getattr(vrm_apply_motion, name)) == inspect.getsource(getattr(vrm_bake_springs, name)).replace(
+            "vrm_apply_motion.py", "vrm_bake_springs.py"), name
+
+
+def test_use_scene_of_switches_to_a_scene_that_holds_the_armature():
+    from types import SimpleNamespace as N
+    rig = N(name="Rig")
+    work, main = N(name="Work", objects={"Cam"}), N(name="Main", objects={"Rig", "Body"})
+    win = N(scene=work)
+
+    class Context:                                        # bpy.context.scene は窓のシーン（Blender と同じ）
+        window_manager = N(windows=[win])
+        window = None
+
+        @property
+        def scene(self):
+            return win.scene
+
+    bpy = N(data=N(scenes=[work, main]), context=Context())
+    assert vrm_apply_motion.use_scene_of(bpy, rig) is main and win.scene is main
+    assert vrm_bake_springs.use_scene_of(bpy, rig) is main                         # もう今のシーンならそのまま
+    with pytest.raises(SystemExit, match="入ったシーン"):
+        vrm_apply_motion.use_scene_of(N(data=N(scenes=[work]), context=Context()), rig)
+    win.scene = work
+    Context.window_manager = N(windows=[])
+    with pytest.raises(SystemExit, match="窓"):
+        vrm_apply_motion.use_scene_of(bpy, rig)
+
+
+def test_reset_pose_matches_the_retarget_reset_and_keeps_scale():
+    from types import SimpleNamespace as N
+    bone = N(location=(0, 0.1, 0), rotation_quaternion=(0.9, 0.1, 0, 0), rotation_euler=(0.3, 0, 0), rotation_axis_angle=(0, 0, 1, 0),
+             scale=(1.2, 1, 1))
+    assert vrm_apply_motion.reset_pose(bone) is True
+    assert bone.location == (0.0, 0.0, 0.0) and bone.rotation_quaternion == (1.0, 0.0, 0.0, 0.0) and bone.rotation_euler == (0.0, 0.0, 0.0)
+    assert bone.scale == (1.2, 1, 1)                                  # 大きさは motion.retarget と同じく変えない
+    assert vrm_apply_motion.reset_pose(bone) is False                 # もう基本の姿勢
 
 
 def test_fps_settings_keep_the_effective_rate():
