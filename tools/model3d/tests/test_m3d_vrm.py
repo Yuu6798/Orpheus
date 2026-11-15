@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from m3d_helpers import stand_in_executable
-from model3d.blender_adapter import retarget, vrm_motion_rig
+from model3d.blender_adapter import retarget, vrm_apply_motion, vrm_bake_springs, vrm_motion_rig
 from model3d.io import ToolError, atomic_json
 from model3d.semantic import MIXAMO_ROLES
 
@@ -169,3 +169,191 @@ def test_motion_rig_rejects_bad_settings(tmp_path, parameters, outputs, message)
 
     with pytest.raises(ToolError, match=message):
         get("vrm.motion_rig").function({"character": tmp_path / "avatar.blend"}, parameters, declared, Context())
+
+
+# ---------- 動きを元の VRM へ戻す・揺れものを焼く ----------
+
+def test_inverse_map_and_renamed_paths():
+    inverse = vrm_apply_motion.inverse_map({"prefix": "mixamorig:", "map": {"upper_arm.L": "mixamorig:LeftArm", "hips": "mixamorig:Hips"}})
+    assert inverse == {"mixamorig:LeftArm": "upper_arm.L", "mixamorig:Hips": "hips"}
+    path = 'pose.bones["mixamorig:LeftArm"].rotation_quaternion'
+    assert vrm_apply_motion.bone_of(path) == "mixamorig:LeftArm"
+    assert vrm_apply_motion.renamed_path(path, inverse) == 'pose.bones["upper_arm.L"].rotation_quaternion'
+    assert vrm_apply_motion.renamed_path('pose.bones["hair_01"].location', inverse) == 'pose.bones["hair_01"].location'
+    assert vrm_apply_motion.bone_of('["model3d_points_frames"]') is None
+    # 名前の中の " と \ は Blender が \" と \\ にして書く。戻すときもそう書く
+    quoted = 'pose.bones["a\\"]b\\\\c"].location'
+    assert vrm_apply_motion.bone_of(quoted) == 'a"]b\\c' and vrm_bake_springs.bone_span(quoted) == ('a"]b\\c', len(quoted) - 10)
+    assert vrm_apply_motion.renamed_path(quoted, {'a"]b\\c': 'x"y'}) == 'pose.bones["x\\"y"].location'
+    assert vrm_apply_motion.bone_of('pose.bones["broken') is None
+
+
+def test_both_scripts_carry_the_same_data_path_reader():
+    import inspect
+    for name in ("bone_span", "use_scene_of"):
+        assert inspect.getsource(getattr(vrm_apply_motion, name)) == inspect.getsource(getattr(vrm_bake_springs, name)).replace(
+            "vrm_apply_motion.py", "vrm_bake_springs.py"), name
+
+
+def test_use_scene_of_switches_to_a_scene_that_holds_the_armature():
+    from types import SimpleNamespace as N
+    rig = N(name="Rig")
+    work, main = N(name="Work", objects={"Cam"}), N(name="Main", objects={"Rig", "Body"})
+    win = N(scene=work)
+
+    class Context:                                        # bpy.context.scene は窓のシーン（Blender と同じ）
+        window_manager = N(windows=[win])
+        window = None
+
+        @property
+        def scene(self):
+            return win.scene
+
+    bpy = N(data=N(scenes=[work, main]), context=Context())
+    assert vrm_apply_motion.use_scene_of(bpy, rig) is main and win.scene is main
+    assert vrm_bake_springs.use_scene_of(bpy, rig) is main                         # もう今のシーンならそのまま
+    with pytest.raises(SystemExit, match="入ったシーン"):
+        vrm_apply_motion.use_scene_of(N(data=N(scenes=[work]), context=Context()), rig)
+    win.scene = work
+    Context.window_manager = N(windows=[])
+    with pytest.raises(SystemExit, match="窓"):
+        vrm_apply_motion.use_scene_of(bpy, rig)
+
+
+def test_reset_pose_matches_the_retarget_reset_and_keeps_scale():
+    from types import SimpleNamespace as N
+    bone = N(location=(0, 0.1, 0), rotation_quaternion=(0.9, 0.1, 0, 0), rotation_euler=(0.3, 0, 0), rotation_axis_angle=(0, 0, 1, 0),
+             scale=(1.2, 1, 1))
+    assert vrm_apply_motion.reset_pose(bone) is True
+    assert bone.location == (0.0, 0.0, 0.0) and bone.rotation_quaternion == (1.0, 0.0, 0.0, 0.0) and bone.rotation_euler == (0.0, 0.0, 0.0)
+    assert bone.scale == (1.2, 1, 1)                                  # 大きさは motion.retarget と同じく変えない
+    assert vrm_apply_motion.reset_pose(bone) is False                 # もう基本の姿勢
+
+
+def test_fps_settings_keep_the_effective_rate():
+    assert vrm_apply_motion.fps_settings(24) == (24, 1.0)
+    whole, base = vrm_apply_motion.fps_settings(29.97)
+    assert whole == 30 and abs(whole / base - 29.97) < 1e-9
+    with pytest.raises(ValueError):
+        vrm_apply_motion.fps_settings(0.2)
+
+
+def test_spring_steps_follow_the_private_script_rounding():
+    # 24 fps と 1/60 秒: 経過秒 ÷ 刻み は奇数コマでちょうど .5 になる。台本と同じ式（round の偶数への丸めを含む）
+    step = 1.0 / 60.0
+    steps = [vrm_bake_springs.target_steps(frame, 1, 24.0, step) for frame in range(1, 8)]
+    assert steps == [int(round((frame - 1) / 24.0 / step)) for frame in range(1, 8)]
+    assert steps[:4] == [0, 2, 5, 8] and vrm_bake_springs.target_steps(720, 1, 24.0, step) == 1798
+
+
+def test_spring_overrides_are_checked():
+    good = {"_note": "メモ", "sleeve": {"stiffness": 0.2, "gravity_power": 0.9}, "_capsule_radius": {"upper_leg": 0.085},
+            "_colliders": [{"bone": "lower_leg.L", "offset": [0, 0, 0], "tail": [0, 0.3, 0], "radius": 0.05, "groups": ["legs"]}]}
+    assert vrm_bake_springs.check_overrides(good) is good
+    collider = good["_colliders"][0]
+    for bad, message in (([], "オブジェクト"), ({"_capsule_radius": {"leg": -1}}, "_capsule_radius"),
+                         ({"_colliders": [{"bone": "x"}]}, "_colliders"), ({"skirt": 1}, "skirt"),
+                         ({"_colliders": [{**collider, "offset": ["0", 0, 0]}]}, "_colliders"),
+                         ({"_colliders": [{**collider, "groups": [3]}]}, "_colliders"),
+                         ({"skirt": {"stiffness": "0.2"}}, "skirt"), ({"skirt": {"gravity_dir": [0, -1]}}, "skirt")):
+        with pytest.raises(ValueError, match=message):
+            vrm_bake_springs.check_overrides(bad)
+    assert vrm_bake_springs.keys_of(" skirt, ,sleeve") == ["skirt", "sleeve"]
+
+
+# 代役の Blender: 台本の名前で出力を書き分け、受け取った argv を報告に残す
+STAND_IN_MOTION = r'''
+import json, sys
+if "--version" in sys.argv:
+    print("Blender 5.2.4 LTS")
+    sys.exit(0)
+script = sys.argv[sys.argv.index("--python") + 1]
+args = sys.argv[sys.argv.index("--") + 1:]
+def value(flag):
+    return args[args.index(flag) + 1]
+open(value("--out-blend"), "wb").write(b"moved")
+report = {"armature": "Rig", "frames": [1, 3], "argv": sys.argv[1:], "script": script}
+if script.endswith("vrm_apply_motion.py"):
+    report.update(curves=10, curves_renamed=8, fps=24.0)
+else:
+    report.update(joints=5, still_joints=2, steps=4, overridden={"sleeve": {"stiffness": 0.2}})
+json.dump(report, open(value("--report"), "w"))
+'''
+
+
+def _motion_recipe(tmp_path, apply_parameters, bake_parameters, overrides=True):
+    for name in ("avatar.blend", "motion.blend"):
+        (tmp_path / name).write_bytes(b"blend")
+    atomic_json(tmp_path / "bone_map.json", {"prefix": "mixamorig:", "map": {"hips": "mixamorig:Hips"}})
+    atomic_json(tmp_path / "overrides.json", {"sleeve": {"stiffness": 0.2}})
+    inputs = {"avatar": {"path": "avatar.blend"}, "motion": {"path": "motion.blend"}, "map": {"path": "bone_map.json"},
+              "overrides": {"path": "overrides.json"}}
+    bake_inputs = {"blend": "$steps.apply.blend", **({"overrides": "$inputs.overrides"} if overrides else {})}
+    steps = [{"id": "apply", "operation": "vrm.apply_motion", "parameters": apply_parameters,
+              "inputs": {"character": "$inputs.avatar", "motion": "$inputs.motion", "bone_map": "$inputs.map"},
+              "outputs": {"blend": "dance.blend", "report": "apply.json"}},
+             {"id": "springs", "operation": "vrm.bake_springs", "inputs": bake_inputs, "parameters": bake_parameters,
+              "outputs": {"blend": "springs.blend", "report": "springs.json"}}]
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm-motion", "inputs": inputs,
+                                           "steps": steps})
+    return tmp_path / "recipe.json"
+
+
+def test_apply_motion_and_bake_springs_pass_their_inputs_to_blender(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN_MOTION))
+    recipe = _motion_recipe(tmp_path, {"blender": blender, "fps": 24},
+                            {"blender": blender, "no_spring": ["skirt"], "settle_s": 1.5, "rate": 120})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    apply_report = json.loads(Path(result["steps"]["apply"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    tail = apply_report["argv"][apply_report["argv"].index("--") + 1:]
+    assert Path(apply_report["script"]).name == "vrm_apply_motion.py" and "--python-expr" in apply_report["argv"]
+    assert tail[tail.index("--fps") + 1] == "24.0" and Path(tail[tail.index("--bone-map") + 1]).name == "bone_map.json"
+    assert Path(tail[tail.index("--motion") + 1]).name == "motion.blend"
+    bake_report = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
+    assert Path(bake_report["script"]).name == "vrm_bake_springs.py"
+    assert Path(tail[tail.index("--blend") + 1]).name == "dance.blend"                       # 前の工程の出力
+    assert tail[tail.index("--no-spring") + 1] == "skirt" and tail[tail.index("--settle") + 1] == "1.5"
+    assert tail[tail.index("--rate") + 1] == "120.0" and tail[tail.index("--addon-module") + 1] == "bl_ext.user_default.vrm"
+    assert Path(tail[tail.index("--overrides") + 1]).name == "overrides.json"
+    observation = result["steps"]["springs"]["observations"][0]
+    assert observation["kind"] == "vrm_bake_springs" and observation["joints"] == 5 and observation["overridden"] == ["sleeve"]
+    assert result["steps"]["apply"]["observations"][0]["curves_renamed"] == 8
+    # 揺れものの計算を読むアドオンは、挙げたもののうち名前の最後が vrm のもの
+    recipe = _motion_recipe(tmp_path, {"blender": blender}, {"blender": blender, "addons": ["rigify", "bl_ext.blender_org.vrm"]},
+                            overrides=False)
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    bake_report = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
+    assert tail[tail.index("--addon-module") + 1] == "bl_ext.blender_org.vrm" and "--overrides" not in tail and "--fps" not in tail
+
+
+@pytest.mark.parametrize("operation, parameters, message", [
+    ("vrm.apply_motion", {"wobble": 1}, "知らないパラメーター"),
+    ("vrm.apply_motion", {"fps": 0}, "fps"),
+    ("vrm.apply_motion", {"armature": 1}, "armature"),
+    ("vrm.bake_springs", {"rate": 0}, "rate"),
+    ("vrm.bake_springs", {"settle_s": -1}, "settle_s"),
+    ("vrm.bake_springs", {"no_spring": "skirt"}, "no_spring"),
+    ("vrm.bake_springs", {"overrides_bad": True}, "overrides"),
+])
+def test_motion_operations_reject_bad_settings(tmp_path, operation, parameters, message):
+    from model3d.ops import get
+    blender = stand_in_executable(tmp_path, "blender", STAND_IN_MOTION)
+    for name in ("avatar.blend", "motion.blend"):
+        (tmp_path / name).write_bytes(b"blend")
+    atomic_json(tmp_path / "bone_map.json", {"map": {"hips": "mixamorig:Hips"}})
+    atomic_json(tmp_path / "overrides.json", {"_colliders": [{"bone": "x"}]})
+    inputs = {"character": tmp_path / "avatar.blend", "motion": tmp_path / "motion.blend", "bone_map": tmp_path / "bone_map.json",
+              "blend": tmp_path / "avatar.blend"}
+    if parameters.pop("overrides_bad", False):
+        inputs["overrides"] = tmp_path / "overrides.json"
+
+    class Context:
+        tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
+
+    with pytest.raises(ToolError, match=message):
+        get(operation).function(inputs, {"blender": str(blender), **parameters},
+                                {"blend": tmp_path / "o.blend", "report": tmp_path / "r.json"}, Context())
