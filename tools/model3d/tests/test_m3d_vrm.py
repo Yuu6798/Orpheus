@@ -193,6 +193,8 @@ def test_both_scripts_carry_the_same_data_path_reader():
     for name in ("bone_span", "use_scene_of"):
         assert inspect.getsource(getattr(vrm_apply_motion, name)) == inspect.getsource(getattr(vrm_bake_springs, name)).replace(
             "vrm_apply_motion.py", "vrm_bake_springs.py"), name
+    from model3d.blender_adapter import vrm_export
+    assert inspect.getsource(vrm_export.use_scene_of) == inspect.getsource(vrm_bake_springs.use_scene_of)   # 書き出しも同じ写し
 
 
 def test_use_scene_of_switches_to_a_scene_that_holds_the_armature():

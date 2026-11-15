@@ -50,6 +50,20 @@ def alpha_mode(material):
     return getattr(mtoon, "alpha_mode", None) or "UNKNOWN"
 
 
+def use_scene_of(bpy, armature):
+    """アーマチュアのあるシーンを今のシーンにして返す（作業用のシーンを開いたまま保存されたファイルがある。vrm_apply_motion.py に
+    同じ写しがある）。裏の起動でも、読み込んだファイルの窓のシーンを替えれば bpy.context.scene が替わる（Blender 5.2.4 で確かめた）。"""
+    scenes = [scene for scene in bpy.data.scenes if armature.name in scene.objects]
+    if not scenes:
+        raise SystemExit(f"アーマチュア {armature.name} の入ったシーンがありません")
+    if bpy.context.scene not in scenes:
+        window = bpy.context.window or next(iter(bpy.context.window_manager.windows), None)
+        if window is None:
+            raise SystemExit(f"アーマチュア {armature.name} のシーン {scenes[0].name} に切り替えられません（窓がありません）")
+        window.scene = scenes[0]
+    return bpy.context.scene
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -67,6 +81,7 @@ def main(argv=None):
     if len(armatures) != 1:
         raise SystemExit(f"アーマチュアが {len(armatures)} 個あります（--armature で選んでください）")
     armature = armatures[0]
+    use_scene_of(bpy, armature)                           # 選んで書き出すアーマチュアは、今のシーンのビューレイヤーに要る
     extension = getattr(armature.data, "vrm_addon_extension", None)
     if extension is None:
         raise SystemExit("VRM Add-on の設定がありません（アドオンを有効にして起動してください）")
