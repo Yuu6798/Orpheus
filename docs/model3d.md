@@ -718,6 +718,7 @@ VRM のキャラ（VRM Add-on で読み込んだ .blend）を、model3d の動�
 2. 作業コピーへ動きを移す（`motion.prepare_keypoints` → `check.motion` → `motion.retarget`。Mixamo 式の骨の名前を前提にする
    ほかの動きの工程も、作業コピーで使える）。
 3. `vrm.apply_motion`: 動きを元の VRM の .blend へ戻す。`vrm.bake_springs`: VRM の揺れものを動きに合わせて骨のキーに焼く（下）。
+4. アセットにするときは `vrm.export`（VRM 1.0 の書き出し）と `check.vrm`（中身の検査。Blender なし）。
 
 ### 骨の名前を Mixamo 式に付け替える（`vrm.motion_rig`）
 
@@ -810,6 +811,30 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
 **限界**: 揺れものの計算は VRM Add-on の中の関数（`<アドオン>.editor.spring_bone1.handler.update_pose_bone_rotations`）を直接呼ぶので、
 アドオンの版が変わると動かないことがある（4.10.5 で確かめた）。食い込みの押し出しは入れていない（`collision.push_out` と `render.stage` の
 `push` を使う）。
+
+### VRM を書き出す（`vrm.export`）と中身を確かめる（`check.vrm`）
+
+- `vrm.export` の入力: `blend`（VRM のキャラの .blend。VRM Add-on の設定入り）、任意で `meta_from`（メタを写す元の VRM 1.0）。
+- 骨を基本の姿勢に戻し（動きを外し、姿勢の値を消す）、別名の .blend（出力 `blend`）に保存してから、VRM Add-on で VRM 1.0（出力 `vrm`）を書き出す。
+  動きは VRM に入らない。元のファイルは変えない。
+- `meta_from` があれば、メタの名前・版・作者を写す（.blend には VRM の名前と作者が残らないことがある。利用条件などほかのメタは .blend のまま）。
+- `jpeg_quality`（1〜100。既定 0 は変えない）で、材質が使う画像を JPEG にして埋め込み直す（色の絵を PNG のまま埋めると大きい。
+  2 作目の VRM のダンスでは 4 枚で 68 MB → JPEG 品質 95 で 14 MB）。透過の要る画像には使わない。
+- 書き出した VRM を `check.vrm` と同じ検査にかけ、出力 `check` に残す。不合格なら needs_review（`strict` なら失敗）。
+- `check.vrm`（Blender なし。GLB を読むだけ）: メタ（名前・作者・利用条件）、人型の骨の数と必須の骨、メッシュ、材質の数と MToon の数、画像（種類と大きさ）、
+  揺れもの（名前と関節の数）・当たり判定・組の数、形の割り当てのある表情。合否は、VRM 1.0 の拡張があるか・人型の必須の骨（VRM 1.0 の 15 本）・
+  メタの名前と作者とライセンスの URL（VRM 1.0 で必須）・人型の骨と揺れものと当たり判定の node の番号が範囲の中か、だけ。見た目は判定しない。
+  不合格は needs_review（`strict` なら失敗、`report_only` なら測るだけ）。
+
+**VRM に入らないもの**（2 作目の VRM のダンスで分かったこと）: 表情を頭の絵の差し替えで作ったもの（VRM の表情は形の変化）、布の計算、
+骨の拘束（ねじれを分ける骨。アプリによって効かず腕が崩れうる）。動画用とアセット用は別物になると、最初に伝える。
+
+**確かめたこと**（Windows の Blender 5.2.4 と VRM Add-on 4.10.5、2026-11-16。実測）:
+- 2 作目の VRM のダンスの衣装のアセット（制作で書き出した VRM 1.0、14.2 MB）の書き出し元の .blend から書き出し、制作の VRM とバイト単位で同じだった。
+- メタの写しと JPEG（品質 95）の経路も、制作の台本（衣装を切る手直しを外して）と同じ入力から書き出して、バイト単位で同じだった。
+- `check.vrm` で、制作の VRM は合格（人型の骨 54・材質 4（どれも MToon）・画像 4（JPEG）・揺れもの 13・当たり判定 19）。
+
+**限界**: VRM 0.x は読まない（`meta_from` も VRM 1.0 だけ）。ほかのアプリ（VRChat など）で読めるかは確かめない。
 
 ## 推定した 3D の点を整える
 
