@@ -181,6 +181,17 @@ def test_inverse_map_and_renamed_paths():
     assert vrm_apply_motion.renamed_path(path, inverse) == 'pose.bones["upper_arm.L"].rotation_quaternion'
     assert vrm_apply_motion.renamed_path('pose.bones["hair_01"].location', inverse) == 'pose.bones["hair_01"].location'
     assert vrm_apply_motion.bone_of('["model3d_points_frames"]') is None
+    # 名前の中の " と \ は Blender が \" と \\ にして書く。戻すときもそう書く
+    quoted = 'pose.bones["a\\"]b\\\\c"].location'
+    assert vrm_apply_motion.bone_of(quoted) == 'a"]b\\c' and vrm_bake_springs.bone_span(quoted) == ('a"]b\\c', len(quoted) - 10)
+    assert vrm_apply_motion.renamed_path(quoted, {'a"]b\\c': 'x"y'}) == 'pose.bones["x\\"y"].location'
+    assert vrm_apply_motion.bone_of('pose.bones["broken') is None
+
+
+def test_both_scripts_carry_the_same_data_path_reader():
+    import inspect
+    assert inspect.getsource(vrm_apply_motion.bone_span) == inspect.getsource(vrm_bake_springs.bone_span).replace(
+        "vrm_apply_motion.py", "vrm_bake_springs.py")
     for bad in ({}, {"map": {}}, {"map": {"a": 1}}, []):
         with pytest.raises(ValueError, match="map"):
             vrm_apply_motion.inverse_map(bad)
@@ -208,8 +219,12 @@ def test_spring_overrides_are_checked():
     good = {"_note": "メモ", "sleeve": {"stiffness": 0.2, "gravity_power": 0.9}, "_capsule_radius": {"upper_leg": 0.085},
             "_colliders": [{"bone": "lower_leg.L", "offset": [0, 0, 0], "tail": [0, 0.3, 0], "radius": 0.05, "groups": ["legs"]}]}
     assert vrm_bake_springs.check_overrides(good) is good
+    collider = good["_colliders"][0]
     for bad, message in (([], "オブジェクト"), ({"_capsule_radius": {"leg": -1}}, "_capsule_radius"),
-                         ({"_colliders": [{"bone": "x"}]}, "_colliders"), ({"skirt": 1}, "skirt")):
+                         ({"_colliders": [{"bone": "x"}]}, "_colliders"), ({"skirt": 1}, "skirt"),
+                         ({"_colliders": [{**collider, "offset": ["0", 0, 0]}]}, "_colliders"),
+                         ({"_colliders": [{**collider, "groups": [3]}]}, "_colliders"),
+                         ({"skirt": {"stiffness": "0.2"}}, "skirt"), ({"skirt": {"gravity_dir": [0, -1]}}, "skirt")):
         with pytest.raises(ValueError, match=message):
             vrm_bake_springs.check_overrides(bad)
     assert vrm_bake_springs.keys_of(" skirt, ,sleeve") == ["skirt", "sleeve"]

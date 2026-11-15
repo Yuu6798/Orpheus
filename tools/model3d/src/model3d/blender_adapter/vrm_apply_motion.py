@@ -45,21 +45,39 @@ def inverse_map(data):
     return inverse
 
 
-def bone_of(data_path):
-    """`pose.bones["名前"].…` の F カーブの骨の名前。骨の F カーブでなければ None。"""
+def bone_span(data_path):
+    """`pose.bones["名前"].…` の骨の名前（\\ の逃がしを戻したもの）と、名前の後ろの `]` の位置。骨の F カーブでなければ None。
+    Blender は名前の中の `"` と `\\` を `\\"`・`\\\\` にして書く。vrm_bake_springs.py に同じ写しがある。"""
     prefix = 'pose.bones["'
     if not data_path.startswith(prefix):
         return None
-    end = data_path.find('"]', len(prefix))
-    return data_path[len(prefix):end] if end > 0 else None
+    name, index = [], len(prefix)
+    while index < len(data_path):
+        char = data_path[index]
+        if char == "\\" and index + 1 < len(data_path):
+            name.append(data_path[index + 1])
+            index += 2
+        elif char == '"':
+            return ("".join(name), index + 1) if data_path[index + 1:index + 2] == "]" else None
+        else:
+            name.append(char)
+            index += 1
+    return None
+
+
+def bone_of(data_path):
+    """骨の F カーブの骨の名前。骨の F カーブでなければ None。"""
+    span = bone_span(data_path)
+    return span[0] if span else None
 
 
 def renamed_path(data_path, inverse):
     """骨の F カーブのデータパスの骨の名前を、元の名前へ戻したもの（対応表に無い骨ならそのまま）。"""
-    name = bone_of(data_path)
-    if name is None or name not in inverse:
+    span = bone_span(data_path)
+    if span is None or span[0] not in inverse:
         return data_path
-    return 'pose.bones["' + inverse[name] + data_path[len('pose.bones["') + len(name):]
+    escaped = inverse[span[0]].replace("\\", "\\\\").replace('"', '\\"')
+    return 'pose.bones["' + escaped + '"' + data_path[span[1]:]
 
 
 def fps_settings(fps):

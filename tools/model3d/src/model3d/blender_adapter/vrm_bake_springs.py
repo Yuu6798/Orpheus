@@ -42,30 +42,58 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _vector(value):
+    return isinstance(value, list) and len(value) == 3 and all(_number(v) for v in value)
+
+
 def check_overrides(overrides):
-    """上書きの JSON の形を確かめる。おかしければ ValueError。"""
+    """上書きの JSON の形を確かめる。おかしければ ValueError（Blender を起動する前に、工程からも呼ぶ）。"""
     if not isinstance(overrides, dict):
         raise ValueError("上書きは JSON のオブジェクトにしてください")
     for key, values in overrides.items():
         if key == "_capsule_radius":
-            if not isinstance(values, dict) or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
-                                                       for v in values.values()):
+            if not isinstance(values, dict) or not all(_number(v) and v > 0 for v in values.values()):
                 raise ValueError("_capsule_radius は {骨の名前に含まれる文字: 半径（正の数）} にしてください")
         elif key == "_colliders":
             if not isinstance(values, list):
                 raise ValueError("_colliders は当たり判定の並びにしてください")
             for spec in values:
                 if not isinstance(spec, dict) or set(spec) != {"bone", "offset", "tail", "radius", "groups"} \
-                        or not isinstance(spec["groups"], list) or not spec["groups"] \
-                        or not all(isinstance(spec[k], list) and len(spec[k]) == 3 for k in ("offset", "tail")) \
-                        or not isinstance(spec["radius"], (int, float)) or spec["radius"] <= 0:
-                    raise ValueError(f"_colliders の当たり判定は bone・offset（3 つ）・tail（3 つ）・radius（正の数）・"
+                        or not isinstance(spec["bone"], str) or not _vector(spec["offset"]) or not _vector(spec["tail"]) \
+                        or not _number(spec["radius"]) or spec["radius"] <= 0 or not isinstance(spec["groups"], list) \
+                        or not spec["groups"] or not all(isinstance(group, str) for group in spec["groups"]):
+                    raise ValueError(f"_colliders の当たり判定は bone（骨の名前）・offset と tail（数 3 つ）・radius（正の数）・"
                                      f"groups（揺れものの当たりの組の名前の並び）にしてください: {spec!r}")
         elif key.startswith("_"):
             continue                                            # 書き手のメモなど
-        elif not isinstance(values, dict) or not all(isinstance(name, str) for name in values):
-            raise ValueError(f"揺れもの {key!r} の上書きは {{関節の設定の名前: 値}} にしてください")
+        elif not isinstance(values, dict) or not all(isinstance(name, str) and (_number(value) or _vector(value))
+                                                     for name, value in values.items()):
+            raise ValueError(f"揺れもの {key!r} の上書きは {{関節の設定の名前: 数（向きは数 3 つ）}} にしてください")
     return overrides
+
+
+def bone_span(data_path):
+    """`pose.bones["名前"].…` の骨の名前（\\ の逃がしを戻したもの）と、名前の後ろの `]` の位置。骨の F カーブでなければ None。
+    Blender は名前の中の `"` と `\\` を `\\"`・`\\\\` にして書く。vrm_apply_motion.py に同じ写しがある。"""
+    prefix = 'pose.bones["'
+    if not data_path.startswith(prefix):
+        return None
+    name, index = [], len(prefix)
+    while index < len(data_path):
+        char = data_path[index]
+        if char == "\\" and index + 1 < len(data_path):
+            name.append(data_path[index + 1])
+            index += 2
+        elif char == '"':
+            return ("".join(name), index + 1) if data_path[index + 1:index + 2] == "]" else None
+        else:
+            name.append(char)
+            index += 1
+    return None
 
 
 def keys_of(text):
@@ -187,8 +215,8 @@ def main(argv=None):
     removed_curves = 0
     for bag in fcurve_bags(action):
         for curve in list(bag.fcurves):
-            path = curve.data_path
-            if path.startswith('pose.bones["') and path.split('"')[1] in joint_names:
+            span = bone_span(curve.data_path)
+            if span is not None and span[0] in joint_names:
                 bag.fcurves.remove(curve)
                 removed_curves += 1
     for bone in joints:

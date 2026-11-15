@@ -23,6 +23,20 @@ def _names(parameters, key):
     return value
 
 
+def _check(parameters, allowed, outputs, required, operation):
+    """工程に共通の確かめ（知らないパラメーター・要る出力・armature の型）。armature（空なら ""）を返す。"""
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    missing = [name for name in required if name not in outputs]
+    if missing:
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+    armature = parameters.get("armature", "")
+    if not isinstance(armature, str):
+        raise ToolError(f"armature はアーマチュアの名前（文字列）にしてください: {armature!r}")
+    return armature
+
+
 @register("vrm.motion_rig", inputs=("character",), outputs=("blend", "bone_map", "report", "skip"), cacheable=False,
           summary="VRM のキャラの .blend（VRM Add-on の人型の骨の割り当て入り）から、骨の名前を Mixamo 式（bone_prefix）に付け替えた"
                   "作業コピー（blend）と、元の名前 → 付け替えた名前の対応表（bone_map）を作る（Blender の中で）。付け替えるのは "
@@ -31,18 +45,10 @@ def _names(parameters, key):
 def motion_rig(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
     require(inputs, ("character",), "vrm.motion_rig")
-    unknown = set(parameters) - MOTION_RIG_PARAMETERS
-    if unknown:
-        raise ToolError(f"vrm.motion_rig の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(MOTION_RIG_PARAMETERS)}）")
-    missing = [name for name in ("blend", "bone_map", "report") if name not in outputs]
-    if missing:
-        raise ToolError(f"vrm.motion_rig には outputs の {', '.join(missing)} が要ります")
+    armature = _check(parameters, MOTION_RIG_PARAMETERS, outputs, ("blend", "bone_map", "report"), "vrm.motion_rig")
     skip_meshes = _names(parameters, "skip_meshes")
     if bool(skip_meshes) != ("skip" in outputs):
         raise ToolError("vrm.motion_rig: skip_meshes と outputs の skip は一緒に書いてください")
-    armature = parameters.get("armature", "")
-    if not isinstance(armature, str):
-        raise ToolError(f"armature はアーマチュアの名前（文字列）にしてください: {armature!r}")
     blender = _blender(parameters, context, "vrm.motion_rig")
     addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
     args = ["--character", inputs["character"], "--out-blend", outputs["blend"], "--bone-map", outputs["bone_map"],
@@ -63,19 +69,6 @@ def motion_rig(inputs, parameters, outputs, context):
 
 APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_apply_motion.py"
 APPLY_PARAMETERS = {"blender", "addons", "blender_extensions", "fps", "armature", "timeout"}
-
-
-def _check(parameters, allowed, outputs, required, operation):
-    unknown = set(parameters) - allowed
-    if unknown:
-        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
-    missing = [name for name in required if name not in outputs]
-    if missing:
-        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
-    armature = parameters.get("armature", "")
-    if not isinstance(armature, str):
-        raise ToolError(f"armature はアーマチュアの名前（文字列）にしてください: {armature!r}")
-    return armature
 
 
 @register("vrm.apply_motion", inputs=("character", "motion", "bone_map"), outputs=("blend", "report"), cacheable=False,
