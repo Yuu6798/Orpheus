@@ -58,6 +58,29 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
+def skip_masks(named, sizes):
+    """skip_vertices の npz の真偽の配列（鍵 → 配列）を、メッシュごとの「胴の面として数えない頂点」にする（メッシュの名前 → 配列）。
+
+    鍵がメッシュの名前なら、そのメッシュだけに当てる（頂点の数が違えば ValueError）。vrm.motion_rig の skip はこの形。
+    名前でない鍵の配列は、前と同じく、すべての OR を頂点の数が合うメッシュに当てる（名前で当てたメッシュは除く）。
+    その配列どうしの長さが違えば ValueError。"""
+    masks = {}
+    for name, mask in named.items():
+        if name in sizes:
+            if len(mask) != sizes[name]:
+                raise ValueError(f"skip_vertices の {name} は {len(mask)} 頂点ぶんですが、メッシュ {name} は {sizes[name]} 頂点です")
+            masks[name] = mask
+    rest = [mask for name, mask in named.items() if name not in sizes]
+    if rest:
+        if len({len(mask) for mask in rest}) != 1:
+            raise ValueError("skip_vertices のメッシュの名前でない鍵の配列は、同じ長さにしてください（違うメッシュならメッシュの名前を鍵に）")
+        combined = np.logical_or.reduce(rest)
+        for name, size in sizes.items():
+            if name not in masks and size == len(combined):
+                masks[name] = combined
+    return masks
+
+
 def frame_list(spec, total):
     if not spec:
         return list(range(total))
@@ -233,13 +256,14 @@ def main(argv=None):
         DOM = {ob.name: dom_groups(ob) for ob in OBS}
     if COLLISION and a.skip_vertices:
         with np.load(a.skip_vertices, allow_pickle=False) as data:
-            masks = [data[k].astype(bool) for k in data.files if data[k].dtype == bool]
-        if masks:
-            skip = np.logical_or.reduce(masks)
-            for ob in OBS:
-                if len(skip) == len(DOM[ob.name]):
-                    DOM[ob.name] = ["" if skip[i] else g for i, g in enumerate(DOM[ob.name])]
-                    skipped[ob.name] = int(skip.sum())
+            named = {k: data[k].astype(bool) for k in data.files if data[k].dtype == bool}
+        try:
+            masks = skip_masks(named, {ob.name: len(DOM[ob.name]) for ob in OBS})
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        for name, skip in masks.items():
+            DOM[name] = ["" if skip[i] else g for i, g in enumerate(DOM[name])]
+            skipped[name] = int(skip.sum())
     for ob in (OBS[:2] if COLLISION else []):
         lst = [(i, "L" if g.startswith("Left") else "R", "forearm" if "ForeArm" in g else "hand")
                for i, g in enumerate(DOM[ob.name]) if ("ForeArm" in g or "Hand" in g)]
