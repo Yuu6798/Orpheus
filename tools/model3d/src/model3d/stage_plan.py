@@ -114,9 +114,9 @@ class Clock:
         return [self(v, f"{where}[{n}]") for n, v in enumerate(value)] if isinstance(value, list) else [self(value, where)]
 
 
-def spans(parts, clock, where):
-    """区間の並びの [頭, 終わり)（秒）。頭は前の区間の until（最初は 0 秒）。最後の区間だけ until を省ける（その先ずっと）。"""
-    out, start = [], 0.0
+def spans(parts, clock, where, start=0.0):
+    """区間の並びの [頭, 終わり)（秒）。頭は前の区間の until（最初は start 秒。既定 0）。最後の区間だけ until を省ける（その先ずっと）。"""
+    out = []
     for n, part in enumerate(parts):
         if "until" in part:
             end = clock(part["until"], f"{where}[{n}].until")

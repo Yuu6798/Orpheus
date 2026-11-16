@@ -163,6 +163,15 @@ def test_bad_plans_are_refused(shots, extra, message):
         orbit_plan.Orbit(_plan(shots, **extra))
 
 
+def test_the_first_shot_starts_at_the_time_of_the_first_frame():
+    orbit = orbit_plan.Orbit(_plan([{"until": -0.5, "keys": [_key()]}, {"until": 0.5, "keys": [_key(), _key(az=90.0)]},
+                                    {"keys": [_key()]}], time_offset=-1.0))
+    assert orbit.spans[:2] == [(-1.0, -0.5), (-0.5, 0.5)]                       # 負の時刻から始まる前置きの区間も書ける
+    assert orbit.keys_at(1, 0.0)[2] == pytest.approx(0.5)
+    with pytest.raises(ToolError, match="区間の頭"):
+        orbit_plan.Orbit(_plan([{"until": 0.5, "keys": [_key()]}, {"keys": [_key()]}], time_offset=1.0))
+
+
 def test_the_camera_must_not_sit_on_its_aim():
     with pytest.raises(ToolError, match="同じ"):
         _camera([{"keys": [_key(dist=0.0, height={"above": 0.0})]}])

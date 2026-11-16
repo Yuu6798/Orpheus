@@ -86,11 +86,7 @@ class Orbit:
         if p.get("grid") is None and _uses_beats(plan):
             raise ToolError("段取り表に拍 {\"beat\": k} がありますが、grid（拍の格子）がありません")
         self.shots = p["shots"]
-        self.spans = spans(self.shots, self.clock, "shots")
-        first_end = self.spans[0][1]                     # 最初の区間の頭は T = 1 の時刻（区間の中の割合 u をそこから数える）
-        if first_end <= self.offset:
-            raise ToolError(f"shots[0] の until（{first_end:g} 秒）が T = 1 の時刻（time_offset {self.offset:g} 秒）より後ではありません")
-        self.spans[0] = (self.offset, first_end)
+        self.spans = spans(self.shots, self.clock, "shots", start=self.offset)   # 最初の区間の頭は T = 1 の時刻（u をそこから数える）
         for n, (shot, (start, end)) in enumerate(zip(self.shots, self.spans)):
             keys = shot["keys"]
             if len(keys) > 1 and math.isinf(end):
