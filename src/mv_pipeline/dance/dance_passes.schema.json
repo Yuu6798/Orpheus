@@ -43,6 +43,19 @@
       "patternProperties": {"^x_": {}},
       "additionalProperties": false
     },
+    "figure": {
+      "description": "人物を灯りの色で染める（finish.light_tint。陰影の要素 shade が要る）。省くと色の絵のまま",
+      "type": "object",
+      "required": ["light", "shadow"],
+      "properties": {
+        "light": {"description": "光の当たる所の倍率（R・G・B）", "$ref": "#/$defs/rgb"},
+        "shadow": {"description": "陰の所の倍率（R・G・B）", "$ref": "#/$defs/rgb"},
+        "shade_range": {"description": "陰影の明るさを 0〜1 に伸ばす範囲 [low, high]", "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "face_smooth": {"description": "顔の範囲（head）の陰影をならす強さ（顔の面積の平方根に対する σ の割合。0 で無し）", "type": "number", "minimum": 0}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
     "rim": {
       "description": "人物の輪郭のすぐ内側の光（finish.rim_light）。省くと無し",
       "type": "object",
