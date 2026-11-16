@@ -35,6 +35,7 @@ SCHEMAS = {
     "passes": "model3d-passes/0.1",
     "cameras": "model3d-cameras/0.1",
     "orbit-plan": "model3d-orbit-plan/0.1",
+    "shot-plan": "model3d-shot-plan/0.1",
 }
 
 

@@ -1,0 +1,615 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-shot-plan/0.1",
+  "title": "model3d shot plan",
+  "description": "plan.shots のショット表: 2D の絵コンテのカメラ（1 枚の絵の仮の部屋の中の移動・向き・寄りと、追う点を置く画面の画素）と回り込みの区間、手持ちの揺れと打点の揺れ、踊りの時刻の止め、つなぎの最中の相手のカメラ（wipes）、揺れなしの基準のカメラ（references）。コマ T の時刻は time_offset + (T − 1) / fps 秒で、表の時刻はどれもこの秒（秒の数・印 marks の名前・拍 {\"beat\": k} のどれか）。部屋の長さは仮の単位（scale 倍が m）、回り込みは m、角度は度、画素は camera.resolution の画面。省いた部分は既定の値（docs/model3d.md）。作品ごとの時刻と値はリポジトリの外のレシピに置く。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fps",
+    "frames",
+    "room",
+    "dance",
+    "shots"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "model3d-shot-plan/0.1"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "fps": {
+      "description": "書き出す fps",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "frames": {
+      "description": "書き出すコマの数（T = 1 から）",
+      "type": "integer",
+      "minimum": 1
+    },
+    "time_offset": {
+      "description": "T = 1 の時刻（秒。曲の秒にそろえるとき）",
+      "type": "number"
+    },
+    "marks": {
+      "description": "時刻の名前 → 秒の数か拍 {\"beat\": k}",
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/plain_time"
+      }
+    },
+    "grid": {
+      "description": "拍の格子（拍 {\"beat\": k} の時刻 = k0_time + period × k）",
+      "type": "object",
+      "required": [
+        "period",
+        "k0_time"
+      ],
+      "properties": {
+        "period": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "k0_time": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "dance": {
+      "description": "踊りの時刻 → 動きのコマ: f = frame0 + fps × 踊りの時刻。踊りの時刻はふつうコマの時刻で、holds の区間では at に止める",
+      "type": "object",
+      "required": [
+        "fps"
+      ],
+      "properties": {
+        "frame0": {
+          "description": "踊りの時刻 0 秒の動きのコマ（既定 1）",
+          "type": "number"
+        },
+        "fps": {
+          "description": "動きの fps",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "holds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "from",
+              "at"
+            ],
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/time"
+              },
+              "until": {
+                "$ref": "#/$defs/time"
+              },
+              "at": {
+                "description": "止める踊りの時刻（秒）",
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "room": {
+      "description": "絵の中の仮の部屋（render.box_room と同じ置き方。画素は camera.resolution の画面の画素）",
+      "type": "object",
+      "required": [
+        "focal_px",
+        "center_px",
+        "camera_height",
+        "origin_px"
+      ],
+      "properties": {
+        "focal_px": {
+          "description": "基準のカメラの焦点距離（画素）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "center_px": {
+          "description": "主点（水平線の上の消失点）[x, y]",
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "camera_height": {
+          "description": "基準のカメラの床からの高さ（仮の単位）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "origin_px": {
+          "description": "世界の原点にする床の点（踊り手の立つ所）[x, 床に立つ所の y]",
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "scale": {
+          "description": "仮の単位 1 が何 m か（既定 1）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "dancer": {
+      "description": "踊り手の点（カメラの控えの dancer。既定 hips）",
+      "type": "string",
+      "minLength": 1
+    },
+    "smooth": {
+      "description": "点の通り道のならし（ガウスの σ を秒で。±ceil(reach × σ) の標本）",
+      "type": "object",
+      "properties": {
+        "sigma_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reach": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "follow": {
+      "description": "追う点の追い方: ショットの中を samples 点で平均した所から、ショットの follow（無ければ default）の割合だけ、いまの点へ寄せる",
+      "type": "object",
+      "properties": {
+        "samples": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "handheld": {
+      "description": "手持ちの揺れの形（区間の handheld が振れ幅の度）: Σ weights[m] × sin(2π hz[m] t + 乱数の位相)",
+      "type": "object",
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hz": {
+          "$ref": "#/$defs/triple"
+        },
+        "weights": {
+          "$ref": "#/$defs/triple"
+        }
+      },
+      "additionalProperties": false
+    },
+    "kicks": {
+      "description": "打点の揺れ（handheld が 0 より大きい区間でだけ）: at から length 秒、deg × exp(−経過 / tau) × sin(2π hz 経過 + phase) × gain",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "deg"
+        ],
+        "properties": {
+          "at": {
+            "$ref": "#/$defs/time"
+          },
+          "deg": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "kick": {
+      "type": "object",
+      "properties": {
+        "tau": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "length": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "hz": {
+          "$ref": "#/$defs/triple"
+        },
+        "phase": {
+          "$ref": "#/$defs/triple"
+        },
+        "gain": {
+          "$ref": "#/$defs/triple"
+        }
+      },
+      "additionalProperties": false
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "resolution": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "sensor_height": {
+          "description": "書き出す lens_mm の換算に使う縦の受光（mm）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "wipes": {
+      "description": "つなぎ: at を中心に seconds 秒の間（|t − at| < seconds ÷ 2）は、相手のショット（at の後か前のショット）のカメラも同じ時刻で作る（出力 alt）",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "seconds"
+        ],
+        "properties": {
+          "at": {
+            "$ref": "#/$defs/time"
+          },
+          "seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "references": {
+      "description": "揺れなしの基準のカメラ（ショット shot の at（省くとショットの頭）の時刻）。報告の references に書く（手前の板を置く基準など）",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "shot"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "shot": {
+            "type": "string",
+            "minLength": 1
+          },
+          "at": {
+            "$ref": "#/$defs/time"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/shot"
+      }
+    }
+  },
+  "patternProperties": {
+    "^x_": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "plain_time": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "object",
+          "required": [
+            "beat"
+          ],
+          "properties": {
+            "beat": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "time": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": [
+            "beat"
+          ],
+          "properties": {
+            "beat": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "triple": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "ramp": {
+      "description": "数か [頭, 終わり]（ショットの中の割合 u でまっすぐ変える）",
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "key": {
+      "type": "object",
+      "required": [
+        "move",
+        "anchor",
+        "at"
+      ],
+      "properties": {
+        "u": {
+          "description": "区間の中の割合（0〜1。最初のキーは既定 0、最後は 1）",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "move": {
+          "description": "基準のカメラからの移動 [右, 下, 奥]（仮の単位）",
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "yaw": {
+          "description": "右へ向ける角（度）",
+          "type": "number"
+        },
+        "pitch": {
+          "description": "上へ向ける角（度）",
+          "type": "number"
+        },
+        "roll": {
+          "description": "傾き（度）",
+          "type": "number"
+        },
+        "zoom": {
+          "description": "寄り（焦点距離 = zoom × room.focal_px。既定 1）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "anchor": {
+          "description": "追う点: 骨の通り道の点の名前か、踊り手の立つ面の上の基準のカメラの画素 [x, y]",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "at": {
+          "description": "追う点を置く画面の画素 [x, y]",
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "ease": {
+          "description": "次のキーへのつなぎ方",
+          "enum": [
+            "smooth",
+            "linear",
+            "out",
+            "in",
+            "whip"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "orbit": {
+      "description": "回り込み: keys の [時刻, 方位°, 距離 m, 高さ m] を単調な 3 次の補間でつなぎ（範囲の外は端）、点 centre のまわりに置いて高さ aim_z の注視点を向く",
+      "type": "object",
+      "required": [
+        "keys"
+      ],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/time"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "minItems": 4,
+            "maxItems": 4
+          }
+        },
+        "centre": {
+          "description": "回る中心の点（既定 hips）",
+          "type": "string",
+          "minLength": 1
+        },
+        "aim_z": {
+          "description": "注視点の高さ（m。既定 1）",
+          "type": "number"
+        },
+        "fov": {
+          "description": "縦の画角（度。既定 48）",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 180
+        }
+      },
+      "additionalProperties": false
+    },
+    "shot": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "until": {
+          "$ref": "#/$defs/time"
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/key"
+          }
+        },
+        "orbit": {
+          "$ref": "#/$defs/orbit"
+        },
+        "handheld": {
+          "description": "手持ちの揺れの振れ幅（度。0 で揺れも打点の揺れも無し）",
+          "type": "number",
+          "minimum": 0
+        },
+        "follow": {
+          "description": "追う点を追う割合（既定 follow.default）",
+          "type": "number",
+          "minimum": 0
+        },
+        "fix": {
+          "description": "ショットの手直し。keys の区間は dx・dy・dz（move に足す）・dyaw・dpitch（度）・zoom（掛ける）・px・py（at に足す画素）、回り込みは dyaw・radius（掛ける）・dz・aim_dz（m）・zoom・px・py（主点のずらしの画素）",
+          "type": "object",
+          "properties": {
+            "dx": {
+              "$ref": "#/$defs/ramp"
+            },
+            "dy": {
+              "$ref": "#/$defs/ramp"
+            },
+            "dz": {
+              "$ref": "#/$defs/ramp"
+            },
+            "dyaw": {
+              "$ref": "#/$defs/ramp"
+            },
+            "dpitch": {
+              "$ref": "#/$defs/ramp"
+            },
+            "zoom": {
+              "$ref": "#/$defs/ramp"
+            },
+            "px": {
+              "$ref": "#/$defs/ramp"
+            },
+            "py": {
+              "$ref": "#/$defs/ramp"
+            },
+            "radius": {
+              "$ref": "#/$defs/ramp"
+            },
+            "aim_dz": {
+              "$ref": "#/$defs/ramp"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "keys"
+          ],
+          "not": {
+            "required": [
+              "orbit"
+            ]
+          }
+        },
+        {
+          "required": [
+            "orbit"
+          ],
+          "not": {
+            "required": [
+              "keys"
+            ]
+          }
+        }
+      ],
+      "patternProperties": {
+        "^x_": {}
+      },
+      "additionalProperties": false
+    }
+  }
+}
