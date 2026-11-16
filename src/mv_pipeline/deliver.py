@@ -10,7 +10,9 @@ join:
 - SEGMENT: 区間の動画（同じ寸法・fps・符号化で書いたもの）を、つなぐ順に。フォルダを 1 つ渡すと、その中の seg_*.mp4 を名前の順に使う。
   名前が seg_<最初のコマ>_<終わりのコマ>.mp4 なら（実制作の区間の描画と同じ）、区間がすき間なく続くことと、区間ごとのコマ数
   （終わり − 最初）を確かめる。どの区間も同じ寸法・fps・映像の符号化であること（つなぎは再エンコードしないため）。
-- つなぎ: ffmpeg の concat で、映像を再エンコードせずにつなぐ（-c copy）。全体のコマ数を確かめる。
+- つなぎ: ffmpeg の concat で、映像を再エンコードせずにつなぐ（-c copy）。一覧には区間ごとの正確な長さ（パケットの時刻から出す）を
+  duration で添える（ffmpeg 9 が書く区間は入れ物の長さが 1 ms 未満短いことがあり、それに任せると後の区間が前にずれるため）。
+  全体のコマ数を確かめる。
 - 音（--audio）: --audio-start 秒から映像の長さを切り出し、頭と終わりにフェードを掛けて AAC 192k・48kHz にする。映像の長さは
   パケットの時刻から正確に出す（表示の fps は丸めてあるため。整数の fps ならコマ数 / fps と同じ）。フェードの長さは音を付けるときだけ確かめる。
 - 元データ: 映像と音を -c copy で合わせ、映像の長さで切り、faststart で書く。既にあって中身が違えば --force が要る。
@@ -18,8 +20,9 @@ join:
 - 記録 <MASTER の名前>.deliver.json: 区間（sha256・コマ数）・音・ffmpeg（パス・版・sha256）・コマンド・元データの bytes と sha256・
   構造検査（technical_pass。作品の採否ではない）。
 
-手順と ffmpeg の引数は実制作の仕上げ（片をつないで音を付ける）と同じ。同じ ffmpeg（ORPHEUS_FFMPEG で選べる）と同じ入力なら、
-元データは同じバイト列になる。色のタグは区間のまま（つなぐだけで変えない）。
+手順と ffmpeg の引数は実制作の仕上げ（片をつないで音を付ける）と同じ。同じ ffmpeg（ORPHEUS_FFMPEG で選べる）と同じ入力で、
+区間の入れ物の長さが映像の長さ以上なら（ffmpeg 7.1 が書く区間）、元データは同じバイト列になる（一覧の duration は結果を変えない）。
+色のタグは区間のまま（つなぐだけで変えない）。
 
 review-copy（確認用の小さい版。実制作の仕上げと同じ式）:
 - 元データが --limit-bytes（28,000,000）未満なら、そのまま写す。
@@ -144,12 +147,24 @@ def video_seconds(path):
     return Fraction(end - start) * Fraction(int(base[1]), int(base[2]))
 
 
-def _concat_list(segments, path):
-    """ffmpeg の concat の一覧（実制作と同じ file '<スラッシュ区切りの絶対パス>'。' はエスケープする）。"""
+def _microseconds(seconds):
+    """秒（Fraction）をマイクロ秒に丸めた concat の duration の書き方（0.416667 など）。半分は切り上げる
+    （concat が区間の入れ物から読む長さと同じ丸め。ffmpeg の av_rescale の AV_ROUND_NEAR_INF）。"""
+    count = int(Fraction(seconds) * 1_000_000 + Fraction(1, 2))
+    return f"{count // 1_000_000}.{count % 1_000_000:06d}"
+
+
+def _concat_list(segments, path, lengths):
+    """ffmpeg の concat の一覧（実制作と同じ file '<スラッシュ区切りの絶対パス>'。' はエスケープする）に、区間ごとの映像の長さ
+    （video_seconds。パケットの時刻から出した正確な長さ）を duration で添える。
+
+    添えないと、concat は区間の入れ物（mp4 の edit list）の長さで次の区間の時刻を決める。ffmpeg 9.0.2 はその長さのミリ秒に満たない
+    分を落として書くことがあり（12 fps の 5 コマ 416.67 ms が 416 ms）、つなぎ目ごとに後の区間が 1 ms 未満ずつ前にずれる。入れ物の
+    長さが映像の長さ以上の区間（ffmpeg 7.1 が書いたもの）では、添えても添えなくても同じバイト列になる（実制作の仕上げと同じ）。"""
     lines = []
-    for segment in segments:
+    for segment, length in zip(segments, lengths, strict=True):
         name = segment.resolve().as_posix().replace("'", "'\\''")
-        lines.append(f"file '{name}'\n")
+        lines.append(f"file '{name}'\nduration {_microseconds(length)}\n")
     path.write_bytes("".join(lines).encode("utf-8"))
 
 
@@ -196,7 +211,8 @@ def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out
         records.append({"path": str(path), "sha256": sha256(path), "frames": frames,
                         "range": None if ranges is None else list(ranges[index])})
     total = sum(r["frames"] for r in records)
-    duration = float(sum((video_seconds(path) for path in segments), Fraction(0)))     # 表示の fps（丸めてある）では割らない
+    lengths = [video_seconds(path) for path in segments]
+    duration = float(sum(lengths, Fraction(0)))                                    # 表示の fps（丸めてある）では割らない
     if audio is not None and fade_in + fade_out > duration:                        # フェードは音にだけ掛ける
         raise PipelineError(f"フェード（{fade_in:g} + {fade_out:g} 秒）が長さ {duration:g} 秒より長いです")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -204,7 +220,7 @@ def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out
     commands = []
     try:
         listing = work / "concat.txt"
-        _concat_list(segments, listing)
+        _concat_list(segments, listing, lengths)
         video = work / "video.mp4"
         _run(["-f", "concat", "-safe", "0", "-i", listing, "-c", "copy", video], commands)
         joined = probe.decode(video, "v")["frames"]
