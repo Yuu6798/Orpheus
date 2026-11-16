@@ -169,6 +169,7 @@ def _sprites(raw):
     out["fade"] = [float(v) for v in raw.get("fade", space.SPRITES["fade"])]
     out["mirror_mode"] = raw.get("mirror_mode", space.SPRITES["mirror_mode"])
     out["mirror_order"] = raw.get("mirror_order", space.SPRITES["mirror_order"])
+    out["focus_metric"] = raw.get("focus_metric", space.SPRITES["focus_metric"])
     return out
 
 
@@ -298,8 +299,13 @@ def load_space(spec, plan):
         if "distance_m" not in fr:
             raise PipelineError(f"cameras の T {fr['T']} に distance_m（踊り手までの距離）がありません")
         cameras[int(fr["T"])] = {"matrix": fr["matrix"], "focal": fr["focal_px"] * k,
-                                 "principal": (fr["principal_px"][0] * k, fr["principal_px"][1] * k), "focus": fr["distance_m"]}
+                                 "principal": (fr["principal_px"][0] * k, fr["principal_px"][1] * k), "focus": fr["distance_m"],
+                                 "dancer": fr.get("dancer")}
     absent = [T for T in plan.frames if T not in cameras]
+    if data["sprites"] is not None and data["sprites"]["focus_metric"] == "depth":
+        lacking = [T for T in plan.frames if T in cameras and cameras[T]["dancer"] is None]
+        if lacking:
+            raise PipelineError(f"sprites.focus_metric depth には、cameras の dancer（踊り手の点）が要ります（無い T: {lacking[:10]}）")
     if absent:
         raise PipelineError(f"cameras に、重ねるコマの T がありません: {absent[:10]}")
     items, sprites = {}, []
