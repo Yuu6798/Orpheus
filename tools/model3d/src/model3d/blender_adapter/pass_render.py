@@ -42,9 +42,11 @@ import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
     from . import stage_render
+    from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import stage_render
+    from vrm_apply_motion import use_scene_of
 
 PASSES = ("room", "char", "shade", "disc", "head")
 DEFAULTS = {
@@ -178,20 +180,6 @@ def set_pass(bpy, kind, handles, settings):
         image.file_format, image.color_mode, image.quality = "JPEG", "RGB", settings["quality"]
 
 
-def use_scene_of(bpy, armature):
-    """アーマチュアのあるシーンを今のシーンにして返す（作業用のシーンを開いたまま保存されたファイルがある。vrm_apply_motion.py に
-    同じ写しがある）。裏の起動でも、読み込んだファイルの窓のシーンを替えれば bpy.context.scene が替わる（Blender 5.2.4 で確かめた）。"""
-    scenes = [scene for scene in bpy.data.scenes if armature.name in scene.objects]
-    if not scenes:
-        raise SystemExit(f"アーマチュア {armature.name} の入ったシーンがありません")
-    if bpy.context.scene not in scenes:
-        window = bpy.context.window or next(iter(bpy.context.window_manager.windows), None)
-        if window is None:
-            raise SystemExit(f"アーマチュア {armature.name} のシーン {scenes[0].name} に切り替えられません（窓がありません）")
-        window.scene = scenes[0]
-    return bpy.context.scene
-
-
 def apply_render(bpy, settings):
     """Workbench の描き方（どの要素にも共通）。"""
     sc = bpy.context.scene
@@ -259,7 +247,7 @@ def main(argv=None):
         coll = bpy.data.collections.get(settings["room"]["collection"])
         if coll is None:
             raise SystemExit(f"部屋のコレクションがありません: {settings['room']['collection']}")
-        room = {o for o in coll.all_objects if o.type in DRAWN and o.name in sc.objects}
+        room = {o for o in coll.all_objects if o.type in DRAWN and o.name in sc.objects and not o.hide_render}
     character = [o for o in sc.objects if o.type in DRAWN and not o.hide_render and o not in room]
     heads = set(settings["head"])
     absent = sorted(heads - {o.name for o in character})
@@ -287,7 +275,7 @@ def main(argv=None):
     sc.camera = cam
 
     # 踊り手の点: 骨の付け根の平均を、動きのコマの並びでならす（骨だけを動かして測る。部品の変形は止めて速くする。後で戻す）
-    frames = sorted({f for _, f, _ in plan})
+    frames = sorted({f for T, f, _ in plan if by_record.get(T, (None,) * 4)[3] is None})   # 記録に点の無いコマだけ測る
     mods = [(m, m.show_viewport) for o in bpy.data.objects if o.type == "MESH" for m in o.modifiers]
     for m, _ in mods:
         m.show_viewport = False
@@ -300,7 +288,7 @@ def main(argv=None):
     finally:
         for m, shown in mods:
             m.show_viewport = shown
-    path = dancer_path(raw, frames, settings["dancer"]["sigma"])
+    path = dancer_path(raw, frames, settings["dancer"]["sigma"]) if frames else {}
     record_res = record["resolution"] if record is not None else None
 
     def place(T, f, spec):
@@ -376,7 +364,8 @@ def main(argv=None):
                           "head": sorted(heads)},
               "armature": arm.name, "dancer_bones": settings["dancer"]["bones"],
               "camera": {"from_record": sum(1 for T, _, _ in plan if T in by_record),
-                         "from_track": sum(1 for T, _, _ in plan if T not in by_record)},
+                         "from_track": sum(1 for T, _, _ in plan if T not in by_record),
+                         "unused_record": sorted(set(by_record) - {T for T, _, _ in plan})},
               "seconds": round(seconds, 1), "seconds_per_pass": round(seconds / count, 3) if count else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

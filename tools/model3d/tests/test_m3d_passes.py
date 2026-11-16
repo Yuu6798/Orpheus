@@ -255,3 +255,8 @@ def test_the_new_contracts_are_known():
     with pytest.raises(ToolError, match="passes"):
         contracts.validate("passes", {"schema_version": "model3d-passes/0.1", "directory": ".", "fps": 30, "resolution": [8, 8],
                                       "passes": {"shadow": {"format": "png", "alpha": False, "frames": [], "missing": []}}})
+
+
+def test_the_scene_switch_is_the_vrm_steps_one():
+    from model3d.blender_adapter import vrm_apply_motion
+    assert pass_render.use_scene_of is vrm_apply_motion.use_scene_of      # 写さずに読む（VRM の工程と同じ切り替え）
