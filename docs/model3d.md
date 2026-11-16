@@ -890,7 +890,7 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
      百分位（`inner_percentile`）と平均でならす。
   3. 体から、脚の頂点グループの頂点を `collider_min_leg_vertices` 以上持つ、`collider_min_island` 頂点以上の島（脚・骨盤）だけを取り出し、
      `collider_cut_below` m より下（足首・靴）を除き、面を `collider_ratio` に減らして当たりの相手（`skirt_collider`）にする。小さな島
-     （腰の飾りや花）は入らない。ほかの物の当たり判定は外す。
+     （腰の飾りや花）は入らない。写しの形状キー（表情など）は外す。ほかの物の当たり判定は外す。
   4. 細かい裾の頂点のうち、脚に近すぎるもの（脚＋`clearance`。腰に固定する段は `clearance_top`）を外へ出す。
   5. `extend_slit` なら、前の切れ目を、腰に固定する段（`pin_rows_front`）の下まで伸ばす（筒と細かい裾の両方に切り込み）。
      `extra_cuts_deg` の向き（度。0 が +X、90 が +Y）にも、帯の下から裾まで切り込みを足せる。
