@@ -24,7 +24,7 @@
       "required": ["T", "matrix", "focal_px", "principal_px"],
       "properties": {
         "T": {"type": "integer", "minimum": 1},
-        "f": {"type": "integer"},
+        "f": {"type": "number"},
         "matrix": {
           "type": "array", "minItems": 4, "maxItems": 4,
           "items": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}

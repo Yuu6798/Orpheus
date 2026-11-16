@@ -21,7 +21,7 @@
       "required": ["T", "f"],
       "properties": {
         "T": {"type": "integer", "minimum": 1},
-        "f": {"type": "integer"},
+        "f": {"description": "動きのコマ（小数なら、前のコマと次のコマの間の時刻を描く）", "type": "number"},
         "camera": {
           "description": "カメラの位置と狙う点（世界の座標、m）と、レンズ（mm）",
           "type": "object",

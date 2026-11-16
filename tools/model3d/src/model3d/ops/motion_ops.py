@@ -640,7 +640,8 @@ def _bone_path_settings(parameters, track):
         raise ToolError("frame_range と track は一緒に使えません（track があれば、その動きのコマを測ります）")
     frames = None
     if track is not None:
-        frames = sorted({int(fr["f"]) for fr in track["frames"]})
+        from ..blender_adapter.stage_render import motion_frame
+        frames = sorted({motion_frame(fr["f"]) for fr in track["frames"]})
     elif span is not None:
         if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)
                 or span[0] > span[1]):
