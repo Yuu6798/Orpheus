@@ -167,6 +167,7 @@
         "margin": {"description": "画面の外へこの画素まではみ出した絵も置く（既定 200）", "type": "number", "minimum": 0},
         "fade": {"description": "明るさ = 明るさ × clip(fade[0] − 奥行き ÷ fade[1], fade[2], fade[3]) × gain（既定 [1.25, 40, 0.45, 1.1]）", "type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
         "mirror_blur": {"description": "映り込みに足すぼかし（画素。既定 2）", "type": "number", "minimum": 0},
+        "focus_metric": {"description": "踊り手の遠さ（絵を踊り手の手前と奥に分け、ピントを合わせる所）: distance（既定。控えの distance_m。直線の距離で試作と同じ）か depth（控えの dancer のカメラから見た奥行き。絵の奥行きと同じ測り方で、踊り手が画面の端にいても正しい）", "enum": ["distance", "depth"]},
         "mirror_order": {"description": "映り込みを重ねる順: source（既定。元の位置の奥行きの遠い順。試作と同じ）か reflected（映った奥行きの遠い順。カメラが傾いて高さの違う絵の映り込みが重なるとき、前後が正しい）", "enum": ["source", "reflected"]},
         "mirror_mode": {"description": "映り込みの絵の向き: rotate（既定。180° 回す。試作と同じで左右も入れ替わる）か flip（左右を保って上下だけ返す。床の映り込みとして正しい向き。左右対称の絵ではどちらも同じ）", "enum": ["rotate", "flip"]},
         "floor": {"description": "映り込みで上下を返す床の高さ（m。既定 0）", "type": "number"}
