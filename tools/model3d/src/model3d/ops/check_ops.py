@@ -76,8 +76,8 @@ def check_continuity(inputs, parameters, outputs, context):
     return _finish(report, outputs, parameters, "連続性の検査")
 
 
-JITTER_PARAMETERS = {"objects", "bone", "bone_prefix", "armature", "frames", "jump_mm", "toggle", "toggle_types", "top", "blender",
-                     "addons", "blender_extensions", "timeout", "strict", "report_only", *checks.JITTER_THRESHOLDS}
+JITTER_PARAMETERS = {"objects", "bone", "bone_prefix", "armature", "frames", "jump_mm", "toggle", "toggle_types", "top", "space",
+                     "blender", "addons", "blender_extensions", "timeout", "strict", "report_only", *checks.JITTER_THRESHOLDS}
 JITTER_SCRIPT = __import__("pathlib").Path(__file__).resolve().parents[1] / "blender_adapter" / "jitter_sample.py"
 
 
@@ -114,7 +114,7 @@ def _jitter_frames(inputs, parameters):
 def check_jitter(inputs, parameters, outputs, context):
     from pathlib import Path
     from ..blender_adapter import launcher
-    from ..blender_adapter.jitter_sample import TOGGLE_TYPES
+    from ..blender_adapter.jitter_sample import SPACES, TOGGLE_TYPES
     from ..io import read_json
     from . import number
     from .blender_ops import blender_addons
@@ -136,6 +136,9 @@ def check_jitter(inputs, parameters, outputs, context):
     toggle = parameters.get("toggle", False)
     if not isinstance(toggle, bool):
         raise ToolError(f"toggle は true か false にしてください: {toggle!r}")
+    space = parameters.get("space", "bone")
+    if space not in SPACES:
+        raise ToolError(f"space は {' か '.join(SPACES)} にしてください（bone: 骨の行列をそのまま逆に。rigid: 回転と位置だけ）: {space!r}")
     kinds = parameters.get("toggle_types", list(TOGGLE_TYPES))
     if not isinstance(kinds, list) or not kinds or not all(isinstance(k, str) and k for k in kinds):
         raise ToolError(f"toggle_types はモディファイアの種類（例 \"CLOTH\"）の並びにしてください: {kinds!r}")
@@ -146,7 +149,7 @@ def check_jitter(inputs, parameters, outputs, context):
     jump = number(parameters, "jump_mm", 4.0, minimum=0, exclusive=True)
     settings = {"objects": objects, "bone": _bone_prefix(parameters) + bone, "armature": armature, "frames": frames,
                 "frames_source": source, "jump_m": jump / 1000, "toggle": toggle, "toggle_types": kinds,
-                "top": number(parameters, "top", 8, minimum=1, integer=True)}
+                "top": number(parameters, "top", 8, minimum=1, integer=True), "space": space}
     blender = _blender(parameters, context, "check.jitter")
     addons, extensions = blender_addons(parameters, context)
     step_dir = Path(context.step_dir)
@@ -157,7 +160,14 @@ def check_jitter(inputs, parameters, outputs, context):
                                   log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
     report = checks.jitter_verdict(read_json(raw_path), thresholds)
     report.update(blend=str(inputs["blend"]), blender_version=record["blender_version"])
-    return _finish(report, outputs, parameters, "ちらつきの検査")
+    result = _finish(report, outputs, parameters, "ちらつきの検査")
+    warnings = report.get("warnings") or []
+    if warnings and not parameters.get("report_only"):   # 骨の大きさで長さが変わっているなど、数の読み方に要る注意
+        if parameters.get("strict"):
+            raise ToolError("ちらつきの検査: " + "; ".join(warnings))
+        result.unresolved.extend(f"ちらつきの検査: {w}" for w in warnings)
+        result.review = True
+    return result
 
 
 MOTION_PARAMETERS = {"fps", "bend_min_deg", "contact_height", "skate_speed", "floor_tolerance", "frames", "top",
