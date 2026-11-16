@@ -161,6 +161,24 @@ def test_the_reflections_can_be_stacked_by_their_reflected_depth(tmp_path):
     assert top_colour("source") == "blue"                                    # 元の奥行きの順（試作と同じ）では、映って遠い青が上
 
 
+def test_the_dancer_can_be_placed_by_its_camera_depth(tmp_path):
+    """踊り手が画面の端（カメラ (0, 0, 1) が +Y を見て、踊り手は (3, 5, 1)）: 直線の距離 5.83 と比べると、奥行き 5.5 の絵（踊り手の
+    すぐ後ろ）が手前の層に入る。depth では踊り手の奥行き 5 と比べて奥の層（Codex の指摘）。"""
+    levels = space.sprite_levels(_sprite(tmp_path / "a.png", (40, 20)))
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+    matrix[:3, 3] = [0.0, 0.0, 1.0]
+    camera = {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": math.hypot(3.0, 5.0),
+              "dancer": [3.0, 5.0, 1.0]}
+    items = [[3.3, 5.5, 1.0, 0.4, 1.0, 0]]
+    far, near, _ = space.sprite_layers((200, 200), camera, items, [levels], {"focus_blur": 0.0})
+    assert near.any() and not far.any()                                     # 既定（distance。試作と同じ）
+    far, near, _ = space.sprite_layers((200, 200), camera, items, [levels], {"focus_blur": 0.0, "focus_metric": "depth"})
+    assert far.any() and not near.any()
+    with pytest.raises(ValueError, match="dancer"):
+        space.sprite_layers((200, 200), {**camera, "dancer": None}, items, [levels], {"focus_metric": "depth"})
+
+
 def _sprite_spec(tmp_path, items, near_frames=()):
     _passes(tmp_path)
     _sprite(tmp_path / "lamp.png", (40, 20), color=(0, 255, 0))
