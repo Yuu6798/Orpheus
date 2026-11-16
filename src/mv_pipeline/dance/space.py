@@ -98,7 +98,8 @@ def phantom_glow(picture, dark, hot):
 
 SPRITES = {"gain": 1.05, "glow": 0.45, "glow_blur": 18.0, "focus_blur": 0.10, "max_blur": 5.0, "room_blur": 0.15, "near_clip": 0.3,
            "margin": 200.0, "fade": [1.25, 40.0, 0.45, 1.1], "mirror_blur": 2.0, "floor": 0.0, "mirror_mode": "rotate",
-           "mirror_order": "source"}
+           "mirror_order": "source", "focus_metric": "distance"}
+FOCUS_METRICS = ("distance", "depth")    # 踊り手の遠さ: distance は控えの distance_m（直線の距離。試作と同じ）、depth はカメラから見た奥行き
 MIRROR_ORDERS = ("source", "reflected")  # 映り込みを重ねる順: source は元の位置の奥行き（試作と同じ）、reflected は映った奥行き
 MIRROR_MODES = ("rotate", "flip")        # 映り込みの絵の向き: rotate は 180° 回す（試作と同じ）、flip は左右を保って上下だけ返す
 _flipped = {}
@@ -176,7 +177,9 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
     fade[2], fade[3]) × gain。ぼかし = min(|奥行き − focus| × focus_blur, max_blur) × unit + room_blur × 部屋の σ × unit。
     床への映り込みは、床の面（floor）で上下を返した位置に、ぼかしを mirror_blur × unit 足して置く（絵の向きは mirror_mode。rotate は
     180° 回す（試作と同じ。左右も入れ替わる）、flip は左右を保って上下だけ返す（床の映り込みとして正しい向き））。映り込みを重ねる順は
-    mirror_order（source は元の位置の奥行きの遠い順（試作と同じ）、reflected は映った奥行きの遠い順（重なる映り込みの前後が正しい））。奥行き near_clip 以下と、
+    mirror_order（source は元の位置の奥行きの遠い順（試作と同じ）、reflected は映った奥行きの遠い順（重なる映り込みの前後が正しい））。
+    踊り手の遠さ focus は、focus_metric が distance なら控えの直線の距離（試作と同じ。踊り手が画面の端にいると、絵の奥行きと測り方が違う）、
+    depth なら控えの踊り手の点のカメラから見た奥行き（絵の奥行きと同じ測り方）。奥行き near_clip 以下と、
     画面の外 margin 画素より外と、上端（映り込みは下端）がカメラの後ろ（奥行き 0.05 m 以下）に回る絵は置かない。"""
     s = {**SPRITES, **(settings or {})}
     width, height = size
@@ -190,6 +193,10 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
     matrix = np.asarray(camera["matrix"], np.float64)
     right, up, back, position = matrix[:3, 0], matrix[:3, 1], matrix[:3, 2], matrix[:3, 3]
     focal, (px, py), focus = camera["focal"], camera["principal"], camera["focus"]
+    if s["focus_metric"] == "depth":                                 # 踊り手の点のカメラから見た奥行き（絵の奥行きと同じ測り方）
+        if camera.get("dancer") is None:
+            raise ValueError("focus_metric depth には、カメラの控えの dancer（踊り手の点）が要ります")
+        focus = float(-((np.asarray(camera["dancer"], np.float64) - position) @ back))
 
     def project(points):
         relative = points - position
