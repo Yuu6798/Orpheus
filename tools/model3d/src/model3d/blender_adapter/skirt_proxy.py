@@ -441,6 +441,8 @@ def main(argv=None):
     collider.name = COLLIDER
     for collection in body.users_collection:
         collection.objects.link(collider)
+    if collider.data.shape_keys is not None:          # 写しの形状キー（表情など）は当たりに要らない。あると面を減らせない
+        collider.shape_key_clear()
     bm = bmesh.new()
     bm.from_mesh(collider.data)
     bm.verts.ensure_lookup_table()
