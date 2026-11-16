@@ -215,6 +215,16 @@ def over_glow(image, layer, glow, glow_blur, unit=1.0):
 WORLD = {"sky": [0.012, 0.009, 0.018], "pool": [0.40, 0.15, 0.055], "halo": {"sigma": 110.0, "color": [0.10, 0.04, 0.015]}}
 
 
+EFFECTS = {"gain": 0.9, "glow": 0.32, "blur": 1.0, "glow_blur": 12.0}    # 試作の値
+
+
+def effects(frame, picture, gain, glow, settings, unit=1.0):
+    """効果の要素（model3d の render.passes の fx。人物を黒で一緒に描いた、光として足す色）を、σ blur でぼかして gain 倍、さらに
+    σ glow_blur でぼかして glow 倍、frame に足す（試作と同じ式）。"""
+    soft = finish.blur(picture, settings["blur"], unit)
+    return frame + soft * gain + finish.blur(soft, settings["glow_blur"], unit) * glow
+
+
 def centroid(alpha):
     """アルファの重みの中心（画素）。人物が 50 画素ぶんより小さければ画面の中心。"""
     height, width = alpha.shape

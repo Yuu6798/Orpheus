@@ -125,6 +125,18 @@
       "patternProperties": {"^x_": {}},
       "additionalProperties": false
     },
+    "effects": {
+      "description": "効果（model3d の render.passes の fx。人物を黒で一緒に描いた光）を、σ blur でぼかして gain 倍、さらに σ glow_blur でぼかして glow 倍、足す（space.effects。近い小さな絵の後、衝撃の前）。要素の一覧に fx が要る。省くと無し",
+      "type": "object",
+      "properties": {
+        "gain": {"description": "倍率（数か時刻のキー。既定 0.9）", "$ref": "#/$defs/level"},
+        "glow": {"description": "にじみの倍率（数か時刻のキー。既定 0.32）", "$ref": "#/$defs/level"},
+        "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 1）", "type": "number", "minimum": 0},
+        "glow_blur": {"description": "にじみの σ（幅 1080 の画素。既定 12）", "type": "number", "minimum": 0}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
     "impact": {
       "description": "衝撃: 画の中心のまわりに少しずつ拡大した画を元の画と平均し、奥へ吸い込まれる筋にする（space.impact。小さな絵と人物の後、にじみの前）。省くと無し",
       "type": "object",
@@ -188,6 +200,17 @@
             "strength": {"description": "強さ（数か時刻のキー。既定 0.16）", "$ref": "#/$defs/level"},
             "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 2.5）", "type": "number", "minimum": 0},
             "tint": {"description": "色の倍率（R・G・B か色のキー。既定 [1, 1, 1]）", "$ref": "#/$defs/color"}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "fx": {
+          "description": "効果の映り込み（要素 rfx を σ blur でぼかし、gain と strength を掛ける。人物の映り込みの次に足す）",
+          "type": "object",
+          "properties": {
+            "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 3）", "type": "number", "minimum": 0},
+            "gain": {"description": "倍率（既定 0.35）", "type": "number", "minimum": 0},
+            "strength": {"description": "強さ（数か時刻のキー。既定 1）", "$ref": "#/$defs/level"}
           },
           "patternProperties": {"^x_": {}},
           "additionalProperties": false

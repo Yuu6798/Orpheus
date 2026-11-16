@@ -29,7 +29,7 @@ from . import space
 SCHEMA_VERSION = "dance-passes/0.1"
 SCHEMA_FILE = Path(__file__).resolve().parent / "dance_passes.schema.json"
 SPRITES_SCHEMA = Path(__file__).resolve().parent / "dance_sprites.schema.json"
-KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade", "pool")
+KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade", "pool", "fx", "rfx")
 PHANTOM_KIND = re.compile(r"^r?ph([0-9]+)$")       # 分身 ph<i> と、床で反転したカメラの rph<i>
 FLOOR_SHADOW = {"strength": 0.45, "sigma": 26.0, "gain": 1.0, "down": 1}      # 既定は試作の値
 FLASH_COLOR = [255.0, 255.0, 255.0]
@@ -153,6 +153,15 @@ def _world(raw):
     return out
 
 
+def _effects(raw):
+    """効果の足し方（書いたときだけ。既定は試作の値）。"""
+    if raw is None:
+        return None
+    return {"gain": _level(raw.get("gain", space.EFFECTS["gain"]), "effects.gain"),
+            "glow": _level(raw.get("glow", space.EFFECTS["glow"]), "effects.glow"),
+            **{key: float(raw.get(key, space.EFFECTS[key])) for key in ("blur", "glow_blur")}}
+
+
 def _impact(raw):
     if raw is None:
         return None
@@ -174,7 +183,10 @@ def _reflection(raw):
     """床への映り込みの設定（書いた部分だけ。既定は試作の値）。"""
     if raw is None:
         return None
-    out = {"char": None, "ripple": None, "phantoms": None, "sprites": None}
+    out = {"char": None, "ripple": None, "phantoms": None, "sprites": None, "fx": None}
+    if raw.get("fx") is not None:
+        out["fx"] = {"blur": float(raw["fx"].get("blur", 3.0)), "gain": float(raw["fx"].get("gain", 0.35)),
+                     "strength": _level(raw["fx"].get("strength", 1.0), "reflection.fx.strength")}
     if raw.get("sprites") is not None:
         out["sprites"] = {"strength": float(raw["sprites"].get("strength", 0.5)),
                           "gain": _level(raw["sprites"].get("gain", 1.0), "reflection.sprites.gain")}
@@ -208,7 +220,7 @@ def normalize(raw):
             "clock": None if raw.get("clock") is None else _check_keys(raw["clock"], "clock"),
             "reflection": _reflection(raw.get("reflection")), "phantoms": _phantoms(raw.get("phantoms")),
             "cameras": raw.get("cameras"), "sprites": _sprites(raw.get("sprites")),
-            "world": _world(raw.get("world")), "impact": _impact(raw.get("impact")),
+            "world": _world(raw.get("world")), "impact": _impact(raw.get("impact")), "effects": _effects(raw.get("effects")),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
     if raw.get("figure") is not None:
         figure = raw["figure"]
@@ -398,7 +410,7 @@ def sprite_layers(data, plan, T, where):
 
 def reflection_layer(data, plan, T, layers=None):
     """床への映り込みの画（部屋に足す前。表示の値）。reflection が無ければ None。床で反転したカメラで描いた要素（と小さな絵の映り込み
-    layers[2]）を、ぼかして色と強さを掛けて足し合わせ（space.mirror。人物 → 分身 → 小さな絵の順）、水鏡ならゆらす（space.ripple）。"""
+    layers[2]）を、ぼかして色と強さを掛けて足し合わせ（space.mirror。人物 → 効果 → 分身 → 小さな絵の順）、水鏡ならゆらす（space.ripple）。"""
     reflection = data["reflection"]
     if reflection is None:
         return None
@@ -409,6 +421,10 @@ def reflection_layer(data, plan, T, layers=None):
         mirrored = _same_size(read_image(plan.files["rchar"][T], alpha=True), plan, "rchar", T)
         char = reflection["char"]
         parts.append((mirrored[..., :3] * mirrored[..., 3:4], char["blur"], [color_at(char["tint"], t), level_at(char["strength"], t)]))
+    flames = reflection["fx"]
+    if flames is not None and T in plan.files.get("rfx", {}):     # 効果の映り込み（ぼかして gain と強さを掛ける）
+        picture = _same_size(read_image(plan.files["rfx"][T]), plan, "rfx", T)
+        parts.append((picture, flames["blur"], [flames["gain"], level_at(flames["strength"], t)]))
     ghosts, glow = data["phantoms"], reflection["phantoms"]
     if ghosts is not None and glow is not None:       # 分身の映り込み（炎の色 × アルファをぼかして、分身の強さと gain を掛ける）
         strength = level_at(ghosts["strength"], t)
@@ -493,6 +509,10 @@ def compose(data, plan, T, look=None, where=None):
     frame = phantom_layer(data, plan, T, frame, near=True)         # 手前の分身
     if layers is not None:                                          # 近い小さな絵
         frame = space.over_glow(frame, layers[1], lights["glow"], lights["glow_blur"], unit)
+    lit = data["effects"]
+    if lit is not None and T in files.get("fx", {}):                 # 効果（光として足す。奥の効果は、人物の黒で隠れている）
+        picture = _same_size(read_image(files["fx"][T]), plan, "fx", T)
+        frame = space.effects(frame, picture, level_at(lit["gain"], t), level_at(lit["glow"], t), lit, unit)
     hit = data["impact"]
     if hit is not None:                                              # 衝撃（奥へ吸い込まれる筋）
         frame = space.impact(frame, level_at(hit["amount"], t), hit["zoom"], hit["steps"])
@@ -568,6 +588,10 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         raise PipelineError("figure（灯りの色で染める）には、人物を描いたどのコマにも shade（陰影）が要ります（一覧の outside にしない）")
     if data["reflection"] is not None and data["reflection"]["char"] is not None and "rchar" not in plan.files:
         raise PipelineError("reflection.char（人物の映り込み）には、要素の一覧に rchar（床で反転したカメラで描いた人物）が要ります")
+    if data["effects"] is not None and "fx" not in plan.files:
+        raise PipelineError("effects（効果）には、要素の一覧に fx（model3d の render.passes の fx で描いた効果）が要ります")
+    if data["reflection"] is not None and data["reflection"]["fx"] is not None and "rfx" not in plan.files:
+        raise PipelineError("reflection.fx（効果の映り込み）には、要素の一覧に rfx（床で反転したカメラで描いた効果）が要ります")
     if data["phantoms"] is not None and not plan.phantoms():
         raise PipelineError("phantoms（分身）には、要素の一覧に ph<i>（model3d の render.passes の phantoms で描いた分身）が要ります")
     where = load_space(spec, plan)

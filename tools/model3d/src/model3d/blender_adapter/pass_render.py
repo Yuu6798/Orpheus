@@ -12,7 +12,12 @@
 - disc: 足もとの影のもとになる円（半径 disc.radius・頂点 disc.vertices の多角形）を、踊り手の点の真下の高さ disc.height に白で。
   背景は黒
 - head: 顔の範囲。head に挙げた物体を白、ほかの人物の物体を黒で（髪などに隠れた所は黒）。背景は黒
-- r<要素>（mirror.passes に挙げた char・shade）: 同じ要素を、カメラを床の面（高さ mirror.height）で反転して描いたもの（床への映り込み）。
+- fx: 効果の形（fx_shapes。火の粉・はじけ・火花・手の軌跡の炎の帯・炎の輪）を、毎コマ頂点の色つきの四角形のメッシュにして、
+  頂点の色のまま平らな光で（光として足す色）。人物のメッシュも一緒に黒で描く（人物の手前の効果だけが見え、奥の効果は人物に隠れる。
+  メッシュでない人物の物体は描かない）。
+  背景は黒。形はそのコマのカメラを向く。fx.during の時刻のコマだけ描く
+- pool: 床の光のたまり（中心が明るく、外へ暗くなる円盤。頂点の色）を平らな光で。背景は黒。pool.during の時刻のコマだけ描く
+- r<要素>（mirror.passes に挙げた char・shade・fx）: 同じ要素を、カメラを床の面（高さ mirror.height）で反転して描いたもの（床への映り込み）。
   反転したカメラの行列は、入れた行列（記録のカメラなら記録の行列、トラックのカメラなら Blender の行列）に左から鏡の行列を掛けたもの
 - ph<i>（phantoms.items の i 番目の分身）: 人物の骨組みを offset（m。世界の座標。骨組みに親があっても）だけずらし、踊りの時刻を delay 秒遅らせて、shade と同じ白い人物と
   スタジオの光で描いたもの（背景は透け。RGBA の PNG）。phantoms.during の時刻（コマの時刻 (T − 1) / fps）のコマだけ描く。
@@ -29,6 +34,10 @@ settings.json（render.passes が書く。DEFAULTS に重ねる）:
 - mirror: passes（反転したカメラでも描く要素の並び。char・shade）、height（床の面の高さ m）
 - phantoms: items（[{offset, delay}]）、during（[[頭, 終わり]] 秒）、mirror、point・sigma_s・reach（距離に使う点とならし）、
   frame0・fps（動きのコマ → 踊りの時刻。fps を省くと .blend の fps）
+- fx: shapes（fx_shapes の設定）、levels（形ごとの強さ。数か時刻のキー）、clock（効果の時刻のキー。省くとコマの時刻）、rate（時間の
+  進み方。数か時刻のキー。0 で筋が伸びない）、during、frame0・fps（動きのコマ → 踊りの時刻）、sigmas（点ごとのならし σ 秒）・reach。
+  点は --bones の骨の通り道（point_track）から読む
+- pool: centre・radii・segments・falloff・floor・floor_falloff・height（m）、during
 
 カメラ（コマ T ごと）:
 - 入力 cameras（model3d-cameras/0.1）にあれば、その行列（matrix_world に入れる。回転の持ち方は物体の既定の XYZ のオイラー角のまま）と、
@@ -50,15 +59,17 @@ import time
 import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
-    from . import stage_render
+    from . import fx_shapes, point_track, stage_render
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import fx_shapes
+    import point_track
     import stage_render
     from vrm_apply_motion import use_scene_of
 
-PASSES = ("room", "char", "shade", "disc", "head")
-MIRRORED = ("char", "shade")                      # 床で反転したカメラでも描ける要素（r<要素>）
+PASSES = ("room", "char", "shade", "disc", "head", "fx", "pool")
+MIRRORED = ("char", "shade", "fx")                # 床で反転したカメラでも描ける要素（r<要素>）
 ALPHA = ("char", "ph")                            # 透けの RGBA の PNG で書く要素（反転したものも）
 EPS = 1e-6                                        # 時刻の境目（plan.stage と同じく、この秒だけ前のコマから届いたとみなす）
 DEFAULTS = {
@@ -71,8 +82,13 @@ DEFAULTS = {
     "armature": None, "fps": None, "only": None, "mirror": {"passes": [], "height": 0.0},
     "phantoms": {"items": [], "during": None, "mirror": False, "point": "hips", "sigma_s": 0.292, "reach": 3.0, "frame0": 1.0,
                  "fps": None},
+    "fx": {"shapes": {}, "levels": {}, "clock": None, "rate": 1.0, "during": None, "frame0": 1.0, "fps": None, "sigmas": {},
+           "reach": 3.0},
+    "pool": {"centre": [0.0, 0.0], "radii": [0.0, 0.5, 1.0, 1.6, 2.4, 3.5, 5.0, 7.0, 10.0, 15.0, 24.0, 45.0], "segments": 72,
+             "falloff": 4.5, "floor": 0.09, "floor_falloff": 25.0, "height": 0.002, "during": None},
 }
-SECTIONS = ("camera", "dancer", "disc", "room", "shade", "mirror", "phantoms")
+SECTIONS = ("camera", "dancer", "disc", "room", "shade", "mirror", "phantoms", "fx", "pool")
+FX_NAME, POOL_NAME, FX_BLACK = "model3d_passes_fx", "model3d_passes_pool", "model3d_fx_black"
 DRAWN = {"MESH", "CURVE", "CURVES", "SURFACE", "META", "FONT", "POINTCLOUD", "VOLUME", "GREASEPENCIL"}   # 描画に出る物体の種類
 DISC_NAME = "model3d_passes_disc"
 
@@ -86,6 +102,7 @@ def parse_args(argv):
     ap.add_argument("--report", required=True)
     ap.add_argument("--cameras-out", required=True)
     ap.add_argument("--cameras")
+    ap.add_argument("--bones")
     return ap.parse_args(argv)
 
 
@@ -148,6 +165,74 @@ def local_offset(offset, parent=None):
     if parent is None:
         return [float(v) for v in offset]
     return [float(v) for v in np.linalg.solve(np.asarray(parent, dtype=np.float64), np.asarray(offset, dtype=np.float64))]
+
+
+def drawn_at(kind, t, settings):
+    """要素 kind をコマの時刻 t（(T − 1) / fps 秒）に描くか。分身は phantoms.during、効果（fx・rfx）は fx.during、床の光のたまりは
+    pool.during の中だけ（None ならいつも）。ほかの要素はいつも。"""
+    if phantom_index(kind) is not None:
+        return within(t, settings["phantoms"]["during"])
+    base = base_kind(kind)
+    if base in ("fx", "pool"):
+        return within(t, settings[base]["during"])
+    return True
+
+
+def fx_points(settings):
+    """効果が読む点の名前（はじけの起点、火花と炎の帯の手）。"""
+    shapes = fx_shapes.merged(settings["fx"]["shapes"])
+    names = []
+    if "bursts" in shapes:
+        names.append(shapes["bursts"]["origin"])
+    for name in ("sparks", "trails"):
+        if name in shapes:
+            names += list(shapes[name]["hands"])
+    return sorted(set(names))
+
+
+def fx_state(fx, t, f, dance_fps, camera, points):
+    """コマの効果の値（fx_shapes.Shapes.frame に渡す）。t はコマの時刻、f は動きのコマ（踊りの時刻 = (f − frame0) ÷ dance_fps）、
+    camera は 4×4 の行列（m）。効果の時刻は clock のキー（省くと t）、強さと時間の進み方は levels・rate の t での値。"""
+    return {"tf": t if fx["clock"] is None else float(fx_shapes.keys_at(fx["clock"], t)),
+            "dance_t": (float(f) - fx["frame0"]) / dance_fps, "rate": float(fx_shapes.keys_at(fx["rate"], t)),
+            "camera": camera, "points": points, "levels": {k: float(fx_shapes.keys_at(v, t)) for k, v in fx["levels"].items()}}
+
+
+def pool_quads(pool):
+    """床の光のたまりの四角形 (N, 4, 3)（m）と頂点の色 (N, 4, 3)。中心 centre から半径 radii の輪を segments に分け、明るさは
+    exp(−r ÷ falloff) + floor × (1 − exp(−r ÷ floor_falloff))（中心が明るく外へ暗くなり、遠くはほのかに残る。試作と同じ）。"""
+    radii, segments = [float(r) for r in pool["radii"]], int(pool["segments"])
+    angles = np.linspace(0, 2 * math.pi, segments + 1)
+    cx, cy = (float(v) for v in pool["centre"])
+    quads, colors = [], []
+    for j in range(len(radii) - 1):
+        for i in range(segments):
+            corners = [(radii[j], angles[i]), (radii[j + 1], angles[i]), (radii[j + 1], angles[i + 1]), (radii[j], angles[i + 1])]
+            quads.append([(cx + r * math.cos(a), cy + r * math.sin(a), pool["height"]) for r, a in corners])
+            colors.append([[math.exp(-r / pool["falloff"]) + pool["floor"] * (1 - math.exp(-r / pool["floor_falloff"]))] * 3
+                           for r, _ in corners])
+    return np.array(quads, dtype=float), np.array(colors, dtype=float)
+
+
+def set_quads(obj, quads, colors):
+    """四角形の集まり (N, 4, 3)（Blender 単位）と頂点の色 (N, 4, 3) を、メッシュに入れ直す（頂点の色は線形の値。描くときの色）。"""
+    mesh = obj.data
+    mesh.clear_geometry()
+    old = mesh.color_attributes.get("fx")
+    if old is not None:
+        mesh.color_attributes.remove(old)
+    count = len(quads)
+    if count == 0:
+        mesh.update()
+        return
+    mesh.from_pydata(np.asarray(quads).reshape(-1, 3), [], np.arange(count * 4).reshape(-1, 4))
+    attribute = mesh.color_attributes.new("fx", "FLOAT_COLOR", "POINT")
+    rgba = np.ones((count * 4, 4), dtype=np.float32)
+    rgba[:, :3] = np.asarray(colors).reshape(-1, 3)
+    attribute.data.foreach_set("color", rgba.reshape(-1))
+    mesh.color_attributes.active_color = attribute
+    mesh.color_attributes.render_color_index = list(mesh.color_attributes).index(attribute)
+    mesh.update()
 
 
 def extension(kind, fmt):
@@ -231,16 +316,18 @@ def set_pass(bpy, kind, handles, settings):
     kind = base_kind(kind)
     sc = bpy.context.scene
     shading = sc.display.shading
-    show_character = kind in ("char", "shade", "head", "ph")
-    for o in handles["character"]:
-        o.hide_render = not show_character
+    show_character = kind in ("char", "shade", "head", "ph", "fx")    # 効果の要素では、人物は黒（効果を隠す）
+    for o in handles["character"]:                      # 効果の要素では、黒にできないメッシュでない物体（カーブの髪など）は描かない
+        o.hide_render = not show_character or (kind == "fx" and getattr(o, "type", "MESH") != "MESH")
     for o in handles["room"]:
         o.hide_render = kind != "room"
-    if handles["disc"] is not None:
-        handles["disc"].hide_render = kind != "disc"
+    for name in ("disc", "fx", "pool"):
+        if handles.get(name) is not None:
+            handles[name].hide_render = kind != name
     lit = kind in ("shade", "ph")                       # 分身は、陰影と同じ白い人物とスタジオの光（背景は透け）
     shading.light = "STUDIO" if lit else "FLAT"
-    shading.color_type = "OBJECT" if kind == "head" else ("SINGLE" if kind in ("shade", "disc", "ph") else "TEXTURE")
+    shading.color_type = ("OBJECT" if kind == "head" else "VERTEX" if kind in ("fx", "pool")
+                          else "SINGLE" if kind in ("shade", "disc", "ph") else "TEXTURE")
     shading.single_color = (1.0, 1.0, 1.0)
     shading.show_specular_highlight = not lit
     shading.use_world_space_lighting = lit
@@ -345,8 +432,37 @@ def main(argv=None):
         for coll in list(disc.users_collection):         # 今のコレクションが描画から外されていても描けるよう、シーンの直下に置く
             coll.objects.unlink(disc)
         sc.collection.objects.link(disc)
+    bases = {base_kind(k) for k in kinds}
+    effect = pool_obj = None
+    if "fx" in bases:                                    # 効果の入れ物（毎コマ入れ直す）。人物は頂点の色を黒にして、効果の要素で黒く描く
+        effect = bpy.data.objects.new(FX_NAME, bpy.data.meshes.new(FX_NAME))
+        sc.collection.objects.link(effect)
+        for o in character:
+            if o.type != "MESH":
+                continue
+            black = o.data.color_attributes.get(FX_BLACK) or o.data.color_attributes.new(FX_BLACK, "FLOAT_COLOR", "POINT")
+            black.data.foreach_set("color", np.tile(np.array([0, 0, 0, 1], dtype=np.float32), len(o.data.vertices)))
+            o.data.color_attributes.active_color = black
+            o.data.color_attributes.render_color_index = list(o.data.color_attributes).index(black)
+    if "pool" in bases:
+        pool_obj = bpy.data.objects.new(POOL_NAME, bpy.data.meshes.new(POOL_NAME))
+        sc.collection.objects.link(pool_obj)
+        quads, colors = pool_quads(settings["pool"])
+        set_quads(pool_obj, quads / unit, colors)
     world = apply_render(bpy, settings)
-    handles = {"character": character, "room": sorted(room, key=lambda o: o.name), "disc": disc, "world": world}
+    handles = {"character": character, "room": sorted(room, key=lambda o: o.name), "disc": disc, "world": world, "fx": effect,
+               "pool": pool_obj}
+    shapes, fx_points_at = None, None
+    if effect is not None:
+        fx = settings["fx"]
+        shapes = fx_shapes.Shapes(fx["shapes"])
+        needed = fx_points(settings)
+        if needed:
+            if not a.bones:
+                raise SystemExit(f"効果の点（{needed}）には --bones（骨の通り道）が要ります")
+            with open(a.bones, encoding="utf-8") as stream:
+                fx_points_at = point_track.Samples(json.load(stream), {name: float(fx["sigmas"].get(name, 0.0)) for name in needed},
+                                                   fx["frame0"], fx["fps"] or sc.render.fps / sc.render.fps_base, fx["reach"])
 
     cam_s = settings["camera"]
     cam_d = bpy.data.cameras.new("model3d_passes_camera")
@@ -414,7 +530,7 @@ def main(argv=None):
         if only is not None and T not in only:
             continue
         files = {k: os.path.join(a.passes_dir, pass_file(k, T, settings["format"])) for k in kinds}
-        active = [k for k in kinds if k not in ghost_kinds or within((T - 1) / fps, ghosts["during"])]
+        active = [k for k in kinds if drawn_at(k, (T - 1) / fps, settings)]
         todo = [k for k in active if not os.path.exists(files[k])]
         for k in active:
             if k not in todo:
@@ -426,6 +542,13 @@ def main(argv=None):
         assigned = place(T, f, spec)[3]
         bpy.context.view_layer.update()
         main = assigned if assigned is not None else cam.matrix_world.copy()   # 反転と分身は、このコマの入れた行列から
+        if effect is not None and any(base_kind(k) == "fx" for k in todo):   # 効果の形（このカメラを向く。反転したカメラでも同じ形）
+            camera = np.array([list(row) for row in main], dtype=float)
+            camera[:3, 3] *= unit
+            fx_fps = settings["fx"]["fps"] or sc.render.fps / sc.render.fps_base
+            quads, colors = shapes.frame(fx_state(settings["fx"], (T - 1) / fps, f, fx_fps, camera, fx_points_at))
+            set_quads(effect, quads / unit, colors)
+            bpy.context.view_layer.update()
         for k in todo:
             if k in mirrored or k in ghost_kinds:
                 continue
