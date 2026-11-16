@@ -135,6 +135,32 @@ def test_the_reflection_can_keep_left_and_right(tmp_path):
         passes.load_spec(_spec(tmp_path, cameras="cameras.json", sprites={"items": "s.json", "images": ["half.png"], "mirror_mode": "turn"}))
 
 
+def test_the_reflections_can_be_stacked_by_their_reflected_depth(tmp_path):
+    """下へ 60° 向いたカメラ: 高さの違う 2 つの絵は、映ると前後が入れ替わる。reflected では近い映り込みが上、既定（source）は試作と同じ
+    元の奥行きの順（Codex の指摘）。"""
+    red = space.sprite_levels(_sprite(tmp_path / "red.png", (40, 20), color=(255, 0, 0)))
+    blue = space.sprite_levels(_sprite(tmp_path / "blue.png", (40, 20), color=(0, 0, 255)))
+    c, s = math.cos(math.radians(60)), math.sin(math.radians(60))
+    matrix = np.eye(4)
+    matrix[:3, 0], matrix[:3, 1], matrix[:3, 2], matrix[:3, 3] = [1, 0, 0], [0, s, c], [0, -c, s], [0.0, 0.0, 3.0]
+    camera = {"matrix": matrix.tolist(), "focal": 400.0, "principal": (200.0, 200.0), "focus": 3.0}   # 元の奥行き 赤 3.2・青 2.7、映ると 4・5
+    items = [[0.0, 2.0, 0.4641, 0.5, 1.0, 0], [0.0, 2.5, 1.3301, 0.5, 1.0, 1]]   # 赤は元で遠い（映ると近い）、青は元で近い（映ると遠い）
+
+    def mirror(order, chosen):
+        settings = {"mirror_order": order, "mirror_blur": 0.0, "focus_blur": 0.0, "near_clip": 0.3}
+        return space.sprite_layers((400, 400), camera, [items[i] for i in chosen], [red, blue], settings)[2]
+
+    overlap = (mirror("source", [0])[..., 3] > 0.9) & (mirror("source", [1])[..., 3] > 0.9)
+    assert overlap.sum() > 10                                                # 2 つの映り込みが重なる
+
+    def top_colour(order):
+        both = mirror(order, [0, 1])[overlap]
+        return "red" if both[:, 0].sum() > both[:, 2].sum() else "blue"
+
+    assert top_colour("reflected") == "red"                                  # 映って近い赤が上
+    assert top_colour("source") == "blue"                                    # 元の奥行きの順（試作と同じ）では、映って遠い青が上
+
+
 def _sprite_spec(tmp_path, items, near_frames=()):
     _passes(tmp_path)
     _sprite(tmp_path / "lamp.png", (40, 20), color=(0, 255, 0))
