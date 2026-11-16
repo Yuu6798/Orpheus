@@ -396,9 +396,9 @@ uv run mv dance passes spec.json            # dance.mp4 を run として出す�
 | 5 | 明るい所のにじみ（`bloom`。省くと無し。省いた鍵は `stage_bloom` の既定） | `finish.stage_bloom` |
 | 6 | 閃光（`flash`。強さのキーと色。色へのスクリーン合成） | `fx.fire.screen` |
 | 7 | 明るさ（`level`。明け方・暗転） | `cues.envelope` |
-| 8 | 周辺の減光・粒（`look`。fx の look と同じ設定。uint8 へは切り捨て）。無ければ四捨五入で uint8 | `fx.look.finish` |
+| 8 | 周辺の減光・粒（`look`。fx の look と同じ設定と確かめ（grade のキーの並びなど）。uint8 へは切り捨て）。無ければ四捨五入で uint8 | `fx.look.finish` |
 
-- 書き出しは `write_video`（BT.709）。`output.frames` なら、重ねたコマを run の `frames/f<T>.png` にも書く。音は `audio`（T = 1 が `offset_s` 秒。0 以上）。音が動画より短ければ、後ろを無音で足して動画の長さにそろえ、warnings に残す（読み始めより音が短ければ止める）。
+- 書き出しは `write_video`（BT.709）。`output.frames` なら、重ねたコマを run の `frames/f<T>.png` にも書く。音は `audio`（T = 1 が `offset_s` 秒。0 以上。一覧が T = 1 から始まらなければ、最初の T のぶん先から読む）。音が動画より短ければ、後ろを無音で足して動画の長さにそろえ、warnings に残す（読み始めより音が短ければ止める）。
 - run は `mv dance render` と同じ形（`<out>/<run_id>/spec.json manifest.json render.log dance.mp4`、`index.json`、`acceptance.jsonl`）。キャッシュ key は正規化した spec・要素の一覧と音の sha256・エンジンの指紋・ライブラリの版。`technical_pass` も同じ構造検査。timeline.json は書かない（歌詞・切れ目の無い重ね合わせなので、`mv gate check` の字の検査は対象外）。
 
 **確かめたこと**:

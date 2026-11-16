@@ -178,3 +178,31 @@ def test_a_short_song_is_padded_to_the_video(tmp_path):
     spec = _spec(tmp_path, audio={"path": "song.wav"})
     result = passes.render_run(spec, out=tmp_path / "runs", quiet=True)           # 6 コマ（0.2 秒）に 0.05 秒の音: 無音で足して通す
     assert result["status"] == "succeeded" and result["technical_pass"] is True and any("無音" in w for w in result["warnings"])
+
+
+def test_the_audio_starts_at_the_first_listed_T(tmp_path, monkeypatch):
+    _passes(tmp_path, frames=3)
+    manifest = json.loads((tmp_path / "passes.json").read_text(encoding="utf-8"))
+    for entry in manifest["passes"].values():                       # T 31〜33 の一覧（30 fps なら 1 秒目から）
+        for fr in entry["frames"]:
+            fr["T"] += 30
+    (tmp_path / "passes.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "song.wav").write_bytes(b"")
+    seen = {}
+
+    def plan(path, start, seconds, warnings):
+        seen["start"], seen["seconds"] = start, seconds
+        return None
+    monkeypatch.setattr(passes, "audio_plan", plan)
+    result = passes.render_run(_spec(tmp_path, audio={"path": "song.wav", "offset_s": 0.5}), out=tmp_path / "runs", quiet=True)
+    assert result["status"] == "succeeded" and seen["start"] == pytest.approx(1.5) and seen["seconds"] == pytest.approx(0.1)
+
+
+def test_look_grade_keys_must_be_in_order(tmp_path):
+    _passes(tmp_path)
+    bad = {"grade": {"keys": [{"t": 0, "sat": 1, "gain": [1, 1, 1], "con": 0}, {"t": 2, "sat": 1, "gain": [1, 1, 1], "con": 0},
+                              {"t": 1, "sat": 1, "gain": [1, 1, 1], "con": 0}]}}
+    with pytest.raises(PipelineError, match="look.grade.keys"):
+        passes.load_spec(_spec(tmp_path, look=bad))
+    empty = passes.load_spec(_spec(tmp_path, look={}))
+    assert any(w.startswith("look") for w in empty.warnings)

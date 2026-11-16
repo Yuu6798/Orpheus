@@ -117,7 +117,9 @@ def parse_spec(raw, base_dir, path=None, digest=""):
         lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
         raise PipelineError("dance passes spec is invalid:\n" + "\n".join(lines))
     base_dir = Path(base_dir).resolve()
-    spec = fxspec.Spec(data=normalize(raw), base_dir=base_dir, path=path, sha256=digest, warnings=())
+    data = normalize(raw)
+    warnings = fxspec.look_warnings(data["look"])      # fx・dance と同じ look の確かめ（grade のキーの並びは止め、注意は warnings に）
+    spec = fxspec.Spec(data=data, base_dir=base_dir, path=path, sha256=digest, warnings=tuple(warnings))
     spec.resolve(spec.data["passes"])
     if spec.data["audio"] is not None:
         spec.resolve(spec.data["audio"]["path"])
@@ -313,7 +315,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
             spec=fxruns.spec_record(spec), assets=assets, engine=fxruns.engine_record(dance, "dance"), libraries=libraries,
             interval={"start": 0.0, "duration": seconds, "fps": plan.fps, "frames": n_frames, "T": [plan.frames[0], plan.frames[-1]]},
             output={"size": [width, height], "scale": 1.0, "crf": data["output"]["crf"]}, passes=sorted(plan.files),
-            variants={}, grid=None, warnings=[], look=data["look"] is not None)
+            variants={}, grid=None, warnings=list(spec.warnings), look=data["look"] is not None)
         run.save()
         run.log(f"passes start key={key} frames={n_frames} size={width}x{height} passes={sorted(plan.files)}")
         look = fxlook.prepare(data["look"], plan.size, plan.fps) if data["look"] is not None else None
@@ -331,7 +333,9 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
                 yield image
                 meter(i + 1)
 
-        audio = audio_plan(audio_path, data["audio"]["offset_s"] if audio_path is not None else 0.0, seconds, run.manifest["warnings"])
+        # 音の読み始め: T = 1 が offset_s 秒なので、一覧の最初の T のぶん先から読む（T が 1 から始まらない一覧でも絵と合う）
+        start = (data["audio"]["offset_s"] + (plan.frames[0] - 1) / plan.fps) if audio_path is not None else 0.0
+        audio = audio_plan(audio_path, start, seconds, run.manifest["warnings"])
         path = run.dir / f"{VARIANT}.mp4"
         result = fxrender.write_video(path, frames(), plan.size, plan.fps, data["output"]["crf"], n_frames, audio, run.log_path)
         checks = probe.check_video(path, width=width, height=height, fps=plan.fps, frames=n_frames, audio=audio is not None,
