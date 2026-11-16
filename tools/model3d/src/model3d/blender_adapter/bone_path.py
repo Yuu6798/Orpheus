@@ -9,9 +9,14 @@ armature（アーマチュアの物体の名前。null なら最初のアーマ�
 """
 import argparse
 import json
-import math
 import os
 import sys
+
+try:   # パッケージとして読むとき（テスト）
+    from . import stage_render
+except ImportError:   # Blender が台本として動かすとき
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import stage_render
 
 
 def parse_args(argv):
@@ -52,8 +57,7 @@ def main(argv=None):
     points = {b: [] for b in settings["bones"]}
     try:
         for f in frames:
-            whole = math.floor(f)                     # 小数のコマは、前のコマとそこからの割合（subframe）
-            sc.frame_set(int(whole), subframe=float(f) - whole)
+            stage_render.set_frame(sc, f)             # 小数のコマは、前のコマとそこからの割合（subframe。render.stage と同じ）
             for b in settings["bones"]:
                 p = arm.matrix_world @ arm.pose.bones[b].head
                 points[b].append([p.x * unit, p.y * unit, p.z * unit])
@@ -61,7 +65,7 @@ def main(argv=None):
         for m, shown in mods:
             m.show_viewport = shown
     out = {"schema_version": "model3d-bone-path/0.1", "unit": "m", "scale_length": unit,
-           "fps": sc.render.fps / sc.render.fps_base, "armature": arm.name, "frames": [int(f) if float(f).is_integer() else float(f) for f in frames], "bones": points}
+           "fps": sc.render.fps / sc.render.fps_base, "armature": arm.name, "frames": [stage_render.motion_frame(f) for f in frames], "bones": points}
     with open(a.out, "w", encoding="utf-8") as stream:
         json.dump(out, stream)
     print(f"BONE_PATH {len(frames)} frames, {len(points)} bones", flush=True)
