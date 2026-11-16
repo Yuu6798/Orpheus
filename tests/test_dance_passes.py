@@ -238,5 +238,8 @@ def test_the_figure_is_tinted_by_the_shade_pass(tmp_path):
     bad = _spec(tmp_path / "noshade", figure={"light": [1, 1, 1], "shadow": [0.5, 0.5, 0.5]})
     with pytest.raises(PipelineError, match="shade"):
         passes.render_run(bad, out=tmp_path / "noshade" / "runs", quiet=True)
+    smoothing = _spec(tmp_path, floor_shadow=None, figure={"light": [1, 1, 1], "shadow": [0.5, 0.5, 0.5], "face_smooth": 0.09})
+    noted = passes.render_run(smoothing, out=tmp_path / "runs", quiet=True)     # head の無い一覧: ならさずに描き、warnings に残す
+    assert noted["status"] == "succeeded" and any("face_smooth" in w for w in noted["warnings"])
     with pytest.raises(PipelineError, match="low < high"):
         passes.load_spec(_spec(tmp_path, figure={"light": [1, 1, 1], "shadow": [1, 1, 1], "shade_range": [0.6, 0.4]}))

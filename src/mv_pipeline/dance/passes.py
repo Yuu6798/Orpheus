@@ -7,8 +7,8 @@
     重ね（finish.over）→ にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
 
 既存の部品（dance の finish・cues、fx の fire と look、encode.write_video）を呼ぶ。新しく足したのは、区間ごとの部屋のぼかし
-（finish.blur と、区間の値を引く segment_value）と、灯りの色で人物を染める部品（finish.light_tint・finish.face_shade）。時刻はコマ T の (T − 1) ÷ fps 秒。長さ（画素）は幅 1080 の画面での値で、
-コマの幅に合わせて掛ける。
+（finish.blur と、区間の値を引く segment_value）と、灯りの色で人物を染める部品（finish.light_tint・finish.face_shade）。
+時刻はコマ T の (T − 1) ÷ fps 秒。長さ（画素）は幅 1080 の画面での値で、コマの幅に合わせて掛ける。
 """
 import json
 from dataclasses import dataclass
@@ -307,6 +307,9 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     plan = load_passes(passes_path)
     if data["figure"] is not None and "shade" not in plan.files:
         raise PipelineError("figure（灯りの色で染める）には、要素の一覧に shade（陰影）が要ります")
+    notes = list(spec.warnings)
+    if data["figure"] is not None and data["figure"]["face_smooth"] > 0 and "head" not in plan.files:
+        notes.append("figure.face_smooth: 要素の一覧に head（顔の範囲）が無いので、顔の陰影はならしません")
     width, height = plan.size
     if width % 2 or height % 2:
         raise PipelineError(f"コマの大きさは偶数にしてください（H.264 の 4:2:0）: {width}×{height}")
@@ -333,7 +336,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
             interval={"start": (plan.frames[0] - 1) / plan.fps, "duration": seconds, "fps": plan.fps, "frames": n_frames,
                       "T": [plan.frames[0], plan.frames[-1]]},
             output={"size": [width, height], "scale": 1.0, "crf": data["output"]["crf"]}, passes=sorted(plan.files),
-            variants={}, grid=None, warnings=list(spec.warnings), look=data["look"] is not None)
+            variants={}, grid=None, warnings=notes, look=data["look"] is not None)
         run.save()
         run.log(f"passes start key={key} frames={n_frames} size={width}x{height} passes={sorted(plan.files)}")
         look = fxlook.prepare(data["look"], plan.size, plan.fps) if data["look"] is not None else None
