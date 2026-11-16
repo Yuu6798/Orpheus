@@ -324,6 +324,8 @@ hooks から使う仕上げの部品。どれも**表示の値**（sRGB に符�
 | `floor_reflection(img, fg, alpha, floor_y, height=300, start=0.22)` | `behind` | 床の上の人物を上下に返して、下へ薄くしながら重ねる |
 | `sharpen(fg, sigma=1.4, amount=0.4)` | `performer` | アンシャープ |
 | `rim_light(fg, alpha, rgb, strength, kernel=7, …)` | `performer` | シルエットの縁のすぐ内側に光を足す（上が強い）。`kernel=5, shape="rect", blur=0, gradient=None, clip=False` で細い縁の光。`band="blur"` は縁の帯を「アルファ − σ kernel でぼかしたアルファ」にする（要素別の描画の重ねの試作と同じ帯。既定の `erode` は削ったアルファとの差） |
+| `light_tint(fg, shade, light, shadow, low, high)` | — | 人物を灯りの色で染める。陰影の要素（白い人物に光を当てた明るさ）を low〜high で 0〜1 に伸ばして smoothstep にし、陰の色から光の色（チャンネルごとの倍率）へ混ぜた倍率を掛ける |
+| `face_shade(shade, head, amount)` | — | 顔の範囲だけ陰影をなだらかにする（目のくぼみなどの細かい陰影が輪に見えるのを消す）。顔の面積の平方根 × amount の σ でぼかし、顔の縁の内側だけで混ぜる |
 | `blur(img, sigma)` | — | ガウスのぼかし（σ × unit が 0.2 以下ならそのまま）。要素別の描画の重ねで、部屋を区間ごとにぼかす |
 | `tint(fg, gains)`・`over(fg, alpha, img)` | — | チャンネルの倍率、表示の値での重ね |
 | `beat_pulse(beats, t, tau=0.12, downbeats=…, bar=1.0, beat=0.55, count=1, gain=None)` | どこでも | 直前の拍（count 個）の減衰の和。小節頭は bar。`gain(拍の時刻, t)` で区間ごとの強さや休みを決める。spec の `beats`（`ctx.spec.data["beats"]`）をそのまま渡せる |
@@ -373,6 +375,7 @@ uv run mv dance passes spec.json            # dance.mp4 を run として出す�
   "audio": {"path": "song.wav", "offset_s": 0.0},
   "room": {"blur": [{"until": 1.26, "sigma": 3.0}, {"sigma": 0.8}], "level": [[0.0, 1.0], [4.0, 1.2]]},
   "floor_shadow": {"strength": 0.45, "sigma": 26},
+  "figure": {"light": [0.96, 0.775, 0.665], "shadow": [0.8, 0.58, 0.49], "shade_range": [0.42, 0.74], "face_smooth": 0.09},
   "rim": {"rgb": [255, 184, 115], "strength": 0.9, "kernel": 6, "blur": 0, "gradient": null, "clip": false, "band": "blur"},
   "bloom": {"threshold": 0.7, "ceiling": null, "sigma": 7, "strength": 0.75, "down": 4},
   "flash": {"keys": [[3.4, 0.0], [3.4, 0.14], [3.5, 0.0]], "color": [255, 230, 191]},
@@ -391,7 +394,8 @@ uv run mv dance passes spec.json            # dance.mp4 を run として出す�
 |---|---|---|
 | 1 | 部屋（`room`。無ければ黒）を区間ごとの σ でぼかし（`room.blur`。数か `[{until, sigma}]`。最後の区間は until を省ける）、明るさ（`room.level`）を掛ける | `finish.blur`（新しく足した）、`cues.envelope` |
 | 2 | 足もとの円（`disc`）をぼかして部屋を暗くする（`floor_shadow`。既定は試作の strength 0.45・sigma 26・gain 1・down 1。`null` で無し） | `finish.halo` |
-| 3 | 人物（`char` の色とアルファ）に輪郭の光（`rim`。省くと無し） | `finish.rim_light` |
+| 3 | 人物（`char` の色とアルファ）を灯りの色で染める（`figure`。省くと色の絵のまま。陰影の要素 `shade` が要る）。`face_smooth` が 0 より大きく顔の範囲 `head` があれば、先に顔の中の陰影をならす | `finish.face_shade`・`finish.light_tint`（新しく足した） |
+| 3b | 人物に輪郭の光（`rim`。省くと無し） | `finish.rim_light` |
 | 4 | 部屋に人物を重ねる | `finish.over` |
 | 5 | 明るい所のにじみ（`bloom`。省くと無し。省いた鍵は `stage_bloom` の既定） | `finish.stage_bloom` |
 | 6 | 閃光（`flash`。強さのキーと色。色へのスクリーン合成） | `fx.fire.screen` |
@@ -408,6 +412,7 @@ uv run mv dance passes spec.json            # dance.mp4 を run として出す�
   - 輪郭の光を既定の帯（削ったアルファとの差）で重ねると、人物の輪郭の帯で差が平均 11/255 になった（帯の作りが違う）。`band="blur"` で試作の帯にそろえて、上の差になった。
   - にじみは、試作が明るさを引いてから縮めるのに対し、`stage_bloom` は縮めてから引く。周辺の減光は look で最後に掛ける（試作は閃光と暗転の前）。上の差は、これらを含めた大きさ。
   - 906 コマの重ねと書き出しは約 13 分（ほかの処理と並べて回した。`technical_pass` は通った）。
+- 人物の染め（`figure`）も、同じ要素（陰影・顔の範囲も）と試作の設定（光の色・陰の色・陰影の範囲・顔の陰影のならし 0.09）で比べた。906 コマで差の平均は 0.59/255（符号つきも −0.59）、99% 点は 6/255 以下、最大 8/255（手前の板・柱・粒は切った）。約 15 分。
 
 ## run
 
@@ -450,7 +455,7 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 ## 限界
 
 - 緑抜きは 1 色のクロマキーだけ。髪の細い毛や半透明の布は `tolerance`・`softness` で調整する。縁の質は素材次第。アニメ調の生成動画 1 本では `tolerance` 0.22・`softness` 0.12・`spill` 1.0・`choke_px` 1.0・`feather_px` 1.0 で、抜き出したコマを見た範囲では使えた。実写は確かめていない。
-- 人物の明るさや色をステージの光に合わせる処理は無い（人物が浮いて見えることがある）。
+- `mv dance render` には、人物の明るさや色をステージの光に合わせる処理は無い（人物が浮いて見えることがある）。3D の要素別の描画を重ねる `mv dance passes` には、陰影の要素で灯りの色に染める `figure` がある。
 - 歌詞の折り返しは自動ではない（`row` で明示する）。横書きだけ。
 - 動画の読み出しは前方向だけで、戻るときは先頭から数え直す。本番の描画は順に読むので速いが、`stills` で後ろの時刻から描くと遅い。
 - 動画のフレームは OpenCV で復号するが、色の読み方は環境で違う。Windows の OpenCV 5.0.0 は色のタグを見ず、いつも BT.601 の行列で RGB に直す（合成の単色動画の実測で、BT.709 の緑 (30, 220, 60) が (44, 248, 64) になる）。Linux の CI の同じ版は (28, 218, 59) と正しく読んだ。どの環境でも同じ色で読めるよう、タグが `bt709` の動画は ffmpeg に行列を指定して読む（Windows の実測で誤差 1 以内。時間は OpenCV の 1.5 倍ほど）。タグが `smpte170m`・`bt470bg` の動画は OpenCV のままで正しい。タグが無い動画は行列を見分けられないので BT.601 として読み、`warnings` に残す。BT.709 で作ったタグなしの動画は色がずれるので、タグを付けてから渡す。色の範囲は `tv`・`pc` ともタグに従う。
