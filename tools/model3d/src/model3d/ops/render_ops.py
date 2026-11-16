@@ -518,3 +518,119 @@ def render_passes(inputs, parameters, outputs, context):
                                   "frames": len(v["frames"]), "missing": len(v["missing"])} for k, v in manifest["passes"].items()},
                    "camera": report.get("camera"), "objects": {k: len(v) for k, v in (report.get("objects") or {}).items()}}
     return StepResult(observations=[observation])
+
+
+BOX_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "box_room.py"
+BOX_PARAMETERS = {"blender", "focal_px", "center_px", "camera_height", "scale", "origin_px", "wall_px", "floor", "wall", "shell",
+                  "collection", "armature", "timeout"}
+
+
+def _pair(value, where):
+    if not isinstance(value, list) or len(value) != 2 or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+        raise ToolError(f"{where} は [x, y]（数 2 つ）にしてください: {value!r}")
+    return [float(v) for v in value]
+
+
+def _box_settings(parameters, image_size):
+    """render.box_room のパラメーターを確かめる（絵の中の仮の部屋の置き方。docs/model3d.md の「箱の部屋」）。image_size は絵の（幅, 高さ）。"""
+    from ..blender_adapter import box_room
+    missing = [k for k in ("focal_px", "center_px", "camera_height", "origin_px", "wall_px") if k not in parameters]
+    if missing:
+        raise ToolError(f"render.box_room にはパラメーター {', '.join(missing)} が要ります")
+    s = {"focal_px": float(number(parameters, "focal_px", minimum=0, exclusive=True)),
+         "center_px": _pair(parameters["center_px"], "center_px"),
+         "camera_height": float(number(parameters, "camera_height", minimum=0, exclusive=True)),
+         "origin_px": _pair(parameters["origin_px"], "origin_px"), "wall_px": float(number(parameters, "wall_px"))}
+    if "scale" in parameters:
+        s["scale"] = float(number(parameters, "scale", minimum=0, exclusive=True))
+    floor = _section(parameters, "floor", {"rows", "x"})
+    f = {}
+    if "rows" in floor:
+        rows = floor["rows"]
+        if (not isinstance(rows, list) or len(rows) != 3 or not all(isinstance(v, int) and not isinstance(v, bool) for v in rows)
+                or rows[2] < 1 or rows[1] - rows[0] < 2 * rows[2]):
+            raise ToolError(f"floor.rows は [最初の行, 終わりの行（含まない）, きざみ]（整数。段が 2 つ以上）にしてください: {rows!r}")
+        f["rows"] = rows
+    if "x" in floor:
+        xs = floor["x"]
+        if (not isinstance(xs, list) or len(xs) < 2 or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in xs)
+                or any(b <= a for a, b in zip(xs, xs[1:]))):
+            raise ToolError(f"floor.x は床の列の x（2 つ以上、小さい順）にしてください: {xs!r}")
+        f["x"] = [float(v) for v in xs]
+    s["floor"] = f
+    wall = _section(parameters, "wall", {"x", "top"})
+    w = {}
+    if "x" in wall:
+        w["x"] = _pair(wall["x"], "wall.x")
+        if w["x"][0] >= w["x"][1]:
+            raise ToolError(f"wall.x は [左の端, 右の端]（左 < 右）にしてください: {wall['x']!r}")
+    if "top" in wall:
+        w["top"] = float(number(wall, "top"))
+        if w["top"] >= s["camera_height"]:
+            raise ToolError("wall.top（壁の上の端の y。下が正）は camera_height（床）より小さくしてください")
+    s["wall"] = w
+    if "shell" in parameters:
+        shell = parameters["shell"]
+        if shell is None:
+            s["shell"] = None
+        else:
+            shell = _section(parameters, "shell", {"location", "size", "color"})
+            sh = {}
+            for key in ("location", "size", "color"):
+                if key in shell:
+                    value = shell[key]
+                    if not isinstance(value, list) or len(value) != 3 or not all(
+                            isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+                        raise ToolError(f"shell.{key} は数 3 つにしてください: {value!r}")
+                    if key != "location" and any(v < 0 or (key == "size" and v == 0) for v in value):
+                        raise ToolError(f"shell.{key} は {'0 より大きい' if key == 'size' else '0 以上の'}数にしてください: {value!r}")
+                    sh[key] = [float(v) for v in value]
+            s["shell"] = sh
+    if "collection" in parameters:
+        s["collection"] = _name(parameters["collection"], "collection")
+    if parameters.get("armature") is not None:
+        s["armature"] = _name(parameters["armature"], "armature")
+    problem = box_room.room_problem(box_room.merged(s), image_size)
+    if problem:
+        raise ToolError(f"render.box_room: {problem}")
+    return s
+
+
+@register("render.box_room", inputs=("blend", "image"), outputs=("blend", "report"), cacheable=False,
+          summary="1 枚の背景の絵（image）を、基準のカメラ（焦点距離・主点・床からの高さ）から床と奥の壁に投影して張った「箱の部屋」を"
+                  "キャラの .blend（blend）に足す（Blender の中で）。基準のカメラから見ると絵と同じ画になり、カメラが動くと床と壁が"
+                  "ずれて奥行きが出る。踊り手の立つ所（絵の画素）が世界の原点、scale 倍が m。絵の届かない向きは暗い箱（shell）で囲う。"
+                  "物体は collection（既定 model3d_room）に入れ、render.passes の room.collection で描く。絵は .blend に詰め込む。"
+                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def box_room(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend", "image"), "render.box_room")
+    unknown = set(parameters) - BOX_PARAMETERS
+    if unknown:
+        raise ToolError(f"render.box_room の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(BOX_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"render.box_room には outputs の {', '.join(missing)} が要ります")
+    from PIL import Image
+    try:
+        with Image.open(inputs["image"]) as picture:
+            image_size = picture.size
+    except OSError as error:
+        raise ToolError(f"render.box_room: 背景の絵を読めません: {inputs['image']}（{error}）") from error
+    settings = _box_settings(parameters, image_size)
+    blender = _blender(parameters, context, "render.box_room")
+    settings_path = Path(context.step_dir) / "box_room_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--image", inputs["image"], "--settings", str(settings_path),
+            "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    run = launcher.run_blender(blender, BOX_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                               timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    observation = {"kind": "box_room", "exit_code": run["exit_code"], "seconds": run["seconds"],
+                   "blender_version": run["blender_version"], "collection": report.get("collection"), "objects": report.get("objects"),
+                   "scene": report.get("scene"), "vertices": report.get("vertices"), "faces": report.get("faces"),
+                   "wall_depth": report.get("wall_depth"),
+                   "camera_m": report.get("camera_m")}
+    return StepResult(observations=[observation])
