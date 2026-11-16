@@ -11,7 +11,7 @@
 - 描き方は簡易描画（Workbench）の頂点の色・スタジオの光・くぼみの強調（cavity）。裏の面も描く。色の変換は Standard。
   画像に日時などの控えを書かない。
 - カメラは、狙う点 target（[x, y] m）の真上の高さ center から水平に向き、方位 yaw（度。0 で -Y 側の正面、90 で +X 側）・
-  レンズ lens（mm、受光 36 mm）で、縦 height（m）が画面の高さに入る距離に置く。
+  レンズ lens（mm、受光は縦に 36 mm）で、縦 height（m）が画面の高さに入る距離に置く（横長の画面でも縦で合わせる）。
 - コマ（frames。小数は前後のコマの間の時刻）ごとに <frames-dir>/f<T>.<jpg|png>（T は並びの 1 から）。
 
 .blend は保存しない（色の属性・カメラ・背景は、描くための読み込みの中だけ。ほかの物体と分け合うメッシュは、色を付ける前に写す）。
@@ -38,6 +38,7 @@ DEFAULTS = {"frames": [], "bone_meshes": [], "bone_colors": [], "bone_default": 
             "antialiasing": "8", "cavity": True, "world": [0.2, 0.2, 0.22],
             "camera": {"yaw": 0.0, "height": 1.5, "center": 0.75, "lens": 85.0, "target": [0.0, 0.0]}, "armature": None}
 ATTRIBUTE = "model3d_part_colors"
+SENSOR = 36.0     # 受光の縦の大きさ（mm）
 
 
 def parse_args(argv):
@@ -65,7 +66,7 @@ def group_color(name, bone_colors, default):
 
 def camera_place(camera, unit=1.0):
     """カメラの位置（Blender 単位）・向き（オイラー角、ラジアン）・狙う点までの水平の距離（m）。リポジトリの外の台本と同じ式。"""
-    fov = 2 * math.atan(18.0 / camera["lens"])
+    fov = 2 * math.atan(SENSOR / 2 / camera["lens"])            # 縦の画角（受光は縦に合わせる）
     distance = (camera["height"] / 2) / math.tan(fov / 2)
     yaw = math.radians(camera["yaw"])
     x, y = camera["target"]
@@ -182,7 +183,9 @@ def main(argv=None):
     unit = float(scene.unit_settings.scale_length)
     location, rotation, distance = camera_place(settings["camera"], unit)
     camera_data = bpy.data.cameras.new("model3d_part_colors_camera")
-    camera_data.lens, camera_data.sensor_width, camera_data.clip_end = settings["camera"]["lens"], 36, 100 / unit
+    camera_data.lens, camera_data.clip_end = settings["camera"]["lens"], 100 / unit
+    # 受光は縦に 36 mm（縦の高さ height が、横長の画面でも画面の高さに入る。縦長の画面では台本の既定 AUTO と同じ写り方）
+    camera_data.sensor_fit, camera_data.sensor_height, camera_data.sensor_width = "VERTICAL", SENSOR, SENSOR
     camera = bpy.data.objects.new("model3d_part_colors_camera", camera_data)
     scene.collection.objects.link(camera)
     camera.location, camera.rotation_euler = location, rotation
@@ -200,7 +203,8 @@ def main(argv=None):
               "objects": applied, "drawn": drawn, "skipped_hidden": skipped, "hidden": sorted(settings["hide"]),
               "unused_object_colors": unused,
               "camera": {"location_m": [v * unit for v in location], "rotation_deg": [math.degrees(v) for v in rotation],
-                         "lens_mm": settings["camera"]["lens"], "sensor_mm": 36, "distance_m": distance},
+                         "lens_mm": settings["camera"]["lens"], "sensor_mm": SENSOR, "sensor_fit": "VERTICAL",
+                         "distance_m": distance},
               "seconds": round(time.time() - began, 1), "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
