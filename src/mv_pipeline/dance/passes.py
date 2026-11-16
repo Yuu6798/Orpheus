@@ -422,6 +422,8 @@ def load_scene(spec, plan):
         other = load_passes(spec.resolve(wipe["passes"]), continuous=False)
         if other.size != plan.size:
             raise PipelineError(f"wipes[{n}] の相手の要素の大きさ {other.size} が、要素の大きさ {plan.size} と違います")
+        if abs(other.fps - plan.fps) > 1e-9:                     # 同じ T を同じ時刻として重ねるので、fps もそろえる
+            raise PipelineError(f"wipes[{n}] の相手の要素の fps（{other.fps:g}）が、要素の fps（{plan.fps:g}）と違います")
         start, end = wipe["at"] - wipe["seconds"] / 2, wipe["at"] + wipe["seconds"] / 2
         needed = [T for T in plan.frames if abs((T - 1) / plan.fps - wipe["at"]) < wipe["seconds"] / 2]
         absent = [T for T in needed if T not in other.frames]

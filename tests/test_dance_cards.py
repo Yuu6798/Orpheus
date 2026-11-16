@@ -186,6 +186,10 @@ def test_the_wipe_swaps_the_shots_behind_a_moving_pillar(tmp_path):
     with pytest.raises(PipelineError, match="重なって"):
         passes.load_spec(_spec(tmp_path, wipes=[wipe, {**wipe, "at": 0.05}]))
     _alt(tmp_path, [1, 2, 3])                                                     # 相手の要素を、つなぎの間のコマがそろった一覧に戻す
+    fast = json.loads((tmp_path / "alt.json").read_text(encoding="utf-8"))
+    (tmp_path / "alt60.json").write_text(json.dumps({**fast, "fps": 60}), encoding="utf-8")
+    with pytest.raises(PipelineError, match="fps"):                              # fps の違う相手の一覧は止める（Codex の指摘）
+        passes.load_scene(passes.load_spec(_spec(tmp_path, wipes=[{**wipe, "passes": "alt60.json"}])), plan)
     lamps = {"items": "sprites.json", "images": ["pillar.png"]}                    # 小さな絵があれば、相手のカメラが要る（Codex の指摘）
     with pytest.raises(PipelineError, match="cameras"):
         passes.load_scene(passes.load_spec(_spec(tmp_path, cameras=_cameras(tmp_path), sprites=lamps, wipes=[wipe])), plan)
