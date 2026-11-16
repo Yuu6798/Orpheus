@@ -144,6 +144,15 @@ def test_the_dance_time_can_hold_while_the_camera_moves():
     assert moved[3] == later[3] and not np.allclose(moved[0], later[0])          # カメラは動き続ける
 
 
+def test_beat_pushes_follow_the_grid():
+    plan = _plan([{"keys": [_key()]}], grid={"period": 0.5, "k0_time": 0.0},
+                 effects=[{"kind": "beat_push", "from": 0.0, "until": 1.0, "strong": 0.5, "weak": 0.5, "tau": 100.0}])
+    orbit = orbit_plan.Orbit(plan)
+    samples = orbit_plan.read_points(_still_path(), orbit.names, orbit.frame0, orbit.dance_fps, 0.0, 3.0)
+    assert orbit.camera(1, samples)[0][1, 3] == pytest.approx(-2.0 * 0.5)     # 拍 0（0 秒）で寄る
+    assert orbit.camera(16, samples)[0][1, 3] == pytest.approx(-2.0 * (1 - 0.5 * np.exp(-0.0 / 100.0)))   # 拍 1（0.5 秒）
+
+
 def test_plan_stage_effects_move_the_camera():
     pushed, *_ = _camera([{"keys": [_key()]}], effects=[{"kind": "push", "at": 0.0, "amount": 0.5, "tau": 10.0, "length": 1.0}])
     assert pushed[1, 3] == pytest.approx(-2.0 * 0.5)                              # 距離に 1 − 0.5 × exp(−0/10)
@@ -157,6 +166,7 @@ def test_plan_stage_effects_move_the_camera():
     ([{"until": 1.0, "keys": [_key(), _key(), _key()]}], {}, "u"),
     ([{"until": {"beat": 2}, "keys": [_key()]}, {"keys": [_key()]}], {}, "grid"),
     ([{"keys": [_key()]}], {"dance": {"fps": 24, "holds": [{"from": 1.0, "until": 0.5, "at": 0.0}]}}, "holds"),
+    ([{"keys": [_key()]}], {"effects": [{"kind": "beat_push", "from": 0.0, "until": 1.0}]}, "grid"),
 ])
 def test_bad_plans_are_refused(shots, extra, message):
     with pytest.raises(ToolError, match=message):
