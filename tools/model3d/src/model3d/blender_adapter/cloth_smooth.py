@@ -211,8 +211,10 @@ def main(argv=None):
     points, bones = read_frames(proxy)
     proxy_result, proxy_summary = smooth_in_bone_space(points, bones, settings["sigma"], settings["median"])
     removed = replace_with_cache(proxy, proxy_result, a.proxy_cache)
+    scale = np.linalg.norm(bones[:, :3, :3], axis=1)      # 骨の世界の行列の軸ごとの大きさ（ずれの数はその逆数の倍になる）
     report = {"schema_version": "model3d-cloth-smooth/0.1", "blender": bpy.app.version_string, "armature": armature.name,
-              "bone": settings["bone"], "frames": [int(start), int(end)], "median_window": settings["median"],
+              "bone": settings["bone"], "bone_scale": [float(scale.min()), float(scale.max())], "frames": [int(start), int(end)],
+              "median_window": settings["median"],
               "proxy": {"object": proxy.name, "verts": int(points.shape[1]), "sigma_frames": settings["sigma"],
                         "cache": os.path.basename(a.proxy_cache), "removed_modifiers": removed, **proxy_summary}}
 
@@ -231,10 +233,20 @@ def main(argv=None):
     out = os.path.abspath(a.out_blend)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     # Mesh Cache のパスを、出力の .blend からの相対パス（//…）にして保存する。保存は、開いている（入力の）.blend のフォルダから
-    # 見た相対パスを、出力のフォルダから見た相対パスに直す（relative_remap）ので、入力のフォルダから見た相対パスを入れておく
+    # 見た相対パスを、出力のフォルダから見た相対パスに直す（relative_remap）ので、入力のフォルダから見た相対パスを入れておく。
+    # 入力の .blend が別のドライブにあると（Windows）入力から見た相対パスを作れないので、絶対パスのまま保存してから、出力を開いた
+    # ままの状態で出力から見た相対パスに直し、もう一度保存する
+    later = []
     for reader, path in readers:
-        reader.filepath = bpy.path.relpath(os.path.abspath(path))
-    bpy.ops.wm.save_as_mainfile(filepath=out, copy=True, compress=True, relative_remap=True)
+        try:
+            reader.filepath = bpy.path.relpath(os.path.abspath(path))
+        except ValueError:
+            later.append((reader, path))
+    bpy.ops.wm.save_as_mainfile(filepath=out, copy=not later, compress=True, relative_remap=True)
+    if later:
+        for reader, path in later:
+            reader.filepath = relative_to_blend(path, out)
+        bpy.ops.wm.save_mainfile(filepath=out, compress=True, relative_remap=False)
     report["cache_paths"] = {reader.id_data.name: relative_to_blend(path, out) for reader, path in readers}
     report["seconds"] = round(time.time() - started, 1)
     report["settings"] = settings
