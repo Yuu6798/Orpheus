@@ -3,9 +3,10 @@
 1 コマの重ね方（表示の値。sRGB に符号化した 0〜1 の float32。リポジトリ外の試作の重ね合わせの台本と同じ順）:
 
     部屋（room）→ ぼかし（room.blur。区間ごとの σ）→ 明るさ（room.level）→ 足もとの円（disc）の影（finish.halo）
-    → 床への映り込み（rchar・rph<i>。reflection。space.mirror・space.ripple）→ 奥の分身（ph<i>。phantoms。space.phantom）
+    → 床への映り込み（rchar・rph<i>・小さな絵。reflection。space.mirror・space.ripple）→ 遠い小さな絵（sprites。space.sprite_layers・
+    over_glow）→ 奥の分身（ph<i>。phantoms。space.phantom）
     人物（char の色・アルファ）→ 灯りの色で染める（shade と head。finish.face_shade・finish.light_tint）→ 輪郭の光（finish.rim_light）
-    重ね（finish.over）→ 手前の分身 → にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
+    重ね（finish.over）→ 手前の分身 → 近い小さな絵 → にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
 
 既存の部品（dance の finish・cues、fx の fire と look、encode.write_video）を呼ぶ。新しく足したのは、区間ごとの部屋のぼかし
 （finish.blur と、区間の値を引く segment_value）と、灯りの色で人物を染める部品（finish.light_tint・finish.face_shade）。
@@ -26,6 +27,7 @@ from . import space
 
 SCHEMA_VERSION = "dance-passes/0.1"
 SCHEMA_FILE = Path(__file__).resolve().parent / "dance_passes.schema.json"
+SPRITES_SCHEMA = Path(__file__).resolve().parent / "dance_sprites.schema.json"
 KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade")
 PHANTOM_KIND = re.compile(r"^r?ph([0-9]+)$")       # 分身 ph<i> と、床で反転したカメラの rph<i>
 FLOOR_SHADOW = {"strength": 0.45, "sigma": 26.0, "gain": 1.0, "down": 1}      # 既定は試作の値
@@ -125,11 +127,25 @@ def _phantoms(raw):
     return out
 
 
+def _sprites(raw):
+    """小さな絵の設定（書いたときだけ。既定は試作の値）。"""
+    if raw is None:
+        return None
+    out = {"items": raw["items"], "images": list(raw["images"])}
+    for key in ("gain", "glow", "glow_blur", "focus_blur", "max_blur", "room_blur", "near_clip", "margin", "mirror_blur", "floor"):
+        out[key] = float(raw.get(key, space.SPRITES[key]))
+    out["fade"] = [float(v) for v in raw.get("fade", space.SPRITES["fade"])]
+    return out
+
+
 def _reflection(raw):
     """床への映り込みの設定（書いた部分だけ。既定は試作の値）。"""
     if raw is None:
         return None
-    out = {"char": None, "ripple": None, "phantoms": None}
+    out = {"char": None, "ripple": None, "phantoms": None, "sprites": None}
+    if raw.get("sprites") is not None:
+        out["sprites"] = {"strength": float(raw["sprites"].get("strength", 0.5)),
+                          "gain": _level(raw["sprites"].get("gain", 1.0), "reflection.sprites.gain")}
     if raw.get("phantoms") is not None:
         out["phantoms"] = {"blur": float(raw["phantoms"].get("blur", 3.0)), "gain": float(raw["phantoms"].get("gain", 0.45))}
     if raw.get("char") is not None:
@@ -159,6 +175,7 @@ def normalize(raw):
             "figure": None, "rim": None, "bloom": None, "flash": None, "level": _level(raw.get("level", 1.0), "level"),
             "clock": None if raw.get("clock") is None else _check_keys(raw["clock"], "clock"),
             "reflection": _reflection(raw.get("reflection")), "phantoms": _phantoms(raw.get("phantoms")),
+            "cameras": raw.get("cameras"), "sprites": _sprites(raw.get("sprites")),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
     if raw.get("figure") is not None:
         figure = raw["figure"]
@@ -199,6 +216,13 @@ def parse_spec(raw, base_dir, path=None, digest=""):
     spec.resolve(spec.data["passes"])
     if spec.data["audio"] is not None:
         spec.resolve(spec.data["audio"]["path"])
+    if spec.data["sprites"] is not None:
+        if spec.data["cameras"] is None:
+            raise PipelineError("sprites（小さな絵）には cameras（カメラの控え。model3d-cameras/0.1）が要ります")
+        for name in [spec.data["sprites"]["items"], *spec.data["sprites"]["images"]]:
+            spec.resolve(name)
+    if spec.data["cameras"] is not None:
+        spec.resolve(spec.data["cameras"])
     return spec
 
 
@@ -211,6 +235,53 @@ def load_spec(path):
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise PipelineError(f"dance passes spec is not valid JSON ({path.name}): {error}") from error
     return parse_spec(raw, path.resolve().parent, path.resolve(), sha256(path))
+
+
+@dataclass
+class Space:
+    """3D の位置を使う部品の入力: コマ T ごとのカメラ（cameras）と小さな絵の位置（items）、小さな絵（sprites）。"""
+    cameras: dict
+    items: dict
+    sprites: list
+
+
+def load_space(spec, plan):
+    """spec の cameras（model3d-cameras/0.1）・sprites の位置（dance-sprites/0.1）と絵を読む。どちらも無ければ None。"""
+    data = spec.data
+    if data["cameras"] is None:
+        return None
+    record = read_json(spec.resolve(data["cameras"]))
+    if not isinstance(record, dict) or record.get("schema_version") != "model3d-cameras/0.1":
+        raise PipelineError(f"cameras は model3d-cameras/0.1 にしてください: {data['cameras']}")
+    rw, rh = record["resolution"]
+    width, height = plan.size
+    if rw * height != rh * width:
+        raise PipelineError(f"cameras の画面（{rw}×{rh}）と要素（{width}×{height}）の縦横比が違います")
+    k = height / rh
+    cameras = {}
+    for fr in record["frames"]:
+        if "distance_m" not in fr:
+            raise PipelineError(f"cameras の T {fr['T']} に distance_m（踊り手までの距離）がありません")
+        cameras[int(fr["T"])] = {"matrix": fr["matrix"], "focal": fr["focal_px"] * k,
+                                 "principal": (fr["principal_px"][0] * k, fr["principal_px"][1] * k), "focus": fr["distance_m"]}
+    absent = [T for T in plan.frames if T not in cameras]
+    if absent:
+        raise PipelineError(f"cameras に、重ねるコマの T がありません: {absent[:10]}")
+    items, sprites = {}, []
+    if data["sprites"] is not None:
+        placed = read_json(spec.resolve(data["sprites"]["items"]))
+        try:
+            jsonschema.Draft202012Validator(json.loads(SPRITES_SCHEMA.read_text(encoding="utf-8"))).validate(placed)
+        except jsonschema.ValidationError as error:
+            raise PipelineError(f"小さな絵の位置（{data['sprites']['items']}）の形が違います: {error.message[:200]}") from error
+        items = {int(fr["T"]): np.asarray(fr["items"], np.float64).reshape(-1, 6) for fr in placed["frames"]}
+        try:
+            sprites = [space.sprite_levels(spec.resolve(name)) for name in data["sprites"]["images"]]
+        except ValueError as error:
+            raise PipelineError(str(error)) from error
+        if not sprites:
+            raise PipelineError("sprites.images に小さな絵がありません")
+    return Space(cameras, items, sprites)
 
 
 @dataclass
@@ -283,9 +354,18 @@ def read_image(path, alpha=False):
     return image[..., ::-1].astype(np.float32) / 255
 
 
-def reflection_layer(data, plan, T):
-    """床への映り込みの画（部屋に足す前。表示の値）。reflection が無ければ None。床で反転したカメラで描いた要素を、ぼかして色と強さを
-    掛けて足し合わせ（space.mirror）、水鏡ならゆらす（space.ripple。効果の時刻 clock で）。"""
+def sprite_layers(data, plan, T, where):
+    """コマ T の小さな絵の 3 枚（遠い・近い・映り込み）。sprites が無ければ None。"""
+    if data["sprites"] is None or where is None:
+        return None
+    t = (T - 1) / plan.fps
+    return space.sprite_layers(plan.size, where.cameras[T], where.items.get(T, ()), where.sprites, data["sprites"],
+                               segment_value(data["room"]["blur"], t), plan.size[0] / 1080)
+
+
+def reflection_layer(data, plan, T, layers=None):
+    """床への映り込みの画（部屋に足す前。表示の値）。reflection が無ければ None。床で反転したカメラで描いた要素（と小さな絵の映り込み
+    layers[2]）を、ぼかして色と強さを掛けて足し合わせ（space.mirror。人物 → 分身 → 小さな絵の順）、水鏡ならゆらす（space.ripple）。"""
     reflection = data["reflection"]
     if reflection is None:
         return None
@@ -304,6 +384,9 @@ def reflection_layer(data, plan, T):
             if T in plan.files.get(kind, {}):
                 picture = _same_size(read_image(plan.files[kind][T], alpha=True), plan, kind, T)
                 parts.append((space.phantom_glow(picture, ghosts["dark"], ghosts["hot"]), glow["blur"], [strength, glow["gain"]]))
+    lights = reflection["sprites"]
+    if lights is not None and layers is not None:     # 小さな絵の映り込み（床で上下を返した位置に置いたもの。ぼかさない）
+        parts.append((layers[2][..., :3], 0.0, [lights["strength"], level_at(lights["gain"], t)]))
     mirror = space.mirror(plan.size, parts, unit)
     ripple = reflection["ripple"]
     if ripple is not None:
@@ -327,7 +410,7 @@ def phantom_layer(data, plan, T, image, near):
     return image
 
 
-def compose(data, plan, T, look=None):
+def compose(data, plan, T, look=None, where=None):
     """コマ T を重ねて uint8 (H, W, 3) RGB を返す（表示の値で計算する。上の順）。"""
     from ..fx import fire
     from ..fx import look as fxlook
@@ -346,9 +429,13 @@ def compose(data, plan, T, look=None):
         disc = _same_size(read_image(files["disc"][T]), plan, "disc", T).mean(axis=2)
         room = finish.halo(room, disc, strength=shadow["strength"], gain=shadow["gain"], sigma=shadow["sigma"], down=shadow["down"],
                            unit=unit)
-    mirror = reflection_layer(data, plan, T)
+    layers = sprite_layers(data, plan, T, where)
+    mirror = reflection_layer(data, plan, T, layers)
     if mirror is not None:
         room = room + mirror
+    lights = data["sprites"]
+    if layers is not None:                                          # 遠い小さな絵（踊り手より遠い）
+        room = space.over_glow(room, layers[0], lights["glow"], lights["glow_blur"], unit)
     room = phantom_layer(data, plan, T, room, near=False)          # 奥の分身（踊り手より遠い）
     alpha = character[..., 3]
     figure = character[..., :3]
@@ -365,6 +452,8 @@ def compose(data, plan, T, look=None):
                                   blur=rim["blur"], gradient=rim["gradient"], clip=rim["clip"], unit=unit, band=rim["band"])
     frame = finish.over(figure, alpha, room)
     frame = phantom_layer(data, plan, T, frame, near=True)         # 手前の分身
+    if layers is not None:                                          # 近い小さな絵
+        frame = space.over_glow(frame, layers[1], lights["glow"], lights["glow_blur"], unit)
     bloom = data["bloom"]
     if bloom is not None:
         frame = finish.stage_bloom(frame, threshold=bloom["threshold"], ceiling=bloom["ceiling"], sigma=bloom["sigma"],
@@ -437,6 +526,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         raise PipelineError("reflection.char（人物の映り込み）には、要素の一覧に rchar（床で反転したカメラで描いた人物）が要ります")
     if data["phantoms"] is not None and not plan.phantoms():
         raise PipelineError("phantoms（分身）には、要素の一覧に ph<i>（model3d の render.passes の phantoms で描いた分身）が要ります")
+    where = load_space(spec, plan)
     notes = list(spec.warnings)
     if data["figure"] is not None and data["figure"]["face_smooth"] > 0 and "head" not in plan.files:
         notes.append("figure.face_smooth: 要素の一覧に head（顔の範囲）が無いので、顔の陰影はならしません")
@@ -448,6 +538,11 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     if audio_path is not None and not audio_path.is_file():
         raise PipelineError(f"音声が見つかりません: {data['audio']['path']}")
     assets = {"passes": {"path": data["passes"], "sha256": sha256(passes_path)}}
+    if data["cameras"] is not None:
+        assets["cameras"] = {"path": data["cameras"], "sha256": sha256(spec.resolve(data["cameras"]))}
+    if data["sprites"] is not None:
+        for n, name in enumerate([data["sprites"]["items"], *data["sprites"]["images"]]):
+            assets[f"sprites_{n}"] = {"path": name, "sha256": sha256(spec.resolve(name))}
     if audio_path is not None:
         assets["audio"] = {"path": data["audio"]["path"], "sha256": sha256(audio_path)}
     libraries = fxrender.library_versions()
@@ -478,7 +573,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         def frames():
             from ..fx import compare
             for i, T in enumerate(plan.frames):
-                image = compose(data, plan, T, look)
+                image = compose(data, plan, T, look, where)
                 if frames_dir is not None:
                     compare.save_png_atomic(image, frames_dir / f"f{T:04d}.png")
                 yield image

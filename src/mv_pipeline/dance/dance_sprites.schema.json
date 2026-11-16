@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dance-sprites/0.1",
+  "title": "dance sprites",
+  "description": "mv dance passes の小さな絵（sprites）を置く 3D の位置。コマ T ごとに、絵の [x, y, z, 高さ, 明るさ, 絵の番号] の並び（世界の座標、m。絵の中心がその点で、上端は高さの半分だけ上。絵の番号は spec の sprites.images の番号を、絵の数で割った余りで使う）。T の無いコマには置かない。",
+  "type": "object",
+  "required": ["schema_version", "unit", "frames"],
+  "properties": {
+    "schema_version": {"const": "dance-sprites/0.1"},
+    "unit": {"const": "m"},
+    "notes": {"type": "string"},
+    "frames": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["T", "items"],
+        "properties": {
+          "T": {"type": "integer", "minimum": 1},
+          "items": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 6, "maxItems": 6}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false
+}

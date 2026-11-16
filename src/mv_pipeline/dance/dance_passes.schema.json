@@ -91,6 +91,29 @@
     },
     "level": {"description": "仕上げの明るさの倍率（明け方・暗転。数か、時刻のキー）", "$ref": "#/$defs/level"},
     "clock": {"description": "効果の時刻のキー（省くと t のまま）。時間停止で効果だけゆっくり進めるときなど（水鏡のうねりが使う）", "$ref": "#/$defs/keys"},
+    "cameras": {"description": "コマごとのカメラの控え（model3d-cameras/0.1。render.passes か plan.orbit の出力）。sprites（小さな絵）に要る。spec のあるフォルダからの相対パス", "type": "string", "minLength": 1},
+    "sprites": {
+      "description": "小さな絵（提灯など）を 3D の位置とカメラの控えから画面に置く（space.sprite_layers）。踊り手より遠いものは人物の前に、近いものは後に重ね、床への映り込みは reflection.sprites。省くと無し",
+      "type": "object",
+      "required": ["items", "images"],
+      "properties": {
+        "items": {"description": "置く位置（dance-sprites/0.1）。spec のあるフォルダからの相対パス", "type": "string", "minLength": 1},
+        "images": {"description": "小さな絵（RGBA の PNG。8 か 16 ビット、前乗算でないアルファ）の並び", "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "gain": {"description": "明るさの倍率（既定 1.05）", "type": "number", "minimum": 0},
+        "glow": {"description": "にじみの倍率（既定 0.45）", "type": "number", "minimum": 0},
+        "glow_blur": {"description": "にじみの σ（幅 1080 の画素。既定 18）", "type": "number", "minimum": 0},
+        "focus_blur": {"description": "踊り手との奥行きの差 1 m あたりのぼかし（画素。既定 0.10）", "type": "number", "minimum": 0},
+        "max_blur": {"description": "奥行きの差のぼかしの上限（画素。既定 5）", "type": "number", "minimum": 0},
+        "room_blur": {"description": "部屋のぼかし（room.blur）に掛けて足す割合（既定 0.15）", "type": "number", "minimum": 0},
+        "near_clip": {"description": "これより近い（奥行き m）絵は置かない（既定 0.3）", "type": "number", "minimum": 0},
+        "margin": {"description": "画面の外へこの画素まではみ出した絵も置く（既定 200）", "type": "number", "minimum": 0},
+        "fade": {"description": "明るさ = 明るさ × clip(fade[0] − 奥行き ÷ fade[1], fade[2], fade[3]) × gain（既定 [1.25, 40, 0.45, 1.1]）", "type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+        "mirror_blur": {"description": "映り込みに足すぼかし（画素。既定 2）", "type": "number", "minimum": 0},
+        "floor": {"description": "映り込みで上下を返す床の高さ（m。既定 0）", "type": "number"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
     "phantoms": {
       "description": "分身（model3d の render.passes の phantoms で描いた ph<i>。白い人物にスタジオの光）を炎の色の光として足す。一覧の near が手前なら人物の後に、そうでなければ人物の前（部屋の上）に。省くと無し",
       "type": "object",
@@ -129,6 +152,16 @@
           "properties": {
             "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 3）", "type": "number", "minimum": 0},
             "gain": {"description": "分身の強さに掛ける倍率（既定 0.45）", "type": "number", "minimum": 0}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "sprites": {
+          "description": "小さな絵の映り込み（床で上下を返した位置に置いた絵。ぼかさずに strength と gain を掛ける。sprites が要る）",
+          "type": "object",
+          "properties": {
+            "strength": {"description": "強さ（既定 0.5）", "type": "number", "minimum": 0},
+            "gain": {"description": "強さに掛ける倍率（数か時刻のキー。既定 1）", "$ref": "#/$defs/level"}
           },
           "patternProperties": {"^x_": {}},
           "additionalProperties": false
