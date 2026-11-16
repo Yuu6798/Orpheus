@@ -57,3 +57,29 @@ def ripple(image, amount, clock, settings=None, unit=1.0):
         + second["share"] * s["px"] * unit * amount * np.sin(ys / (s["wave_px"] * unit * second["length"]) - clock * s["speed"][1]
                                                             + xs * second["slant"])
     return cv2.remap(image, xs + shift.astype(np.float32), ys, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+PHANTOM = {"dark": [0.75, 0.16, 0.03], "hot": [1.0, 0.78, 0.36], "fill": 0.38, "edge": 1.1, "edge_blur": 9.0, "edge_gain": 2.0,
+           "glow": 14.0, "glow_gain": 0.7}
+
+
+def flame_colors(gray, dark, hot):
+    """白黒の陰影 gray (H, W)（0〜1 に切る）→ 炎の色（暗い所は dark、明るい所は hot へ混ぜる。float32）。"""
+    w = np.clip(gray, 0, 1)[..., None]
+    return np.asarray(dark, np.float32) * (1 - w) + np.asarray(hot, np.float32) * w
+
+
+def phantom(target, picture, strength, settings=None, unit=1.0):
+    """分身（白い人物にスタジオの光を当てた透けの RGBA）を、炎の色の光として target に足す。中は fill だけ透けて、輪郭（アルファ − σ
+    edge_blur でぼかしたアルファ、× edge_gain）が edge 倍で光る。σ glow でぼかした光を glow_gain 倍足す。"""
+    s = {**PHANTOM, **(settings or {})}
+    solid = picture[..., 3]
+    outline = np.clip(solid - finish.blur(solid, s["edge_blur"], unit), 0, 1) * s["edge_gain"]
+    cover = (solid * (s["fill"] + s["edge"] * outline) * strength)[..., None]
+    body = flame_colors(picture[..., :3].mean(axis=2), s["dark"], s["hot"]) * cover
+    return target + body + finish.blur(body, s["glow"], unit) * s["glow_gain"]
+
+
+def phantom_glow(picture, dark, hot):
+    """床への映り込みの分身の項のもと: 炎の色 × アルファ（mirror の parts に入れて、ぼかして強さを掛ける）。"""
+    return flame_colors(picture[..., :3].mean(axis=2), dark, hot) * picture[..., 3:4]

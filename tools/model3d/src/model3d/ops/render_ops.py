@@ -328,13 +328,15 @@ def prepare_push(inputs, parameters, outputs, context):
 
 PASS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "pass_render.py"
 PASS_PARAMETERS = {"blender", "addons", "blender_extensions", "resolution", "passes", "format", "quality", "antialiasing", "camera",
-                   "dancer", "disc", "head", "room", "shade", "mirror", "bone_prefix", "armature", "fps", "passes_dir", "only", "timeout"}
+                   "dancer", "disc", "head", "room", "shade", "mirror", "phantoms", "bone_prefix", "armature", "fps", "passes_dir", "only",
+                   "timeout"}
 PASS_CAMERA_KEYS = {"sensor_height", "lens", "clip"}
 DANCER_KEYS = {"bones", "sigma"}
 DISC_KEYS = {"radius", "vertices", "height"}
 ROOM_KEYS = {"collection", "world"}
 SHADE_KEYS = {"studio_light", "rotate_z"}
 MIRROR_KEYS = {"passes", "height"}
+PHANTOM_KEYS = {"items", "during", "mirror", "point", "sigma_s", "reach", "frame0", "fps"}
 ANTIALIASING = ("OFF", "FXAA", "5", "8", "11", "16", "32")
 
 
@@ -433,7 +435,45 @@ def _pass_settings(parameters):
     if "height" in mirror:
         m["height"] = float(number(mirror, "height"))
     s["mirror"] = m
+    s["phantoms"] = _phantom_settings(_section(parameters, "phantoms", PHANTOM_KEYS))
     return s
+
+
+def _phantom_settings(ghosts):
+    """分身（phantoms）の設定を確かめる。items は [{offset: [x, y(, z)] m, delay: 秒}]、during は [[頭, 終わり], …] 秒。"""
+    out = {}
+    if "items" in ghosts:
+        items = ghosts["items"]
+        if not isinstance(items, list):
+            raise ToolError(f"phantoms.items は分身の並び [{{offset, delay}}] にしてください: {items!r}")
+        out["items"] = []
+        for n, item in enumerate(items):
+            where = f"phantoms.items[{n}]"
+            if not isinstance(item, dict) or set(item) - {"offset", "delay"} or "offset" not in item:
+                raise ToolError(f"{where} は {{offset: [x, y]（m）, delay: 秒}} にしてください: {item!r}")
+            offset = item["offset"]
+            if (not isinstance(offset, list) or len(offset) not in (2, 3)
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in offset)):
+                raise ToolError(f"{where}.offset は踊り手からのずらし [x, y] か [x, y, z]（m）にしてください: {offset!r}")
+            delay = float(number(item, "delay", 0.0, minimum=0))
+            out["items"].append({"offset": [float(v) for v in offset], "delay": delay})
+    if ghosts.get("during") is not None:
+        during = ghosts["during"]
+        if (not isinstance(during, list) or not during
+                or not all(isinstance(w, list) and len(w) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in w)
+                           and w[0] < w[1] for w in during)):
+            raise ToolError(f"phantoms.during は分身を描く時間 [[頭, 終わり], …]（秒。頭 < 終わり）にしてください: {during!r}")
+        out["during"] = [[float(a), float(b)] for a, b in during]
+    if "mirror" in ghosts:
+        out["mirror"] = _flag(ghosts, "mirror", "phantoms.mirror")
+    if "point" in ghosts:
+        out["point"] = _name(ghosts["point"], "phantoms.point")
+    for key, minimum, exclusive in (("sigma_s", 0, False), ("reach", 0, True), ("fps", 0, True)):
+        if ghosts.get(key) is not None:
+            out[key] = float(number(ghosts, key, minimum=minimum, exclusive=exclusive))
+    if "frame0" in ghosts:
+        out["frame0"] = float(number(ghosts, "frame0"))
+    return out
 
 
 def _camera_record(path, resolution):
@@ -451,31 +491,73 @@ def _camera_record(path, resolution):
     return record
 
 
-def passes_manifest(report, passes_dir, settings):
-    """描く並び（報告の planned）のうち、要素ごとにファイルのあるコマの sha256 と大きさ。無いコマは missing。"""
+def phantom_order(report, settings, bones, record, cameras_out):
+    """分身を描くコマの、踊り手と分身のカメラからの距離と near（分身のほうが近い）。{T: [{i, distance_m, near}]}。
+    点は骨の通り道（bones）の phantoms.point を σ phantoms.sigma_s 秒でならしたもの（試作と同じ）。カメラの位置は、入力の
+    記録があればその行列（入れた行列）、無ければ Blender が書いた控え。"""
+    from ..blender_adapter import pass_render
+    from ..blender_adapter.point_track import PathError, Samples
+    ghosts = pass_render.merged(settings)["phantoms"]
+    if not ghosts["items"]:
+        return {}
+    dance_fps = ghosts["fps"] or report["phantoms"]["dance_fps"]
+    try:
+        points = Samples(bones, {ghosts["point"]: ghosts["sigma_s"]}, ghosts["frame0"], dance_fps, ghosts["reach"])
+    except PathError as error:
+        raise ToolError(f"render.passes の分身: {error}") from error
+    positions = {fr["T"]: [row[3] for row in fr["matrix"][:3]] for fr in cameras_out["frames"]}
+    for fr in (record or {}).get("frames", []):
+        positions[fr["T"]] = [row[3] for row in fr["matrix"][:3]]
+    out = {}
+    for item in report["planned"]:
+        T = item["T"]
+        if not pass_render.within((T - 1) / report["fps"], ghosts["during"]):
+            continue
+        dance_t = (float(item["f"]) - ghosts["frame0"]) / dance_fps
+        out[T] = pass_render.phantom_distances(points, ghosts["point"], dance_t, ghosts["items"], positions[T])[1]
+    return out
+
+
+def passes_manifest(report, passes_dir, settings, order=None):
+    """描く並び（報告の planned）のうち、要素ごとにファイルのあるコマの sha256 と大きさ。無いコマは missing。分身（ph<i>・rph<i>）は
+    phantoms.during の外のコマを outside に分け、描いたコマに near（分身のほうがカメラに近い）と距離を書く（order。phantom_order）。"""
     from .. import contracts
     from ..blender_adapter import pass_render
+    merged = pass_render.merged(settings)
+    ghosts = set(pass_render.phantom_kinds(merged))
     passes = {}
-    for kind in pass_render.all_kinds(settings):
-        frames, missing = [], []
+    for kind in pass_render.all_kinds(merged):
+        frames, missing, outside = [], [], []
+        index = pass_render.phantom_index(kind)
         for item in report["planned"]:
-            name = pass_render.pass_file(kind, item["T"], settings["format"])
+            if kind in ghosts and not pass_render.within((item["T"] - 1) / report["fps"], merged["phantoms"]["during"]):
+                outside.append(item["T"])
+                continue
+            name = pass_render.pass_file(kind, item["T"], merged["format"])
             file = Path(passes_dir) / name
             if file.is_file():
-                frames.append({"T": item["T"], "f": item["f"], "file": name, "sha256": sha256(file), "bytes": file.stat().st_size})
+                entry = {"T": item["T"], "f": item["f"], "file": name, "sha256": sha256(file), "bytes": file.stat().st_size}
+                if kind in ghosts and order and item["T"] in order:
+                    entry["near"] = order[item["T"]][index]["near"]
+                    entry["distance_m"] = order[item["T"]][index]["distance_m"]
+                frames.append(entry)
             else:
                 missing.append(item["T"])
-        passes[kind] = {"format": "png" if pass_render.extension(kind, settings["format"]) == "png" else "jpeg",
+        passes[kind] = {"format": "png" if pass_render.extension(kind, merged["format"]) == "png" else "jpeg",
                         "alpha": pass_render.base_kind(kind) in pass_render.ALPHA, "frames": frames, "missing": missing}
+        if outside:
+            passes[kind]["outside"] = outside
     manifest = {"schema_version": "model3d-passes/0.1", "directory": str(Path(passes_dir).resolve()), "fps": report["fps"],
                 "resolution": report["resolution"], "passes": passes}
     return contracts.validate("passes", manifest)
 
 
-@register("render.passes", inputs=("blend", "track", "cameras"), outputs=("passes", "cameras", "report"), cacheable=False,
+@register("render.passes", inputs=("blend", "track", "cameras", "bones"), outputs=("passes", "cameras", "report"), cacheable=False,
           summary="キャラ（blend）を要素に分けて、Blender の簡易描画（Workbench）でコマごとに描く: room（部屋の物体）・char（人物の"
                   "色の絵のまま。透けの PNG）・shade（白い人物にスタジオの光）・disc（踊り手の点の真下の床の円）・head（顔の物体だけ白）。"
                   "mirror を書くと、char・shade をカメラを床の面で反転して描いた r<要素>（床への映り込み）も描く。"
+                  "phantoms を書くと、骨組みをずらし踊りの時刻を遅らせた分身 ph<i>（と反転した rph<i>）も描き、骨の通り道（bones）の点で"
+                  "分身と踊り手のカメラからの距離を比べて、一覧に near（分身が手前）を書く。"
                   "コマの並びとカメラはトラック（model3d-stage-track/0.1）、cameras（model3d-cameras/0.1）があればそのコマのカメラは"
                   "行列と焦点距離と主点から。出力の cameras は、並びの全部のコマのカメラと踊り手の点（重ねる側が使う）。描いたコマは"
                   "とばす（続きから描ける）。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"
@@ -499,6 +581,9 @@ def render_passes(inputs, parameters, outputs, context):
     merged = script.merged(settings)
     track = _track(inputs["track"])
     record = _camera_record(inputs["cameras"], merged["resolution"]) if inputs.get("cameras") is not None else None
+    bones = contracts.load("bone-path", inputs["bones"]) if inputs.get("bones") is not None else None
+    if merged["phantoms"]["items"] and bones is None:
+        raise ToolError("render.passes の phantoms（分身）には、inputs の bones（骨の通り道。分身と踊り手の距離を測る点）が要ります")
     plan = stage_render.frame_plan(track, 0, 0)
     problem = script.cameras_problem(plan, script.record_cameras(record))
     if problem:
@@ -523,8 +608,9 @@ def render_passes(inputs, parameters, outputs, context):
     run = launcher.run_blender(blender, PASS_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                timeout=_timeout(parameters), addons=addons, extensions=extensions)
     report = read_json(outputs["report"])
-    contracts.load("cameras", outputs["cameras"])
-    manifest = passes_manifest(report, passes_dir, merged)
+    cameras_out = contracts.load("cameras", outputs["cameras"])
+    order = phantom_order(report, merged, bones, record, cameras_out) if bones is not None else None
+    manifest = passes_manifest(report, passes_dir, merged, order)
     atomic_json(outputs["passes"], manifest)
     observation = {"kind": "pass_render", "exit_code": run["exit_code"], "seconds": run["seconds"],
                    "blender_version": run["blender_version"], "addons": run.get("addons"), "planned": len(report["planned"]),
