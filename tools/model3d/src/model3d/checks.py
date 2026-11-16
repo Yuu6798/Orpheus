@@ -191,6 +191,38 @@ def continuity(track, max_jump):
             "worst_move": worst, "jumps": jumps[:50], "non_finite_frames": non_finite}
 
 
+JITTER_THRESHOLDS = ("max_mean_mm", "max_p99_mm", "max_peak_mm", "max_over_percent")
+_JITTER_FIELDS = {"max_mean_mm": ("mean_mm", "ずれの平均", " mm"), "max_p99_mm": ("p99_mm", "ずれの 99 百分位", " mm"),
+                  "max_peak_mm": ("peak_mm", "ずれの最大", " mm"), "max_over_percent": ("over_percent", "飛びの割合", "%")}
+
+
+def jitter_verdict(report, thresholds=None):
+    """check.jitter の測った値（blender_adapter/jitter_sample.py の報告）に合否を足す。しきい値（JITTER_THRESHOLDS の一部）は、
+    測ったメッシュごとに、変形を切らないそのままの値と比べる（toggle の測り直しは見分けるためのもので、合否に入れない）。
+    しきい値が無ければ pass は None（測っただけ）。3 コマに満たず測れなかったときは未実施（pass は None）。"""
+    report = dict(report)
+    thresholds = {key: value for key, value in (thresholds or {}).items() if value is not None}
+    unknown = set(thresholds) - set(JITTER_THRESHOLDS)
+    if unknown:
+        raise ToolError(f"知らないしきい値: {sorted(unknown)}（使えるのは {list(JITTER_THRESHOLDS)}）")
+    report["thresholds"] = thresholds
+    if report.get("status") != "done":
+        report.update({"pass": None, "failures": []})
+        report.setdefault("reason", "測れませんでした")
+        return report
+    if not thresholds:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+        return report
+    failures = []
+    for name, measured in report["measured"].items():
+        for key, limit in thresholds.items():
+            field, label, unit = _JITTER_FIELDS[key]
+            if measured[field] > limit:
+                failures.append(f"{name}: {label}が {measured[field]:.6g}{unit}（しきい値 {limit:g}{unit}）")
+    report.update({"pass": not failures, "failures": failures})
+    return report
+
+
 MOTION_THRESHOLDS = ("max_swivel_deg", "max_skate_fraction", "max_floor_depth_m", "max_step_m", "max_length_spread")
 
 
