@@ -71,6 +71,100 @@ def check_continuity(inputs, parameters, outputs, context):
     return _finish(report, outputs, parameters, "連続性の検査")
 
 
+JITTER_PARAMETERS = {"objects", "bone", "bone_prefix", "armature", "frames", "jump_mm", "toggle", "toggle_types", "top", "space",
+                     "blender", "addons", "blender_extensions", "timeout", "strict", "report_only", *checks.JITTER_THRESHOLDS}
+JITTER_SCRIPT = __import__("pathlib").Path(__file__).resolve().parents[1] / "blender_adapter" / "jitter_sample.py"
+
+
+def _jitter_frames(inputs, parameters):
+    """測るコマの並び [[T, f], …] と出どころ。入力 track（小数のコマも）か、パラメーター frames（[最初, 最後] の整数）。
+    どちらも無ければ None（Blender の中でシーンの全コマ）。"""
+    span = parameters.get("frames")
+    if inputs.get("track") is not None:
+        if span is not None:
+            raise ToolError("check.jitter: 入力 track とパラメーター frames は一緒に使えません（コマの並びはどちらか 1 つで決める）")
+        from .render_ops import _track
+        track = _track(inputs["track"])
+        f = [float(fr["f"]) for fr in track["frames"]]
+        steps = [b - a for a, b in zip(f, f[1:])]
+        # 前後のコマの中間と比べるので、動きのコマは等間隔に増えること（plan.retime の並びの丸めの揺れ 1e-13 ほどは許す）
+        if steps and (min(steps) <= 0 or max(steps) - min(steps) > 1e-6 * max(1.0, abs(steps[0]))):
+            raise ToolError("check.jitter: track の動きのコマ f は、等間隔に増える並びにしてください（前後のコマの中間と比べるため）")
+        return [[int(fr["T"]), fr["f"]] for fr in track["frames"]], "track"
+    if span is None:
+        return None, "scene"
+    if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)
+            or span[0] > span[1]):
+        raise ToolError(f"frames は [最初のコマ, 最後のコマ]（整数、最初 ≤ 最後）にしてください: {span!r}")
+    return [[k + 1, f] for k, f in enumerate(range(span[0], span[1] + 1))], "range"
+
+
+@register("check.jitter", inputs=("blend", "track"), outputs=("report",), cacheable=False,
+          summary="布などのメッシュ（objects）のちらつきを測る: コマごとに頂点を骨（bone）から見た座標で読み（Blender の中で）、"
+                  "前後のコマの中間からのずれ（2 階差分の半分）の平均・99 百分位・最大と、jump_mm（既定 4）を超えた割合、ずれの大きい"
+                  "コマと頂点を出す。体の動きそのものは骨から見ると動かないので、布の震えや 1 コマだけの跳びが残る。コマは入力 track "
+                  "（小数のコマも）か frames（[最初, 最後]）、無ければシーンの全コマ。toggle で変形を 1 つずつ切って測り直し、どの変形が"
+                  "ちらつきを作るかを見分ける。しきい値（max_mean_mm など）を渡したときだけ合否を出す。好みは判定しない。"
+                  "Blender は外部の実行ファイルなので再利用しない")
+def check_jitter(inputs, parameters, outputs, context):
+    from pathlib import Path
+    from ..blender_adapter import launcher
+    from ..blender_adapter.jitter_sample import SPACES, TOGGLE_TYPES
+    from ..io import read_json
+    from . import number
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _bone_prefix, _timeout
+    require(inputs, ("blend",), "check.jitter")
+    unknown = set(parameters) - JITTER_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.jitter の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(JITTER_PARAMETERS)}）")
+    objects = parameters.get("objects")
+    if (not isinstance(objects, list) or not objects or not all(isinstance(o, str) and o for o in objects)
+            or len(set(objects)) != len(objects)):
+        raise ToolError(f"objects は測るメッシュの名前（空でない・重ならない文字列）の並びにしてください: {objects!r}")
+    bone = parameters.get("bone", "Hips")
+    if not isinstance(bone, str) or not bone:
+        raise ToolError(f"bone は骨の名前（bone_prefix の後ろ）にしてください: {bone!r}")
+    armature = parameters.get("armature")
+    if armature is not None and (not isinstance(armature, str) or not armature):
+        raise ToolError(f"armature はアーマチュアの名前にしてください: {armature!r}")
+    toggle = parameters.get("toggle", False)
+    if not isinstance(toggle, bool):
+        raise ToolError(f"toggle は true か false にしてください: {toggle!r}")
+    space = parameters.get("space", "bone")
+    if space not in SPACES:
+        raise ToolError(f"space は {' か '.join(SPACES)} にしてください（bone: 骨の行列をそのまま逆に。rigid: 回転と位置だけ）: {space!r}")
+    kinds = parameters.get("toggle_types", list(TOGGLE_TYPES))
+    if not isinstance(kinds, list) or not kinds or not all(isinstance(k, str) and k for k in kinds):
+        raise ToolError(f"toggle_types はモディファイアの種類（例 \"CLOTH\"）の並びにしてください: {kinds!r}")
+    frames, source = _jitter_frames(inputs, parameters)
+    if frames is not None and len(frames) < 3:
+        raise ToolError(f"check.jitter には 3 コマ以上が要ります（前後のコマの中間と比べるため）: {len(frames)} コマ")
+    thresholds = {key: number(parameters, key, minimum=0) for key in checks.JITTER_THRESHOLDS if parameters.get(key) is not None}
+    jump = number(parameters, "jump_mm", 4.0, minimum=0, exclusive=True)
+    settings = {"objects": objects, "bone": _bone_prefix(parameters) + bone, "armature": armature, "frames": frames,
+                "frames_source": source, "jump_m": jump / 1000, "toggle": toggle, "toggle_types": kinds,
+                "top": number(parameters, "top", 8, minimum=1, integer=True), "space": space}
+    blender = _blender(parameters, context, "check.jitter")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path, raw_path = step_dir / "jitter_settings.json", step_dir / "jitter_raw.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, JITTER_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                  "--report", str(raw_path)],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = checks.jitter_verdict(read_json(raw_path), thresholds)
+    report.update(blend=str(inputs["blend"]), blender_version=record["blender_version"])
+    result = _finish(report, outputs, parameters, "ちらつきの検査")
+    warnings = report.get("warnings") or []
+    if warnings and not parameters.get("report_only"):   # 骨の大きさで長さが変わっているなど、数の読み方に要る注意
+        if parameters.get("strict"):
+            raise ToolError("ちらつきの検査: " + "; ".join(warnings))
+        result.unresolved.extend(f"ちらつきの検査: {w}" for w in warnings)
+        result.review = True
+    return result
+
+
 MOTION_PARAMETERS = {"fps", "bend_min_deg", "contact_height", "skate_speed", "floor_tolerance", "frames", "top",
                      "strict", "report_only", *checks.MOTION_THRESHOLDS}
 
