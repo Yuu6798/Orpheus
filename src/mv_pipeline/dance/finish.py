@@ -168,6 +168,32 @@ def blur(img, sigma, unit=1.0):
     return cv2.GaussianBlur(img, (0, 0), s) if s > 0.2 else img
 
 
+def light_tint(fg, shade, light, shadow, low=0.5, high=0.92):
+    """人物を灯りの色で染める。陰影の要素 shade（白い人物に光を当てた明るさ。0〜1）を low〜high で 0〜1 に伸ばして
+    smoothstep にし、陰の色 shadow から光の色 light（どちらもチャンネルごとの倍率）へ混ぜた倍率を fg に掛ける
+    （要素別の描画の重ねの試作と同じ式）。"""
+    lit = np.clip((shade - low) / (high - low), 0.0, 1.0)
+    lit = lit * lit * (3 - 2 * lit)
+    shadow = np.asarray(shadow, np.float32)
+    tint = shadow + (np.asarray(light, np.float32) - shadow) * lit[..., None]
+    return fg * tint
+
+
+def face_shade(shade, head, amount, unit=1.0):
+    """顔の範囲だけ陰影をなだらかにする（目のくぼみやまつ毛の形の細かい陰影が、目を閉じた絵などで輪に見えるのを消す）。
+    head は顔の範囲の要素の明るさ（0〜1。0.5 より上を顔として 0〜1 に伸ばす）。顔の面積（画素）の平方根 × amount の σ
+    （2 以上）でぼかした陰影を、顔の縁（σ 1.5 × unit）の内側だけで混ぜる。顔が 50 画素以下か amount が 0 なら、そのまま返す
+    （要素別の描画の重ねの試作と同じ式）。"""
+    head = np.clip((head - 0.5) * 2, 0, 1)
+    area = float(head.sum())
+    if amount <= 0 or area <= 50:
+        return shade
+    sigma = max(2.0, amount * math.sqrt(area))
+    smooth = blur(shade * head, sigma) / np.maximum(blur(head, sigma), 1e-3)
+    core = np.clip(blur(head, 1.5, unit) * 2 - 1, 0, 1)
+    return shade * (1 - core) + smooth * core
+
+
 # ---- 拍の脈 ---------------------------------------------------------------------------
 
 def beat_pulse(beats, t, tau=0.12, downbeats=(), bar=1.0, beat=0.55, count=1, gain=None):

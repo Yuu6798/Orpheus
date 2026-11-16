@@ -3,11 +3,11 @@
 1 コマの重ね方（表示の値。sRGB に符号化した 0〜1 の float32。リポジトリ外の試作の重ね合わせの台本と同じ順）:
 
     部屋（room）→ ぼかし（room.blur。区間ごとの σ）→ 明るさ（room.level）→ 足もとの円（disc）の影（finish.halo）
-    人物（char の色・アルファ）→ 輪郭の光（finish.rim_light）
+    人物（char の色・アルファ）→ 灯りの色で染める（shade と head。finish.face_shade・finish.light_tint）→ 輪郭の光（finish.rim_light）
     重ね（finish.over）→ にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
 
 既存の部品（dance の finish・cues、fx の fire と look、encode.write_video）を呼ぶ。新しく足したのは、区間ごとの部屋のぼかし
-（finish.blur と、区間の値を引く segment_value）だけ。時刻はコマ T の (T − 1) ÷ fps 秒。長さ（画素）は幅 1080 の画面での値で、
+（finish.blur と、区間の値を引く segment_value）と、灯りの色で人物を染める部品（finish.light_tint・finish.face_shade）。時刻はコマ T の (T − 1) ÷ fps 秒。長さ（画素）は幅 1080 の画面での値で、
 コマの幅に合わせて掛ける。
 """
 import json
@@ -89,8 +89,15 @@ def normalize(raw):
             "floor_shadow": (None if "floor_shadow" in raw and raw["floor_shadow"] is None
                              else {**FLOOR_SHADOW, **{k: float(v) if k != "down" else int(v)
                                                       for k, v in (raw.get("floor_shadow") or {}).items() if not k.startswith("x_")}}),
-            "rim": None, "bloom": None, "flash": None, "level": _level(raw.get("level", 1.0), "level"),
+            "figure": None, "rim": None, "bloom": None, "flash": None, "level": _level(raw.get("level", 1.0), "level"),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
+    if raw.get("figure") is not None:
+        figure = raw["figure"]
+        low, high = (float(v) for v in figure.get("shade_range", [0.5, 0.92]))
+        if not low < high:
+            raise PipelineError(f"figure.shade_range は [low, high]（low < high）にしてください: {[low, high]}")
+        data["figure"] = {"light": [float(v) for v in figure["light"]], "shadow": [float(v) for v in figure["shadow"]],
+                          "shade_range": [low, high], "face_smooth": float(figure.get("face_smooth", 0.0))}
     if raw.get("rim") is not None:
         rim = raw["rim"]
         data["rim"] = {"rgb": [float(v) for v in rim["rgb"]], "strength": float(rim["strength"]),
@@ -220,6 +227,12 @@ def compose(data, plan, T, look=None):
                            unit=unit)
     alpha = character[..., 3]
     figure = character[..., :3]
+    tint = data["figure"]
+    if tint is not None:
+        shade = read_image(files["shade"][T]).mean(axis=2)
+        if tint["face_smooth"] > 0 and "head" in files:
+            shade = finish.face_shade(shade, read_image(files["head"][T]).mean(axis=2), tint["face_smooth"], unit=unit)
+        figure = finish.light_tint(figure, shade, tint["light"], tint["shadow"], *tint["shade_range"])
     rim = data["rim"]
     if rim is not None:
         figure = finish.rim_light(figure, alpha, rim["rgb"], rim["strength"], kernel=rim["kernel"], shape=rim["shape"],
@@ -291,6 +304,8 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     data = spec.data
     passes_path = spec.resolve(data["passes"])
     plan = load_passes(passes_path)
+    if data["figure"] is not None and "shade" not in plan.files:
+        raise PipelineError("figure（灯りの色で染める）には、要素の一覧に shade（陰影）が要ります")
     width, height = plan.size
     if width % 2 or height % 2:
         raise PipelineError(f"コマの大きさは偶数にしてください（H.264 の 4:2:0）: {width}×{height}")

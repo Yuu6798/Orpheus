@@ -207,3 +207,36 @@ def test_look_grade_keys_must_be_in_order(tmp_path):
         passes.load_spec(_spec(tmp_path, look=bad))
     empty = passes.load_spec(_spec(tmp_path, look={}))
     assert any(w.startswith("look") for w in empty.warnings)
+def test_light_tint_mixes_the_shadow_and_light_colors():
+    fg = np.ones((2, 3, 3), np.float32)
+    shade = np.array([[0.0, 0.5, 1.0], [0.42, 0.58, 0.74]], np.float32)
+    out = finish.light_tint(fg, shade, [1.0, 0.8, 0.6], [0.5, 0.4, 0.3], 0.42, 0.74)
+    assert np.allclose(out[0, 0], [0.5, 0.4, 0.3]) and np.allclose(out[0, 2], [1.0, 0.8, 0.6])       # 範囲の外は端の色
+    assert np.allclose(out[1, 1], [0.75, 0.6, 0.45])                                                    # 真ん中は smoothstep の 0.5
+    assert out[0, 1, 0] == pytest.approx(0.5 + 0.5 * (lambda u: u * u * (3 - 2 * u))((0.5 - 0.42) / 0.32))
+
+
+def test_face_shade_smooths_only_inside_the_face():
+    shade = np.full((60, 60), 0.8, np.float32)
+    shade[25:35, 25:35] = 0.2                                   # 顔の中の細かい陰（目のくぼみ）
+    shade[2:6, 2:6] = 0.1                                       # 顔の外の陰
+    head = np.zeros((60, 60), np.float32)
+    head[10:50, 10:50] = 1.0
+    out = finish.face_shade(shade, head, 0.09)
+    assert out[30, 30] > 0.3 and out[3, 3] == pytest.approx(0.1)                  # 顔の中だけならす
+    assert finish.face_shade(shade, head, 0.0) is shade and finish.face_shade(shade, head * 0, 0.09) is shade
+
+
+def test_the_figure_is_tinted_by_the_shade_pass(tmp_path):
+    _passes(tmp_path, kinds=("room", "char", "shade"))
+    plan = passes.load_passes(tmp_path / "passes.json")
+    plain = passes.compose(passes.load_spec(_spec(tmp_path, floor_shadow=None)).data, plan, 1)
+    spec = _spec(tmp_path, floor_shadow=None, figure={"light": [1.0, 1.0, 1.0], "shadow": [0.5, 0.5, 0.5], "shade_range": [0.4, 0.6]})
+    tinted = passes.compose(passes.load_spec(spec).data, plan, 1).astype(int)
+    assert tinted[20, 16, 0] == round(200 * 0.5) and tuple(tinted[2, 2]) == tuple(plain[2, 2])     # 陰影の要素は黒（陰の色）。部屋は変わらない
+    _passes(tmp_path / "noshade")
+    bad = _spec(tmp_path / "noshade", figure={"light": [1, 1, 1], "shadow": [0.5, 0.5, 0.5]})
+    with pytest.raises(PipelineError, match="shade"):
+        passes.render_run(bad, out=tmp_path / "noshade" / "runs", quiet=True)
+    with pytest.raises(PipelineError, match="low < high"):
+        passes.load_spec(_spec(tmp_path, figure={"light": [1, 1, 1], "shadow": [1, 1, 1], "shade_range": [0.6, 0.4]}))
