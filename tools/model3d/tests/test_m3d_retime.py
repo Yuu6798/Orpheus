@@ -24,6 +24,11 @@ def test_motion_frames_stay_integers_only_when_they_are_whole():
     assert stage_render.split_frame(-0.5) == (-1, 0.5)
 
 
+def test_the_scene_range_encloses_fractional_frames():
+    assert stage_render.scene_range([1, 1.8]) == (1, 2) and stage_render.scene_range([25.8, 29, 26.6]) == (25, 29)
+    assert stage_render.scene_range([3]) == (3, 3) and all(isinstance(v, int) for v in stage_render.scene_range([0.5, 2.5]))
+
+
 def test_set_frame_passes_the_subframe():
     calls = []
     scene = SimpleNamespace(frame_set=lambda frame, subframe=0.0: calls.append((frame, subframe)))

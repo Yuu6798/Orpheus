@@ -104,6 +104,11 @@ def split_frame(f):
     return int(whole), float(f) - whole
 
 
+def scene_range(frames):
+    """描く動きのコマ（小数も）を含む、シーンのコマの範囲（整数。frame_start・frame_end は整数しか受けない）。"""
+    return int(math.floor(min(frames))), int(math.ceil(max(frames)))
+
+
 def set_frame(scene, f):
     """シーンを動きのコマ f へ進める（小数なら subframe で前後のコマの間の時刻）。"""
     whole, sub = split_frame(f)
@@ -1063,7 +1068,7 @@ def main(argv=None):
         sc.render.fps = int(math.ceil(fps))
         sc.render.fps_base = sc.render.fps / fps
     action_frames = [f for _, f, _ in plan]
-    sc.frame_start, sc.frame_end = min(action_frames), max(action_frames)
+    sc.frame_start, sc.frame_end = scene_range(action_frames)
     if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     stage, cam_s, line = settings["stage"], settings["camera"], settings["outline"]
