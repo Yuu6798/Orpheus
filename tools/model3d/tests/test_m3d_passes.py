@@ -151,12 +151,11 @@ plan = [(fr["T"], fr["f"]) for fr in track["frames"]]
 only = set(settings["only"] or [T for T, _ in plan])
 rendered = {k: [] for k in pass_render.all_kinds(settings)}
 existing = {k: [] for k in pass_render.all_kinds(settings)}
-ghosts = set(pass_render.phantom_kinds(settings))
 for T, f in plan:
     if T not in only:
         continue
     for kind in pass_render.all_kinds(settings):
-        if kind in ghosts and not pass_render.within((T - 1) / track.get("fps", 24), settings["phantoms"]["during"]):
+        if not pass_render.drawn_at(kind, (T - 1) / track.get("fps", 24), settings):
             continue
         path = os.path.join(value("--passes-dir"), pass_render.pass_file(kind, T, settings["format"]))
         os.makedirs(os.path.dirname(path), exist_ok=True)

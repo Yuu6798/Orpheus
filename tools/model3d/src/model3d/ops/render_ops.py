@@ -328,8 +328,8 @@ def prepare_push(inputs, parameters, outputs, context):
 
 PASS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "pass_render.py"
 PASS_PARAMETERS = {"blender", "addons", "blender_extensions", "resolution", "passes", "format", "quality", "antialiasing", "camera",
-                   "dancer", "disc", "head", "room", "shade", "mirror", "phantoms", "bone_prefix", "armature", "fps", "passes_dir", "only",
-                   "timeout"}
+                   "dancer", "disc", "head", "room", "shade", "mirror", "phantoms", "fx", "pool", "bone_prefix", "armature", "fps",
+                   "passes_dir", "only", "timeout"}
 PASS_CAMERA_KEYS = {"sensor_height", "lens", "clip"}
 DANCER_KEYS = {"bones", "sigma"}
 DISC_KEYS = {"radius", "vertices", "height"}
@@ -337,6 +337,9 @@ ROOM_KEYS = {"collection", "world"}
 SHADE_KEYS = {"studio_light", "rotate_z"}
 MIRROR_KEYS = {"passes", "height"}
 PHANTOM_KEYS = {"items", "during", "mirror", "point", "sigma_s", "reach", "frame0", "fps"}
+FX_KEYS = {"shapes", "levels", "clock", "rate", "during", "frame0", "fps", "sigmas", "reach"}
+FX_LEVELS = ("embers", "trails", "sparks", "ring", "flare")
+POOL_KEYS = {"centre", "radii", "segments", "falloff", "floor", "floor_falloff", "height", "during"}
 ANTIALIASING = ("OFF", "FXAA", "5", "8", "11", "16", "32")
 
 
@@ -436,7 +439,110 @@ def _pass_settings(parameters):
         m["height"] = float(number(mirror, "height"))
     s["mirror"] = m
     s["phantoms"] = _phantom_settings(_section(parameters, "phantoms", PHANTOM_KEYS))
+    s["fx"] = _fx_settings(_section(parameters, "fx", FX_KEYS))
+    s["pool"] = _pool_settings(_section(parameters, "pool", POOL_KEYS))
+    drawn = set(kinds) | set(m.get("passes", []))
+    if "fx" in drawn and not s["fx"].get("shapes"):
+        raise ToolError("passes か mirror.passes に fx（効果）を入れるときは、fx.shapes に描く形（embers・bursts・sparks・trails・ring）を書いてください")
     return s
+
+
+def _during(value, where):
+    """描く時間 [[頭, 終わり], …]（秒。頭 < 終わり）。"""
+    if (not isinstance(value, list) or not value
+            or not all(isinstance(w, list) and len(w) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in w)
+                       and w[0] < w[1] for w in value)):
+        raise ToolError(f"{where} は描く時間 [[頭, 終わり], …]（秒。頭 < 終わり）にしてください: {value!r}")
+    return [[float(a), float(b)] for a, b in value]
+
+
+def _keys_or_number(value, where, minimum=None):
+    """数か時刻のキー [[時刻, 数], [時刻, 数, つなぎ方], …]（時刻の昇順。つなぎ方は linear・smooth・step）。"""
+    def ok_number(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and (minimum is None or v >= minimum)
+    if ok_number(value):
+        return float(value)
+    if (isinstance(value, list) and value
+            and all(isinstance(k, list) and len(k) in (2, 3) and isinstance(k[0], (int, float)) and not isinstance(k[0], bool)
+                    and ok_number(k[1]) and (len(k) == 2 or k[2] in ("linear", "smooth", "step")) for k in value)
+            and all(b[0] >= a[0] for a, b in zip(value, value[1:]))):
+        return [[float(k[0]), float(k[1])] + list(k[2:]) for k in value]
+    floor = "" if minimum is None else f"（{minimum:g} 以上）"
+    raise ToolError(f"{where} は数{floor}か時刻のキー [[時刻, 値], [時刻, 値, つなぎ方], …]（時刻の昇順）にしてください: {value!r}")
+
+
+def _fx_settings(fx):
+    """効果（fx）の設定を確かめる。shapes は fx_shapes の設定（知らない形・欄は止める）、levels は形ごとの強さ。"""
+    from ..blender_adapter import fx_shapes
+    out = {}
+    if "shapes" in fx:
+        shapes = fx["shapes"]
+        if not isinstance(shapes, dict):
+            raise ToolError(f"fx.shapes は形の設定 {{形の名前: {{…}}}} にしてください: {shapes!r}")
+        unknown = sorted(set(shapes) - set(fx_shapes.DEFAULTS))
+        if unknown:
+            raise ToolError(f"fx.shapes に知らない欄があります: {unknown}（形は {', '.join(fx_shapes.SHAPES)}）")
+        for name in fx_shapes.SHAPES:
+            if shapes.get(name) is None:
+                continue
+            if not isinstance(shapes[name], dict):
+                raise ToolError(f"fx.shapes.{name} は設定の {{…}} にしてください（既定のままなら {{}}）: {shapes[name]!r}")
+            extra = sorted(set(shapes[name]) - set(fx_shapes.DEFAULTS[name]))
+            if extra:
+                raise ToolError(f"fx.shapes.{name} に知らない欄があります: {extra}")
+        out["shapes"] = shapes
+    if "levels" in fx:
+        levels = fx["levels"]
+        if not isinstance(levels, dict) or set(levels) - set(FX_LEVELS):
+            raise ToolError(f"fx.levels は形ごとの強さ（{', '.join(FX_LEVELS)}。数か時刻のキー）にしてください: {levels!r}")
+        out["levels"] = {k: _keys_or_number(v, f"fx.levels.{k}", minimum=0) for k, v in levels.items()}
+    if fx.get("clock") is not None:
+        clock = _keys_or_number(fx["clock"], "fx.clock")
+        if not isinstance(clock, list):
+            raise ToolError("fx.clock は効果の時刻のキー [[コマの時刻, 効果の時刻], …] にしてください（コマの時刻のままなら省く）")
+        out["clock"] = clock
+    if "rate" in fx:
+        out["rate"] = _keys_or_number(fx["rate"], "fx.rate", minimum=0)
+    if fx.get("during") is not None:
+        out["during"] = _during(fx["during"], "fx.during")
+    if "frame0" in fx:
+        out["frame0"] = float(number(fx, "frame0"))
+    for key in ("fps", "reach"):
+        if fx.get(key) is not None:
+            out[key] = float(number(fx, key, minimum=0, exclusive=True))
+    if "sigmas" in fx:
+        sigmas = fx["sigmas"]
+        if (not isinstance(sigmas, dict) or not all(isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+                                                     for k, v in sigmas.items())):
+            raise ToolError(f"fx.sigmas は点ごとのならし {{点の名前: σ 秒（0 以上）}} にしてください: {sigmas!r}")
+        out["sigmas"] = {k: float(v) for k, v in sigmas.items()}
+    return out
+
+
+def _pool_settings(pool):
+    """床の光のたまり（pool）の設定を確かめる。radii は 0 以上で増えていく半径（m。2 つ以上）。"""
+    out = {}
+    if "centre" in pool:
+        out["centre"] = _pair(pool["centre"], "pool.centre")
+    if "radii" in pool:
+        radii = pool["radii"]
+        if (not isinstance(radii, list) or len(radii) < 2
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in radii)
+                or any(b <= a for a, b in zip(radii, radii[1:]))):
+            raise ToolError(f"pool.radii は 0 以上で増えていく半径の並び（m。2 つ以上）にしてください: {radii!r}")
+        out["radii"] = [float(v) for v in radii]
+    if "segments" in pool:
+        out["segments"] = int(number(pool, "segments", minimum=3, integer=True))
+    for key in ("falloff", "floor_falloff"):
+        if key in pool:
+            out[key] = float(number(pool, key, minimum=0, exclusive=True))
+    if "floor" in pool:
+        out["floor"] = float(number(pool, "floor", minimum=0))
+    if "height" in pool:
+        out["height"] = float(number(pool, "height"))
+    if pool.get("during") is not None:
+        out["during"] = _during(pool["during"], "pool.during")
+    return out
 
 
 def _phantom_settings(ghosts):
@@ -458,12 +564,7 @@ def _phantom_settings(ghosts):
             delay = float(number(item, "delay", 0.0, minimum=0))
             out["items"].append({"offset": [float(v) for v in offset], "delay": delay})
     if ghosts.get("during") is not None:
-        during = ghosts["during"]
-        if (not isinstance(during, list) or not during
-                or not all(isinstance(w, list) and len(w) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in w)
-                           and w[0] < w[1] for w in during)):
-            raise ToolError(f"phantoms.during は分身を描く時間 [[頭, 終わり], …]（秒。頭 < 終わり）にしてください: {during!r}")
-        out["during"] = [[float(a), float(b)] for a, b in during]
+        out["during"] = _during(ghosts["during"], "phantoms.during")
     if "mirror" in ghosts:
         out["mirror"] = _flag(ghosts, "mirror", "phantoms.mirror")
     if "point" in ghosts:
@@ -519,8 +620,9 @@ def phantom_order(report, settings, bones, record, cameras_out):
 
 
 def passes_manifest(report, passes_dir, settings, order=None):
-    """描く並び（報告の planned）のうち、要素ごとにファイルのあるコマの sha256 と大きさ。無いコマは missing。分身（ph<i>・rph<i>）は
-    phantoms.during の外のコマを outside に分け、描いたコマに near（分身のほうがカメラに近い）と距離を書く（order。phantom_order）。"""
+    """描く並び（報告の planned）のうち、要素ごとにファイルのあるコマの sha256 と大きさ。無いコマは missing。分身（ph<i>・rph<i>）・
+    効果（fx・rfx）・床の光のたまり（pool）は、描く時間（during）の外のコマを outside に分ける。分身は、描いたコマに near（分身のほうが
+    カメラに近い）と距離を書く（order。phantom_order）。"""
     from .. import contracts
     from ..blender_adapter import pass_render
     merged = pass_render.merged(settings)
@@ -530,7 +632,7 @@ def passes_manifest(report, passes_dir, settings, order=None):
         frames, missing, outside = [], [], []
         index = pass_render.phantom_index(kind)
         for item in report["planned"]:
-            if kind in ghosts and not pass_render.within((item["T"] - 1) / report["fps"], merged["phantoms"]["during"]):
+            if not pass_render.drawn_at(kind, (item["T"] - 1) / report["fps"], merged):
                 outside.append(item["T"])
                 continue
             name = pass_render.pass_file(kind, item["T"], merged["format"])
@@ -584,6 +686,15 @@ def render_passes(inputs, parameters, outputs, context):
     bones = contracts.load("bone-path", inputs["bones"]) if inputs.get("bones") is not None else None
     if merged["phantoms"]["items"] and bones is None:
         raise ToolError("render.passes の phantoms（分身）には、inputs の bones（骨の通り道。分身と踊り手の距離を測る点）が要ります")
+    effects = "fx" in {script.base_kind(k) for k in script.all_kinds(merged)}
+    needed = script.fx_points(merged) if effects else []
+    if needed and bones is None:
+        raise ToolError(f"render.passes の fx（効果）の点（{', '.join(needed)}）には、inputs の bones（骨の通り道）が要ります")
+    if needed:
+        known = set((bones.get("points") or {}).keys()) | set((bones.get("bones") or {}).keys())
+        absent = [name for name in needed if name not in known]
+        if absent:
+            raise ToolError(f"render.passes の fx: 骨の通り道に無い点 {absent}（motion.bone_path の points か bones に書いてください）")
     plan = stage_render.frame_plan(track, 0, 0)
     problem = script.cameras_problem(plan, script.record_cameras(record))
     if problem:
@@ -605,6 +716,8 @@ def render_passes(inputs, parameters, outputs, context):
             "--passes-dir", str(passes_dir), "--report", outputs["report"], "--cameras-out", outputs["cameras"]]
     if record is not None:
         args += ["--cameras", inputs["cameras"]]
+    if needed:
+        args += ["--bones", inputs["bones"]]
     run = launcher.run_blender(blender, PASS_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                timeout=_timeout(parameters), addons=addons, extensions=extensions)
     report = read_json(outputs["report"])
