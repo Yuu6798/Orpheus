@@ -75,3 +75,27 @@ def test_a_short_audio_track_is_padded_to_the_video(tmp_path):
     result = sheet.side_by_side([a, b], tmp_path / "side.mp4", audio=1)
     checks = probe.check_video(tmp_path / "side.mp4", frames=24, fps=24, audio=True, audio_s=1.0, bt709=True)
     assert result["frames"] == 24 and checks["pass"], checks["failures"]
+
+
+def test_rows_keep_the_last_half_frame_inside_each_video(tmp_path):
+    a = _clip(tmp_path / "a.mp4", 12, 12, (32, 24), 200)
+    b = _clip(tmp_path / "b.mp4", 12, 12, (32, 24), 40)
+    result = sheet.build_rows([a, b], tmp_path / "rows.png", at=[0.99], cell_width=32)        # 最後のコマ（11）の後半
+    record = json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))
+    assert result["missing"] == 0 and [c["frame"] for c in record["cells"]] == [11, 11]
+    late = sheet.build_rows([a, b], tmp_path / "late.png", at=[0.5, 1.2], cell_width=32)     # 動画の外の時刻は今までどおり黒いセル
+    assert late["missing"] == 2
+
+
+def test_side_by_side_keeps_the_audio_without_fades(tmp_path, monkeypatch):
+    a = _clip(tmp_path / "a.mp4", 12, 12, (32, 24), 200)
+    b = _clip(tmp_path / "b.mp4", 12, 12, (32, 24), 40, audio=False)
+    seen = {}
+    real = encode.write_video
+
+    def spy(out, frames, size, fps, crf, n_frames, audio=None, log_path=None):
+        seen["filter"] = encode.audio_filter(audio)
+        return real(out, frames, size, fps, crf, n_frames, audio, log_path)
+    monkeypatch.setattr(encode, "write_video", spy)
+    sheet.side_by_side([a, b], tmp_path / "side.mp4", audio=1)
+    assert seen["filter"] == "anull"                                  # 選んだ動画の音に、明けも暗転も掛けない

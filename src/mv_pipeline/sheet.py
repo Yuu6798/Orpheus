@@ -373,7 +373,7 @@ def build_rows(sources, out, at=None, every=None, count=None, fps=None, labels=N
     width = DEFAULT_CELL_WIDTH if cell_width is None else cell_width
     rows, layout, missing = [], [], []
     for row, (source, name) in enumerate(zip(described, names)):
-        indices = [validate.frame_at(t, source["fps"]) for t in times]
+        indices = [_frame_in(source, t) for t in times]
         frames = _load_frames(source, [i for i in indices if 0 <= i < source["frames"]])
         cells = []
         for t, index in zip(times, indices):
@@ -400,6 +400,14 @@ def build_rows(sources, out, at=None, every=None, count=None, fps=None, labels=N
     atomic_json(out.with_suffix(".json"), record)
     return {"sheet": str(out), "json": str(out.with_suffix(".json")), "format": record["format"], "rows": len(described),
             "columns": len(times), "size": record["size"], "missing": len(missing)}
+
+
+def _frame_in(source, t):
+    """時刻 t のいちばん近いコマ。動画の中の時刻（最後の半コマも）は、最後のコマを越えないようにする（--every・--count の時刻と同じ）。"""
+    index = validate.frame_at(t, source["fps"])
+    if index >= source["frames"] and 0 <= t < source["frames"] / source["fps"]:
+        index = source["frames"] - 1
+    return index
 
 
 def _fit(image, shape):
@@ -446,7 +454,8 @@ def side_by_side(sources, out, height=None, audio=1, labels=None, crf=20, fps=No
         chosen = described[audio - 1]
         if probe.inspect(chosen["path"]).get("audio") is None:
             raise PipelineError(f"{audio} 本目の動画に音がありません（--audio 0 で音なしにできます）: {chosen['path']}")
-        audio_plan = {"path": chosen["path"], "start": 0.0, "duration": n_frames / fps}
+        # 選んだ動画の音をそのまま使う（write_video の既定の明けと暗転は掛けない）
+        audio_plan = {"path": chosen["path"], "start": 0.0, "duration": n_frames / fps, "fade_in": 0.0, "fade_out": 0.0}
         sound = probe.decode(chosen["path"], "a")                          # 音のストリームの長さ（入れ物の長さは絵の長さのことがある）
         if sound["ok"] and 0 < sound["seconds"] < n_frames / fps:        # 音が短ければ、後ろを無音で足して動画の長さにそろえる
             audio_plan.update(length=sound["seconds"], pad=True)
