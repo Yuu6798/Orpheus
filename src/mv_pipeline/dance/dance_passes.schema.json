@@ -177,7 +177,7 @@
           "seconds": {"type": "number", "exclusiveMinimum": 0},
           "direction": {"description": "−1 は右から左、+1 は左から右", "enum": [-1, 1]},
           "passes": {"description": "相手の要素の一覧（model3d-passes/0.1。plan.shots の alt のカメラで描いたもの）", "type": "string", "minLength": 1},
-          "cameras": {"description": "相手のカメラの控え（model3d-cameras/0.1。cards があれば要る）", "type": "string", "minLength": 1},
+          "cameras": {"description": "相手のカメラの控え（model3d-cameras/0.1。cards か sprites があれば要る）", "type": "string", "minLength": 1},
           "pillar": {
             "description": "柱（絵の上から使い、幅 width_px に縦横比のまま引き伸ばす。既定は試作の値）",
             "type": "object",

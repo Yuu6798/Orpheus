@@ -185,3 +185,11 @@ def test_the_wipe_swaps_the_shots_behind_a_moving_pillar(tmp_path):
         passes.load_scene(passes.load_spec(_spec(tmp_path, wipes=[gap])), plan)
     with pytest.raises(PipelineError, match="重なって"):
         passes.load_spec(_spec(tmp_path, wipes=[wipe, {**wipe, "at": 0.05}]))
+    _alt(tmp_path, [1, 2, 3])                                                     # 相手の要素を、つなぎの間のコマがそろった一覧に戻す
+    lamps = {"items": "sprites.json", "images": ["pillar.png"]}                    # 小さな絵があれば、相手のカメラが要る（Codex の指摘）
+    with pytest.raises(PipelineError, match="cameras"):
+        passes.load_scene(passes.load_spec(_spec(tmp_path, cameras=_cameras(tmp_path), sprites=lamps, wipes=[wipe])), plan)
+    (tmp_path / "sprites.json").write_text(json.dumps({"schema_version": "dance-sprites/0.1", "unit": "m",
+                                                        "frames": [{"T": T, "items": []} for T in (1, 2, 3)]}), encoding="utf-8")
+    named = {**wipe, "cameras": _cameras(tmp_path, "alt_cameras.json")}
+    assert passes.load_scene(passes.load_spec(_spec(tmp_path, cameras="cameras.json", sprites=lamps, wipes=[named])), plan).wipes[0]["where"]

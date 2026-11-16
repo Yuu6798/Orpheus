@@ -416,6 +416,9 @@ def load_scene(spec, plan):
         cards.append({**card, "rgb": rgb, "alpha": alpha, "corners": corners})
     wipes = []
     for n, wipe in enumerate(data["wipes"] or []):
+        if (data["cards"] or data["sprites"] is not None) and wipe["cameras"] is None:     # 相手の画にも、板と小さな絵を置く
+            raise PipelineError(f"wipes[{n}] に cameras（相手のカメラの控え）が要ります（手前の板と小さな絵を相手の画にも置くため。"
+                                "省くと、つなぎの間に相手の画から消える）")
         other = load_passes(spec.resolve(wipe["passes"]), continuous=False)
         if other.size != plan.size:
             raise PipelineError(f"wipes[{n}] の相手の要素の大きさ {other.size} が、要素の大きさ {plan.size} と違います")
@@ -425,8 +428,6 @@ def load_scene(spec, plan):
         if absent:
             raise PipelineError(f"wipes[{n}] の相手の要素に、つなぎの間（{start:g}〜{end:g} 秒）のコマがありません: {absent[:10]}")
         where = load_space(spec, other, wipe["cameras"]) if wipe["cameras"] is not None else None
-        if data["cards"] and where is None:
-            raise PipelineError(f"wipes[{n}] に cameras（相手のカメラの控え）が要ります（手前の板を相手の画にも重ねるため）")
         try:
             rgb, alpha = space.read_rgba(spec.resolve(wipe["pillar"]["image"]))
         except ValueError as error:
