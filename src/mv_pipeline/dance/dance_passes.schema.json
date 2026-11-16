@@ -48,8 +48,8 @@
       "type": "object",
       "required": ["light", "shadow"],
       "properties": {
-        "light": {"description": "光の当たる所の倍率（R・G・B）", "$ref": "#/$defs/rgb"},
-        "shadow": {"description": "陰の所の倍率（R・G・B）", "$ref": "#/$defs/rgb"},
+        "light": {"description": "光の当たる所の倍率（R・G・B か色のキー）", "$ref": "#/$defs/color"},
+        "shadow": {"description": "陰の所の倍率（R・G・B か色のキー）", "$ref": "#/$defs/color"},
         "shade_range": {"description": "陰影の明るさを 0〜1 に伸ばす範囲 [low, high]", "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
         "face_smooth": {"description": "顔の範囲（head）の陰影をならす強さ（顔の面積の平方根に対する σ の割合。0 で無し）", "type": "number", "minimum": 0}
       },
@@ -61,7 +61,8 @@
       "type": "object",
       "required": ["rgb", "strength"],
       "properties": {
-        "rgb": {"$ref": "#/$defs/rgb"}, "strength": {"type": "number", "minimum": 0},
+        "rgb": {"description": "色（0〜255 の R・G・B か色のキー）", "$ref": "#/$defs/color"},
+        "strength": {"description": "強さ（数か時刻のキー）", "$ref": "#/$defs/level"},
         "kernel": {"type": "number", "exclusiveMinimum": 0}, "shape": {"enum": ["ellipse", "rect"]},
         "blur": {"type": "number", "minimum": 0},
         "gradient": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
@@ -75,8 +76,9 @@
       "description": "明るい所のにじみ（finish.stage_bloom）。省くと無し",
       "type": "object",
       "properties": {
-        "threshold": {"type": "number"}, "ceiling": {"type": ["number", "null"]}, "sigma": {"type": "number", "exclusiveMinimum": 0},
-        "strength": {"type": "number", "minimum": 0}, "down": {"type": "integer", "minimum": 1}
+        "threshold": {"description": "しきい値（数か時刻のキー）", "$ref": "#/$defs/signed"}, "ceiling": {"type": ["number", "null"]},
+        "sigma": {"type": "number", "exclusiveMinimum": 0},
+        "strength": {"description": "強さ（数か時刻のキー）", "$ref": "#/$defs/level"}, "down": {"type": "integer", "minimum": 1}
       },
       "patternProperties": {"^x_": {}},
       "additionalProperties": false
@@ -91,6 +93,50 @@
     },
     "level": {"description": "仕上げの明るさの倍率（明け方・暗転。数か、時刻のキー）", "$ref": "#/$defs/level"},
     "clock": {"description": "効果の時刻のキー（省くと t のまま）。時間停止で効果だけゆっくり進めるときなど（水鏡のうねりが使う）", "$ref": "#/$defs/keys"},
+    "world": {
+      "description": "背景を、部屋（room）から別の世界（空の色 + 床の光のたまりの要素 pool × pool の色 + 人物のまわりのほのかな明るみ）へ切り替える。mix が 0 と 1 の間は、踊り手の重心から fx-timeline の burn と同じ焼け抜け（space.world）。省くと無し",
+      "type": "object",
+      "required": ["mix"],
+      "properties": {
+        "mix": {"description": "切り替わりの進み（0 = 部屋、1 = 別の世界。数か時刻のキー）", "$ref": "#/$defs/level"},
+        "sky": {"description": "空の色（表示の値。既定 [0.012, 0.009, 0.018]）", "$ref": "#/$defs/rgb"},
+        "pool": {"description": "床の光のたまり（要素 pool の明るさ）に掛ける色（既定 [0.40, 0.15, 0.055]）", "$ref": "#/$defs/rgb"},
+        "halo": {
+          "description": "人物のまわりのほのかな明るみ（アルファを σ sigma でぼかして色を掛ける。既定 110・[0.10, 0.04, 0.015]）",
+          "type": "object",
+          "properties": {"sigma": {"type": "number", "minimum": 0}, "color": {"$ref": "#/$defs/rgb"}},
+          "additionalProperties": false
+        },
+        "burn": {
+          "description": "焼け抜け（fx-timeline の burn と同じ欄と既定。from は踊り手の重心で、書かない）",
+          "type": "object",
+          "properties": {
+            "seed": {"type": "integer"}, "scale": {"type": "number", "exclusiveMinimum": 0}, "soft": {"type": "number", "exclusiveMinimum": 0},
+            "char": {"type": "number", "minimum": 0, "maximum": 1}, "bias": {"type": "number", "minimum": 0, "maximum": 1},
+            "edge": {
+              "type": "object",
+              "properties": {"color": {"$ref": "#/$defs/rgb"}, "width": {"type": "number", "exclusiveMinimum": 0}, "gain": {"type": "number", "minimum": 0}},
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "impact": {
+      "description": "衝撃: 画の中心のまわりに少しずつ拡大した画を元の画と平均し、奥へ吸い込まれる筋にする（space.impact。小さな絵と人物の後、にじみの前）。省くと無し",
+      "type": "object",
+      "required": ["amount"],
+      "properties": {
+        "amount": {"description": "強さ（数か時刻のキー。0.01 以下のコマは何もしない）", "$ref": "#/$defs/level"},
+        "zoom": {"description": "強さ 1 での 1 段の拡大の割合（既定 0.05）", "type": "number", "minimum": 0},
+        "steps": {"description": "重ねる拡大の段の数（既定 3）", "type": "integer", "minimum": 1}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
     "cameras": {"description": "コマごとのカメラの控え（model3d-cameras/0.1。render.passes か plan.orbit の出力）。sprites（小さな絵）に要る。spec のあるフォルダからの相対パス", "type": "string", "minLength": 1},
     "sprites": {
       "description": "小さな絵（提灯など）を 3D の位置とカメラの控えから画面に置く（space.sprite_layers）。踊り手より遠いものは人物の前に、近いものは後に重ね、床への映り込みは reflection.sprites。省くと無し",
@@ -206,6 +252,7 @@
       }
     },
     "level": {"oneOf": [{"type": "number", "minimum": 0}, {"$ref": "#/$defs/keys"}]},
+    "signed": {"oneOf": [{"type": "number"}, {"$ref": "#/$defs/keys"}]},
     "segments": {
       "oneOf": [
         {"type": "number", "minimum": 0},

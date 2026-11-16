@@ -3,10 +3,11 @@
 1 コマの重ね方（表示の値。sRGB に符号化した 0〜1 の float32。リポジトリ外の試作の重ね合わせの台本と同じ順）:
 
     部屋（room）→ ぼかし（room.blur。区間ごとの σ）→ 明るさ（room.level）→ 足もとの円（disc）の影（finish.halo）
+    → 別の世界への切り替え（world。空・床の光のたまり pool・焼け抜けは fx.burn。space.world）
     → 床への映り込み（rchar・rph<i>・小さな絵。reflection。space.mirror・space.ripple）→ 遠い小さな絵（sprites。space.sprite_layers・
     over_glow）→ 奥の分身（ph<i>。phantoms。space.phantom）
     人物（char の色・アルファ）→ 灯りの色で染める（shade と head。finish.face_shade・finish.light_tint）→ 輪郭の光（finish.rim_light）
-    重ね（finish.over）→ 手前の分身 → 近い小さな絵 → にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
+    重ね（finish.over）→ 手前の分身 → 近い小さな絵 → 衝撃（impact。space.impact）→ にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
 
 既存の部品（dance の finish・cues、fx の fire と look、encode.write_video）を呼ぶ。新しく足したのは、区間ごとの部屋のぼかし
 （finish.blur と、区間の値を引く segment_value）と、灯りの色で人物を染める部品（finish.light_tint・finish.face_shade）。
@@ -28,7 +29,7 @@ from . import space
 SCHEMA_VERSION = "dance-passes/0.1"
 SCHEMA_FILE = Path(__file__).resolve().parent / "dance_passes.schema.json"
 SPRITES_SCHEMA = Path(__file__).resolve().parent / "dance_sprites.schema.json"
-KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade")
+KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade", "pool")
 PHANTOM_KIND = re.compile(r"^r?ph([0-9]+)$")       # 分身 ph<i> と、床で反転したカメラの rph<i>
 FLOOR_SHADOW = {"strength": 0.45, "sigma": 26.0, "gain": 1.0, "down": 1}      # 既定は試作の値
 FLASH_COLOR = [255.0, 255.0, 255.0]
@@ -88,6 +89,11 @@ def _level(value, where):
     return float(value) if isinstance(value, (int, float)) else _check_keys(value, where)
 
 
+def _signed(value, where):
+    """数か時刻のキー（負の値も許す。にじみのしきい値など）。"""
+    return float(value) if isinstance(value, (int, float)) else _check_keys(value, where)
+
+
 def _color(value, where):
     """色（チャンネルごとの倍率 [R, G, B]）か、色のキー [[時刻, [R, G, B]], [時刻, [R, G, B], つなぎ方], …]。"""
     if len(value) == 3 and all(isinstance(v, (int, float)) for v in value):
@@ -125,6 +131,32 @@ def _phantoms(raw):
     for key in ("fill", "edge", "edge_blur", "edge_gain", "glow", "glow_gain"):
         out[key] = float(raw.get(key, space.PHANTOM[key]))
     return out
+
+
+def _world(raw):
+    """世界の切り替えの設定（書いたときだけ。既定は試作の値。焼け抜けは fx-timeline の burn と同じ書き方と既定）。"""
+    if raw is None:
+        return None
+    from ..fx.sequence import BURN, BURN_EDGE
+    halo = {**space.WORLD["halo"], **raw.get("halo", {})}
+    out = {"mix": _level(raw["mix"], "world.mix"), "sky": [float(v) for v in raw.get("sky", space.WORLD["sky"])],
+           "pool": [float(v) for v in raw.get("pool", space.WORLD["pool"])],
+           "halo": {"sigma": float(halo["sigma"]), "color": [float(v) for v in halo["color"]]}}
+    burn = raw.get("burn", {})
+    edge = burn.get("edge")
+    if edge is not None:
+        edge = {"color": [float(v) for v in edge.get("color", BURN_EDGE["color"])],
+                **{key: float(edge.get(key, BURN_EDGE[key])) for key in ("width", "gain")}}
+    out["burn"] = {"seed": int(burn.get("seed", BURN["seed"])), **{key: float(burn.get(key, BURN[key])) for key in ("scale", "soft")},
+                   "edge": edge if edge and edge["gain"] > 0 else None, "char": float(burn.get("char", BURN["char"])),
+                   "bias": float(burn.get("bias", BURN["bias"]))}
+    return out
+
+
+def _impact(raw):
+    if raw is None:
+        return None
+    return {"amount": _level(raw["amount"], "impact.amount"), "zoom": float(raw.get("zoom", 0.05)), "steps": int(raw.get("steps", 3))}
 
 
 def _sprites(raw):
@@ -176,25 +208,26 @@ def normalize(raw):
             "clock": None if raw.get("clock") is None else _check_keys(raw["clock"], "clock"),
             "reflection": _reflection(raw.get("reflection")), "phantoms": _phantoms(raw.get("phantoms")),
             "cameras": raw.get("cameras"), "sprites": _sprites(raw.get("sprites")),
+            "world": _world(raw.get("world")), "impact": _impact(raw.get("impact")),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
     if raw.get("figure") is not None:
         figure = raw["figure"]
         low, high = (float(v) for v in figure.get("shade_range", [0.5, 0.92]))
         if not low < high:
             raise PipelineError(f"figure.shade_range は [low, high]（low < high）にしてください: {[low, high]}")
-        data["figure"] = {"light": [float(v) for v in figure["light"]], "shadow": [float(v) for v in figure["shadow"]],
+        data["figure"] = {"light": _color(figure["light"], "figure.light"), "shadow": _color(figure["shadow"], "figure.shadow"),
                           "shade_range": [low, high], "face_smooth": float(figure.get("face_smooth", 0.0))}
     if raw.get("rim") is not None:
         rim = raw["rim"]
-        data["rim"] = {"rgb": [float(v) for v in rim["rgb"]], "strength": float(rim["strength"]),
+        data["rim"] = {"rgb": _color(rim["rgb"], "rim.rgb"), "strength": _level(rim["strength"], "rim.strength"),
                        "kernel": float(rim.get("kernel", 7)), "shape": rim.get("shape", "ellipse"), "blur": float(rim.get("blur", 1.6)),
                        "gradient": None if "gradient" in rim and rim["gradient"] is None else [float(v) for v in rim.get("gradient", [1.25, 0.75])],
                        "clip": bool(rim.get("clip", True)), "band": rim.get("band", "erode")}
     if raw.get("bloom") is not None:
         bloom = raw["bloom"]
-        data["bloom"] = {"threshold": float(bloom.get("threshold", 0.45)),
+        data["bloom"] = {"threshold": _signed(bloom.get("threshold", 0.45), "bloom.threshold"),
                          "ceiling": None if "ceiling" in bloom and bloom["ceiling"] is None else float(bloom.get("ceiling", 0.8)),
-                         "sigma": float(bloom.get("sigma", 7.0)), "strength": float(bloom.get("strength", 0.6)),
+                         "sigma": float(bloom.get("sigma", 7.0)), "strength": _level(bloom.get("strength", 0.6), "bloom.strength"),
                          "down": int(bloom.get("down", 4))}
     if raw.get("flash") is not None:
         data["flash"] = {"keys": _check_keys(raw["flash"]["keys"], "flash.keys"),
@@ -372,7 +405,7 @@ def reflection_layer(data, plan, T, layers=None):
     t = (T - 1) / plan.fps
     unit = plan.size[0] / 1080
     parts = []
-    if reflection["char"] is not None:
+    if reflection["char"] is not None and T in plan.files.get("rchar", {}):      # 描く時間の外のコマ（outside）には足さない
         mirrored = _same_size(read_image(plan.files["rchar"][T], alpha=True), plan, "rchar", T)
         char = reflection["char"]
         parts.append((mirrored[..., :3] * mirrored[..., 3:4], char["blur"], [color_at(char["tint"], t), level_at(char["strength"], t)]))
@@ -421,14 +454,20 @@ def compose(data, plan, T, look=None, where=None):
     unit = width / 1080
     files = plan.files
     character = _same_size(read_image(files["char"][T], alpha=True), plan, "char", T)
-    room = _same_size(read_image(files["room"][T]), plan, "room", T) if "room" in files else np.zeros((height, width, 3), np.float32)
+    has_room = T in files.get("room", {})               # 部屋は描く時間の外（outside）のコマには無い（別の世界に切り替わった後など）
+    room = _same_size(read_image(files["room"][T]), plan, "room", T) if has_room else np.zeros((height, width, 3), np.float32)
     room = finish.blur(room, segment_value(data["room"]["blur"], t), unit=unit)
     room = room * np.float32(level_at(data["room"]["level"], t))
     shadow = data["floor_shadow"]
-    if shadow is not None and "disc" in files:
+    if shadow is not None and T in files.get("disc", {}):
         disc = _same_size(read_image(files["disc"][T]), plan, "disc", T).mean(axis=2)
         room = finish.halo(room, disc, strength=shadow["strength"], gain=shadow["gain"], sigma=shadow["sigma"], down=shadow["down"],
                            unit=unit)
+    other = data["world"]
+    mix = 0.0 if other is None else level_at(other["mix"], t)
+    if mix > 0:                                          # 部屋から別の世界へ（踊り手のまわりから焼け抜ける。fx.burn）
+        pool = _same_size(read_image(files["pool"][T]), plan, "pool", T) if T in files.get("pool", {}) else None
+        room = space.world(room if has_room else None, character[..., 3], mix, pool, other, other["burn"], unit)
     layers = sprite_layers(data, plan, T, where)
     mirror = reflection_layer(data, plan, T, layers)
     if mirror is not None:
@@ -442,22 +481,25 @@ def compose(data, plan, T, look=None, where=None):
     tint = data["figure"]
     if tint is not None:
         shade = _same_size(read_image(files["shade"][T]), plan, "shade", T).mean(axis=2)
-        if tint["face_smooth"] > 0 and "head" in files:
+        if tint["face_smooth"] > 0 and T in files.get("head", {}):
             head = _same_size(read_image(files["head"][T]), plan, "head", T).mean(axis=2)
             shade = finish.face_shade(shade, head, tint["face_smooth"], unit=unit)
-        figure = finish.light_tint(figure, shade, tint["light"], tint["shadow"], *tint["shade_range"])
+        figure = finish.light_tint(figure, shade, color_at(tint["light"], t), color_at(tint["shadow"], t), *tint["shade_range"])
     rim = data["rim"]
     if rim is not None:
-        figure = finish.rim_light(figure, alpha, rim["rgb"], rim["strength"], kernel=rim["kernel"], shape=rim["shape"],
+        figure = finish.rim_light(figure, alpha, color_at(rim["rgb"], t), level_at(rim["strength"], t), kernel=rim["kernel"], shape=rim["shape"],
                                   blur=rim["blur"], gradient=rim["gradient"], clip=rim["clip"], unit=unit, band=rim["band"])
     frame = finish.over(figure, alpha, room)
     frame = phantom_layer(data, plan, T, frame, near=True)         # 手前の分身
     if layers is not None:                                          # 近い小さな絵
         frame = space.over_glow(frame, layers[1], lights["glow"], lights["glow_blur"], unit)
+    hit = data["impact"]
+    if hit is not None:                                              # 衝撃（奥へ吸い込まれる筋）
+        frame = space.impact(frame, level_at(hit["amount"], t), hit["zoom"], hit["steps"])
     bloom = data["bloom"]
     if bloom is not None:
-        frame = finish.stage_bloom(frame, threshold=bloom["threshold"], ceiling=bloom["ceiling"], sigma=bloom["sigma"],
-                                   strength=bloom["strength"], down=bloom["down"], unit=unit)
+        frame = finish.stage_bloom(frame, threshold=level_at(bloom["threshold"], t), ceiling=bloom["ceiling"], sigma=bloom["sigma"],
+                                   strength=level_at(bloom["strength"], t), down=bloom["down"], unit=unit)
     flash = data["flash"]
     if flash is not None:
         strength = level_at(flash["keys"], t)
@@ -522,6 +564,8 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     plan = load_passes(passes_path)
     if data["figure"] is not None and "shade" not in plan.files:
         raise PipelineError("figure（灯りの色で染める）には、要素の一覧に shade（陰影）が要ります")
+    if data["figure"] is not None and len(plan.files["shade"]) != len(plan.frames):
+        raise PipelineError("figure（灯りの色で染める）には、人物を描いたどのコマにも shade（陰影）が要ります（一覧の outside にしない）")
     if data["reflection"] is not None and data["reflection"]["char"] is not None and "rchar" not in plan.files:
         raise PipelineError("reflection.char（人物の映り込み）には、要素の一覧に rchar（床で反転したカメラで描いた人物）が要ります")
     if data["phantoms"] is not None and not plan.phantoms():
