@@ -6,6 +6,8 @@
 書き出しの前に機械で見るための道具（音の終わりの測り方は mv audio end と同じ。audio/end.py）。数を出すだけで、絵の良し悪しは判定しない。
 
 - 音が切れる時刻 `audio_end_s`: 動画の音の、最後の鳴っている窓の終わり（window 秒ごとの RMS が、いちばん大きい窓から floor_db 以内）。
+  時刻は映像の最初のコマから数える。音の流れが映像より遅れて（早く）始まる動画は、その差 `audio_start_s`（最初の音の塊の時刻 −
+  最初のコマの時刻。ffmpeg の ashowinfo・showinfo で読む）を足す（読み出した音の標本には時刻が無いので、そのままだと音の頭から数えてしまう）。
 - 絵が続く長さ `picture_after_s` = 映像の長さ − `audio_end_s`（音が切れてから、暗転や静止を含めて絵が続く秒）。
 - `status`: 映像に音が無ければ `fail`（測れない）。`picture_after_s` が `max_tail_s`（仮の値。既定 1.0 秒）を超えたら `warn`（長い余韻。
   好みなので不合格にはしない）。最後の窓まで鳴っている（音が鳴っている所で終わる）ときも `warn`（曲を途中で切ったかを聞いて確かめる）。
@@ -15,6 +17,8 @@
 """
 import json
 import math
+import re
+import subprocess
 from pathlib import Path
 
 from ..audio import end as audio_end
@@ -45,6 +49,17 @@ def settings(value=None, where="tail"):
     return out
 
 
+def first_time(video, stream):
+    """最初のコマ（stream "v"）か最初の音の塊（"a"）の時刻（秒。ffmpeg の showinfo・ashowinfo の pts_time）。読めなければ None。
+    ffmpeg は、どちらの流れの時刻からも同じ入力の頭の時刻を引くので、2 つの差が流れの頭の時刻の差になる。"""
+    from .. import media
+    flag, name = ("-vf", "showinfo") if stream == "v" else ("-af", "ashowinfo")
+    result = subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-i", str(video), "-map", f"0:{stream}:0", f"-frames:{stream}", "1",
+                             flag, name, "-f", "null", "-"], capture_output=True)
+    found = re.search(r"pts_time:\s*(-?[0-9]+(?:\.[0-9]+)?(?:e-?[0-9]+)?)", result.stderr.decode("utf-8", errors="replace"))
+    return float(found.group(1)) if found else None
+
+
 def measure(video, limits):
     """動画の音の終わりと絵の終わり（報告の中身）。"""
     from ..fx import probe
@@ -61,7 +76,13 @@ def measure(video, limits):
     if not decoded["ok"] or not fps:
         raise PipelineError(f"映像を読めません（{video.name}）: {decoded['error']}")
     video_s = decoded["frames"] / fps
-    after = video_s - measured["end_s"]
+    starts = first_time(video, "v"), first_time(video, "a")
+    if None in starts:
+        raise PipelineError(f"最初のコマか最初の音の時刻を読めません（{video.name}）")
+    offset = round(starts[1] - starts[0], 6)                 # 音の流れの頭の、映像の最初のコマからの秒
+    end_s = round(offset + measured["end_s"], 6)
+    silent_from = measured["digital_silence_from_s"]
+    after = video_s - end_s
     reasons = []
     if after > limits["max_tail_s"] + 1e-9:
         reasons.append(f"音が切れてから絵が {after:.2f} 秒続きます（目安 {limits['max_tail_s']:g} 秒以下）")
@@ -72,11 +93,12 @@ def measure(video, limits):
             "method": {"rate": audio_end.RATE, "channels": "mean", "level": "rms_dbfs", "window_s": limits["window_s"],
                        "floor_db": limits["floor_db"]},
             "thresholds": {"max_tail_s": limits["max_tail_s"]},
-            "measure": {"audio_end_s": measured["end_s"], "picture_after_s": round(after, 6), "peak_dbfs": measured["peak_dbfs"],
-                        "last_sounding_window": measured["last_sounding_window"],
-                        "digital_silence_from_s": measured["digital_silence_from_s"],
+            "measure": {"audio_start_s": offset, "audio_end_s": end_s, "picture_after_s": round(after, 6), "peak_dbfs": measured["peak_dbfs"],
+                        "last_sounding_window": None if measured["last_sounding_window"] is None else
+                        {**measured["last_sounding_window"], "start_s": round(offset + measured["last_sounding_window"]["start_s"], 6)},
+                        "digital_silence_from_s": None if silent_from is None else round(offset + silent_from, 6),
                         "cut_while_sounding": measured["cut_while_sounding"]},
-            "tail": audio_end.tail_profile(samples, audio_end.RATE, limits["window_s"]),
+            "tail": [[round(offset + s, 6), d] for s, d in audio_end.tail_profile(samples, audio_end.RATE, limits["window_s"])],
             "status": "warn" if reasons else "pass", "reasons": reasons, "note": NOTE}
 
 

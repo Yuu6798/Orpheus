@@ -161,7 +161,7 @@ uv run mv gate flashes final.mp4 [--out DIR] [--delta 0.10] [--max-per-s 3]
 uv run mv gate tail final.mp4 [--out DIR] [--max-tail-s 1.0] [--window 0.1] [--floor-db -60]
 ```
 
-- 音が切れる時刻（`audio_end_s`）は `mv audio end` と同じ測り方（[audio](audio.md#音の終わりmv-audio-end)）。絵が続く長さ（`picture_after_s`）は、映像の長さ（コマの数 ÷ fps）− 音が切れる時刻。
+- 音が切れる時刻（`audio_end_s`）は `mv audio end` と同じ測り方（[audio](audio.md#音の終わりmv-audio-end)）で、映像の最初のコマから数える（音の流れが映像より遅れて始まる動画は、その差 `audio_start_s` を足す。報告の窓の時刻も同じ）。絵が続く長さ（`picture_after_s`）は、映像の長さ（コマの数 ÷ fps）− 音が切れる時刻。
 - `status`: 絵が `--max-tail-s`（仮の値。既定 1.0 秒）より長く続くか、最後の窓まで音が鳴っていれば `warn`（理由を `reasons` に書く）。ほかは `pass`。音の無い動画は測らずに止める。終了コードはどちらも 0。
 - 出力は既定で動画の隣の `<動画の名前>_tail_report/tail_report.json`（`gate-tail-report/0.1`）: 動画の名前と sha256・fps・コマの数・長さ、測り方、しきい値、測った数、終わりの 5 秒の窓ごとの dBFS、`status` と `reasons`。同じ動画と同じしきい値なら同じ報告。
 - **確かめたこと**: CI では、音が切れてから 0.5 秒で終わる動画（合格）、1.5〜2 秒続く動画（要確認）、最後まで鳴っている動画（要確認）、音の無い動画（止まる）、`mv gate check` の `tail` の行と既定の値・知らない欄、コマンドを、合成の音と小さな動画で確かめた。

@@ -91,6 +91,24 @@ def test_the_gate_reports_how_long_the_picture_stays_after_the_sound(tmp_path):
     assert sounding["status"] == "warn" and sounding["measure"]["cut_while_sounding"]
 
 
+def test_a_late_audio_stream_is_measured_on_the_picture_timeline(tmp_path):
+    """音の流れが映像より 2 秒遅れて始まる動画（mp4 の編集リスト）: 音の終わりは映像の最初のコマから数える（Codex の指摘）。"""
+    import subprocess
+    from mv_pipeline import media
+    song = _wav(tmp_path / "song.wav", [(2.5, 0.5), (2.5, 0.0)])
+    aligned = _video(tmp_path, song, 5.0)
+    late = tmp_path / "late.mp4"
+    subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(aligned), "-itsoffset", "2.0", "-i", str(aligned),
+                    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", str(late)], check=True)
+    report, _ = tail.run(late)
+    m = report["measure"]
+    assert m["audio_start_s"] == pytest.approx(2.0, abs=0.05)
+    assert m["audio_end_s"] == pytest.approx(4.5, abs=0.11) and m["picture_after_s"] == pytest.approx(0.5, abs=0.11)
+    assert report["status"] == "pass" and report["tail"][0][0] >= 2.0 - 0.05
+    on_time, _ = tail.run(aligned, out=tmp_path / "aligned")
+    assert on_time["measure"]["audio_start_s"] == pytest.approx(0.0, abs=0.05)
+
+
 def test_the_gate_settings_and_silent_videos_are_checked(tmp_path):
     assert tail.settings({}) == {"max_tail_s": 1.0, "window_s": 0.1, "floor_db": -60.0}
     for value, word in (({"max_tail": 1}, "知らない欄"), ({"max_tail_s": -1}, "範囲"), ({"floor_db": "low"}, "数"), ([], "形")):
