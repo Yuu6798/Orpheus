@@ -125,6 +125,76 @@
       "patternProperties": {"^x_": {}},
       "additionalProperties": false
     },
+    "references": {"description": "基準のカメラ（model3d の plan.shots の report。references に名前ごとのカメラ）。spec のあるフォルダからの相対パス。cards の place が使う", "type": "string", "minLength": 1},
+    "cards": {
+      "description": "手前の板: 絵（RGBA の PNG）を 3D の 4 隅に置き、コマごとのカメラ（spec の cameras）で写して、いちばん手前に重ねる（space.card。効果の後）。省くと無し",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["image"],
+        "properties": {
+          "image": {"description": "板の絵（RGBA の PNG。8 か 16 ビット、アルファは前乗算でない）", "type": "string", "minLength": 1},
+          "corners": {"description": "板の 4 隅（m。絵の左上・右上・右下・左下）", "type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "minItems": 4, "maxItems": 4},
+          "place": {
+            "description": "基準のカメラ（references の名前）から見て、画面の画素 at の向き・奥行き depth（m）の所に、幅 width_px 画素ぶんの板を置く（絵の anchor の所を at に合わせる。向きは基準のカメラの面にそろえて世界に固定）",
+            "type": "object",
+            "required": ["reference", "at", "depth", "width_px"],
+            "properties": {
+              "reference": {"type": "string", "minLength": 1},
+              "at": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+              "depth": {"type": "number", "exclusiveMinimum": 0},
+              "width_px": {"type": "number", "exclusiveMinimum": 0},
+              "anchor": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "default": [0.5, 0.5]}
+            },
+            "additionalProperties": false
+          },
+          "during": {"description": "出す時間 [[頭, 終わり], …]（秒。コマの時刻。省くといつも）", "type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}},
+          "blur": {"description": "ぼかしの σ（焦点距離 focal_ref のときの、幅 1080 の画素。寄るほど焦点距離に比例して強い）", "type": "number", "minimum": 0},
+          "focal_ref": {"description": "blur を決めた焦点距離（カメラの控えの画素）", "type": "number", "exclusiveMinimum": 0},
+          "gain": {"description": "色に掛ける倍率（数か時刻のキー。不透明度は変えない）", "$ref": "#/$defs/level"},
+          "wave": {
+            "description": "列ごとに上下へゆらす（shift = amount × sin(speed × (t − start) + 列 ÷ wavelength)。絵の画素）",
+            "type": "object",
+            "properties": {
+              "amount": {"$ref": "#/$defs/level"}, "speed": {"type": "number"}, "start": {"type": "number"},
+              "wavelength": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "patternProperties": {"^x_": {}},
+        "additionalProperties": false
+      }
+    },
+    "wipes": {
+      "description": "柱が横切るつなぎ: at を中心に seconds 秒の間は、相手の要素（passes。とびとびのコマでよい）で相手の画も重ね、柱の位置を境に入れ替えて柱を重ねる（space.pillar・space.wipe。手前の板の後、衝撃の前）。省くと無し",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "seconds", "direction", "passes", "pillar"],
+        "properties": {
+          "at": {"type": "number"},
+          "seconds": {"type": "number", "exclusiveMinimum": 0},
+          "direction": {"description": "−1 は右から左、+1 は左から右", "enum": [-1, 1]},
+          "passes": {"description": "相手の要素の一覧（model3d-passes/0.1。plan.shots の alt のカメラで描いたもの）", "type": "string", "minLength": 1},
+          "cameras": {"description": "相手のカメラの控え（model3d-cameras/0.1。cards か sprites があれば要る）", "type": "string", "minLength": 1},
+          "pillar": {
+            "description": "柱（絵の上から使い、幅 width_px に縦横比のまま引き伸ばす。既定は試作の値）",
+            "type": "object",
+            "required": ["image"],
+            "properties": {
+              "image": {"description": "柱の絵（RGBA の PNG）", "type": "string", "minLength": 1},
+              "width_px": {"type": "number", "exclusiveMinimum": 0}, "extra_px": {"type": "number", "minimum": 0},
+              "blur": {"type": "number", "exclusiveMinimum": 0}, "gain": {"type": "number", "minimum": 0},
+              "motion": {"type": "number", "minimum": 0}, "ease": {"type": "number", "minimum": 0, "maximum": 1},
+              "edge_px": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "effects": {
       "description": "効果（model3d の render.passes の fx。人物を黒で一緒に描いた光）を、σ blur でぼかして gain 倍、さらに σ glow_blur でぼかして glow 倍、足す（space.effects。近い小さな絵の後、衝撃の前）。要素の一覧に fx が要る。省くと無し",
       "type": "object",

@@ -11,6 +11,8 @@
     over_glow(image, layer, glow, glow_blur)          小さな絵の層を重ね、にじませる
     world(room, alpha, mix, settings, …)              背景を、部屋から別の世界（空・床の光のたまり）へ、踊り手から焼け抜けて切り替える（fx.burn）
     impact(frame, amount, zoom, steps)                衝撃: 少しずつ拡大した画を重ねて、奥へ吸い込まれる筋にする
+    card(frame, rgb, alpha, corners, camera, …)        手前の板: 3D の 4 隅をカメラで写して射影で重ねる（card_corners で基準のカメラから置く）
+    pillar(…)・wipe(old, new, …)                      柱が横切るつなぎ: 柱の位置を境に 2 つの画を入れ替え、柱を重ねる
 """
 import math
 
@@ -305,3 +307,116 @@ def impact(frame, amount, zoom=0.05, steps=3):
         move = np.array([[scale, 0, (1 - scale) * width / 2], [0, scale, (1 - scale) * height / 2]], np.float64)
         total += cv2.warpAffine(frame, move, (width, height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     return total / (int(steps) + 1)
+
+
+# ---- 手前の板と、柱が横切るつなぎ ------------------------------------------------------------------
+
+def project_points(camera, points):
+    """点（m。(n, 3)）を、カメラ（行列 matrix（m）・焦点距離 focal_px・主点 principal_px。その画面の画素）で写した (u, v, 奥行き)。"""
+    matrix = np.asarray(camera["matrix"], np.float64)
+    relative = np.asarray(points, np.float64) - matrix[:3, 3]
+    depth = -(relative @ matrix[:3, 2])
+    u = camera["focal_px"] * (relative @ matrix[:3, 0]) / depth + camera["principal_px"][0]
+    v = -camera["focal_px"] * (relative @ matrix[:3, 1]) / depth + camera["principal_px"][1]
+    return u, v, depth
+
+
+def card_corners(camera, at, depth, width_px, anchor, image_size):
+    """基準のカメラから見て、画面の画素 at の向き・奥行き depth（m）の所に、幅 width_px 画素ぶんの板（絵の縦横比）を置いた 4 隅（m。
+    左上・右上・右下・左下）。anchor は板のどこを at に合わせるか（[0〜1, 0〜1]。絵の左上が [0, 0]）。板は向きを基準のカメラの面に
+    そろえて、世界に固定する（試作と同じ式）。"""
+    matrix = np.asarray(camera["matrix"], np.float64)
+    right, up, forward, position = matrix[:3, 0], matrix[:3, 1], -matrix[:3, 2], matrix[:3, 3]
+    f, (px, py) = float(camera["focal_px"]), camera["principal_px"]
+    image_w, image_h = image_size
+    wide = width_px * depth / f
+    high = wide * image_h / image_w
+    centre = position + depth * (forward + (at[0] - px) / f * right - (at[1] - py) / f * up)
+    return np.array([centre + (u / image_w - anchor[0]) * wide * right - (v / image_h - anchor[1]) * high * up
+                     for u, v in ((0, 0), (image_w, 0), (image_w, image_h), (0, image_h))])
+
+
+def read_rgba(path):
+    """RGBA の PNG（8 か 16 ビット。アルファは前乗算でない）→ (色 (H, W, 3), 不透明度 (H, W)) の float32（0〜1）。"""
+    from pathlib import Path
+    image = cv2.imdecode(np.frombuffer(Path(path).read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if image is None or image.ndim != 3 or image.shape[2] != 4:
+        raise ValueError(f"RGBA の PNG にしてください: {path}")
+    top = 65535.0 if image.dtype == np.uint16 else 255.0
+    rgba = image[..., [2, 1, 0, 3]].astype(np.float32) / np.float32(top)
+    return np.ascontiguousarray(rgba[..., :3]), np.ascontiguousarray(rgba[..., 3])
+
+
+def wave(rgb, alpha, amount, phase, wavelength):
+    """板を列ごとに上下へゆらす（shift = amount × sin(phase + 列 ÷ wavelength)。線形補間、端は端の画素。試作の客の頭の影の揺れ）。"""
+    height, width = alpha.shape
+    xs = np.arange(width, dtype=np.float32)
+    shift = amount * np.sin(phase + xs / wavelength)
+    map_x = np.tile(xs, (height, 1))
+    map_y = (np.arange(height, dtype=np.float32)[:, None] - shift[None, :]).astype(np.float32)
+    return (cv2.remap(rgb, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE),
+            cv2.remap(alpha, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE))
+
+
+def card(frame, rgb, alpha, corners, camera, sigma, gain, size, unit=1.0):
+    """板を 1 枚重ねる: 4 隅をカメラで写して、前乗算の色と不透明度を射影で写し、σ でぼかして over（色は gain 倍）。板がカメラの後ろに
+    回った（奥行き 0.05 m 未満）か、画面から大きく外れたら重ねない。カメラの画素は画面の大きさ size に合わせる。"""
+    width, height = size
+    u, v, depth = project_points(camera, corners)
+    if np.any(depth < 0.05):
+        return frame
+    scale = width / float(camera["resolution"][0])
+    target = (np.stack([u, v], 1) * scale).astype(np.float32)
+    if target[:, 0].max() < -width or target[:, 0].min() > 2 * width or target[:, 1].max() < -height or target[:, 1].min() > 2 * height:
+        return frame
+    image_h, image_w = alpha.shape
+    source = np.array([[0, 0], [image_w, 0], [image_w, image_h], [0, image_h]], np.float32)
+    transform = cv2.getPerspectiveTransform(source, target)
+    warped = cv2.warpPerspective(rgb * alpha[..., None], transform, (width, height), flags=cv2.INTER_LINEAR, borderValue=0)
+    cover = cv2.warpPerspective(alpha, transform, (width, height), flags=cv2.INTER_LINEAR, borderValue=0)
+    warped, cover = finish.blur(warped, sigma, 1.0), finish.blur(cover, sigma, 1.0)
+    return frame * (1 - cover[..., None]) + warped * gain
+
+
+PILLAR = {"width_px": 760.0, "extra_px": 40.0, "blur": 5.0, "gain": 0.62, "motion": 0.5, "ease": 0.15, "edge_px": 40.0}
+
+
+def pillar_image(rgb, alpha, size, settings, seconds, fps, unit=1.0):
+    """柱の絵（前乗算の色, 不透明度, 幅）: 柱の絵（上から使う）を、幅 width_px × unit・高さ（画面の高さ + extra_px × unit）に縦横比のまま
+    引き伸ばし（3 次の補間）、σ blur でぼかして色を gain 倍、画面を seconds 秒で横切る速さの motion コマぶんの動きぶれを横に付ける
+    （試作と同じ作り）。"""
+    width, height = size
+    s = settings
+    wide = int(round(s["width_px"] * unit))
+    rows = int(math.ceil((height + s["extra_px"] * unit) / (wide / rgb.shape[1])))
+    target = (wide, int(round(height + s["extra_px"] * unit)))
+    image = cv2.resize(rgb[:rows] * alpha[:rows, :, None], target, interpolation=cv2.INTER_CUBIC)
+    mask = cv2.resize(alpha[:rows], target, interpolation=cv2.INTER_CUBIC)
+    image = cv2.GaussianBlur(image, (0, 0), s["blur"] * unit) * s["gain"]
+    mask = cv2.GaussianBlur(mask, (0, 0), s["blur"] * unit)
+    streak = max(1, int((width + wide) / seconds / fps * s["motion"]))
+    return cv2.blur(image, (streak, 1)), cv2.blur(mask, (streak, 1)), wide
+
+
+def pillar(image, mask, wide, progress, direction, size, settings, unit=1.0):
+    """柱が横切る位置の (前乗算の色, 不透明度, 柱の中心の x)。direction −1 は右から左、+1 は左から右（絵を左右に返す）。
+    進んだ割合 = ease × smoothstep(progress) + (1 − ease) × progress。柱は extra_px ÷ 2 × unit だけ上へずらして置く。"""
+    width, height = size
+    s = settings
+    if direction > 0:
+        image, mask = image[:, ::-1], mask[:, ::-1]
+    p = min(max(progress, 0.0), 1.0)
+    travelled = s["ease"] * (p * p * (3 - 2 * p)) + (1 - s["ease"]) * progress
+    centre = (width + wide / 2) - (width + wide) * travelled if direction < 0 else (-wide / 2) + (width + wide) * travelled
+    move = np.array([[1, 0, centre - wide / 2], [0, 1, -s["extra_px"] / 2 * unit]], np.float64)
+    return (cv2.warpAffine(np.ascontiguousarray(image), move, (width, height), borderValue=0),
+            np.clip(cv2.warpAffine(np.ascontiguousarray(mask), move, (width, height), borderValue=0), 0, 1), centre)
+
+
+def wipe(old, new, post, mask, centre, direction, settings, unit=1.0):
+    """柱が通り過ぎた側を新しい画にし（境目は edge_px でなだらか）、柱を重ねる。"""
+    width = old.shape[1]
+    xs = np.arange(width, dtype=np.float32)
+    side = np.clip(-direction * (xs - centre) / (settings["edge_px"] * unit) + 0.5, 0, 1)[None, :, None]
+    frame = old * (1 - side) + new * side
+    return frame * (1 - mask[..., None]) + post

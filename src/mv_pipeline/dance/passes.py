@@ -162,6 +162,46 @@ def _effects(raw):
             **{key: float(raw.get(key, space.EFFECTS[key])) for key in ("blur", "glow_blur")}}
 
 
+CARD_KEYS = ("blur", "focal_ref")
+
+
+def _cards(raw):
+    """手前の板の並び（書いたときだけ）。"""
+    if raw is None:
+        return None
+    out = []
+    for n, item in enumerate(raw):
+        card = {"image": item["image"], "corners": item.get("corners"), "place": item.get("place"),
+                "during": None if item.get("during") is None else [[float(a), float(b)] for a, b in item["during"]],
+                "blur": float(item.get("blur", 0.0)), "focal_ref": None if item.get("focal_ref") is None else float(item["focal_ref"]),
+                "gain": _level(item.get("gain", 1.0), f"cards[{n}].gain"), "wave": None}
+        if (card["corners"] is None) == (card["place"] is None):
+            raise PipelineError(f"cards[{n}] は corners（4 隅 m）か place（基準のカメラから置く）のどちらか 1 つにしてください")
+        if card["blur"] > 0 and card["focal_ref"] is None:
+            raise PipelineError(f"cards[{n}] の blur には focal_ref（blur を決めた焦点距離。カメラの控えの画素）が要ります")
+        if item.get("wave") is not None:
+            w = item["wave"]
+            card["wave"] = {"amount": _level(w.get("amount", 0.0), f"cards[{n}].wave.amount"), "speed": float(w.get("speed", 0.0)),
+                            "start": float(w.get("start", 0.0)), "wavelength": float(w.get("wavelength", 260.0))}
+        out.append(card)
+    return out
+
+
+def _wipes(raw):
+    """柱が横切るつなぎの並び（書いたときだけ。柱の既定は試作の値）。"""
+    if raw is None:
+        return None
+    out = []
+    for n, item in enumerate(raw):
+        pillar = {**space.PILLAR, **{k: float(v) for k, v in item["pillar"].items() if k != "image"}, "image": item["pillar"]["image"]}
+        out.append({"at": float(item["at"]), "seconds": float(item["seconds"]), "direction": int(item["direction"]),
+                    "passes": item["passes"], "cameras": item.get("cameras"), "pillar": pillar})
+    starts = sorted((w["at"] - w["seconds"] / 2, w["at"] + w["seconds"] / 2) for w in out)
+    if any(b[0] < a[1] for a, b in zip(starts, starts[1:])):
+        raise PipelineError("wipes の時間が重なっています")
+    return out
+
+
 def _impact(raw):
     if raw is None:
         return None
@@ -224,6 +264,7 @@ def normalize(raw):
             "reflection": _reflection(raw.get("reflection")), "phantoms": _phantoms(raw.get("phantoms")),
             "cameras": raw.get("cameras"), "sprites": _sprites(raw.get("sprites")),
             "world": _world(raw.get("world")), "impact": _impact(raw.get("impact")), "effects": _effects(raw.get("effects")),
+            "references": raw.get("references"), "cards": _cards(raw.get("cards")), "wipes": _wipes(raw.get("wipes")),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
     if raw.get("figure") is not None:
         figure = raw["figure"]
@@ -293,14 +334,16 @@ class Space:
     sprites: list
 
 
-def load_space(spec, plan):
-    """spec の cameras（model3d-cameras/0.1）・sprites の位置（dance-sprites/0.1）と絵を読む。どちらも無ければ None。"""
+def load_space(spec, plan, cameras_path=None):
+    """spec の cameras（model3d-cameras/0.1）・sprites の位置（dance-sprites/0.1）と絵を読む。どちらも無ければ None。
+    cameras_path を渡すと、その控えを読む（つなぎの相手の要素のカメラ）。"""
     data = spec.data
-    if data["cameras"] is None:
+    name = cameras_path or data["cameras"]
+    if name is None:
         return None
-    record = read_json(spec.resolve(data["cameras"]))
+    record = read_json(spec.resolve(name))
     if not isinstance(record, dict) or record.get("schema_version") != "model3d-cameras/0.1":
-        raise PipelineError(f"cameras は model3d-cameras/0.1 にしてください: {data['cameras']}")
+        raise PipelineError(f"cameras は model3d-cameras/0.1 にしてください: {name}")
     rw, rh = record["resolution"]
     width, height = plan.size
     if rw * height != rh * width:
@@ -312,7 +355,7 @@ def load_space(spec, plan):
             raise PipelineError(f"cameras の T {fr['T']} に distance_m（踊り手までの距離）がありません")
         cameras[int(fr["T"])] = {"matrix": fr["matrix"], "focal": fr["focal_px"] * k,
                                  "principal": (fr["principal_px"][0] * k, fr["principal_px"][1] * k), "focus": fr["distance_m"],
-                                 "dancer": fr.get("dancer")}
+                                 "dancer": fr.get("dancer"), "focal_px": fr["focal_px"]}
     absent = [T for T in plan.frames if T not in cameras]
     if data["sprites"] is not None and data["sprites"]["focus_metric"] == "depth":
         lacking = [T for T in plan.frames if T in cameras and cameras[T]["dancer"] is None]
@@ -338,6 +381,84 @@ def load_space(spec, plan):
 
 
 @dataclass
+class Scene:
+    """手前の板とつなぎの入力: 板（色・不透明度・4 隅 m・設定）と、つなぎごとの相手の要素の一覧・カメラと柱の絵。"""
+    cards: list
+    wipes: list
+
+
+def load_scene(spec, plan):
+    """spec の cards・wipes の絵と、つなぎの相手の要素の一覧（とびとびでよい）とカメラを読む。どちらも無ければ None。"""
+    data = spec.data
+    if data["cards"] is None and data["wipes"] is None:
+        return None
+    references = None
+    if data["references"] is not None:
+        report = read_json(spec.resolve(data["references"]))
+        references = (report or {}).get("references")
+        if not isinstance(references, dict):
+            raise PipelineError(f"references は plan.shots の report（references のあるもの）にしてください: {data['references']}")
+    cards = []
+    for n, card in enumerate(data["cards"] or []):
+        try:
+            rgb, alpha = space.read_rgba(spec.resolve(card["image"]))
+        except ValueError as error:
+            raise PipelineError(f"cards[{n}]: {error}") from error
+        if card["corners"] is not None:
+            corners = np.asarray(card["corners"], np.float64)
+        else:
+            place = card["place"]
+            if references is None or place["reference"] not in references:
+                raise PipelineError(f"cards[{n}] の place.reference {place['reference']!r} が、references（plan.shots の report）にありません")
+            reference = references[place["reference"]]
+            corners = space.card_corners(reference, place["at"], float(place["depth"]), float(place["width_px"]), place.get("anchor", [0.5, 0.5]),
+                                         (alpha.shape[1], alpha.shape[0]))
+        cards.append({**card, "rgb": rgb, "alpha": alpha, "corners": corners})
+    wipes = []
+    for n, wipe in enumerate(data["wipes"] or []):
+        if (data["cards"] or data["sprites"] is not None) and wipe["cameras"] is None:     # 相手の画にも、板と小さな絵を置く
+            raise PipelineError(f"wipes[{n}] に cameras（相手のカメラの控え）が要ります（手前の板と小さな絵を相手の画にも置くため。"
+                                "省くと、つなぎの間に相手の画から消える）")
+        other = load_passes(spec.resolve(wipe["passes"]), continuous=False)
+        if other.size != plan.size:
+            raise PipelineError(f"wipes[{n}] の相手の要素の大きさ {other.size} が、要素の大きさ {plan.size} と違います")
+        if abs(other.fps - plan.fps) > 1e-9:                     # 同じ T を同じ時刻として重ねるので、fps もそろえる
+            raise PipelineError(f"wipes[{n}] の相手の要素の fps（{other.fps:g}）が、要素の fps（{plan.fps:g}）と違います")
+        start, end = wipe["at"] - wipe["seconds"] / 2, wipe["at"] + wipe["seconds"] / 2
+        needed = [T for T in plan.frames if abs((T - 1) / plan.fps - wipe["at"]) < wipe["seconds"] / 2]
+        absent = [T for T in needed if T not in other.frames]
+        if absent:
+            raise PipelineError(f"wipes[{n}] の相手の要素に、つなぎの間（{start:g}〜{end:g} 秒）のコマがありません: {absent[:10]}")
+        where = load_space(spec, other, wipe["cameras"]) if wipe["cameras"] is not None else None
+        try:
+            rgb, alpha = space.read_rgba(spec.resolve(wipe["pillar"]["image"]))
+        except ValueError as error:
+            raise PipelineError(f"wipes[{n}].pillar: {error}") from error
+        wipes.append({**wipe, "plan": other, "where": where, "rgb": rgb, "alpha": alpha, "image": None})
+    return Scene(cards, wipes)
+
+
+def card_layer(data, scene, plan, T, where, frame, select):
+    """手前の板を重ねる（select はどの板を出すかを決める時刻。つなぎの相手の画では、相手のショットの側の時刻）。"""
+    if scene is None or not scene.cards:
+        return frame
+    t = (T - 1) / plan.fps
+    unit = plan.size[0] / 1080
+    camera = where.cameras[T]
+    view = {"matrix": camera["matrix"], "focal_px": camera["focal"], "principal_px": camera["principal"], "resolution": list(plan.size)}
+    for card in scene.cards:
+        if card["during"] is not None and not any(a - 1e-6 <= select < b - 1e-6 for a, b in card["during"]):
+            continue
+        rgb, alpha = card["rgb"], card["alpha"]
+        if card["wave"] is not None:
+            w = card["wave"]
+            rgb, alpha = space.wave(rgb, alpha, level_at(w["amount"], t), w["speed"] * (t - w["start"]), w["wavelength"])
+        sigma = card["blur"] * camera["focal_px"] / card["focal_ref"] * unit if card["blur"] > 0 else 0.0
+        frame = space.card(frame, rgb, alpha, card["corners"], view, sigma, level_at(card["gain"], t), plan.size, unit)
+    return frame
+
+
+@dataclass
 class Plan:
     """重ねるコマの並び。files[要素][T] は要素のファイルの絶対パス（分身は描いた時間のコマだけ）。near[要素][T] は分身が手前か。"""
     manifest: dict
@@ -353,8 +474,9 @@ class Plan:
         return sorted(int(PHANTOM_KIND.match(kind)[1]) for kind in self.files if kind.startswith("ph"))
 
 
-def load_passes(path, verify=True):
-    """要素の一覧（model3d-passes/0.1）を読み、重ねるコマの並びにする。char は要る。どの要素も同じコマがそろい、T が 1 ずつ続くこと。
+def load_passes(path, verify=True, continuous=True):
+    """要素の一覧（model3d-passes/0.1）を読み、重ねるコマの並びにする。char は要る。どの要素も同じコマがそろい、T が 1 ずつ続くこと
+    （continuous が False なら続かなくてよい。つなぎの相手の要素のように、とびとびのコマだけを描いた一覧）。
     verify なら、一覧の sha256 と今のファイルを照合する（描いた後に変わったコマは止める）。"""
     manifest = read_json(path)
     if not isinstance(manifest, dict) or manifest.get("schema_version") != "model3d-passes/0.1":
@@ -369,7 +491,7 @@ def load_passes(path, verify=True):
     frames = [fr["T"] for fr in passes["char"]["frames"]]
     if not frames:
         raise PipelineError("char のコマがありません")
-    if any(b != a + 1 for a, b in zip(frames, frames[1:])):
+    if continuous and any(b != a + 1 for a, b in zip(frames, frames[1:])):
         raise PipelineError("char のコマの T が 1 ずつ続いていません（とびがあると 1 本の動画にできません）")
     files, near = {}, {}
     for kind, entry in passes.items():
@@ -467,10 +589,9 @@ def phantom_layer(data, plan, T, image, near):
     return image
 
 
-def compose(data, plan, T, look=None, where=None):
-    """コマ T を重ねて uint8 (H, W, 3) RGB を返す（表示の値で計算する。上の順）。"""
-    from ..fx import fire
-    from ..fx import look as fxlook
+def layers(data, plan, T, where=None, scene=None, select=None):
+    """コマ T の重ねる層（部屋から手前の板まで。衝撃・にじみ・閃光・明るさ・look の前の、表示の値の float32）。
+    select は手前の板を選ぶ時刻（省くとコマの時刻。つなぎの相手の画では、相手のショットの側の時刻）。"""
     from . import finish
 
     t = (T - 1) / plan.fps
@@ -521,6 +642,48 @@ def compose(data, plan, T, look=None, where=None):
     if lit is not None and T in files.get("fx", {}):                 # 効果（光として足す。奥の効果は、人物の黒で隠れている）
         picture = _same_size(read_image(files["fx"][T]), plan, "fx", T)
         frame = space.effects(frame, picture, level_at(lit["gain"], t), level_at(lit["glow"], t), lit, unit)
+    return card_layer(data, scene, plan, T, where, frame, t if select is None else select)   # 手前の板（いちばん手前）
+
+
+NEXT = 1e-3            # つなぎの最中に、相手のショットの側を選ぶ時刻のずらし（plan.shots と同じ）
+
+
+def wipe_at(scene, t):
+    """時刻 t がつなぎの間（|t − at| < seconds ÷ 2）なら、そのつなぎ（無ければ None）。"""
+    for wipe in (scene.wipes if scene is not None else []):
+        if abs(t - wipe["at"]) < wipe["seconds"] / 2:
+            return wipe
+    return None
+
+
+def wipe_layer(data, plan, T, frame, scene):
+    """つなぎの間のコマ: 相手の要素で相手の画を重ね（手前の板は相手のショットの側の時刻で選ぶ）、柱が通り過ぎた側を新しい画にして、
+    柱を重ねる（space.pillar・space.wipe）。at より前は今の画が古い画、at から後は相手の画が古い画（at の 1e-6 秒前のコマから後の側）。"""
+    t = (T - 1) / plan.fps
+    wipe = wipe_at(scene, t)
+    if wipe is None:
+        return frame
+    unit = plan.size[0] / 1080
+    at = wipe["at"]
+    before = t < at - 1e-6                               # at の前か後か（plan.shots と同じく、EPS 秒前のコマから後の側）
+    other = layers(data, wipe["plan"], T, wipe["where"], scene, at + NEXT if before else at - NEXT)
+    old, new = (frame, other) if before else (other, frame)
+    if wipe["image"] is None:
+        wipe["image"] = space.pillar_image(wipe["rgb"], wipe["alpha"], plan.size, wipe["pillar"], wipe["seconds"], plan.fps, unit)
+    image, mask, wide = wipe["image"]
+    progress = (t - at + wipe["seconds"] / 2) / wipe["seconds"]
+    post, cover, centre = space.pillar(image, mask, wide, progress, wipe["direction"], plan.size, wipe["pillar"], unit)
+    return space.wipe(old, new, post, cover, centre, wipe["direction"], wipe["pillar"], unit)
+
+
+def finish_frame(data, plan, T, frame, look=None):
+    """衝撃・にじみ・閃光・明るさ・look（上の順の 4e〜8）を掛けて、uint8 (H, W, 3) RGB を返す。"""
+    from ..fx import fire
+    from ..fx import look as fxlook
+    from . import finish
+
+    t = (T - 1) / plan.fps
+    unit = plan.size[0] / 1080
     hit = data["impact"]
     if hit is not None:                                              # 衝撃（奥へ吸い込まれる筋）
         frame = space.impact(frame, level_at(hit["amount"], t), hit["zoom"], hit["steps"])
@@ -538,6 +701,13 @@ def compose(data, plan, T, look=None, where=None):
     if look is not None:
         return fxlook.finish(look, np.ascontiguousarray(frame, dtype=np.float32), t)
     return (np.clip(frame, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+
+
+def compose(data, plan, T, look=None, where=None, scene=None):
+    """コマ T を重ねて uint8 (H, W, 3) RGB を返す（表示の値で計算する。上の順）。"""
+    frame = layers(data, plan, T, where, scene)
+    frame = wipe_layer(data, plan, T, frame, scene)
+    return finish_frame(data, plan, T, frame, look)
 
 
 def audio_plan(path, offset, seconds, warnings):
@@ -603,6 +773,9 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     if data["phantoms"] is not None and not plan.phantoms():
         raise PipelineError("phantoms（分身）には、要素の一覧に ph<i>（model3d の render.passes の phantoms で描いた分身）が要ります")
     where = load_space(spec, plan)
+    if data["cards"] and where is None:
+        raise PipelineError("cards（手前の板）には、spec の cameras（コマごとのカメラの控え）が要ります")
+    scene = load_scene(spec, plan)
     notes = list(spec.warnings)
     if data["figure"] is not None and data["figure"]["face_smooth"] > 0 and "head" not in plan.files:
         notes.append("figure.face_smooth: 要素の一覧に head（顔の範囲）が無いので、顔の陰影はならしません")
@@ -619,6 +792,12 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     if data["sprites"] is not None:
         for n, name in enumerate([data["sprites"]["items"], *data["sprites"]["images"]]):
             assets[f"sprites_{n}"] = {"path": name, "sha256": sha256(spec.resolve(name))}
+    names = [data["references"]] if data["references"] is not None else []
+    names += [card["image"] for card in data["cards"] or []]
+    for wipe in data["wipes"] or []:
+        names += [wipe["passes"], wipe["pillar"]["image"]] + ([wipe["cameras"]] if wipe["cameras"] is not None else [])
+    for n, name in enumerate(names):
+        assets[f"scene_{n}"] = {"path": name, "sha256": sha256(spec.resolve(name))}
     if audio_path is not None:
         assets["audio"] = {"path": data["audio"]["path"], "sha256": sha256(audio_path)}
     libraries = fxrender.library_versions()
@@ -649,7 +828,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         def frames():
             from ..fx import compare
             for i, T in enumerate(plan.frames):
-                image = compose(data, plan, T, look, where)
+                image = compose(data, plan, T, look, where, scene)
                 if frames_dir is not None:
                     compare.save_png_atomic(image, frames_dir / f"f{T:04d}.png")
                 yield image
