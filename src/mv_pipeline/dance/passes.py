@@ -135,6 +135,7 @@ def _sprites(raw):
     for key in ("gain", "glow", "glow_blur", "focus_blur", "max_blur", "room_blur", "near_clip", "margin", "mirror_blur", "floor"):
         out[key] = float(raw.get(key, space.SPRITES[key]))
     out["fade"] = [float(v) for v in raw.get("fade", space.SPRITES["fade"])]
+    out["mirror_mode"] = raw.get("mirror_mode", space.SPRITES["mirror_mode"])
     return out
 
 

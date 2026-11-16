@@ -93,7 +93,17 @@ def phantom_glow(picture, dark, hot):
 # ---- 小さな絵を 3D の位置に置く（提灯など） ----------------------------------------------------------
 
 SPRITES = {"gain": 1.05, "glow": 0.45, "glow_blur": 18.0, "focus_blur": 0.10, "max_blur": 5.0, "room_blur": 0.15, "near_clip": 0.3,
-           "margin": 200.0, "fade": [1.25, 40.0, 0.45, 1.1], "mirror_blur": 2.0, "floor": 0.0}
+           "margin": 200.0, "fade": [1.25, 40.0, 0.45, 1.1], "mirror_blur": 2.0, "floor": 0.0, "mirror_mode": "rotate"}
+MIRROR_MODES = ("rotate", "flip")        # 映り込みの絵の向き: rotate は 180° 回す（試作と同じ）、flip は左右を保って上下だけ返す
+_flipped = {}
+
+
+def flipped(levels):
+    """左右を返した絵の並び（作り置く）。映り込みを flip で置くとき、上下を返す置き方と合わせて、左右を保った上下反転になる。"""
+    key = id(levels)
+    if key not in _flipped or _flipped[key][0] is not levels:
+        _flipped[key] = (levels, [np.ascontiguousarray(level[:, ::-1]) for level in levels])
+    return _flipped[key][1]
 
 
 def sprite_levels(path):
@@ -158,7 +168,8 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
     items: (N, 6) の [x, y, z, 高さ, 明るさ, 絵の番号]（m）。絵の中心がその点で、上端は高さの半分だけ上。
     遠い順に置き、踊り手までの距離 focus より遠ければ遠い方に、近ければ近い方に。明るさ = 明るさ × clip(fade[0] − 奥行き ÷ fade[1],
     fade[2], fade[3]) × gain。ぼかし = min(|奥行き − focus| × focus_blur, max_blur) × unit + room_blur × 部屋の σ × unit。
-    床への映り込みは、床の面（floor）で上下を返した位置に、ぼかしを mirror_blur × unit 足して置く。奥行き near_clip 以下と、
+    床への映り込みは、床の面（floor）で上下を返した位置に、ぼかしを mirror_blur × unit 足して置く（絵の向きは mirror_mode。rotate は
+    180° 回す（試作と同じ。左右も入れ替わる）、flip は左右を保って上下だけ返す（床の映り込みとして正しい向き））。奥行き near_clip 以下と、
     画面の外 margin 画素より外と、上端（映り込みは下端）がカメラの後ろ（奥行き 0.05 m 以下）に回る絵は置かない。"""
     s = {**SPRITES, **(settings or {})}
     width, height = size
@@ -200,7 +211,8 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
             paste(far if depth[index] > focus else near, levels, (cu[index], cv_[index]), (tu[index], tv[index]), brightness, sigma)
         if (mirror_depth[index] > s["near_clip"] and np.isfinite(mu[index]) and np.isfinite(nu[index])
                 and -margin < mu[index] < width + margin and -margin < mv[index] < height + margin):
-            paste(mirror, levels, (mu[index], mv[index]), (nu[index], nv[index]), brightness, sigma + s["mirror_blur"] * unit)
+            shown = flipped(levels) if s["mirror_mode"] == "flip" else levels
+            paste(mirror, shown, (mu[index], mv[index]), (nu[index], nv[index]), brightness, sigma + s["mirror_blur"] * unit)
     return far, near, mirror
 
 

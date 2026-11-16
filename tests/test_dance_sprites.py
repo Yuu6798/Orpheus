@@ -107,6 +107,34 @@ def test_a_sprite_whose_top_is_behind_the_camera_is_skipped(tmp_path):
     assert near.any() or far.any()
 
 
+def test_the_reflection_can_keep_left_and_right(tmp_path):
+    """左が赤・右が青の絵: 映り込みは既定（rotate。試作と同じ）では左右が入れ替わり、flip では左右を保つ（Codex の指摘）。"""
+    image = np.zeros((40, 20, 4), np.uint8)
+    image[:, :10, 2], image[:, 10:, 0], image[..., 3] = 255, 255, 255         # BGRA: 左は赤、右は青
+    (tmp_path / "half.png").write_bytes(cv2.imencode(".png", image)[1].tobytes())
+    levels = space.sprite_levels(tmp_path / "half.png")
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+    matrix[:3, 3] = [0.0, -5.0, 1.0]
+    camera = {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": 5.0}
+    items = [[0.0, 0.0, 0.5, 0.8, 1.0, 0]]
+
+    def sides(mode):
+        _, _, mirror = space.sprite_layers((200, 200), camera, items, [levels], {"mirror_mode": mode, "mirror_blur": 0.0, "focus_blur": 0.0})
+        ys, xs = np.nonzero(mirror[..., 3] > 0.5)
+        row = int(np.median(ys))
+        left, right = mirror[row, xs.min() + 1], mirror[row, xs.max() - 1]
+        return ("red" if left[0] > left[2] else "blue"), ("red" if right[0] > right[2] else "blue")
+
+    assert sides("rotate") == ("blue", "red")                                 # 試作と同じ（180° 回す）
+    assert sides("flip") == ("red", "blue")                                   # 左右を保つ
+    data = passes.load_spec(_spec(tmp_path, cameras="cameras.json", sprites={"items": "s.json", "images": ["half.png"],
+                                                                             "mirror_mode": "flip"})).data
+    assert data["sprites"]["mirror_mode"] == "flip"
+    with pytest.raises(PipelineError):
+        passes.load_spec(_spec(tmp_path, cameras="cameras.json", sprites={"items": "s.json", "images": ["half.png"], "mirror_mode": "turn"}))
+
+
 def _sprite_spec(tmp_path, items, near_frames=()):
     _passes(tmp_path)
     _sprite(tmp_path / "lamp.png", (40, 20), color=(0, 255, 0))
