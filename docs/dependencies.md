@@ -79,6 +79,8 @@ Windows 11 のスマート アプリ コントロール（SAC）が「オン」�
 - 9.0.2 で確かめたこと（Windows。実測）：pytest 全体で落ちたのは、このずれを見つけた 1 件（`mv deliver review-copy` の 2 パスの
   ビットレートの式）だけだった。fx・fx timeline・dance の smoke（CI と同じ合成素材）と `mv demo → render → verify` は
   technical_pass（記録の ffmpeg は 9.0.2）。
+- dance の 0.1 のデモの全コマ照合（`tests/test_dance_compat.py`）は、9.0.2 で素材の mp4 のバイト列が変わったため、飛ばされていた
+  （全 144 コマは記録と同じだった）。素材のハッシュが違っても全フレームが記録と同じなら通すようにした。
 
 GPU情報はOS報告であり、利用可能VRAMやモデル性能を保証しません。描画はCPU経路です。
 既存HTDemucs/Qwenの実行経路は未設定です。大型モデルを自動導入せず、別環境のCLIを接続できます。
