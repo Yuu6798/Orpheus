@@ -329,7 +329,8 @@ def prepare_push(inputs, parameters, outputs, context):
 PASS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "pass_render.py"
 PASS_PARAMETERS = {"blender", "addons", "blender_extensions", "resolution", "passes", "format", "quality", "antialiasing", "camera",
                    "dancer", "disc", "head", "room", "shade", "mirror", "phantoms", "fx", "pool", "bone_prefix", "armature", "fps",
-                   "passes_dir", "only", "timeout"}
+                   "passes_dir", "only", "timeout", "expressions"}
+EXPRESSION_KEYS = {"objects", "images", "times", "shape_keys"}
 PASS_CAMERA_KEYS = {"sensor_height", "lens", "clip"}
 DANCER_KEYS = {"bones", "sigma"}
 DISC_KEYS = {"radius", "vertices", "height"}
@@ -343,7 +344,44 @@ POOL_KEYS = {"centre", "radii", "segments", "falloff", "floor", "floor_falloff",
 ANTIALIASING = ("OFF", "FXAA", "5", "8", "11", "16", "32")
 
 
-def _pass_settings(parameters):
+def _expression_settings(value, recipe_dir):
+    """render.passes の expressions を確かめ、絵のパスを絶対パスにする（recipe からの相対パスも可）。"""
+    if not isinstance(value, dict):
+        raise ToolError(f"expressions は {{\"objects\": …, \"images\": …, \"times\": …}} にしてください: {value!r}")
+    unknown = set(value) - EXPRESSION_KEYS
+    if unknown:
+        raise ToolError(f"expressions の知らない鍵: {sorted(unknown)}（使えるのは {sorted(EXPRESSION_KEYS)}）")
+    objects = _names(value.get("objects"), "expressions.objects")
+    images = value.get("images", {})
+    if not isinstance(images, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in images.items()):
+        raise ToolError(f"expressions.images は {{表情: 絵のパス}} にしてください: {images!r}")
+    resolved = {}
+    for name, path in images.items():
+        full = resolve_path(recipe_dir, path) if recipe_dir is not None else Path(path)
+        if not Path(full).is_file():
+            raise ToolError(f"expressions.images の絵がありません（{name}）: {full}")
+        resolved[name] = str(Path(full).resolve())
+    times = value.get("times")
+    if (not isinstance(times, list) or not times
+            or not all(isinstance(e, list) and len(e) == 2 and isinstance(e[0], (int, float)) and not isinstance(e[0], bool)
+                       and isinstance(e[1], str) and e[1] for e in times)):
+        raise ToolError(f"expressions.times は [[秒, 表情], …] にしてください: {times!r}")
+    starts = [float(e[0]) for e in times]
+    if any(b < a for a, b in zip(starts, starts[1:])):
+        raise ToolError(f"expressions.times は秒の小さい順にしてください: {starts}")
+    shape_keys = value.get("shape_keys", {})
+    if not isinstance(shape_keys, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in shape_keys.items()):
+        raise ToolError(f"expressions.shape_keys は {{表情: 形状キーの名前}} にしてください: {shape_keys!r}")
+    named = {e[1] for e in times}
+    unused = sorted((set(resolved) | set(shape_keys)) - named)
+    if unused:
+        raise ToolError(f"expressions の images・shape_keys に、times に出てこない表情があります: {unused}")
+    if not resolved and not shape_keys:
+        raise ToolError("expressions には images（表情の絵）か shape_keys（表情の形状キー）が要ります")
+    return {"objects": objects, "images": resolved, "times": [[float(t), name] for t, name in times], "shape_keys": dict(shape_keys)}
+
+
+def _pass_settings(parameters, recipe_dir=None):
     """render.passes のパラメーターを確かめ、台本の settings にする（省いた値は台本の既定。長さは m）。"""
     from ..blender_adapter import pass_render
     from .motion_ops import _bone_prefix
@@ -441,6 +479,8 @@ def _pass_settings(parameters):
     s["phantoms"] = _phantom_settings(_section(parameters, "phantoms", PHANTOM_KEYS))
     s["fx"] = _fx_settings(_section(parameters, "fx", FX_KEYS))
     s["pool"] = _pool_settings(_section(parameters, "pool", POOL_KEYS))
+    if parameters.get("expressions") is not None:
+        s["expressions"] = _expression_settings(parameters["expressions"], recipe_dir)
     drawn = set(kinds) | set(m.get("passes", []))
     if "fx" in drawn and not s["fx"].get("shapes"):
         raise ToolError("passes か mirror.passes に fx（効果）を入れるときは、fx.shapes に描く形（embers・bursts・sparks・trails・ring）を書いてください")
@@ -679,7 +719,7 @@ def render_passes(inputs, parameters, outputs, context):
     missing = [name for name in ("passes", "cameras", "report") if name not in outputs]
     if missing:
         raise ToolError(f"render.passes には outputs の {', '.join(missing)} が要ります")
-    settings = _pass_settings(parameters)
+    settings = _pass_settings(parameters, getattr(context, "recipe_dir", None))
     merged = script.merged(settings)
     track = _track(inputs["track"])
     record = _camera_record(inputs["cameras"], merged["resolution"]) if inputs.get("cameras") is not None else None
@@ -731,6 +771,10 @@ def render_passes(inputs, parameters, outputs, context):
                                   "skipped_existing": len(report["skipped_existing"].get(k, [])),
                                   "frames": len(v["frames"]), "missing": len(v["missing"])} for k, v in manifest["passes"].items()},
                    "camera": report.get("camera"), "objects": {k: len(v) for k, v in (report.get("objects") or {}).items()}}
+    if merged.get("expressions"):                       # 表情の絵の素性（隠れた入力なので、sha256 を残す）
+        observation["expressions"] = {"images": {name: {"path": path, "sha256": sha256(path)}
+                                                 for name, path in merged["expressions"]["images"].items()},
+                                      "counts": (report.get("expressions") or {}).get("counts")}
     return StepResult(observations=[observation])
 
 
