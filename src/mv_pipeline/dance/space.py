@@ -95,7 +95,9 @@ def phantom_glow(picture, dark, hot):
 # ---- 小さな絵を 3D の位置に置く（提灯など） ----------------------------------------------------------
 
 SPRITES = {"gain": 1.05, "glow": 0.45, "glow_blur": 18.0, "focus_blur": 0.10, "max_blur": 5.0, "room_blur": 0.15, "near_clip": 0.3,
-           "margin": 200.0, "fade": [1.25, 40.0, 0.45, 1.1], "mirror_blur": 2.0, "floor": 0.0, "mirror_mode": "rotate"}
+           "margin": 200.0, "fade": [1.25, 40.0, 0.45, 1.1], "mirror_blur": 2.0, "floor": 0.0, "mirror_mode": "rotate",
+           "mirror_order": "source"}
+MIRROR_ORDERS = ("source", "reflected")  # 映り込みを重ねる順: source は元の位置の奥行き（試作と同じ）、reflected は映った奥行き
 MIRROR_MODES = ("rotate", "flip")        # 映り込みの絵の向き: rotate は 180° 回す（試作と同じ）、flip は左右を保って上下だけ返す
 _flipped = {}
 
@@ -171,7 +173,8 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
     遠い順に置き、踊り手までの距離 focus より遠ければ遠い方に、近ければ近い方に。明るさ = 明るさ × clip(fade[0] − 奥行き ÷ fade[1],
     fade[2], fade[3]) × gain。ぼかし = min(|奥行き − focus| × focus_blur, max_blur) × unit + room_blur × 部屋の σ × unit。
     床への映り込みは、床の面（floor）で上下を返した位置に、ぼかしを mirror_blur × unit 足して置く（絵の向きは mirror_mode。rotate は
-    180° 回す（試作と同じ。左右も入れ替わる）、flip は左右を保って上下だけ返す（床の映り込みとして正しい向き））。奥行き near_clip 以下と、
+    180° 回す（試作と同じ。左右も入れ替わる）、flip は左右を保って上下だけ返す（床の映り込みとして正しい向き））。映り込みを重ねる順は
+    mirror_order（source は元の位置の奥行きの遠い順（試作と同じ）、reflected は映った奥行きの遠い順（重なる映り込みの前後が正しい））。奥行き near_clip 以下と、
     画面の外 margin 画素より外と、上端（映り込みは下端）がカメラの後ろ（奥行き 0.05 m 以下）に回る絵は置かない。"""
     s = {**SPRITES, **(settings or {})}
     width, height = size
@@ -202,17 +205,26 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
     mu, mv, mirror_depth = project(mirrored)
     nu, nv, _ = project(mirrored - lift)
     margin, (near_fade, per_m, low, high) = s["margin"], s["fade"]
+    def look(index):
+        """明るさとぼかしは、元の位置の奥行きで決める（映り込みも同じ）。"""
+        brightness = float(tones[index] * np.clip(near_fade - depth[index] / per_m, low, high) * s["gain"])
+        sigma = float(min(abs(depth[index] - focus) * s["focus_blur"], s["max_blur"]) * unit + s["room_blur"] * room_sigma * unit)
+        return sprites[int(kinds[index]) % len(sprites)], brightness, sigma
+
     for index in np.argsort(-depth):                                 # 遠いものから置く
         if not depth[index] > s["near_clip"]:
             continue
-        levels = sprites[int(kinds[index]) % len(sprites)]
-        brightness = float(tones[index] * np.clip(near_fade - depth[index] / per_m, low, high) * s["gain"])
-        sigma = float(min(abs(depth[index] - focus) * s["focus_blur"], s["max_blur"]) * unit + s["room_blur"] * room_sigma * unit)
+        levels, brightness, sigma = look(index)
         if (np.isfinite(cu[index]) and np.isfinite(tu[index]) and -margin < cu[index] < width + margin
                 and -margin < cv_[index] < height + margin):
             paste(far if depth[index] > focus else near, levels, (cu[index], cv_[index]), (tu[index], tv[index]), brightness, sigma)
+    order = np.argsort(-mirror_depth) if s["mirror_order"] == "reflected" else np.argsort(-depth)
+    for index in order:                                              # 映り込みを置く順（mirror_order。既定は試作と同じ元の奥行き）
+        if not depth[index] > s["near_clip"]:
+            continue
         if (mirror_depth[index] > s["near_clip"] and np.isfinite(mu[index]) and np.isfinite(nu[index])
                 and -margin < mu[index] < width + margin and -margin < mv[index] < height + margin):
+            levels, brightness, sigma = look(index)
             shown = flipped(levels) if s["mirror_mode"] == "flip" else levels
             paste(mirror, shown, (mu[index], mv[index]), (nu[index], nv[index]), brightness, sigma + s["mirror_blur"] * unit)
     return far, near, mirror

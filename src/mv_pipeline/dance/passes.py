@@ -168,6 +168,7 @@ def _sprites(raw):
         out[key] = float(raw.get(key, space.SPRITES[key]))
     out["fade"] = [float(v) for v in raw.get("fade", space.SPRITES["fade"])]
     out["mirror_mode"] = raw.get("mirror_mode", space.SPRITES["mirror_mode"])
+    out["mirror_order"] = raw.get("mirror_order", space.SPRITES["mirror_order"])
     return out
 
 
