@@ -1001,10 +1001,23 @@ def make_pushes(bpy, specs, unit):
     return pushes, notes
 
 
+def version_problem(version):
+    """この描き方が動かない Blender の版なら、その理由。Blender 5.x では EEVEE の名前（BLENDER_EEVEE_NEXT → BLENDER_EEVEE）と、
+    合成の API（scene.node_tree → scene.compositing_node_group）が変わった（Blender 5.2.4 で確かめた。2026-11-16）。
+    この描き方は 4.5.15 でだけ確かめているので、5.x では舞台を組む前に止める。"""
+    if tuple(version[:2]) >= (5, 0):
+        return (f"render.stage は Blender 4.5.15 で確かめた描き方で、Blender {'.'.join(str(v) for v in version[:3])} では動きません"
+                "（5.x では EEVEE の名前と合成の API が変わった。docs/model3d.md の「Blender 5.2 と VRM Add-on」）")
+    return None
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
 
+    problem = version_problem(bpy.app.version)
+    if problem:
+        raise SystemExit(problem)
     if argv is None:
         argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     a = parse_args(argv)

@@ -2,7 +2,10 @@
 
 正解は全フレームの SHA-256（tests/data/dance_01_frames.json。素材は持たず、ハッシュだけ）。0.2 の実装の前に記録し、BT.709 の
 動画の読み手を変えたときに取り直した（デモのクリップは bt709。Windows では、読み手だけ OpenCV に戻すと前の記録と全フレーム一致した）。
-素材の mp4 の符号化と線形の浮動小数の演算は環境で変わるので、記録は環境ごとに持ち、素材のハッシュも一致したときだけ比べる。
+素材の mp4 の符号化と線形の浮動小数の演算は環境で変わるので、記録は環境ごとに持つ。素材のハッシュが記録と同じなら、全フレームが
+同じでなければ失敗にする。素材のハッシュが違っても、全フレームが記録と同じなら通す（imageio-ffmpeg 0.8.1 の ffmpeg 9.0.2 では
+素材の mp4 のバイト列が変わったが、Windows で全フレームが記録と同じだった）。素材もフレームも違うときは、どちらのせいか分からない
+ので飛ばす。
 意図して絵を変えたときは、失敗のログに出る 1 行で記録を取り直す。
 """
 import hashlib
@@ -38,8 +41,10 @@ def test_the_01_demo_keeps_every_frame_byte_for_byte(tmp_path):
     finally:
         ctx.close()
     record = json.loads(RECORD.read_text(encoding="utf-8")).get(environment())
-    if record is None or record["assets"] != assets:
+    if record is None:
         pytest.skip(f"記録の無い環境です: {environment()}")
+    if record["assets"] != assets and frames != record["frames"]:
+        pytest.skip(f"素材のハッシュが記録と違い、フレームも違います（ffmpeg の版の違いなど）: {environment()}")
     if frames != record["frames"]:
         print(json.dumps({environment(): {"assets": assets, "frames": frames}}))
     assert frames == record["frames"]

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-cameras/0.1",
+  "title": "model3d cameras",
+  "description": "要素別の描画（render.passes）のコマごとのカメラと踊り手の点。matrix は世界の座標のカメラの行列（4×4、行ごと。カメラは自分の -Z を向き、+Y が上。位置は m）。focal_px と principal_px は resolution の画面の画素での焦点距離と主点（縦の受光の大きさに合わせる）。render.passes の出力（描いたときの値）で、入力 cameras にも渡せる（そのときは T・matrix・focal_px・principal_px を読み、dancer があれば足もとの影の円をその真下に置く）。",
+  "type": "object",
+  "required": ["schema_version", "unit", "resolution", "frames"],
+  "properties": {
+    "schema_version": {"const": "model3d-cameras/0.1"},
+    "unit": {"const": "m"},
+    "resolution": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "sensor_height_mm": {"type": "number", "exclusiveMinimum": 0},
+    "clip_m": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 2, "maxItems": 2},
+    "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/frame"}},
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "frame": {
+      "type": "object",
+      "required": ["T", "matrix", "focal_px", "principal_px"],
+      "properties": {
+        "T": {"type": "integer", "minimum": 1},
+        "f": {"type": "integer"},
+        "matrix": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}
+        },
+        "focal_px": {"type": "number", "exclusiveMinimum": 0},
+        "principal_px": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "lens_mm": {"type": "number", "exclusiveMinimum": 0},
+        "shift": {"description": "Blender のレンズのずらし（x・y。画面の高さに対する割合）", "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "dancer": {"description": "踊り手の点（世界の座標、m）。足もとの影の円はこの真下の床に置く", "$ref": "#/$defs/vec3"},
+        "distance_m": {"description": "カメラから踊り手の点までの距離", "type": "number", "minimum": 0}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
+  }
+}

@@ -32,6 +32,8 @@ SCHEMAS = {
     "stage-plan": "model3d-stage-plan/0.1",
     "light-keys": "model3d-light-keys/0.1",
     "bone-path": "model3d-bone-path/0.1",
+    "passes": "model3d-passes/0.1",
+    "cameras": "model3d-cameras/0.1",
 }
 
 

@@ -38,6 +38,24 @@ def test_frame_list_reads_ranges_steps_and_lists():
     assert retarget.frame_list("0,5,9", 20) == [0, 5, 9]
 
 
+def test_skip_masks_apply_by_mesh_name_and_keep_the_old_matching_by_count():
+    hair, sash = np.array([True, False, True]), np.array([True, True])
+    sizes = {"Body": 5, "Hair": 3, "Sash": 2, "Cap": 3}
+    # 鍵がメッシュの名前なら、そのメッシュだけ（頂点の数が同じ Cap には当てない）
+    masks = retarget.skip_masks({"Hair": hair, "Sash": sash}, sizes)
+    assert set(masks) == {"Hair", "Sash"} and masks["Hair"] is hair and masks["Sash"] is sash
+    # 名前でない鍵は前と同じ: OR を頂点の数が合うメッシュ（名前で当てたもの以外）に当てる
+    old = retarget.skip_masks({"hair": hair, "more": np.array([False, True, False])}, sizes)
+    assert set(old) == {"Hair", "Cap"} and old["Hair"].tolist() == [True, True, True]
+    mixed = retarget.skip_masks({"Hair": hair, "x": np.array([False, False, True])}, sizes)
+    assert mixed["Hair"] is hair and mixed["Cap"].tolist() == [False, False, True]
+    with pytest.raises(ValueError, match="Hair"):
+        retarget.skip_masks({"Hair": sash}, sizes)
+    with pytest.raises(ValueError, match="同じ長さ"):
+        retarget.skip_masks({"a": hair, "b": sash}, sizes)
+    assert retarget.skip_masks({}, sizes) == {}
+
+
 def test_parse_args_defaults():
     args = retarget.parse_args(["--points", "p.npz", "--character", "c.blend", "--out-blend", "o.blend", "--pose", "pose.npz",
                                 "--report", "r.json"])

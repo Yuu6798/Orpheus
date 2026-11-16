@@ -13,7 +13,7 @@
 | TypeScript | 5.9.3 |
 | librosa | 0.11.0 |
 | numba / llvmlite | 0.63.1 / 0.46.0（Windows実行確認済みの組合せ） |
-| imageio-ffmpeg | 0.6.0 |
+| imageio-ffmpeg | `uv.lock` の版（Dependabot で上げる）。同梱の ffmpeg は 0.7.0 が 7.1、0.8.1 が 9.0.2（Windows はどちらも gyan.dev の essentials 版で libx264 入り）。下の 2026-11-16 の節を参照 |
 | Pillow | 13.0.0 |
 | opencv-python-headless（fx extra） | 5.0.0.93（Apache-2.0。実験的な fx と dance が使う。2026-10-24 に Dependabot で 4.14.0.94 から上げた。Windows の 5.0.0 は色のタグを見ずに BT.601 で読むので、dance は bt709 の動画を ffmpeg で読む。`docs/dance.md` の制限を参照） |
 | pytest（dev） | 9.0.3 |
@@ -66,6 +66,21 @@ Windows 11 のスマート アプリ コントロール（SAC）が「オン」�
 - **通ったもの**：署名なしの拡張モジュール（numpy・OpenCV・Pillow・rpds・scipy・soundfile・soxr・scikit-learn・llvmlite・numba・librosa）の import、librosa のリサンプリング（44.1kHz の音声を 22050Hz で読む）、`uv run pytest`（375 passed・1 skipped）、`mv fx render`（1920x1080 の 4 版とグリッドが technical_pass）。uv.exe・Git for Windows・GitHub CLI は署名つきで、そのまま動きました。
 - **一度だけ止められた例**：soxr の拡張モジュール（`soxr_ext.pyd`）が 1 回だけ止められ（イベント 3077）、その後の実行では通りました。原因は確かめていません。import が `DLL load failed` と「アプリケーション制御ポリシーによってこのファイルがブロックされました」で失敗したら、手順 1 のログでファイル名を控え、もう一度実行して再現するかを確かめます。
 - **未確認**：Node.js・pnpm（Remotion の経路）の SAC 下での動作。
+
+## 2026-11-16 更新（imageio-ffmpeg 0.8.1 の確かめ）
+
+- Dependabot の #125（imageio-ffmpeg 0.7.0 → 0.8.1）で、同梱の ffmpeg が 7.1 から 9.0.2 になる。
+  PATH に ffmpeg が無い PC では、fx・dance・deliver・model3d の書き出しと検査がこれを使う。
+- どちらの ffmpeg.exe も署名なし。確かめた PC は SAC がオフ（状態 0）だったので、SAC がオンの PC で 9.0.2 が止められないかは
+  確かめていない。止められたら、上の手順 1 のログで確かめる。
+- ffmpeg 9.0.2 は、mp4 の edit list の長さのミリ秒に満たない分を落として書くことがある。そのままだと `mv deliver join` で
+  つなぎ目ごとに後の区間が 1 ms 未満ずつ前にずれたので、join は区間の正確な長さを concat の一覧に添えるようにした（`docs/deliver.md`）。
+  7.1 で書いた区間では、添えても結果は同じバイト列。
+- 9.0.2 で確かめたこと（Windows。実測）：pytest 全体で落ちたのは、このずれを見つけた 1 件（`mv deliver review-copy` の 2 パスの
+  ビットレートの式）だけだった。fx・fx timeline・dance の smoke（CI と同じ合成素材）と `mv demo → render → verify` は
+  technical_pass（記録の ffmpeg は 9.0.2）。
+- dance の 0.1 のデモの全コマ照合（`tests/test_dance_compat.py`）は、9.0.2 で素材の mp4 のバイト列が変わったため、飛ばされていた
+  （全 144 コマは記録と同じだった）。素材のハッシュが違っても全フレームが記録と同じなら通すようにした。
 
 GPU情報はOS報告であり、利用可能VRAMやモデル性能を保証しません。描画はCPU経路です。
 既存HTDemucs/Qwenの実行経路は未設定です。大型モデルを自動導入せず、別環境のCLIを接続できます。
