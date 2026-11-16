@@ -229,9 +229,10 @@ def compose(data, plan, T, look=None):
     figure = character[..., :3]
     tint = data["figure"]
     if tint is not None:
-        shade = read_image(files["shade"][T]).mean(axis=2)
+        shade = _same_size(read_image(files["shade"][T]), plan, "shade", T).mean(axis=2)
         if tint["face_smooth"] > 0 and "head" in files:
-            shade = finish.face_shade(shade, read_image(files["head"][T]).mean(axis=2), tint["face_smooth"], unit=unit)
+            head = _same_size(read_image(files["head"][T]), plan, "head", T).mean(axis=2)
+            shade = finish.face_shade(shade, head, tint["face_smooth"], unit=unit)
         figure = finish.light_tint(figure, shade, tint["light"], tint["shadow"], *tint["shade_range"])
     rim = data["rim"]
     if rim is not None:
