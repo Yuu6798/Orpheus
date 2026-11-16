@@ -648,15 +648,16 @@ def wipe_at(scene, t):
 
 def wipe_layer(data, plan, T, frame, scene):
     """つなぎの間のコマ: 相手の要素で相手の画を重ね（手前の板は相手のショットの側の時刻で選ぶ）、柱が通り過ぎた側を新しい画にして、
-    柱を重ねる（space.pillar・space.wipe）。at より前は今の画が古い画、at から後は相手の画が古い画。"""
+    柱を重ねる（space.pillar・space.wipe）。at より前は今の画が古い画、at から後は相手の画が古い画（at の 1e-6 秒前のコマから後の側）。"""
     t = (T - 1) / plan.fps
     wipe = wipe_at(scene, t)
     if wipe is None:
         return frame
     unit = plan.size[0] / 1080
     at = wipe["at"]
-    other = layers(data, wipe["plan"], T, wipe["where"], scene, at + NEXT if t < at else at - NEXT)
-    old, new = (frame, other) if t < at else (other, frame)
+    before = t < at - 1e-6                               # at の前か後か（plan.shots と同じく、EPS 秒前のコマから後の側）
+    other = layers(data, wipe["plan"], T, wipe["where"], scene, at + NEXT if before else at - NEXT)
+    old, new = (frame, other) if before else (other, frame)
     if wipe["image"] is None:
         wipe["image"] = space.pillar_image(wipe["rgb"], wipe["alpha"], plan.size, wipe["pillar"], wipe["seconds"], plan.fps, unit)
     image, mask, wide = wipe["image"]
