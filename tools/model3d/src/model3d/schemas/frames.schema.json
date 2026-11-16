@@ -17,7 +17,7 @@
         "required": ["T", "f", "file", "sha256", "bytes"],
         "properties": {
           "T": {"type": "integer", "minimum": 1},
-          "f": {"type": "integer"},
+          "f": {"type": "number"},
           "file": {"type": "string"},
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "bytes": {"type": "integer", "minimum": 0}

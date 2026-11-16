@@ -439,6 +439,12 @@ def _ranges(span_list, hits, names, rows):
     return out
 
 
+def _frame(f):
+    """動きのコマ（小数のコマは float のまま。render.stage と同じ読み方）。"""
+    from .blender_adapter.stage_render import motion_frame
+    return motion_frame(f)
+
+
 def build_track(plan, keys, bones, cut=None, bone_prefix="mixamorig:"):
     """トラック（model3d-stage-track/0.1）と報告。cut（T と f だけのトラック）が無ければ、骨の通り道のコマを T = 1 から順に描く。"""
     for band in ("low", "mid", "high"):
@@ -452,8 +458,8 @@ def build_track(plan, keys, bones, cut=None, bone_prefix="mixamorig:"):
     fps = float(keys["fps"])
     if cut is not None and cut.get("fps") is not None and float(cut["fps"]) != fps:
         raise ToolError(f"描くコマの並び（cut）の fps（{cut['fps']}）が光のキーの fps（{keys['fps']}）と違います")
-    rows = ([(int(fr["T"]), int(fr["f"])) for fr in cut["frames"]] if cut is not None
-            else [(k + 1, int(f)) for k, f in enumerate(bones["frames"])])
+    rows = ([(int(fr["T"]), _frame(fr["f"])) for fr in cut["frames"]] if cut is not None
+            else [(k + 1, _frame(f)) for k, f in enumerate(bones["frames"])])
     clock = Clock(plan.get("marks"), keys["grid"])
     camera, lights = Camera(plan, clock), Lights(plan, clock, keys)
     names = {"hips": bone_prefix + "Hips", "head": bone_prefix + "Head"}

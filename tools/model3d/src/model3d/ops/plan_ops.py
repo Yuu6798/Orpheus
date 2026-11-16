@@ -1,7 +1,7 @@
 """段取り: 曲の音から光のキーを作り（plan.light_keys）、段取り表と光のキーと骨の通り道から、render.stage が描くトラックを
-作る（plan.stage）。どちらも計算だけ（Blender は使わない）。"""
+作る（plan.stage）。動きと違う fps で描くコマの並び（小数のコマ）も作る（plan.retime）。どれも計算だけ（Blender は使わない）。"""
 from ..io import ToolError, atomic_json
-from . import StepResult, register, require
+from . import StepResult, number, register, require
 
 PLAN_PARAMETERS = {"bone_prefix"}
 
@@ -57,4 +57,38 @@ def light_keys(inputs, parameters, outputs, context):
                    "rate": rate, "channels": int(samples.shape[1]), "audio_seconds": round(length, 6),
                    "silent_frames": frames - shown, "beats": len(keys["beats"]),
                    "mean": {name: round(sum(keys[name]) / frames, 3) for name in ("low", "mid", "high")}}
+    return StepResult(observations=[observation])
+
+
+RETIME_PARAMETERS = {"fps", "motion_fps", "start", "frames"}
+
+
+def retime_track(fps, motion_fps, start, frames):
+    """書き出す fps のコマ T（1 から frames まで）に、動きのコマ f = start + (T − 1) × motion_fps ÷ fps を当てたトラック
+    （model3d-stage-track/0.1。T と f だけ）。f はちょうど整数なら整数、そうでなければ小数（前後のコマの間の時刻）。"""
+    from ..blender_adapter.stage_render import motion_frame
+    rows = [{"T": T, "f": motion_frame(start + (T - 1) * motion_fps / fps)} for T in range(1, frames + 1)]
+    return {"schema_version": "model3d-stage-track/0.1", "fps": fps, "frames": rows}
+
+
+@register("plan.retime", outputs=("track",),
+          summary="動きのコマの fps（motion_fps。例 24）と違う fps（例 30）で描くための、コマの並び（track。model3d-stage-track/0.1 の "
+                  "T と f だけ）を作る。コマ T（1 から frames まで）の動きのコマは f = start + (T − 1) × motion_fps ÷ fps で、小数のコマは"
+                  "render.stage・render.passes・motion.bone_path が前後のコマの間の時刻で描く。plan.stage の cut にも渡せる。計算だけ")
+def retime(inputs, parameters, outputs, context):
+    from .. import contracts
+    unknown = set(parameters) - RETIME_PARAMETERS
+    if unknown:
+        raise ToolError(f"plan.retime の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(RETIME_PARAMETERS)}）")
+    if "track" not in outputs:
+        raise ToolError("plan.retime には outputs の track が要ります")
+    fps = number(parameters, "fps", minimum=0, exclusive=True)
+    motion_fps = number(parameters, "motion_fps", minimum=0, exclusive=True)
+    start = number(parameters, "start", 1)
+    frames = number(parameters, "frames", minimum=1, integer=True)
+    track = retime_track(fps, motion_fps, start, frames)
+    atomic_json(outputs["track"], contracts.validate("stage-track", track))
+    last = track["frames"][-1]["f"]
+    observation = {"kind": "retime", "frames": frames, "fps": fps, "motion_fps": motion_fps, "f": [track["frames"][0]["f"], last],
+                   "fractional": sum(1 for fr in track["frames"] if isinstance(fr["f"], float))}
     return StepResult(observations=[observation])

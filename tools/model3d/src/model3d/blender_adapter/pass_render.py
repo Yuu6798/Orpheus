@@ -140,7 +140,7 @@ def camera_entry(T, f, matrix, lens, shift, sensor_height, resolution, unit, dan
     for row in M[:3]:
         row[3] *= unit
     width, height = resolution
-    entry = {"T": int(T), "f": int(f), "matrix": M, "focal_px": focal_from_lens(lens, sensor_height, height),
+    entry = {"T": int(T), "f": stage_render.motion_frame(f), "matrix": M, "focal_px": focal_from_lens(lens, sensor_height, height),
              "principal_px": principal_from_shift(shift, width, height), "lens_mm": float(lens), "shift": [float(v) for v in shift]}
     if dancer is not None:
         entry["dancer"] = [float(v) for v in dancer]
@@ -282,7 +282,7 @@ def main(argv=None):
     raw = {}
     try:
         for f in frames:
-            sc.frame_set(int(f))
+            stage_render.set_frame(sc, f)
             heads_at = [arm.matrix_world @ arm.pose.bones[b].head for b in settings["dancer"]["bones"]]
             raw[f] = np.array(sum(heads_at, Vector()) / len(heads_at)) * unit
     finally:
@@ -332,7 +332,7 @@ def main(argv=None):
         if not todo:
             continue
         t0 = time.time()
-        sc.frame_set(int(f))
+        stage_render.set_frame(sc, f)
         place(T, f, spec)
         bpy.context.view_layer.update()
         for k in todo:

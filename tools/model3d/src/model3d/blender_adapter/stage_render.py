@@ -92,10 +92,33 @@ def frame_name(T):
     return f"f{int(T):04d}.png"
 
 
+def motion_frame(f):
+    """トラックの動きのコマ f。ちょうど整数なら int、そうでなければ float のまま（小数のコマ）。"""
+    f = float(f)
+    return int(f) if f.is_integer() else f
+
+
+def split_frame(f):
+    """動きのコマ f → (frame_set に渡すコマ, subframe)。小数のコマは前のコマと、そこからの割合（0 以上 1 未満）にする。"""
+    whole = math.floor(f)
+    return int(whole), float(f) - whole
+
+
+def scene_range(frames):
+    """描く動きのコマ（小数も）を含む、シーンのコマの範囲（整数。frame_start・frame_end は整数しか受けない）。"""
+    return int(math.floor(min(frames))), int(math.ceil(max(frames)))
+
+
+def set_frame(scene, f):
+    """シーンを動きのコマ f へ進める（小数なら subframe で前後のコマの間の時刻）。"""
+    whole, sub = split_frame(f)
+    scene.frame_set(whole, subframe=sub)
+
+
 def frame_plan(track, frame_start, frame_end):
-    """描くコマの並び [(T, f, そのコマの値)]。トラックがあればその順、無ければシーンの全コマを T = 1 から。"""
+    """描くコマの並び [(T, f, そのコマの値)]。トラックがあればその順、無ければシーンの全コマを T = 1 から。f は小数でもよい。"""
     if track is not None:
-        return [(int(fr["T"]), int(fr["f"]), fr) for fr in track["frames"]]
+        return [(int(fr["T"]), motion_frame(fr["f"]), fr) for fr in track["frames"]]
     return [(k + 1, f, {}) for k, f in enumerate(range(frame_start, frame_end + 1))]
 
 
@@ -672,7 +695,7 @@ def hip_path(bpy, arm, hips, frames, sigma):
         m.show_viewport = False
     points = []
     for f in frames:
-        sc.frame_set(f)
+        set_frame(sc, f)
         points.append(np.array(arm.matrix_world @ hips.head))
     for m, shown in mods:
         m.show_viewport = shown
@@ -1045,7 +1068,7 @@ def main(argv=None):
         sc.render.fps = int(math.ceil(fps))
         sc.render.fps_base = sc.render.fps / fps
     action_frames = [f for _, f, _ in plan]
-    sc.frame_start, sc.frame_end = min(action_frames), max(action_frames)
+    sc.frame_start, sc.frame_end = scene_range(action_frames)
     if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     stage, cam_s, line = settings["stage"], settings["camera"], settings["outline"]
@@ -1089,7 +1112,7 @@ def main(argv=None):
             existing.append(T)
             continue
         t0 = time.time()
-        sc.frame_set(f)
+        set_frame(sc, f)
         if handles is not None:
             values = frame_values(spec, static, stage["stripe_floor"])
             set_stage(handles, values["stage"])
