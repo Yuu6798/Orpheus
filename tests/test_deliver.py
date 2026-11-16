@@ -54,6 +54,34 @@ def segments(tmp_path):
     return folder
 
 
+def _box(data, kind):
+    """1 本の流れの mp4 で、kind の箱の中身の始まり（版が 0 であること）。"""
+    at = data.find(kind)
+    assert at > 0 and data.find(kind, at + 1) < 0 and data[at + 4] == 0, kind
+    return at + 4
+
+
+def set_edit_list(path, rounding):
+    """映像の edit list の長さ（映画の時間単位）を、メディアの長さを rounding（math.floor / math.ceil）で丸めた値に書き換える。
+    ffmpeg 7.1 は切り上げ（入れ物の長さが映像以上）、ffmpeg 9.0.2 はミリ秒に満たない分を落とすことがある（12 fps の 5 コマ: 417 → 416）。"""
+    data = bytearray(path.read_bytes())
+    movie_scale = struct.unpack(">I", data[_box(data, b"mvhd") + 12:][:4])[0]
+    media = _box(data, b"mdhd")
+    media_scale, media_length = struct.unpack(">II", data[media + 12:media + 20])
+    edit = _box(data, b"elst")
+    assert struct.unpack(">I", data[edit + 4:edit + 8])[0] == 1
+    data[edit + 8:edit + 12] = struct.pack(">I", rounding(Fraction(media_length * movie_scale, media_scale)))
+    path.write_bytes(bytes(data))
+
+
+def frame_times(path):
+    """映像のコマの表示の時刻（秒の Fraction。小さい順）。"""
+    text = subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-map", "0:v:0", "-c", "copy",
+                           "-f", "framecrc", "-"], capture_output=True, text=True, check=True).stdout
+    base = Fraction(*map(int, [line for line in text.splitlines() if line.startswith("#tb 0:")][0].split(":")[1].split("/")))
+    return sorted(int(line.split(",")[2]) * base for line in text.splitlines() if line and not line.startswith("#"))
+
+
 # ---- 実制作の仕上げの手順（写し） ---------------------------------------------------------------------
 
 def ref_join(segs, wav, t0, dur, fade_in, fade_out, out_dir):
@@ -73,6 +101,9 @@ def ref_join(segs, wav, t0, dur, fade_in, fade_out, out_dir):
 
 
 def test_join_equals_the_private_finish_and_records_it(segments, tmp_path):
+    # 実制作の区間（ffmpeg 7.1）と同じく、区間の入れ物の長さが映像以上のときに、実制作の仕上げと同じバイト列になる
+    for path in segments.glob("seg_*.mp4"):
+        set_edit_list(path, math.ceil)
     wav = tone(tmp_path / "song.wav")
     result = deliver.join([segments], tmp_path / "out" / "master.mp4", wav, audio_start=0.5, fade_in=0.02, fade_out=0.5)
     ref_dir = tmp_path / "ref"
@@ -88,6 +119,30 @@ def test_join_equals_the_private_finish_and_records_it(segments, tmp_path):
     again = deliver.join([segments], tmp_path / "out" / "master.mp4", wav, audio_start=0.5, fade_in=0.02, fade_out=0.5)
     assert again["state"] == "unchanged" and again["sha256"] == result["sha256"]
     assert not [p for p in (tmp_path / "out").iterdir() if p.name.startswith(".deliver-")]       # 作業フォルダは残さない
+
+
+def test_join_keeps_the_frame_grid_when_a_segment_container_is_cut_short(segments, tmp_path):
+    # ffmpeg 9.0.2 は区間の edit list の長さのミリ秒に満たない分を落とすことがあり、concat がその長さで次の区間の時刻を決めると、
+    # 後の区間が前にずれる（12 fps の 5 コマの区間の後が 8/12288 秒）。join は区間の正確な長さを一覧に添えるので、コマの格子に乗る
+    for path in segments.glob("seg_*.mp4"):
+        set_edit_list(path, math.floor)
+    grid = [Fraction(n, FPS) for n in range(18)]
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    listing = plain / "concat.txt"
+    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in sorted(segments.glob("seg_*.mp4"))), encoding="utf-8")
+    subprocess.run([media.ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+                    "-c", "copy", str(plain / "video.mp4")], check=True)
+    assert frame_times(plain / "video.mp4") != grid                                       # 長さを添えないと、ずれる（この試験の前提）
+    result = deliver.join([segments], tmp_path / "master.mp4", tone(tmp_path / "song.wav"))
+    assert frame_times(tmp_path / "master.mp4") == grid and deliver.video_seconds(tmp_path / "master.mp4") == Fraction(18, FPS)
+    assert result["frames"] == 18 and result["technical_pass"], result
+
+
+def test_concat_durations_round_like_ffmpeg():
+    assert deliver._microseconds(Fraction(5, 12)) == "0.416667" and deliver._microseconds(Fraction(1001, 1000)) == "1.001000"
+    assert deliver._microseconds(Fraction(1, 2_000_000)) == "0.000001" and deliver._microseconds(Fraction(7, 2)) == "3.500000"
+    assert deliver._microseconds(Fraction(3601, 1)) == "3601.000000"
 
 
 def test_existing_master_is_kept_without_force(segments, tmp_path):
