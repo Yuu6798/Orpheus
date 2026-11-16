@@ -26,6 +26,8 @@ FILES = {
     "stage-plan": "stage_plan.schema.json",
     "light-keys": "light_keys.schema.json",
     "bone-path": "bone_path.schema.json",
+    "passes": "passes.schema.json",
+    "cameras": "cameras.schema.json",
 }
 
 KINDS = tuple(FILES)

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-passes/0.1",
+  "title": "model3d passes",
+  "description": "render.passes が要素ごとに描いたコマの一覧。directory の中の <要素>/f<T>.<png|jpg> と、その sha256・大きさ。missing は並びにあって描いていない T（only で選ばなかったコマなど）。",
+  "type": "object",
+  "required": ["schema_version", "directory", "fps", "resolution", "passes"],
+  "properties": {
+    "schema_version": {"const": "model3d-passes/0.1"},
+    "directory": {"type": "string"},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "resolution": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2},
+    "passes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"enum": ["room", "char", "shade", "disc", "head"]},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["format", "alpha", "frames", "missing"],
+        "properties": {
+          "format": {"enum": ["png", "jpeg"]},
+          "alpha": {"description": "透けのある RGBA か（char だけ）", "type": "boolean"},
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["T", "f", "file", "sha256", "bytes"],
+              "properties": {
+                "T": {"type": "integer", "minimum": 1},
+                "f": {"type": "integer"},
+                "file": {"description": "directory からの相対パス（<要素>/f<T>.<拡張子>）", "type": "string"},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "bytes": {"type": "integer", "minimum": 0}
+              },
+              "additionalProperties": false
+            }
+          },
+          "missing": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false
+}
