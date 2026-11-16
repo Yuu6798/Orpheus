@@ -55,6 +55,18 @@ def test_the_window_and_the_order_of_the_phantoms():
     assert order[1]["near"] and order[1]["distance_m"] == pytest.approx(np.hypot(0.5, 1.0))          # 手前へ 2 m、0.5 秒前の位置
 
 
+def test_the_offset_is_in_world_space_under_a_parent():
+    """骨組みに親があるとき、location に足す量は親の座標に直す（Codex の指摘。親が Z 軸のまわりに 90 度回っていると、そのまま足せば
+    世界の Y へずれてしまう）。親の 3×3 を掛け戻すと世界のずらしになる。"""
+    assert pass_render.local_offset([1.0, 2.0, 0.5]) == [1.0, 2.0, 0.5]
+    turned = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    local = pass_render.local_offset([1.0, 0.0, 0.0], turned)
+    assert local == pytest.approx([0.0, -1.0, 0.0])
+    tilted = (np.array([[0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 0.5]]) @ np.diag([1.0, 1.0, 3.0])).tolist()
+    world = [0.4, -1.2, 0.3]
+    assert np.allclose(np.array(tilted) @ pass_render.local_offset(world, tilted), world)
+
+
 def test_the_phantom_settings_are_checked():
     s = render_ops._pass_settings({"phantoms": {"items": [{"offset": [0.9, 1.2], "delay": 0.6}], "during": [[20.5, 28.0]],
                                                 "mirror": True, "point": "hips", "sigma_s": 0.3, "fps": 24}})

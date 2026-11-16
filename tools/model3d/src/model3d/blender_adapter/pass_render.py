@@ -14,7 +14,7 @@
 - head: 顔の範囲。head に挙げた物体を白、ほかの人物の物体を黒で（髪などに隠れた所は黒）。背景は黒
 - r<要素>（mirror.passes に挙げた char・shade）: 同じ要素を、カメラを床の面（高さ mirror.height）で反転して描いたもの（床への映り込み）。
   反転したカメラの行列は、入れた行列（記録のカメラなら記録の行列、トラックのカメラなら Blender の行列）に左から鏡の行列を掛けたもの
-- ph<i>（phantoms.items の i 番目の分身）: 人物の骨組みを offset（m）だけずらし、踊りの時刻を delay 秒遅らせて、shade と同じ白い人物と
+- ph<i>（phantoms.items の i 番目の分身）: 人物の骨組みを offset（m。世界の座標。骨組みに親があっても）だけずらし、踊りの時刻を delay 秒遅らせて、shade と同じ白い人物と
   スタジオの光で描いたもの（背景は透け。RGBA の PNG）。phantoms.during の時刻（コマの時刻 (T − 1) / fps）のコマだけ描く。
   phantoms.mirror なら、反転したカメラでも描く（rph<i>）。分身と踊り手の点（骨の通り道の phantoms.point を σ phantoms.sigma_s 秒で
   ならしたもの）のカメラからの距離を報告に書き、分身のほうが近ければ near（重ねる側が人物の手前に重ねる）
@@ -139,6 +139,15 @@ def phantom_distances(points, name, dance_t, items, camera_at):
         distance = float(np.linalg.norm(points.at(name, dance_t - item["delay"]) + offset - camera_at))
         out.append({"i": i, "distance_m": distance, "near": distance < main})
     return main, out
+
+
+def local_offset(offset, parent=None):
+    """分身のずらし offset（世界の座標の 3 つ）を、骨組みの location に足す量にする。parent は親から骨組みへの行列
+    （親の matrix_world @ matrix_parent_inverse）の左上 3×3（行の並び）。location は親の座標で効くので、親が回っていたり大きさが
+    違ったりしても、骨組みが世界の座標で offset だけずれるように直す（距離の計算 phantom_distances と同じ向き）。親が無ければそのまま。"""
+    if parent is None:
+        return [float(v) for v in offset]
+    return [float(v) for v in np.linalg.solve(np.asarray(parent, dtype=np.float64), np.asarray(offset, dtype=np.float64))]
 
 
 def extension(kind, fmt):
@@ -440,7 +449,11 @@ def main(argv=None):
             stage_render.set_frame(sc, stage_render.motion_frame(f - item["delay"] * dance_fps))
             base = arm.location.copy()
             offset = list(item["offset"]) + [0.0] * (3 - len(item["offset"]))
-            arm.location = base + Vector(offset) / unit
+            shift = Vector(offset) / unit
+            if arm.parent is not None:                   # location は親の座標で効く（世界の座標でずらす）
+                parent = arm.parent.matrix_world @ arm.matrix_parent_inverse
+                shift = Vector(local_offset(shift, [list(row) for row in parent.to_3x3()]))
+            arm.location = base + shift
             for k in names:
                 cam.matrix_world = main if k.startswith("ph") else flip @ main
                 bpy.context.view_layer.update()
