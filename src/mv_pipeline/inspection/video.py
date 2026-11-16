@@ -90,33 +90,35 @@ def frames(path, size, info, start=0, end=None, fps=None):
 SELECT_LIMIT = 200    # これより多いコマは select の式にせず、全部のコマを変換して選ぶ
 
 
-def _sequential(path, wanted, info, size):
+def _sequential(path, wanted, info, size, fps=None):
     """番号の確かな順読みで、wanted のコマだけを残す。"""
     keep, last = {}, wanted[-1]
-    for index, image in frames(path, size, info, 0, last + 1):
+    for index, image in frames(path, size, info, 0, last + 1, fps):
         if index in wanted:
             keep[index] = image.copy()
     return keep
 
 
-def grab(path, indices, info, size=None, total=None):
+def grab(path, indices, info, size=None, total=None, fps=None):
     """{コマ番号: uint8 RGB}。indices の番号のコマだけを、1 回の復号で取り出す（元の大きさ。size=(w, h) で縮める）。
 
     total（動画のコマ数）を渡すと、その外の番号は先に除く。番号の少ないときは ffmpeg の select で選んだコマだけを変換する
-    （番号は復号順で、frames() と同じ）。出てきたコマの数が合わなければ（途中のコマが壊れているなど）順読みで取り直す。"""
+    （番号は復号順で、frames() と同じ）。出てきたコマの数が合わなければ（途中のコマが壊れているなど）順読みで取り直す。
+    fps を渡すと、frames() と同じく fps フィルタでその間隔のコマに揃えた後の番号で選ぶ（total も揃えた後のコマ数）。"""
     wanted = sorted({int(i) for i in indices if i is not None and i >= 0 and (total is None or i < total)})
     if not wanted:
         return {}
     if is_image(path):
         return {0: load_rgb(path)} if 0 in wanted else {}
     if len(wanted) > SELECT_LIMIT:
-        return _sequential(path, wanted, info, size)
+        return _sequential(path, wanted, info, size, fps)
     width, height = size or (info["width"], info["height"])
     chosen = "+".join(f"eq(n\\,{i})" for i in wanted)
+    chain = (f"fps={fps}," if fps else "") + f"select='{chosen}',{_scale(size, info['matrix'])}"
     size_bytes = width * height * 3
     errors = tempfile.TemporaryFile()
     process = subprocess.Popen([media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(path), "-map", "0:v:0",
-                                "-fps_mode", "passthrough", "-vf", f"select='{chosen}',{_scale(size, info['matrix'])}", "-pix_fmt", "rgb24",
+                                "-fps_mode", "passthrough", "-vf", chain, "-pix_fmt", "rgb24",
                                 "-f", "rawvideo", "pipe:1"], stdout=subprocess.PIPE, stderr=errors)
     out, surplus = {}, b""
     try:                              # 出力を全部ためずに 1 コマずつ読む（元の大きさのコマを一度に抱えない）
@@ -139,7 +141,7 @@ def grab(path, indices, info, size=None, total=None):
     if code != 0:
         raise PipelineError(f"コマを取り出せません（{Path(path).name}）: {message[-300:]}")
     if len(out) != len(wanted) or surplus:
-        return _sequential(path, wanted, info, size)
+        return _sequential(path, wanted, info, size, fps)
     return out
 
 

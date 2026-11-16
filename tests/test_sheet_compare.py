@@ -1,0 +1,135 @@
+"""mv sheet の版どうしの見比べ: 同じ時刻のコマを動画ごとに 1 段ずつ並べたシート（--with）と、左右に並べた動画（.mp4 の --out）を、
+色でコマ番号の分かる合成の動画で確かめる（閲覧の道具。合否は出さない）。"""
+import hashlib
+import json
+import subprocess
+
+import numpy as np
+import pytest
+
+from mv_pipeline import encode, media, sheet
+from mv_pipeline.inspection import video
+from mv_pipeline.io import PipelineError
+
+
+def _clip(path, frames, fps, size, base, audio=True, audio_s=None, step=10):
+    """コマ i の色が (base, step·i, 0) の動画（BT.709）。"""
+    width, height = size
+
+    def images():
+        for i in range(frames):
+            image = np.zeros((height, width, 3), np.uint8)
+            image[:] = (base, min(255, step * i), 0)
+            yield image
+    plan = {"silent": True, "duration": audio_s or frames / fps} if audio else None
+    encode.write_video(path, images(), size, fps, 10, frames, plan)
+    return path
+
+
+def test_rows_put_each_video_on_its_own_row(tmp_path):
+    a = _clip(tmp_path / "before.mp4", 12, 12, (64, 48), 200)
+    b = _clip(tmp_path / "after.mp4", 12, 12, (64, 48), 40)
+    result = sheet.build_rows([a, b], tmp_path / "rows.png", at=[0.25, 0.5], labels=["before", "after"], cell_width=64)
+    assert result["rows"] == 2 and result["columns"] == 2 and result["missing"] == 0
+    record = json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))
+    assert [(c["row"], c["label"], c["frame"]) for c in record["cells"]] == [(0, "before", 3), (0, "before", 6), (1, "after", 3), (1, "after", 6)]
+    from PIL import Image
+    image = np.asarray(Image.open(tmp_path / "rows.png"))
+    assert image.shape[1] == 2 * 64
+    top, bottom = image[image.shape[0] // 4 + 8, 10], image[3 * image.shape[0] // 4 + 8, 10]
+    assert top[0] > 150 and bottom[0] < 90                       # 上の段は 1 本目、下の段は 2 本目
+    every = sheet.build_rows([a, b], tmp_path / "every.png", every=0.5, cell_width=64)
+    assert every["columns"] == 2                                  # 1 本目の長さ（1 秒）で 0・0.5 秒
+    with pytest.raises(PipelineError, match="--labels の数"):
+        sheet.build_rows([a, b], tmp_path / "bad.png", at=[0.1], labels=["one"])
+    with pytest.raises(PipelineError, match="時刻"):
+        sheet.build_rows([a, b], tmp_path / "bad.png")
+
+
+def test_side_by_side_video_lines_up_the_times(tmp_path):
+    a = _clip(tmp_path / "a.mp4", 24, 24, (64, 48), 200)
+    b = _clip(tmp_path / "b.mp4", 9, 12, (32, 24), 40, audio=False)     # 12 fps・0.75 秒・半分の大きさ
+    result = sheet.side_by_side([a, b], tmp_path / "side.mp4", labels=None, audio=1, crf=10)
+    assert result["size"] == [32 + 32, 24] and result["fps"] == 24 and result["frames"] == 18 and result["audio"] == 1
+    info = video.describe(tmp_path / "side.mp4")
+    decoded = list(video.frames(tmp_path / "side.mp4", None, info))
+    assert len(decoded) == 18
+    _, frame = decoded[10]
+    left, right = frame[12, 16].astype(int), frame[12, 32 + 16].astype(int)
+    assert abs(left[0] - 200) < 12 and abs(left[1] - 100) < 12     # 1 本目のコマ 10
+    assert abs(right[0] - 40) < 12 and abs(right[1] - 50) < 12     # 2 本目の時刻 10/24 秒 → コマ 5
+    record = json.loads((tmp_path / "side.json").read_text(encoding="utf-8"))
+    assert record["frames"] == 18 and [p["size"] for p in record["panels"]] == [[32, 24], [32, 24]]   # 低い方の高さにそろえる
+    quiet = sheet.side_by_side([b, a], tmp_path / "quiet.mp4", audio=0, labels=["b", "a"])
+    assert quiet["audio"] == 0
+    with pytest.raises(PipelineError, match="音がありません"):
+        sheet.side_by_side([b, a], tmp_path / "noaudio.mp4", audio=1)
+    with pytest.raises(PipelineError, match="2 本以上"):
+        sheet.side_by_side([a], tmp_path / "one.mp4")
+    with pytest.raises(PipelineError, match=".mp4"):
+        sheet.side_by_side([a, b], tmp_path / "side.png")
+
+
+def test_a_short_audio_track_is_padded_to_the_video(tmp_path):
+    from mv_pipeline.fx import probe
+    a = _clip(tmp_path / "a.mp4", 24, 24, (32, 24), 200, audio_s=0.5)     # 1 秒の絵に 0.5 秒の音
+    b = _clip(tmp_path / "b.mp4", 24, 24, (32, 24), 40, audio=False)
+    result = sheet.side_by_side([a, b], tmp_path / "side.mp4", audio=1)
+    checks = probe.check_video(tmp_path / "side.mp4", frames=24, fps=24, audio=True, audio_s=1.0, bt709=True)
+    assert result["frames"] == 24 and checks["pass"], checks["failures"]
+
+
+def test_rows_keep_the_last_half_frame_inside_each_video(tmp_path):
+    a = _clip(tmp_path / "a.mp4", 12, 12, (32, 24), 200)
+    b = _clip(tmp_path / "b.mp4", 12, 12, (32, 24), 40)
+    result = sheet.build_rows([a, b], tmp_path / "rows.png", at=[0.99], cell_width=32)        # 最後のコマ（11）の後半
+    record = json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))
+    assert result["missing"] == 0 and [c["frame"] for c in record["cells"]] == [11, 11]
+    late = sheet.build_rows([a, b], tmp_path / "late.png", at=[0.5, 1.2], cell_width=32)     # 動画の外の時刻は今までどおり黒いセル
+    assert late["missing"] == 2
+
+
+def test_side_by_side_keeps_the_audio_without_fades(tmp_path, monkeypatch):
+    a = _clip(tmp_path / "a.mp4", 12, 12, (32, 24), 200)
+    b = _clip(tmp_path / "b.mp4", 12, 12, (32, 24), 40, audio=False)
+    seen = {}
+    real = encode.write_video
+
+    def spy(out, frames, size, fps, crf, n_frames, audio=None, log_path=None):
+        seen["filter"] = encode.audio_filter(audio)
+        return real(out, frames, size, fps, crf, n_frames, audio, log_path)
+    monkeypatch.setattr(encode, "write_video", spy)
+    sheet.side_by_side([a, b], tmp_path / "side.mp4", audio=1)
+    assert seen["filter"] == "anull"                                  # 選んだ動画の音に、明けも暗転も掛けない
+
+
+def _variable_rate(tmp_path):
+    """コマ i の色が (40, 6·i, 0) の 40 コマ・2 秒の可変フレームレートの動画。0〜0.9 秒は 10 fps（コマ 0〜9）、1 秒からは 30 fps（コマ 10〜39）。
+    平均の fps（ffmpeg の情報）では、コマ番号 = 時刻 × fps にならない。"""
+    even = _clip(tmp_path / "even.mp4", 40, 30, (32, 24), 40, audio=False, step=6)
+    path = tmp_path / "variable.mp4"
+    subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(even),
+                    "-vf", "setpts='if(lt(N,10),N/10,1+(N-10)/30)/TB'", "-fps_mode", "vfr", "-c:v", "libx264", "-crf", "10",
+                    "-pix_fmt", "yuv420p", str(path)], check=True)
+    info = video.describe(path)
+    assert not 29 < info["fps"] < 31 and not 9 < info["fps"] < 11       # 平均の fps（どちらの区間とも違う）
+    return path, info
+
+
+def test_variable_frame_rate_videos_line_up_by_time(tmp_path):
+    vfr, info = _variable_rate(tmp_path)
+    ref = _clip(tmp_path / "ref.mp4", 60, 30, (32, 24), 200, step=4)        # 2 秒・30 fps
+    result = sheet.side_by_side([ref, vfr], tmp_path / "side.mp4", audio=1)
+    assert result["frames"] == 60
+    decoded = list(video.frames(tmp_path / "side.mp4", None, video.describe(tmp_path / "side.mp4")))
+    for i, shown in ((15, 5), (45, 25)):                                    # 0.5 秒はコマ 5（10 fps の区間）、1.5 秒はコマ 25（30 fps の区間）
+        left, right = decoded[i][1][12, 16].astype(int), decoded[i][1][12, 32 + 16].astype(int)
+        assert abs(left[1] - 4 * i) < 4 and abs(right[1] - 6 * shown) < 4, (i, left, right)
+    record = json.loads((tmp_path / "side.json").read_text(encoding="utf-8"))
+    assert [p["read_frames"] for p in record["panels"]] == [60, 60] and record["panels"][1]["frames"] == 40
+    sheet.build_rows([ref, vfr], tmp_path / "rows.png", at=[0.5, 1.5], cell_width=32)
+    record = json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))
+    raw = video.grab(vfr, [5, 25], info, total=40)                         # 復号した順のコマ 5・25（その時刻に映っているコマ）
+    cells = [c for c in record["cells"] if c["row"] == 1]
+    assert [c["sha256"] for c in cells] == [hashlib.sha256(np.ascontiguousarray(raw[k]).tobytes()).hexdigest() for k in (5, 25)]
+    assert record["rows"][1]["read"]["frames"] >= 37 and record["rows"][0]["read"] == {"rate": "30", "frames": 60}
