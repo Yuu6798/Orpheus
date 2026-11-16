@@ -1,23 +1,25 @@
 """mv sheet の版どうしの見比べ: 同じ時刻のコマを動画ごとに 1 段ずつ並べたシート（--with）と、左右に並べた動画（.mp4 の --out）を、
 色でコマ番号の分かる合成の動画で確かめる（閲覧の道具。合否は出さない）。"""
+import hashlib
 import json
+import subprocess
 
 import numpy as np
 import pytest
 
-from mv_pipeline import encode, sheet
+from mv_pipeline import encode, media, sheet
 from mv_pipeline.inspection import video
 from mv_pipeline.io import PipelineError
 
 
-def _clip(path, frames, fps, size, base, audio=True, audio_s=None):
-    """コマ i の色が (base, 10·i, 0) の動画（BT.709）。"""
+def _clip(path, frames, fps, size, base, audio=True, audio_s=None, step=10):
+    """コマ i の色が (base, step·i, 0) の動画（BT.709）。"""
     width, height = size
 
     def images():
         for i in range(frames):
             image = np.zeros((height, width, 3), np.uint8)
-            image[:] = (base, min(255, 10 * i), 0)
+            image[:] = (base, min(255, step * i), 0)
             yield image
     plan = {"silent": True, "duration": audio_s or frames / fps} if audio else None
     encode.write_video(path, images(), size, fps, 10, frames, plan)
@@ -99,3 +101,35 @@ def test_side_by_side_keeps_the_audio_without_fades(tmp_path, monkeypatch):
     monkeypatch.setattr(encode, "write_video", spy)
     sheet.side_by_side([a, b], tmp_path / "side.mp4", audio=1)
     assert seen["filter"] == "anull"                                  # 選んだ動画の音に、明けも暗転も掛けない
+
+
+def _variable_rate(tmp_path):
+    """コマ i の色が (40, 6·i, 0) の 40 コマ・2 秒の可変フレームレートの動画。0〜0.9 秒は 10 fps（コマ 0〜9）、1 秒からは 30 fps（コマ 10〜39）。
+    平均の fps（ffmpeg の情報）では、コマ番号 = 時刻 × fps にならない。"""
+    even = _clip(tmp_path / "even.mp4", 40, 30, (32, 24), 40, audio=False, step=6)
+    path = tmp_path / "variable.mp4"
+    subprocess.run([media.ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(even),
+                    "-vf", "setpts='if(lt(N,10),N/10,1+(N-10)/30)/TB'", "-fps_mode", "vfr", "-c:v", "libx264", "-crf", "10",
+                    "-pix_fmt", "yuv420p", str(path)], check=True)
+    info = video.describe(path)
+    assert not 29 < info["fps"] < 31 and not 9 < info["fps"] < 11       # 平均の fps（どちらの区間とも違う）
+    return path, info
+
+
+def test_variable_frame_rate_videos_line_up_by_time(tmp_path):
+    vfr, info = _variable_rate(tmp_path)
+    ref = _clip(tmp_path / "ref.mp4", 60, 30, (32, 24), 200, step=4)        # 2 秒・30 fps
+    result = sheet.side_by_side([ref, vfr], tmp_path / "side.mp4", audio=1)
+    assert result["frames"] == 60
+    decoded = list(video.frames(tmp_path / "side.mp4", None, video.describe(tmp_path / "side.mp4")))
+    for i, shown in ((15, 5), (45, 25)):                                    # 0.5 秒はコマ 5（10 fps の区間）、1.5 秒はコマ 25（30 fps の区間）
+        left, right = decoded[i][1][12, 16].astype(int), decoded[i][1][12, 32 + 16].astype(int)
+        assert abs(left[1] - 4 * i) < 4 and abs(right[1] - 6 * shown) < 4, (i, left, right)
+    record = json.loads((tmp_path / "side.json").read_text(encoding="utf-8"))
+    assert [p["read_frames"] for p in record["panels"]] == [60, 60] and record["panels"][1]["frames"] == 40
+    sheet.build_rows([ref, vfr], tmp_path / "rows.png", at=[0.5, 1.5], cell_width=32)
+    record = json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))
+    raw = video.grab(vfr, [5, 25], info, total=40)                         # 復号した順のコマ 5・25（その時刻に映っているコマ）
+    cells = [c for c in record["cells"] if c["row"] == 1]
+    assert [c["sha256"] for c in cells] == [hashlib.sha256(np.ascontiguousarray(raw[k]).tobytes()).hexdigest() for k in (5, 25)]
+    assert record["rows"][1]["read"]["frames"] >= 37 and record["rows"][0]["read"] == {"rate": "30", "frames": 60}
