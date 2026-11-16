@@ -2,6 +2,7 @@
 映り込み）、カメラの控えと位置の読み方、人物の前後の重ね順、spec の確かめ。実作品の要素との比べは docs/dance.md。"""
 import hashlib
 import json
+import math
 
 import numpy as np
 import pytest
@@ -80,6 +81,30 @@ def test_sprites_split_far_and_near_and_reflect_on_the_floor(tmp_path):
     assert dim[..., 0].max() < sharp[..., 0].max()
     empty = space.sprite_layers((200, 200), _camera(), [], sprites)
     assert all(not layer.any() for layer in empty)
+
+
+def test_a_sprite_whose_top_is_behind_the_camera_is_skipped(tmp_path):
+    """下へ 45° 向いたカメラ: 中心は near_clip より先でも、上端がカメラの後ろに回る絵は置かない（Codex の指摘。NaN で止まらない）。"""
+    levels = space.sprite_levels(_sprite(tmp_path / "a.png", (40, 20)))
+    c, s = math.cos(math.radians(45)), math.sin(math.radians(45))
+    matrix = np.eye(4)
+    matrix[:3, 0] = [1, 0, 0]
+    matrix[:3, 1] = [0, c, s]                                               # 上
+    matrix[:3, 2] = [0, -s, c]                                              # 後ろ（前は +Y で 45° 下）
+    matrix[:3, 3] = [0.0, 0.0, 1.0]
+    camera = {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": 3.0}
+    crossing = [[0.0, 0.565685, 1.0, 1.6, 1.0, 0]]                          # 中心の奥行き 0.4 m、上端の奥行き −0.17 m
+    far, near, mirror = space.sprite_layers((200, 200), camera, crossing, [levels], {"near_clip": 0.3, "floor": 0.0})
+    assert not far.any() and not near.any()                                 # 止まらずに、その絵だけ置かない
+    upward = np.eye(4)                                                      # 上へ 45° 向いたカメラ: 床で返した絵の下端がカメラの後ろ
+    upward[:3, 0], upward[:3, 1], upward[:3, 2], upward[:3, 3] = [1, 0, 0], [0, -s, c], [0, -c, -s], [0.0, 0.0, 1.0]
+    looking_up = {**camera, "matrix": upward.tolist()}
+    sunk = [[0.0, 0.565685, -1.0, 1.6, 1.0, 0]]                             # 返した中心の奥行き 0.4 m、下端の奥行き −0.17 m
+    _, _, below = space.sprite_layers((200, 200), looking_up, sunk, [levels], {"near_clip": 0.3, "floor": 0.0})
+    assert not below.any()
+    ahead = [[0.0, 3.0, 0.5, 0.2, 1.0, 0]]
+    far, near, _ = space.sprite_layers((200, 200), camera, ahead, [levels], {"near_clip": 0.3})
+    assert near.any() or far.any()
 
 
 def _sprite_spec(tmp_path, items, near_frames=()):
