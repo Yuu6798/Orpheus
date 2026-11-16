@@ -447,6 +447,9 @@ def side_by_side(sources, out, height=None, audio=1, labels=None, crf=20, fps=No
         if probe.inspect(chosen["path"]).get("audio") is None:
             raise PipelineError(f"{audio} 本目の動画に音がありません（--audio 0 で音なしにできます）: {chosen['path']}")
         audio_plan = {"path": chosen["path"], "start": 0.0, "duration": n_frames / fps}
+        sound = probe.decode(chosen["path"], "a")                          # 音のストリームの長さ（入れ物の長さは絵の長さのことがある）
+        if sound["ok"] and 0 < sound["seconds"] < n_frames / fps:        # 音が短ければ、後ろを無音で足して動画の長さにそろえる
+            audio_plan.update(length=sound["seconds"], pad=True)
     font_path = find_font(font) if names else None
     bands = [cell(np.zeros((2, w, 3), np.uint8), w, name, font_path)[:-2] for (w, _), name in zip(sizes, names)] if names else None
     total_width = sum(w for w, _ in sizes)
@@ -461,7 +464,10 @@ def side_by_side(sources, out, height=None, audio=1, labels=None, crf=20, fps=No
                     want = min(validate.frame_at(i / fps, s["fps"]), s["frames"] - 1)
                     index, image = current[k]
                     while index < want:
-                        index, image = next(reader)
+                        try:
+                            index, image = next(reader)
+                        except StopIteration:
+                            raise PipelineError(f"{s['path']} のコマが、数えたコマ数（{s['frames']}）より先に尽きました（コマ {index + 1}）") from None
                     current[k] = (index, image)
                     panel = image
                     if bands is not None:

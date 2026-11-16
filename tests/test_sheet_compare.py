@@ -10,7 +10,7 @@ from mv_pipeline.inspection import video
 from mv_pipeline.io import PipelineError
 
 
-def _clip(path, frames, fps, size, base, audio=True):
+def _clip(path, frames, fps, size, base, audio=True, audio_s=None):
     """コマ i の色が (base, 10·i, 0) の動画（BT.709）。"""
     width, height = size
 
@@ -19,7 +19,7 @@ def _clip(path, frames, fps, size, base, audio=True):
             image = np.zeros((height, width, 3), np.uint8)
             image[:] = (base, min(255, 10 * i), 0)
             yield image
-    plan = {"silent": True, "duration": frames / fps} if audio else None
+    plan = {"silent": True, "duration": audio_s or frames / fps} if audio else None
     encode.write_video(path, images(), size, fps, 10, frames, plan)
     return path
 
@@ -66,3 +66,12 @@ def test_side_by_side_video_lines_up_the_times(tmp_path):
         sheet.side_by_side([a], tmp_path / "one.mp4")
     with pytest.raises(PipelineError, match=".mp4"):
         sheet.side_by_side([a, b], tmp_path / "side.png")
+
+
+def test_a_short_audio_track_is_padded_to_the_video(tmp_path):
+    from mv_pipeline.fx import probe
+    a = _clip(tmp_path / "a.mp4", 24, 24, (32, 24), 200, audio_s=0.5)     # 1 秒の絵に 0.5 秒の音
+    b = _clip(tmp_path / "b.mp4", 24, 24, (32, 24), 40, audio=False)
+    result = sheet.side_by_side([a, b], tmp_path / "side.mp4", audio=1)
+    checks = probe.check_video(tmp_path / "side.mp4", frames=24, fps=24, audio=True, audio_s=1.0, bt709=True)
+    assert result["frames"] == 24 and checks["pass"], checks["failures"]
