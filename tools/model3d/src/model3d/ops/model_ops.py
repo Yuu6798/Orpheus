@@ -228,7 +228,10 @@ def body_size_settings(parameters):
     if "window" in parameters:
         settings["window"] = _real(parameters["window"], "window", 0.0, exclusive=True)
     if "min_points" in parameters:
+        from ..blender_adapter.body_size import MIN_LIMB_POINTS
         settings["min_points"] = number(parameters, "min_points", minimum=1, integer=True)
+        if settings["min_points"] < MIN_LIMB_POINTS:   # 直径は 2 つの向きで測るので、1〜2 頂点では決まらない
+            raise ToolError(f"min_points（腕・脚の直径を測る頂点の数）は {MIN_LIMB_POINTS} 以上にしてください: {settings['min_points']}")
     return settings
 
 

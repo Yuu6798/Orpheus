@@ -25,6 +25,7 @@ except ImportError:   # Blender が台本として動かすとき
     from vrm_apply_motion import use_scene_of
 
 DEFAULTS = {"body": None, "armature": None, "limbs": [], "torso": None, "window": 0.06, "min_points": 6}
+MIN_LIMB_POINTS = 3     # 直径を 2 つの向き（主成分）で測るのに要る頂点の数の下限
 TORSO = {"groups": [], "heights": [], "band": 0.012, "half_width": 0.25, "min_points": 7}
 
 
@@ -44,14 +45,15 @@ def merged(settings):
 
 
 def limb_diameters(points, top, head, tail, groups, at, window, min_points):
-    """骨に沿った位置 at の帯の、骨の軸に垂直な広がりの大きい 2 つの向きの幅（m）と頂点の数。足りなければ (None, 数)。"""
+    """骨に沿った位置 at の帯の、骨の軸に垂直な広がりの大きい 2 つの向きの幅（m）と頂点の数。足りなければ (None, 数)。
+    2 つの向きを決めるので、頂点は min_points と MIN_LIMB_POINTS の多いほうだけ要る（1 頂点では 2 つ目の向きが無い）。"""
     axis = np.asarray(tail) - np.asarray(head)
     length = np.linalg.norm(axis)
     axis /= length
     relative = points - head
     along = relative @ axis / length
     sel = np.isin(top, groups) & (np.abs(along - at) < window)
-    if sel.sum() < min_points:
+    if sel.sum() < max(min_points, MIN_LIMB_POINTS):
         return None, int(sel.sum())
     perpendicular = relative[sel] - np.outer(relative[sel] @ axis, axis)
     u = np.linalg.svd(perpendicular - perpendicular.mean(0), full_matrices=False)[2]

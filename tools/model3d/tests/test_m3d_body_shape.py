@@ -217,6 +217,8 @@ def test_limb_diameters_and_torso_sizes():
     diameters, count = bz.limb_diameters(points, top, HEAD, TAIL, ["upper_arm.L"], 0.6, 0.06, 6)
     assert count == 72 and diameters == pytest.approx([0.08, 0.08], abs=1e-3)
     assert bz.limb_diameters(points, top, HEAD, TAIL, ["lower_arm.L"], 0.6, 0.06, 6) == (None, 0)
+    one = np.array([[0.38, 0.04, 1.4]])                                 # 帯に頂点が 1 つだけ: 2 つ目の向きが無いので測らない（落ちない）
+    assert bz.limb_diameters(one, np.array(["upper_arm.L"]), HEAD, TAIL, ["upper_arm.L"], 0.6, 0.06, 1) == (None, 1)
     rows = [[x, y, 1.0] for x in (-0.1, 0.1) for y in (0.0, 0.12)] * 2
     torso = bz.torso_sizes(np.array(rows, dtype=float), np.array(["hips"] * 8),
                            {"groups": ["hips"], "heights": [1.0, 1.5], "band": 0.012, "half_width": 0.25, "min_points": 7})
@@ -328,6 +330,7 @@ def test_body_shape_rejects_bad_settings(tmp_path, parameters, message):
     ({"body": "Body", "torso": {"groups": ["hips"], "heights": []}}, "heights"),
     ({"body": "Body", "torso": {"groups": ["hips"], "heights": [1.0], "band": 0}}, "band"),
     ({"body": "Body", "limbs": [{"bone": "a", "at": [0.5]}], "window": -1}, "window"),
+    ({"body": "Body", "limbs": [{"bone": "a", "at": [0.5]}], "min_points": 1}, "min_points"),
 ])
 def test_body_size_rejects_bad_settings(tmp_path, parameters, message):
     from model3d.ops import get
