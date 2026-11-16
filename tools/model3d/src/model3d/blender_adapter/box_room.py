@@ -69,14 +69,15 @@ def room_geometry(settings, image_size):
     rows = floor_rows(settings, height)
     xs = [float(v) for v in settings["floor"]["x"]]
     verts, faces, uvs = [], [], []
-    for py in range(int(rows[0]), int(rows[1]), int(rows[2])):
+    lines = row_values(rows)
+    for py in lines:
         z = f * hc / (py - cy)
         for x in xs:
             point = (x, hc, z)
             verts.append(to_b(point))
             uvs.append(uv_of(point))
     columns = len(xs)
-    count = len(range(int(rows[0]), int(rows[1]), int(rows[2])))
+    count = len(lines)
     for j in range(count - 1):
         for i in range(columns - 1):
             a = j * columns + i
@@ -95,8 +96,16 @@ def room_geometry(settings, image_size):
 
 
 def floor_rows(settings, height):
-    """床の段の行 [最初, 終わり（含まない）, きざみ]。既定は [wall_px, 絵の高さ × 2, 24]（絵の下の端の先まで）。"""
-    return settings["floor"]["rows"] or [int(settings["wall_px"]), 2 * int(height), 24]
+    """床の段の行 [最初, 終わり（含まない）, きざみ]。既定は [wall_px, 絵の高さ × 2, 24]（絵の下の端の先まで）。
+    既定の最初の行は wall_px のまま（小数でも切り捨てない。床の奥の端が壁の下の端に合い、水平線にも乗らない）。"""
+    return settings["floor"]["rows"] or [float(settings["wall_px"]), 2 * int(height), 24]
+
+
+def row_values(rows):
+    """床の段の行の並び: 最初の行から、きざみごとに、終わりの行の手前まで（最初の行は小数でもよい）。整数の行なら range と同じ値。"""
+    start, stop, step = (float(v) for v in rows)
+    count = max(0, int(-(-(stop - start) // step)))
+    return [start + k * step for k in range(count) if start + k * step < stop]
 
 
 def room_problem(settings, image_size):
@@ -112,7 +121,7 @@ def room_problem(settings, image_size):
     rows = floor_rows(settings, image_size[1])
     if float(rows[0]) <= cy:
         return "floor.rows の最初の行は、主点の y（水平線）より下にしてください"
-    if len(range(int(rows[0]), int(rows[1]), int(rows[2]))) < 2:
+    if len(row_values(rows)) < 2:
         return f"床の段が 2 つに満たない（行 {rows}）。floor.rows を、終わりの行が最初の行よりきざみの 2 倍以上先になるようにしてください"
     return None
 

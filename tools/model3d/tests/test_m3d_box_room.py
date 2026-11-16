@@ -120,3 +120,14 @@ def test_the_operation_stops_on_a_picture_it_cannot_read(tmp_path):
 def test_the_room_goes_to_the_dancers_scene():
     from model3d.blender_adapter import vrm_apply_motion
     assert box_room.use_scene_of is vrm_apply_motion.use_scene_of      # render.passes と同じ切り替え
+
+
+def test_a_fractional_wall_row_keeps_the_floor_below_the_horizon():
+    settings = box_room.merged({**ROOM, "wall_px": 400.5})          # 水平線（主点の y 400）の 0.5 画素下
+    assert box_room.room_problem(settings, (1000, 800)) is None
+    verts, faces, uvs, info = box_room.room_geometry(settings, (1000, 800))
+    assert info["floor_rows"] == len(range(0, 1200, 24)) and faces
+    first = verts[0]
+    assert first[1] == pytest.approx(verts[-4][1])                   # 床の奥の端は、壁の下の端と同じ奥行き
+    assert box_room.row_values([958, 2600, 24]) == [float(v) for v in range(958, 2600, 24)]   # 整数の行は range と同じ
+    assert box_room.row_values([400.5, 450, 24]) == [400.5, 424.5, 448.5]
