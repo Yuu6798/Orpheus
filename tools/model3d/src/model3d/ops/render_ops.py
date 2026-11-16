@@ -328,12 +328,13 @@ def prepare_push(inputs, parameters, outputs, context):
 
 PASS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "pass_render.py"
 PASS_PARAMETERS = {"blender", "addons", "blender_extensions", "resolution", "passes", "format", "quality", "antialiasing", "camera",
-                   "dancer", "disc", "head", "room", "shade", "bone_prefix", "armature", "fps", "passes_dir", "only", "timeout"}
+                   "dancer", "disc", "head", "room", "shade", "mirror", "bone_prefix", "armature", "fps", "passes_dir", "only", "timeout"}
 PASS_CAMERA_KEYS = {"sensor_height", "lens", "clip"}
 DANCER_KEYS = {"bones", "sigma"}
 DISC_KEYS = {"radius", "vertices", "height"}
 ROOM_KEYS = {"collection", "world"}
 SHADE_KEYS = {"studio_light", "rotate_z"}
+MIRROR_KEYS = {"passes", "height"}
 ANTIALIASING = ("OFF", "FXAA", "5", "8", "11", "16", "32")
 
 
@@ -420,6 +421,18 @@ def _pass_settings(parameters):
         s["fps"] = float(number(parameters, "fps", minimum=0, exclusive=True))
     if parameters.get("only") is not None:
         s["only"] = _render_settings({"only": parameters["only"]})["only"]
+    mirror = _section(parameters, "mirror", MIRROR_KEYS)
+    m = {}
+    if "passes" in mirror:
+        flipped = mirror["passes"]
+        if (not isinstance(flipped, list) or len(set(flipped)) != len(flipped)
+                or not all(isinstance(k, str) and k in pass_render.MIRRORED for k in flipped)):
+            raise ToolError(f"mirror.passes は、床で反転したカメラでも描く要素（{', '.join(pass_render.MIRRORED)}。重ならない）の並びにしてください: "
+                            f"{flipped!r}")
+        m["passes"] = flipped
+    if "height" in mirror:
+        m["height"] = float(number(mirror, "height"))
+    s["mirror"] = m
     return s
 
 
@@ -443,7 +456,7 @@ def passes_manifest(report, passes_dir, settings):
     from .. import contracts
     from ..blender_adapter import pass_render
     passes = {}
-    for kind in settings["passes"]:
+    for kind in pass_render.all_kinds(settings):
         frames, missing = [], []
         for item in report["planned"]:
             name = pass_render.pass_file(kind, item["T"], settings["format"])
@@ -453,7 +466,7 @@ def passes_manifest(report, passes_dir, settings):
             else:
                 missing.append(item["T"])
         passes[kind] = {"format": "png" if pass_render.extension(kind, settings["format"]) == "png" else "jpeg",
-                        "alpha": kind == "char", "frames": frames, "missing": missing}
+                        "alpha": pass_render.base_kind(kind) in pass_render.ALPHA, "frames": frames, "missing": missing}
     manifest = {"schema_version": "model3d-passes/0.1", "directory": str(Path(passes_dir).resolve()), "fps": report["fps"],
                 "resolution": report["resolution"], "passes": passes}
     return contracts.validate("passes", manifest)
@@ -462,6 +475,7 @@ def passes_manifest(report, passes_dir, settings):
 @register("render.passes", inputs=("blend", "track", "cameras"), outputs=("passes", "cameras", "report"), cacheable=False,
           summary="キャラ（blend）を要素に分けて、Blender の簡易描画（Workbench）でコマごとに描く: room（部屋の物体）・char（人物の"
                   "色の絵のまま。透けの PNG）・shade（白い人物にスタジオの光）・disc（踊り手の点の真下の床の円）・head（顔の物体だけ白）。"
+                  "mirror を書くと、char・shade をカメラを床の面で反転して描いた r<要素>（床への映り込み）も描く。"
                   "コマの並びとカメラはトラック（model3d-stage-track/0.1）、cameras（model3d-cameras/0.1）があればそのコマのカメラは"
                   "行列と焦点距離と主点から。出力の cameras は、並びの全部のコマのカメラと踊り手の点（重ねる側が使う）。描いたコマは"
                   "とばす（続きから描ける）。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"

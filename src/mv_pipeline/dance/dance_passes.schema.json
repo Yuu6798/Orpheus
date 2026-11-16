@@ -89,12 +89,54 @@
       "patternProperties": {"^x_": {}},
       "additionalProperties": false
     },
-    "level": {"description": "仕上げの明るさの倍率（明け方・暗転。数か、時刻のキー）", "$ref": "#/$defs/level"}
+    "level": {"description": "仕上げの明るさの倍率（明け方・暗転。数か、時刻のキー）", "$ref": "#/$defs/level"},
+    "clock": {"description": "効果の時刻のキー（省くと t のまま）。時間停止で効果だけゆっくり進めるときなど（水鏡のうねりが使う）", "$ref": "#/$defs/keys"},
+    "reflection": {
+      "description": "床への映り込み（床で反転したカメラで描いた要素 r<要素> を、ぼかして色を掛け、部屋に足す）。省くと無し",
+      "type": "object",
+      "properties": {
+        "char": {
+          "description": "人物の映り込み（要素 rchar の前乗算の色）",
+          "type": "object",
+          "properties": {
+            "strength": {"description": "強さ（数か時刻のキー。既定 0.16）", "$ref": "#/$defs/level"},
+            "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 2.5）", "type": "number", "minimum": 0},
+            "tint": {"description": "色の倍率（R・G・B か色のキー。既定 [1, 1, 1]）", "$ref": "#/$defs/color"}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "ripple": {
+          "description": "水鏡: 映り込みを行ごとに横へゆらす（space.ripple）",
+          "type": "object",
+          "properties": {
+            "amount": {"description": "ゆらす強さ（数か時刻のキー。0 でゆらさない。既定 1）", "$ref": "#/$defs/level"},
+            "px": {"description": "横へずらす幅（幅 1080 の画素。既定 3）", "type": "number", "minimum": 0},
+            "wave_px": {"description": "波の間隔（画素。既定 15）", "type": "number", "exclusiveMinimum": 0},
+            "speed": {"description": "2 つのうねりの速さ（効果の時刻 clock に掛ける。既定 [2.5, 1.7]）", "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        }
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
   },
   "patternProperties": {"^x_": {}},
   "additionalProperties": false,
   "$defs": {
     "rgb": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
+    "color": {
+      "description": "色の倍率: [R, G, B] か、色のキー [[時刻, [R, G, B]], [時刻, [R, G, B], つなぎ方], …]（時刻の昇順。cues.envelope と同じつなぎ方）",
+      "oneOf": [
+        {"$ref": "#/$defs/rgb"},
+        {
+          "type": "array", "minItems": 1,
+          "items": {"type": "array", "minItems": 2, "maxItems": 3, "prefixItems": [{"type": "number"}, {"$ref": "#/$defs/rgb"}, {"enum": ["linear", "smooth", "step"]}]}
+        }
+      ]
+    },
     "keys": {
       "description": "キー [[時刻, 値], [時刻, 値, つなぎ方], …]（時刻の昇順。つなぎ方は linear・smooth・step。dance の cues.envelope）",
       "type": "array", "minItems": 1,

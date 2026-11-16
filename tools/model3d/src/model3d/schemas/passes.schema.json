@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "model3d-passes/0.1",
   "title": "model3d passes",
-  "description": "render.passes が要素ごとに描いたコマの一覧。directory の中の <要素>/f<T>.<png|jpg> と、その sha256・大きさ。missing は並びにあって描いていない T（only で選ばなかったコマなど）。",
+  "description": "render.passes が要素ごとに描いたコマの一覧。directory の中の <要素>/f<T>.<png|jpg> と、その sha256・大きさ。missing は並びにあって描いていない T（only で選ばなかったコマなど）。r<要素>（rchar・rshade）は、カメラを床の面で反転して描いた同じ要素（床への映り込み）。",
   "type": "object",
   "required": ["schema_version", "directory", "fps", "resolution", "passes"],
   "properties": {
@@ -13,13 +13,13 @@
     "passes": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"enum": ["room", "char", "shade", "disc", "head"]},
+      "propertyNames": {"enum": ["room", "char", "shade", "disc", "head", "rchar", "rshade"]},
       "additionalProperties": {
         "type": "object",
         "required": ["format", "alpha", "frames", "missing"],
         "properties": {
           "format": {"enum": ["png", "jpeg"]},
-          "alpha": {"description": "透けのある RGBA か（char だけ）", "type": "boolean"},
+          "alpha": {"description": "透けのある RGBA か（char・rchar だけ）", "type": "boolean"},
           "frames": {
             "type": "array",
             "items": {
