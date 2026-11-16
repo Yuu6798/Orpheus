@@ -39,6 +39,26 @@ def test_islands_follow_the_edges():
     assert len({roots[0], roots[3], roots[4]}) == 3
 
 
+def test_only_deform_bone_groups_are_read_as_bone_weights():
+    from types import SimpleNamespace as NS
+
+    def item(group, weight):
+        return NS(group=group, weight=weight)
+
+    obj = NS(vertex_groups=[NS(index=0, name="upper_arm.L"), NS(index=1, name="mask")],
+             data=NS(vertices=[NS(index=0, groups=[item(1, 1.0), item(0, 0.9)]), NS(index=1, groups=[item(1, 1.0)])]))
+    deform = {"upper_arm.L"}                                               # 選択のためのグループ mask は骨ではない
+    assert list(me.top_groups(obj, deform)) == ["upper_arm.L", ""] and list(me.top_groups(obj)) == ["mask", "mask"]
+    assert [(n, list(i), list(w)) for n, i, w in me.group_weights(obj, deform)] == [("upper_arm.L", [0], [0.9])]
+    assert me.ignored_groups(obj, deform) == {"mask": 2}
+    # mask の重みを混ぜないので、頼んだ 2 倍がそのまま効く（混ぜると、腕 0.9 と mask 1.0 の平均で 1.47 倍に薄まる）
+    points = ring(0.35, 0.04)[:1]
+    settings = bs.merged({"body": "Body", "limbs": [{"bones": ["upper_arm.L"], "profile": [[0.0, 2.0], [1.0, 2.0]]}]})
+    new, _ = bs.reshape_body(points, me.group_weights(obj, deform)[:1], np.array(["upper_arm.L"]), np.zeros(1, int),
+                             {"upper_arm.L": (HEAD, TAIL)}, settings)
+    assert np.hypot(new[0, 1], new[0, 2] - 1.4) == pytest.approx(0.08)
+
+
 def test_tables_are_checked():
     assert me.check_table([[0, 1.1], [1, 1.2]], "p", 0, 1) == [[0, 1.1], [1, 1.2]]
     for bad in ([], [[0, 1], [0, 2]], [[0, 0]], [[0, 1, 2]], [[2, 1]], [[0, float("nan")]]):

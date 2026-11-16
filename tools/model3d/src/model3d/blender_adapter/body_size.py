@@ -17,11 +17,11 @@ import sys
 import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
-    from .model_edit import bone_world, top_groups, world_points
+    from .model_edit import bone_world, deform_names, ignored_groups, top_groups, world_points
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from model_edit import bone_world, top_groups, world_points
+    from model_edit import bone_world, deform_names, ignored_groups, top_groups, world_points
     from vrm_apply_motion import use_scene_of
 
 DEFAULTS = {"body": None, "armature": None, "limbs": [], "torso": None, "window": 0.06, "min_points": 6}
@@ -112,7 +112,9 @@ def main(argv=None):
     if absent:
         raise SystemExit(f"{armature.name} に無い骨があります（limbs）: {absent}")
     points = world_points(body)                 # 頂点の基本の形（骨の姿勢に左右されない）
-    report = measure(points, top_groups(body), {name: bone_world(armature, name) for name in wanted}, settings)
+    deform = deform_names(armature)                     # いちばん重いグループは、変形に使う骨の頂点グループの中で選ぶ
+    report = measure(points, top_groups(body, deform), {name: bone_world(armature, name) for name in wanted}, settings)
+    report["ignored_groups"] = ignored_groups(body, deform)
     report = {"schema_version": "model3d-body-size/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "armature": armature.name, "body": body.name, "verts": len(points), **report, "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)

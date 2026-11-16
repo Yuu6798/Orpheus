@@ -99,21 +99,44 @@ def mesh_edges(mesh):
     return edges.reshape(-1, 2)
 
 
-def top_groups(obj):
-    """頂点ごとの、いちばん重みの大きい頂点グループの名前 (N,)（グループの無い頂点は ""。同じ重みは先のもの。台本と同じ）。"""
+def deform_names(armature):
+    """アーマチュアの変形に使う骨の名前。頂点グループのうち、骨の重みとして読むのはこの名前のものだけ（選択や押し出しのための
+    グループ、変形に使わない骨のグループは読まない。混ぜると、頼んだ広げ方が薄まる）。"""
+    return {bone.name for bone in armature.data.bones if bone.use_deform}
+
+
+def top_groups(obj, allowed=None):
+    """頂点ごとの、いちばん重みの大きい頂点グループの名前 (N,)（allowed の名前のグループだけ。無い頂点は ""。同じ重みは先のもの。
+    台本と同じ）。"""
     names = {group.index: group.name for group in obj.vertex_groups}
-    return np.array([names[max(vertex.groups, key=lambda g: g.weight).group] if len(vertex.groups) else ""
-                     for vertex in obj.data.vertices])
+    out = []
+    for vertex in obj.data.vertices:
+        items = [g for g in vertex.groups if allowed is None or names[g.group] in allowed]
+        out.append(names[max(items, key=lambda g: g.weight).group] if items else "")
+    return np.array(out)
 
 
-def group_weights(obj):
-    """頂点グループの重みを、[(名前, 頂点の番号 (K,), 重み (K,)), …] で（頂点の順に、初めて出た順。台本の足し合わせの順と同じ）。"""
+def group_weights(obj, allowed=None):
+    """頂点グループの重みを、[(名前, 頂点の番号 (K,), 重み (K,)), …] で（allowed の名前のグループだけ。頂点の順に、初めて出た順。
+    台本の足し合わせの順と同じ）。"""
     names = {group.index: group.name for group in obj.vertex_groups}
     collected = {}
     for vertex in obj.data.vertices:
         for item in vertex.groups:
-            collected.setdefault(names[item.group], []).append((vertex.index, item.weight))
+            if allowed is None or names[item.group] in allowed:
+                collected.setdefault(names[item.group], []).append((vertex.index, item.weight))
     return [(name, np.array([pair[0] for pair in pairs]), np.array([pair[1] for pair in pairs])) for name, pairs in collected.items()]
+
+
+def ignored_groups(obj, allowed):
+    """allowed に無い頂点グループの名前と、その重みを持つ頂点の数（報告用）。"""
+    names = {group.index: group.name for group in obj.vertex_groups}
+    counts = {name: 0 for name in names.values() if name not in allowed}
+    for vertex in obj.data.vertices:
+        for item in vertex.groups:
+            if names[item.group] not in allowed and item.weight > 0:
+                counts[names[item.group]] += 1
+    return counts
 
 
 def bone_world(armature, name):

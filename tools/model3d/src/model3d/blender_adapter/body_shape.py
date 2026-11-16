@@ -32,13 +32,13 @@ import sys
 import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
-    from .model_edit import (bone_axis, bone_world, group_weights, islands, mesh_edges, profile, top_groups, world_points,
-                             write_points)
+    from .model_edit import (bone_axis, bone_world, deform_names, group_weights, ignored_groups, islands, mesh_edges, profile,
+                             top_groups, world_points, write_points)
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from model_edit import (bone_axis, bone_world, group_weights, islands, mesh_edges, profile, top_groups, world_points,
-                            write_points)
+    from model_edit import (bone_axis, bone_world, deform_names, group_weights, ignored_groups, islands, mesh_edges, profile,
+                            top_groups, world_points, write_points)
     from vrm_apply_motion import use_scene_of
 
 TORSO = {"bones": [], "band": 0.015, "half_width": 0.25, "min_points": 7, "step": 0.02}
@@ -254,7 +254,8 @@ def main(argv=None):
     absent = sorted(bone for bone in wanted if bone not in armature.data.bones)
     if absent:
         raise SystemExit(f"{armature.name} に無い骨があります（limbs・band_shift）: {absent}")
-    group_names = {group.name for group in body.vertex_groups}
+    deform = deform_names(armature)                     # 骨の重みとして読むのは、変形に使う骨の頂点グループだけ
+    group_names = {group.name for group in body.vertex_groups} & deform
     if settings["band_shift"]:
         missing = sorted({name for pair in settings["band_shift"]["pairs"] for name in pair} - group_names)
         if missing:      # 打ち間違いを黙って通さない（重みが 0 のまま、動かす頂点が変わる）
@@ -265,8 +266,8 @@ def main(argv=None):
     armature.data.pose_position = "REST"
     bpy.context.view_layer.update()
     points = world_points(body)
-    groups = group_weights(body)
-    top = top_groups(body)
+    groups = group_weights(body, deform)
+    top = top_groups(body, deform)
     roots = islands(len(points), mesh_edges(body.data))
     bones = {name: bone_world(armature, name) for name in sorted(wanted)}
     try:
@@ -289,6 +290,7 @@ def main(argv=None):
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     report = {"schema_version": "model3d-body-shape/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "armature": armature.name, "objects": objects, "groups_not_on_body": unused,
+              "ignored_groups": ignored_groups(body, deform),
               "centre_line": None if info["centre"] is None else {"levels_m": [float(v) for v in info["levels"]],
                                                                   "y_m": [float(v) for v in info["centre"]]},
               "settings": settings}
