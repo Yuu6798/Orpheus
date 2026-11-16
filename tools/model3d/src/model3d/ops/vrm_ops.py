@@ -139,3 +139,68 @@ def bake_springs(inputs, parameters, outputs, context):
                    "frames": report.get("frames"), "joints": report.get("joints"), "still_joints": report.get("still_joints"),
                    "steps": report.get("steps"), "overridden": sorted(report.get("overridden") or {})}
     return StepResult(observations=[observation])
+
+
+EXPORT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_export.py"
+EXPORT_PARAMETERS = {"blender", "addons", "blender_extensions", "jpeg_quality", "armature", "strict", "timeout"}
+
+
+@register("vrm.export", inputs=("blend", "meta_from"), outputs=("vrm", "blend", "report", "check"), cacheable=False,
+          summary="VRM のキャラの .blend（blend）を、骨を基本の姿勢に戻して VRM 1.0 として書き出す（Blender の中で VRM Add-on で）。"
+                  "meta_from（元の VRM）があれば、メタの名前・版・作者を写す（.blend に残らないことがあるため）。jpeg_quality（1〜100）で"
+                  "材質の画像を JPEG にして埋め込み直す。書き出した VRM は check.vrm と同じ検査にかけ、check に残す。元のファイルは変えない")
+def export(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import atomic_json
+    from .. import vrm
+    require(inputs, ("blend",), "vrm.export")
+    armature = _check(parameters, EXPORT_PARAMETERS, outputs, ("vrm", "blend", "report"), "vrm.export")
+    quality = number(parameters, "jpeg_quality", 0, minimum=0, integer=True)
+    if quality > 100:
+        raise ToolError(f"jpeg_quality は 0〜100 にしてください: {quality}")
+    blender = _blender(parameters, context, "vrm.export")
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--out-vrm", outputs["vrm"], "--report", outputs["report"]]
+    if "meta_from" in inputs:
+        meta = vrm.meta_of(Path(inputs["meta_from"]).read_bytes(), str(inputs["meta_from"]))
+        atomic_json(step_dir / "meta.json", meta)
+        args += ["--meta", step_dir / "meta.json"]
+    if quality:
+        args += ["--jpeg-quality", str(quality), "--textures", step_dir / "textures"]
+    if armature:
+        args += ["--armature", armature]
+    record = launcher.run_blender(blender, EXPORT_SCRIPT, None, args, log=step_dir / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    checked = vrm.inspect_file(outputs["vrm"])
+    if "check" in outputs:
+        atomic_json(outputs["check"], checked)
+    observation = {"kind": "vrm_export", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
+                   "vrm_bytes": report.get("vrm_bytes"), "meta_copied": report.get("meta_copied"),
+                   "textures": len(report.get("textures") or []), "check_pass": checked["pass"],
+                   "human_bones": checked["human_bones"], "springs": len(checked["springs"]),
+                   "alpha_dropped": report.get("alpha_dropped", [])}
+    # 透過を使う材質の絵を JPEG にしたもの（透過が消える）は、検査の不合格と同じく要確認にする
+    problems = [f"VRM の検査: {f}" for f in checked["failures"]]
+    problems += [f"透過を使う材質の絵を JPEG にしました（透過が消える）: {name}" for name in observation["alpha_dropped"]]
+    if not problems:
+        return StepResult(observations=[observation])
+    if parameters.get("strict"):
+        raise ToolError("vrm.export: " + "; ".join(problems))
+    return StepResult(observations=[observation], unresolved=problems, review=True)
+
+
+@register("check.vrm", inputs=("vrm",), outputs=("report",),
+          summary="VRM 1.0 のファイルの中身を読む（Blender なし）: メタ・人型の骨の数と必須の骨・メッシュ・材質（MToon の数）・画像・"
+                  "揺れもの・当たり判定・表情の割り当て。合否は、VRM 1.0 の拡張があるか・人型の必須の骨・メタの名前と作者とライセンスの URL・"
+                  "node の番号が範囲の中か。見た目は判定しない。不合格は needs_review（strict なら失敗、report_only なら測るだけ）")
+def check_vrm(inputs, parameters, outputs, context):
+    from .. import vrm
+    from .check_ops import _finish
+    require(inputs, ("vrm",), "check.vrm")
+    unknown = set(parameters) - {"strict", "report_only"}
+    if unknown:
+        raise ToolError(f"check.vrm の知らないパラメーター: {sorted(unknown)}（使えるのは report_only・strict）")
+    return _finish(vrm.inspect_file(inputs["vrm"]), outputs, parameters, "VRM の検査")

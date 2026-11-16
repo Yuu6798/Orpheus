@@ -193,6 +193,8 @@ def test_both_scripts_carry_the_same_data_path_reader():
     for name in ("bone_span", "use_scene_of"):
         assert inspect.getsource(getattr(vrm_apply_motion, name)) == inspect.getsource(getattr(vrm_bake_springs, name)).replace(
             "vrm_apply_motion.py", "vrm_bake_springs.py"), name
+    from model3d.blender_adapter import vrm_export
+    assert inspect.getsource(vrm_export.use_scene_of) == inspect.getsource(vrm_bake_springs.use_scene_of)   # 書き出しも同じ写し
 
 
 def test_use_scene_of_switches_to_a_scene_that_holds_the_armature():
@@ -357,3 +359,180 @@ def test_motion_operations_reject_bad_settings(tmp_path, operation, parameters, 
     with pytest.raises(ToolError, match=message):
         get(operation).function(inputs, {"blender": str(blender), **parameters},
                                 {"blend": tmp_path / "o.blend", "report": tmp_path / "r.json"}, Context())
+
+
+# ---------- VRM を書き出す・中身を確かめる ----------
+
+def _glb(document, blob=b""):
+    """JSON と BIN のチャンクを持つ GLB のバイト列（4 バイトにそろえる）。"""
+    import struct
+    text = json.dumps(document).encode("utf-8")
+    text += b" " * (-len(text) % 4)
+    blob += b"\x00" * (-len(blob) % 4)
+    body = struct.pack("<I4s", len(text), b"JSON") + text + (struct.pack("<I4s", len(blob), b"BIN\x00") + blob if blob else b"")
+    return struct.pack("<4sII", b"glTF", 2, 12 + len(body)) + body
+
+
+def _vrm_document(**changes):
+    from model3d import vrm
+    bones = {name: {"node": index} for index, name in enumerate(vrm.REQUIRED_HUMAN_BONES)}
+    document = {"asset": {"version": "2.0", "generator": "test"}, "nodes": [{} for _ in range(20)],
+                "meshes": [{"name": "Body"}], "materials": [{"extensions": {"VRMC_materials_mtoon": {}}}, {}],
+                "bufferViews": [{"buffer": 0, "byteLength": 8}], "images": [{"name": "skin", "mimeType": "image/jpeg", "bufferView": 0}],
+                "extensions": {"VRMC_vrm": {"specVersion": "1.0", "humanoid": {"humanBones": bones},
+                                            "meta": {"name": "テスト", "authors": ["誰か"], "licenseUrl": "https://vrm.dev/licenses/1.0/",
+                                                     "avatarPermission": "onlyAuthor", "thumbnailImage": 0},
+                                            "expressions": {"preset": {"happy": {"morphTargetBinds": [{"node": 1, "index": 0}]},
+                                                                       "blink": {}}}},
+                               "VRMC_springBone": {"specVersion": "1.0", "colliders": [{"node": 16}], "colliderGroups": [{"colliders": [0]}],
+                                                   "springs": [{"name": "hair", "joints": [{"node": 17}, {"node": 18}]}]}}}
+    for key, value in changes.items():
+        document["extensions"]["VRMC_vrm"][key] = value
+    return document
+
+
+def test_check_vrm_reports_the_contents_of_a_vrm():
+    from model3d import vrm
+    report = vrm.inspect(_glb(_vrm_document(), b"12345678"))
+    assert report["pass"] is True and report["failures"] == []
+    assert report["spec_version"] == "1.0" and report["human_bones"] == 15 and report["missing_human_bones"] == []
+    assert report["meta"]["name"] == "テスト" and "thumbnailImage" not in report["meta"]
+    assert report["materials"] == 2 and report["mtoon_materials"] == 1
+    assert report["images"] == [{"name": "skin", "mime_type": "image/jpeg", "bytes": 8}]
+    assert report["springs"] == ["hair"] and report["spring_joints"] == 2 and report["colliders"] == 1
+    assert report["expressions_bound"] == ["happy"] and report["bin_bytes"] == 8
+
+
+def test_check_vrm_fails_on_what_vrm_1_requires():
+    from model3d import vrm
+    document = _vrm_document(specVersion="0.0", meta={"name": "x"})
+    del document["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["leftHand"]
+    document["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["chest"] = {"node": 99}
+    document["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["neck"] = {"node": 0}
+    document["extensions"]["VRMC_springBone"]["springs"][0]["joints"].append({"node": -1})
+    document["extensions"]["VRMC_springBone"]["springs"][0]["colliderGroups"] = [3]
+    document["extensions"]["VRMC_springBone"]["springs"][0]["center"] = 999
+    document["extensions"]["VRMC_springBone"]["colliderGroups"][0]["colliders"] = [0, 7]
+    document["extensions"]["VRMC_vrm"]["meta"]["thumbnailImage"] = 5
+    document["extensions"]["VRMC_vrm"]["firstPerson"] = {"meshAnnotations": [{"node": 99, "type": "auto"}]}
+    document["extensions"]["VRMC_vrm"]["expressions"] = {"custom": {"blush": {"materialColorBinds": [{"material": 9}]}}}
+    report = vrm.inspect(_glb(document))
+    text = " / ".join(report["failures"])
+    assert report["pass"] is False and report["missing_human_bones"] == ["leftHand"]
+    for part in ("specVersion", "authors", "licenseUrl", "leftHand", "chest", "neck", "hair", "当たりの組 0", "colliderGroups",
+                 "center", "thumbnailImage", "meshAnnotations", "表情 blush"):
+        assert part in text, part
+    assert vrm.inspect(_glb({"asset": {"version": "2.0"}}))["failures"] == ["VRMC_vrm（VRM 1.0 の拡張）がありません"]
+    with pytest.raises(ToolError, match="GLB"):
+        vrm.inspect(b"not a glb at all")
+
+
+def test_meta_of_reads_name_version_and_authors():
+    from model3d import vrm
+    assert vrm.meta_of(_glb(_vrm_document())) == {"name": "テスト", "version": "", "authors": ["誰か"]}
+    with pytest.raises(ToolError, match="メタ"):
+        vrm.meta_of(_glb({"asset": {"version": "2.0"}}))
+
+
+def test_check_vrm_operation_follows_the_check_rules(tmp_path):
+    from model3d.ops import get
+    (tmp_path / "good.vrm").write_bytes(_glb(_vrm_document()))
+    (tmp_path / "bad.vrm").write_bytes(_glb(_vrm_document(meta={})))
+
+    class Context:
+        tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
+
+    run = get("check.vrm").function
+    assert run({"vrm": tmp_path / "good.vrm"}, {}, {"report": tmp_path / "r.json"}, Context()).review is False
+    assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["pass"] is True
+    result = run({"vrm": tmp_path / "bad.vrm"}, {}, {"report": tmp_path / "r.json"}, Context())
+    assert result.review is True and any("name" in item for item in result.unresolved)
+    with pytest.raises(ToolError, match="不合格"):
+        run({"vrm": tmp_path / "bad.vrm"}, {"strict": True}, {}, Context())
+    assert run({"vrm": tmp_path / "bad.vrm"}, {"report_only": True}, {}, Context()).review is False
+    with pytest.raises(ToolError, match="知らないパラメーター"):
+        run({"vrm": tmp_path / "good.vrm"}, {"wobble": 1}, {}, Context())
+
+
+def test_texture_names_are_safe_and_unique():
+    from model3d.blender_adapter import vrm_export
+    taken = set()
+    assert vrm_export.texture_name("lower_body texture.png", taken) == "lower_body_texture_png.jpg"
+    assert vrm_export.texture_name("lower_body texture.png", taken) == "lower_body_texture_png_2.jpg"
+    assert vrm_export.texture_name("顔", taken) == "image.jpg"
+
+
+# 代役の Blender: 書き出しの台本の引数を読み、テストの VRM を書く
+STAND_IN_EXPORT = r'''
+import json, shutil, sys
+if "--version" in sys.argv:
+    print("Blender 5.2.4 LTS")
+    sys.exit(0)
+args = sys.argv[sys.argv.index("--") + 1:]
+def value(flag):
+    return args[args.index(flag) + 1]
+open(value("--out-blend"), "wb").write(b"rest pose")
+shutil.copyfile(SOURCE, value("--out-vrm"))
+meta = json.load(open(value("--meta"), encoding="utf-8")) if "--meta" in args else None
+json.dump({"armature": "Rig", "vrm_bytes": 10, "meta_copied": meta, "textures": [{"image": "skin"}] if "--jpeg-quality" in args else [],
+           "argv": sys.argv[1:]}, open(value("--report"), "w", encoding="utf-8"), ensure_ascii=False)
+'''
+
+
+def test_vrm_export_writes_the_vrm_and_checks_it(tmp_path):
+    from model3d import executor
+    (tmp_path / "made.vrm").write_bytes(_glb(_vrm_document()))
+    (tmp_path / "source.vrm").write_bytes(_glb(_vrm_document(meta={"name": "元", "version": "1", "authors": ["作者"],
+                                                                     "licenseUrl": "https://vrm.dev/licenses/1.0/"})))
+    (tmp_path / "asset.blend").write_bytes(b"character")
+    blender = stand_in_executable(tmp_path, "blender", f"SOURCE = {str(tmp_path / 'made.vrm')!r}\n" + STAND_IN_EXPORT)
+    step = {"id": "export", "operation": "vrm.export", "inputs": {"blend": "$inputs.asset", "meta_from": "$inputs.source"},
+            "parameters": {"blender": str(blender), "jpeg_quality": 95},
+            "outputs": {"vrm": "asset.vrm", "blend": "asset.blend", "report": "export.json", "check": "check.json"}}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm-export",
+                                           "inputs": {"asset": {"path": "asset.blend"}, "source": {"path": "source.vrm"}},
+                                           "steps": [step]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    artifacts = result["steps"]["export"]["artifacts"]
+    report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))
+    tail = report["argv"][report["argv"].index("--") + 1:]
+    assert report["meta_copied"] == {"name": "元", "version": "1", "authors": ["作者"]}        # 元の VRM のメタを渡した
+    assert tail[tail.index("--jpeg-quality") + 1] == "95" and Path(tail[tail.index("--textures") + 1]).name == "textures"
+    assert "bl_ext.user_default.vrm" in report["argv"][report["argv"].index("--python-expr") + 1]
+    assert json.loads(Path(artifacts["check"]).read_text(encoding="utf-8"))["pass"] is True
+    observation = result["steps"]["export"]["observations"][0]
+    assert observation["check_pass"] is True and observation["human_bones"] == 15 and observation["textures"] == 1
+    # メタも JPEG も挙げなければ、台本にはどちらも渡さない
+    plain = {**step, "id": "plain", "inputs": {"blend": "$inputs.asset"}, "parameters": {"blender": str(blender)}}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm-export",
+                                           "inputs": {"asset": {"path": "asset.blend"}}, "steps": [plain]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    argv = json.loads(Path(result["steps"]["plain"]["artifacts"]["report"]).read_text(encoding="utf-8"))["argv"]
+    assert result["status"] == "succeeded" and not {"--meta", "--jpeg-quality", "--textures"} & set(argv)
+    # 書き出した VRM が検査に通らなければ needs_review（strict なら失敗）
+    (tmp_path / "made.vrm").write_bytes(_glb(_vrm_document(meta={})))
+    assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["status"] == "needs_review"
+    step["parameters"]["strict"] = True
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "vrm-export",
+                                           "inputs": {"asset": {"path": "asset.blend"}, "source": {"path": "source.vrm"}},
+                                           "steps": [step]})
+    assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["status"] == "failed"
+
+
+@pytest.mark.parametrize("parameters, message", [
+    ({"jpeg_quality": 101}, "jpeg_quality"),
+    ({"jpeg_quality": 9.5}, "jpeg_quality"),
+    ({"wobble": True}, "知らないパラメーター"),
+])
+def test_vrm_export_rejects_bad_settings(tmp_path, parameters, message):
+    from model3d.ops import get
+    blender = stand_in_executable(tmp_path, "blender", "SOURCE = ''\n" + STAND_IN_EXPORT)
+
+    class Context:
+        tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
+
+    with pytest.raises(ToolError, match=message):
+        get("vrm.export").function({"blend": tmp_path / "a.blend"}, {"blender": str(blender), **parameters},
+                                   {"vrm": tmp_path / "a.vrm", "blend": tmp_path / "o.blend", "report": tmp_path / "r.json"},
+                                   Context())
