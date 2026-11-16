@@ -34,6 +34,7 @@ SCHEMAS = {
     "bone-path": "model3d-bone-path/0.1",
     "passes": "model3d-passes/0.1",
     "cameras": "model3d-cameras/0.1",
+    "orbit-plan": "model3d-orbit-plan/0.1",
 }
 
 

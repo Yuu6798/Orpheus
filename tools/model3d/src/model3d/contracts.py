@@ -28,6 +28,7 @@ FILES = {
     "bone-path": "bone_path.schema.json",
     "passes": "passes.schema.json",
     "cameras": "cameras.schema.json",
+    "orbit-plan": "orbit_plan.schema.json",
 }
 
 KINDS = tuple(FILES)
