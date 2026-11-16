@@ -1,5 +1,6 @@
 """描く: 塗りと輪郭線を付けたキャラを、舞台と光の中で、コマごとに PNG に描く（Blender の中で）。描く直前の押し出し（push）
-の準備として、当たりの写しと押し出す頂点の組も足す（render.prepare_push）。"""
+の準備として、当たりの写しと押し出す頂点の組も足す（render.prepare_push）。もう 1 つの描き方として、キャラを要素に分けて簡易描画で
+描き、カメラを控える（render.passes。重ね合わせは Blender の外）。"""
 from pathlib import Path
 
 from ..io import ToolError, atomic_json, resolve_path, sha256
@@ -322,3 +323,198 @@ def prepare_push(inputs, parameters, outputs, context):
                    "groups": [{"mesh": g.get("mesh"), "pieces": g.get("pieces"), "front": (g.get("front") or {}).get("vertices"),
                                "back": (g.get("back") or {}).get("vertices")} for g in report.get("groups", [])]}
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+PASS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "pass_render.py"
+PASS_PARAMETERS = {"blender", "addons", "blender_extensions", "resolution", "passes", "format", "quality", "antialiasing", "camera",
+                   "dancer", "disc", "head", "room", "shade", "bone_prefix", "armature", "fps", "passes_dir", "only", "timeout"}
+PASS_CAMERA_KEYS = {"sensor_height", "lens", "clip"}
+DANCER_KEYS = {"bones", "sigma"}
+DISC_KEYS = {"radius", "vertices", "height"}
+ROOM_KEYS = {"collection", "world"}
+SHADE_KEYS = {"studio_light", "rotate_z"}
+ANTIALIASING = ("OFF", "FXAA", "5", "8", "11", "16", "32")
+
+
+def _pass_settings(parameters):
+    """render.passes のパラメーターを確かめ、台本の settings にする（省いた値は台本の既定。長さは m）。"""
+    from ..blender_adapter import pass_render
+    from .motion_ops import _bone_prefix
+    s = {}
+    if "resolution" in parameters:
+        s["resolution"] = _render_settings({"resolution": parameters["resolution"]})["resolution"]
+    if "passes" in parameters:
+        kinds = parameters["passes"]
+        if (not isinstance(kinds, list) or not kinds or len(set(kinds)) != len(kinds)
+                or not all(isinstance(k, str) and k in pass_render.PASSES for k in kinds)):
+            raise ToolError(f"passes は要素の名前（{', '.join(pass_render.PASSES)}。重ならない）の並びにしてください: {kinds!r}")
+        s["passes"] = kinds
+    kinds = s.get("passes", pass_render.DEFAULTS["passes"])
+    if "format" in parameters:
+        if parameters["format"] not in ("png", "jpeg"):
+            raise ToolError(f"format は png か jpeg にしてください（char はいつも透けの PNG）: {parameters['format']!r}")
+        s["format"] = parameters["format"]
+    if "quality" in parameters:
+        quality = number(parameters, "quality", minimum=1, integer=True)
+        if quality > 100:
+            raise ToolError(f"quality は 1〜100 にしてください: {quality}")
+        s["quality"] = quality
+    if "antialiasing" in parameters:
+        if parameters["antialiasing"] not in ANTIALIASING:
+            raise ToolError(f"antialiasing は {', '.join(ANTIALIASING)} のどれかにしてください: {parameters['antialiasing']!r}")
+        s["antialiasing"] = parameters["antialiasing"]
+    camera = _section(parameters, "camera", PASS_CAMERA_KEYS)
+    c = {}
+    for key in ("sensor_height", "lens"):
+        if key in camera:
+            c[key] = float(number(camera, key, minimum=0, exclusive=True))
+    if "clip" in camera:
+        clip = camera["clip"]
+        if (not isinstance(clip, list) or len(clip) != 2
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in clip) or not 0 < clip[0] < clip[1]):
+            raise ToolError(f"camera.clip は [近い所, 遠い所]（m。0 < 近い所 < 遠い所）にしてください: {clip!r}")
+        c["clip"] = [float(v) for v in clip]
+    s["camera"] = c
+    dancer = _section(parameters, "dancer", DANCER_KEYS)
+    prefix = _bone_prefix(parameters)
+    s["dancer"] = {"bones": [prefix + b for b in (_names(dancer["bones"], "dancer.bones") if "bones" in dancer else ["Hips"])]}
+    if "sigma" in dancer:
+        s["dancer"]["sigma"] = float(number(dancer, "sigma", minimum=0, exclusive=True))
+    disc = _section(parameters, "disc", DISC_KEYS)
+    d = {}
+    if "radius" in disc:
+        d["radius"] = float(number(disc, "radius", minimum=0, exclusive=True))
+    if "vertices" in disc:
+        d["vertices"] = int(number(disc, "vertices", minimum=3, integer=True))
+    if "height" in disc:
+        d["height"] = float(number(disc, "height"))
+    s["disc"] = d
+    if "head" in parameters:
+        s["head"] = _names(parameters["head"], "head")
+    elif "head" in kinds:
+        raise ToolError("passes に head（顔の範囲）を入れるときは、head に顔の物体の名前の並びを書いてください")
+    room = _section(parameters, "room", ROOM_KEYS)
+    r = {}
+    if "collection" in room:
+        r["collection"] = _name(room["collection"], "room.collection")
+    if "world" in room:
+        world = room["world"]
+        if (not isinstance(world, list) or len(world) != 3
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in world)):
+            raise ToolError(f"room.world は部屋の背景の色 [R, G, B]（シーンの線形の値。0 以上）にしてください: {world!r}")
+        r["world"] = [float(v) for v in world]
+    if "room" in kinds and "collection" not in r:
+        raise ToolError("passes に room（部屋）を入れるときは、room.collection に部屋の物体のコレクションの名前を書いてください")
+    s["room"] = r
+    shade = _section(parameters, "shade", SHADE_KEYS)
+    sh = {}
+    if "studio_light" in shade:
+        sh["studio_light"] = _name(shade["studio_light"], "shade.studio_light")
+    if "rotate_z" in shade:
+        sh["rotate_z"] = float(number(shade, "rotate_z"))
+    s["shade"] = sh
+    if parameters.get("armature") is not None:
+        s["armature"] = _name(parameters["armature"], "armature")
+    if parameters.get("fps") is not None:
+        s["fps"] = float(number(parameters, "fps", minimum=0, exclusive=True))
+    if parameters.get("only") is not None:
+        s["only"] = _render_settings({"only": parameters["only"]})["only"]
+    return s
+
+
+def _camera_record(path, resolution):
+    """入力 cameras（model3d-cameras/0.1）を読み、T が重ならないことと、画面の縦横比が描く大きさと同じことを確かめる。"""
+    from .. import contracts
+    record = contracts.load("cameras", path)
+    seen = set()
+    for frame in record["frames"]:
+        if frame["T"] in seen:
+            raise ToolError(f"cameras の T が重なっています: {frame['T']}")
+        seen.add(frame["T"])
+    width, height = record["resolution"]
+    if width * resolution[1] != height * resolution[0]:
+        raise ToolError(f"cameras の画面（{width}×{height}）と描く大きさ（{resolution[0]}×{resolution[1]}）の縦横比が違います")
+    return record
+
+
+def passes_manifest(report, passes_dir, settings):
+    """描く並び（報告の planned）のうち、要素ごとにファイルのあるコマの sha256 と大きさ。無いコマは missing。"""
+    from .. import contracts
+    from ..blender_adapter import pass_render
+    passes = {}
+    for kind in settings["passes"]:
+        frames, missing = [], []
+        for item in report["planned"]:
+            name = pass_render.pass_file(kind, item["T"], settings["format"])
+            file = Path(passes_dir) / name
+            if file.is_file():
+                frames.append({"T": item["T"], "f": item["f"], "file": name, "sha256": sha256(file), "bytes": file.stat().st_size})
+            else:
+                missing.append(item["T"])
+        passes[kind] = {"format": "png" if pass_render.extension(kind, settings["format"]) == "png" else "jpeg",
+                        "alpha": kind == "char", "frames": frames, "missing": missing}
+    manifest = {"schema_version": "model3d-passes/0.1", "directory": str(Path(passes_dir).resolve()), "fps": report["fps"],
+                "resolution": report["resolution"], "passes": passes}
+    return contracts.validate("passes", manifest)
+
+
+@register("render.passes", inputs=("blend", "track", "cameras"), outputs=("passes", "cameras", "report"), cacheable=False,
+          summary="キャラ（blend）を要素に分けて、Blender の簡易描画（Workbench）でコマごとに描く: room（部屋の物体）・char（人物の"
+                  "色の絵のまま。透けの PNG）・shade（白い人物にスタジオの光）・disc（踊り手の点の真下の床の円）・head（顔の物体だけ白）。"
+                  "コマの並びとカメラはトラック（model3d-stage-track/0.1）、cameras（model3d-cameras/0.1）があればそのコマのカメラは"
+                  "行列と焦点距離と主点から。出力の cameras は、並びの全部のコマのカメラと踊り手の点（重ねる側が使う）。描いたコマは"
+                  "とばす（続きから描ける）。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"
+                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def render_passes(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..blender_adapter import launcher
+    from ..blender_adapter import pass_render as script
+    from ..blender_adapter import stage_render
+    from ..io import read_json
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend", "track"), "render.passes")
+    unknown = set(parameters) - PASS_PARAMETERS
+    if unknown:
+        raise ToolError(f"render.passes の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(PASS_PARAMETERS)}）")
+    missing = [name for name in ("passes", "cameras", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"render.passes には outputs の {', '.join(missing)} が要ります")
+    settings = _pass_settings(parameters)
+    merged = script.merged(settings)
+    track = _track(inputs["track"])
+    record = _camera_record(inputs["cameras"], merged["resolution"]) if inputs.get("cameras") is not None else None
+    plan = stage_render.frame_plan(track, 0, 0)
+    problem = script.cameras_problem(plan, script.record_cameras(record))
+    if problem:
+        raise ToolError(f"render.passes: {problem}")
+    if merged["only"]:
+        absent = sorted(set(merged["only"]) - {T for T, _, _ in plan})
+        if absent:
+            raise ToolError(f"only にトラックの並びに無い T があります: {absent}")
+    blender = _blender(parameters, context, "render.passes")
+    addons, extensions = blender_addons(parameters, context)
+    if parameters.get("passes_dir"):
+        passes_dir = resolve_path(context.recipe_dir, parameters["passes_dir"])
+    else:
+        passes_dir = Path(context.step_dir) / "passes"
+    passes_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = Path(context.step_dir) / "pass_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--track", inputs["track"],
+            "--passes-dir", str(passes_dir), "--report", outputs["report"], "--cameras-out", outputs["cameras"]]
+    if record is not None:
+        args += ["--cameras", inputs["cameras"]]
+    run = launcher.run_blender(blender, PASS_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                               timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    contracts.load("cameras", outputs["cameras"])
+    manifest = passes_manifest(report, passes_dir, merged)
+    atomic_json(outputs["passes"], manifest)
+    observation = {"kind": "pass_render", "exit_code": run["exit_code"], "seconds": run["seconds"],
+                   "blender_version": run["blender_version"], "addons": run.get("addons"), "planned": len(report["planned"]),
+                   "passes": {k: {"rendered": len(report["rendered"].get(k, [])),
+                                  "skipped_existing": len(report["skipped_existing"].get(k, [])),
+                                  "frames": len(v["frames"]), "missing": len(v["missing"])} for k, v in manifest["passes"].items()},
+                   "camera": report.get("camera"), "objects": {k: len(v) for k, v in (report.get("objects") or {}).items()}}
+    return StepResult(observations=[observation])
