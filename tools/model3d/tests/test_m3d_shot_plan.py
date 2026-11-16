@@ -157,12 +157,14 @@ def test_the_operation_writes_its_contracts(tmp_path):
               "inputs": {"plan": {"path": "plan.json"}, "bones": {"path": "bones.json"}},
               "steps": [{"id": "shots", "operation": "plan.shots", "inputs": {"plan": "$inputs.plan", "bones": "$inputs.bones"},
                          "parameters": {}, "outputs": {"cameras": "cameras.json", "track": "track.json", "alt": "alt.json",
-                                                       "report": "report.json"}}]}
+                                                       "alt_track": "alt_track.json", "report": "report.json"}}]}
     atomic_json(tmp_path / "recipe.json", recipe)
     result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
     step = result["steps"]["shots"]
     assert result["status"] == "succeeded", step.get("error")
     assert len(contracts.load("cameras", step["artifacts"]["alt"])["frames"]) == 5
+    alt_track = contracts.load("stage-track", step["artifacts"]["alt_track"])
+    assert [fr["T"] for fr in alt_track["frames"]] == [29, 30, 31, 32, 33]                   # 相手の要素を描くトラック
     obs = step["observations"][0]
     assert obs["kind"] == "shot_plan" and obs["frames"] == 60 and obs["alt_frames"] == 5 and obs["anchor_error_px"] < 1e-9
     recipe["steps"][0]["parameters"] = {"fps": 24}

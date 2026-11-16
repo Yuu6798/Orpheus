@@ -319,7 +319,8 @@ def read_points(path, names, frame0, fps, sigma_s, reach):
 
 def build(plan, path):
     """(cameras, track, alt, report)。cameras は model3d-cameras/0.1（並びの全部の T）、alt は wipes の間の相手のショットのカメラ
-    （model3d-cameras/0.1。wipes が無ければ None）、track は model3d-stage-track/0.1（T と f だけ）。"""
+    （model3d-cameras/0.1。wipes が無ければ None）、track は model3d-stage-track/0.1（T と f だけ）。report の alt_track は、相手のカメラの
+    コマだけの並び（render.passes で相手の要素を描くトラック）。"""
     shots = Shots(plan)
     p = shots.p
     smooth = p["smooth"]
@@ -378,5 +379,7 @@ def build(plan, path):
                           "sigma_s": float(smooth["sigma_s"]), "outside": outside},
               "anchor_error_px": worst, "shots": spans_out, "held_frames": int(held),
               "alt": [{"T": e["T"], "shot": e["shot"]} for e in alt], "references": references,
+              "alt_track": None if not shots.wipes else {"schema_version": "model3d-stage-track/0.1", "fps": shots.fps,
+                                                         "frames": [{"T": e["T"], "f": e["f"]} for e in alt]},
               "f": [rows[0]["f"], rows[-1]["f"]]}
     return cameras, track, alt_cameras, report

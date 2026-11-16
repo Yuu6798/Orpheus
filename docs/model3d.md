@@ -230,7 +230,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `plan.light_keys` | audio → keys | 曲の音（WAV など）から、`plan.stage` が光に使う光のキー（`model3d-light-keys/0.1`）を作る（[段取りを組む](#段取りを組む)）。窓（`start` 秒から `frames` コマ）のコマごとに、低・中・高の帯の強さ（0〜1。立ち上がりは即座、下がりはゆっくり）と、拍の格子 `grid`（必須）に入る拍。既定は試作の解析で、numpy だけで計算する（librosa.stft と同じ値）。計算だけで、同じ入力なら再利用する |
 | `plan.retime` | → track | 動きの fps（`motion_fps`。例 24）と違う fps（例 30）で描くコマの並び（T と f だけのトラック）を作る（[動きと違う fps で描く](#動きと違う-fps-で描く小数のコマ)）。f = `start` + (T − 1) × `motion_fps` ÷ `fps` で、小数のコマは前後のコマの間の時刻。`plan.stage` の cut、`motion.bone_path` と `render.passes` の track に渡せる。計算だけで、同じ入力なら再利用する |
 | `plan.stage` | plan, keys, bones [, cut] → track [, report] | 段取り表（`model3d-stage-plan/0.1`）と光のキー（`model3d-light-keys/0.1`）と骨の通り道から、`render.stage` のトラックを作る（[段取りを組む](#段取りを組む)）。コマごとに、カメラ（区間・動き・寄りと揺れ）、壁の模様、光と塗りの縁の値を決める。cut（T と f のトラック）があればその並びで。計算だけで、同じ入力なら再利用する。report は区間ごとのコマの範囲 |
-| `plan.shots` | plan, bones → cameras, track [, alt, report] | 2D の絵コンテのショット表（`model3d-shot-plan/0.1`。1 枚の絵の仮の部屋の中のカメラの移動・向き・寄りと、追う点を置く画面の画素、回り込み、手直し）を、追う点がちょうど狙いの画素に来るように主点を解いた 3D のコマごとのカメラに写す（[絵コンテのカメラを 3D に写す](#絵コンテのカメラを-3d-に写すplanshots)）。部屋の置き方は `render.box_room` と同じ。つなぎの相手のカメラ（`alt`）と揺れなしの基準のカメラも。計算だけで、同じ入力なら再利用する |
+| `plan.shots` | plan, bones → cameras, track [, alt, alt_track, report] | 2D の絵コンテのショット表（`model3d-shot-plan/0.1`。1 枚の絵の仮の部屋の中のカメラの移動・向き・寄りと、追う点を置く画面の画素、回り込み、手直し）を、追う点がちょうど狙いの画素に来るように主点を解いた 3D のコマごとのカメラに写す（[絵コンテのカメラを 3D に写す](#絵コンテのカメラを-3d-に写すplanshots)）。部屋の置き方は `render.box_room` と同じ。つなぎの相手のカメラ（`alt`）と揺れなしの基準のカメラも。計算だけで、同じ入力なら再利用する |
 | `plan.orbit` | plan, bones → cameras, track [, report] | 踊り手を中心にした極座標のカメラの段取り表（`model3d-orbit-plan/0.1`）と、骨から決めた点の通り道から、コマごとのカメラ（`model3d-cameras/0.1`。行列・焦点距離・主点・踊り手の点）とコマの並び（T と動きのコマ f）を作る（[踊り手を中心にしたカメラ](#踊り手を中心にしたカメラplanorbit)）。区間ごとの方位・距離・高さ・狙う点・画角・ロールのキーとつなぎ方、手持ちの揺れと打点の揺れ、踊りの時刻の止め。`render.passes` の track と cameras にそのまま渡せる。計算だけで、同じ入力なら再利用する |
 | `render.stage` | blend, track → frames, report | キャラを舞台と光の中でコマごとに PNG に描く（[舞台で描く](#舞台で描く)）。床・LED の壁・トラス・光の柱とスポット 4 つ、EEVEE と光のにじみ。トラック（`model3d-stage-track/0.1`）のコマの並びとカメラ・光・塗りの値で描き、無ければ腰を追う正面のカメラと動かない光。輪郭線の太さはカメラの距離で画面の上にそろえる。舞台を切って `background` で緑背景か透けにも描ける。`push` で、描く直前に帯などの頂点を当たり（閉じたメッシュ）の外へ出す。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（`model3d-frames/0.1`）。Blender が要り、再利用しない（毎回実行） |
 | `render.prepare_push` | blend → blend, report | `render.stage` の `push` の準備（[押し出しを準備する](#押し出しを準備する)）。`colliders`: 元のメッシュ（脚など）を写して穴をふさぎ、外向きの閉じた当たりにして面を減らし、元と同じ骨で動かす（描かない）。`groups`: 骨（`bones` とその子孫）に重みのある頂点を種に、高さ `top` より下でつながった部分（帯の垂れなど）を選び、上の端から `fade` で重みを付けて、法線の前と後ろで `front` と `back` の頂点の組にする。Blender が要り、再利用しない（毎回実行） |
@@ -2088,7 +2088,7 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
 
 `plan.shots` は、2D の絵コンテのショット表（1 枚の絵の中の仮の部屋に置いたカメラと、追う点を置く画面の画素）を、3D のコマごとのカメラに写す。リポジトリ外の 2 作目の VRM のダンスで、2D の完成版の絵コンテ（2D 版のレンダラの数値）を 3D の再現版のカメラに写した台本の計算を移した。部屋の置き方は [箱の部屋](#箱の部屋)（`render.box_room`）と同じなので、その部屋を描いた .blend と組み合わせると、2D の完成版と同じ構図になる。時刻の読み方・区間・つなぎ方・手持ちの揺れと打点の揺れ・踊りの時刻の止めは `plan.orbit` と同じ。
 
-**流れ**（レシピの工程）: `plan.retime` → `motion.bone_path`（追う点を `points` で測る。例: 顔・胸・腰）→ `plan.shots`（plan, bones → cameras, track [, alt, report]）→ `render.passes`（blend, track, cameras）。
+**流れ**（レシピの工程）: `plan.retime` → `motion.bone_path`（追う点を `points` で測る。例: 顔・胸・腰）→ `plan.shots`（plan, bones → cameras, track [, alt, alt_track, report]）→ `render.passes`（blend, track, cameras）。
 
 **ショット表**（`model3d-shot-plan/0.1`。省いた部分は既定の値。既定は試作の値）:
 
@@ -2128,6 +2128,7 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
   - `cameras`: `model3d-cameras/0.1`。コマごとの行列（m）・焦点距離・主点・`lens_mm`・ずらし・動きのコマ f・踊り手の点（`dancer`。既定 `hips`）・カメラからの距離。
   - `track`: `model3d-stage-track/0.1` の T と f だけ。
   - `alt`（任意。`wipes` が要る）: つなぎの間の相手のショットのカメラ（`model3d-cameras/0.1`。そのコマの T だけ）。
+  - `alt_track`（任意。`wipes` が要る）: そのコマだけの並び（`model3d-stage-track/0.1`。`render.passes` の track に `alt` と一緒に渡して、相手の要素を描く）。
   - `report`（任意）: `model3d-shot-report/0.1`。ショットごとの T の範囲と種類、止めたコマの数、標本の数と範囲、追う点を写した画素と狙いの画素の差の最大（`anchor_error_px`。主点を解いた検算）、つなぎの相手、基準のカメラ。
 
 **確かめたこと**:
