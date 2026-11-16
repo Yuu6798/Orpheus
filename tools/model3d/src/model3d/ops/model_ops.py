@@ -7,6 +7,7 @@
 - check.twist: 骨の軸のまわりのねじれの角をコマごとに測る。
 - model.recolor_part・model.recolor: 色の絵を、部品の uv の範囲だけ・色相の範囲だけ塗り替える。model.remove_parts: 部品を外す。
 - model.smooth_skin・model.clean_skin: 肌の島の色の絵を、頂点の色をならして塗り直す（溝と焼き込まれた明暗・外した部品の下のしみ）。
+- model.face_shape: 顔の形を参照の絵の比率へ寄せる（目より下を上げ、あごを細く）。
 """
 import math
 from pathlib import Path
@@ -630,4 +631,75 @@ def clean_skin(inputs, parameters, outputs, context):
         unresolved.append("塗り直す頂点がありません（island_groups・region_groups を確かめてください）")
     if report.get("not_filled"):
         unresolved.append(f"きれいな肌の色で埋めきれない頂点が {report['not_filled']} あります（fill_iterations を増やすか、範囲を確かめてください）")
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+FACE_SHAPE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "face_shape.py"
+
+
+def face_shape_settings(parameters):
+    """model.face_shape のパラメーターを確かめ、台本の settings にする（上下が入れ替わる表は Blender の前で止める）。"""
+    from .. import texture
+    from ..blender_adapter.face_shape import lift_curve
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"head", "view", "lift", "smooth", "depth", "narrow"}, "model.face_shape")
+    view = parameters.get("view")
+    texture.check_view(view)
+    if view["from"] != "-Y":
+        raise ToolError(f"model.face_shape の view は正面（from: -Y）にしてください: {view['from']!r}")
+    lift = parameters.get("lift")
+    if not isinstance(lift, list) or not lift:
+        raise ToolError(f"lift は [{{\"vy\": 今の高さ（視点の画素）, \"up\": 上へ動かす量（画素）}}, …] にしてください: {lift!r}")
+    anchors = []
+    for k, entry in enumerate(lift):
+        if not isinstance(entry, dict):
+            raise ToolError(f"lift[{k}] は {{\"vy\": …, \"up\": …}} にしてください: {entry!r}")
+        _refuse_unknown(entry, ("vy", "up", "name"), f"lift[{k}]")
+        anchor = {"vy": _real(entry.get("vy"), f"lift[{k}].vy"), "up": _real(entry.get("up"), f"lift[{k}].up")}
+        if "name" in entry:
+            anchor["name"] = _name(entry["name"], f"lift[{k}].name")
+        anchors.append(anchor)
+    if len({a["vy"] for a in anchors}) != len(anchors):
+        raise ToolError("lift の vy が重なっています")
+    depth = parameters.get("depth")
+    if not isinstance(depth, dict):
+        raise ToolError(f"depth は {{\"front\": 顔の正面の y, \"back\": 耳のあたりの y}}（m）にしてください: {depth!r}")
+    _refuse_unknown(depth, ("front", "back"), "depth")
+    front, back = _real(depth.get("front"), "depth.front"), _real(depth.get("back"), "depth.back")
+    if front >= back:
+        raise ToolError(f"depth.front（{front}）は back（{back}）より手前（小さい y）にしてください")
+    settings = {"head": _name(parameters.get("head"), "head"), "view": view, "lift": anchors, "depth": {"front": front, "back": back},
+                "smooth": _real(parameters.get("smooth", 10.0), "smooth", 0.0, exclusive=True),
+                "narrow": _real(parameters.get("narrow", 0.0), "narrow", 0.0, maximum=0.5)}
+    try:
+        lift_curve(anchors, settings["smooth"])
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    return settings
+
+
+@register("model.face_shape", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="顔の形を参照の絵の比率へ寄せる（Blender の中で）: 頭のメッシュ（head）の頂点を、高さに応じて上へ寄せる。高さは正面の正射影の"
+                  "視点（view。texture.project_reference と同じ書き方）の画素で、lift の「今の高さ vy → 上へ動かす量 up」の表をなめらかに"
+                  "補間する。顔の正面（depth.front）で効き、耳のあたり（depth.back）で 0（頭の後ろ側と首のつなぎ目は動かさない）。narrow で"
+                  "あご先を細く。色の絵は頂点に付いて動く。元のファイルは変えない")
+def face_shape(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "model.face_shape")
+    settings = face_shape_settings(parameters)
+    _outputs(outputs, ("blend", "report"), "model.face_shape")
+    blender = _blender(parameters, context, "model.face_shape")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "face_shape_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, FACE_SHAPE_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                     "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "face_shape", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("head", "vertices", "moved_over_1mm", "max_up_mm", "lowest_z_before", "lowest_z_after")}}
+    unresolved = [] if report.get("moved_over_1mm") else ["1 mm 以上動いた頂点がありません（view・lift・depth を確かめてください）"]
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
