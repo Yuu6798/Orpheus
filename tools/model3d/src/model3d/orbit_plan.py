@@ -75,6 +75,27 @@ def rotation(axis, degrees):
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
 
+def handheld(t, amplitude, phases, kicks, hand, kick):
+    """手持ちの揺れ（yaw・pitch・roll の度）: 振れ幅 amplitude × Σ weights[m] × sin(2π hz[m] t + 位相)（位相は handheld.seed の乱数）と、
+    打点 kicks（[(時刻, 度)]）から length 秒の揺れ。振れ幅が 0 なら、打点の揺れも入れない（試作と同じ）。plan.orbit と plan.shots が使う。"""
+    values = []
+    for j in range(3):
+        total = None
+        for m in range(3):          # 試作の式と同じ順: s0 + 0.6 s1 + 0.3 s2（重み 1 は掛けない）
+            term = math.sin(2 * math.pi * hand["hz"][m] * t + phases[j, m])
+            term = term if hand["weights"][m] == 1.0 else hand["weights"][m] * term
+            total = term if total is None else total + term
+        values.append(amplitude * total)
+    if amplitude > 0:
+        for at, strength in kicks:
+            dt = t - at
+            if 0 <= dt < kick["length"]:
+                k = strength * math.exp(-dt / kick["tau"])
+                for j in range(3):
+                    values[j] += k * math.sin(2 * math.pi * kick["hz"][j] * dt + kick["phase"][j]) * kick["gain"][j]
+    return values
+
+
 class Orbit:
     def __init__(self, plan):
         p = merged(plan)
@@ -149,24 +170,8 @@ class Orbit:
         return a, b, EASE[a.get("ease", "smooth")]((u - us[i]) / max(1e-9, us[i + 1] - us[i]))
 
     def jitter(self, t, amplitude):
-        """手持ちの揺れ（yaw・pitch・roll の度）。区間の振れ幅 amplitude が 0 なら、打点の揺れも入れない（試作と同じ）。"""
-        hand, kick = self.p["handheld"], self.p["kick"]
-        values = []
-        for j in range(3):
-            total = None
-            for m in range(3):          # 試作の式と同じ順: s0 + 0.6 s1 + 0.3 s2（重み 1 は掛けない）
-                term = math.sin(2 * math.pi * hand["hz"][m] * t + self.phases[j, m])
-                term = term if hand["weights"][m] == 1.0 else hand["weights"][m] * term
-                total = term if total is None else total + term
-            values.append(amplitude * total)
-        if amplitude > 0:
-            for at, strength in self.kicks:
-                dt = t - at
-                if 0 <= dt < kick["length"]:
-                    k = strength * math.exp(-dt / kick["tau"])
-                    for j in range(3):
-                        values[j] += k * math.sin(2 * math.pi * kick["hz"][j] * dt + kick["phase"][j]) * kick["gain"][j]
-        return values
+        """手持ちの揺れ（yaw・pitch・roll の度。handheld）。"""
+        return handheld(t, amplitude, self.phases, self.kicks, self.p["handheld"], self.p["kick"])
 
     def camera(self, T, samples):
         """コマ T のカメラ: (4×4 の行列, 焦点距離, 踊り手の点, 動きのコマ f, 区間の番号, 止めたか)。"""

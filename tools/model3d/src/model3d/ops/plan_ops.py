@@ -89,6 +89,43 @@ def orbit(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
+@register("plan.shots", inputs=("plan", "bones"), outputs=("cameras", "track", "alt", "alt_track", "report"),
+          summary="2D の絵コンテのショット表（plan。model3d-shot-plan/0.1。1 枚の絵の仮の部屋（render.box_room と同じ置き方）の中の"
+                  "カメラの移動・向き・寄りと、追う点（骨の通り道の点か、踊り手の立つ面の上の画素）を置く画面の画素のキー、回り込みの区間、"
+                  "ショットごとの手直し、手持ちの揺れと打点の揺れ、踊りの時刻の止め）と、骨から決めた点の通り道（bones）から、追う点が"
+                  "ちょうど狙いの画素に来るように主点を解いたコマごとのカメラ（cameras。model3d-cameras/0.1）とコマの並び（track）を作る。"
+                  "wipes を書くと、つなぎの最中の相手のショットのカメラ（alt）とそのコマの並び（alt_track）も作り、references の揺れなしの"
+                  "基準のカメラを report に書く。"
+                  "render.passes の track と cameras にそのまま渡せる。計算だけ")
+def shots(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..shot_plan import build
+    require(inputs, ("plan", "bones"), "plan.shots")
+    if parameters:
+        raise ToolError(f"plan.shots の知らないパラメーター: {sorted(parameters)}（設定はショット表に書きます）")
+    missing = [name for name in ("cameras", "track") if name not in outputs]
+    if missing:
+        raise ToolError(f"plan.shots には outputs の {', '.join(missing)} が要ります")
+    plan = contracts.load("shot-plan", inputs["plan"])
+    bones = contracts.load("bone-path", inputs["bones"])
+    cameras, track, alt, report = build(plan, bones)
+    if ("alt" in outputs or "alt_track" in outputs) and alt is None:
+        raise ToolError("plan.shots の outputs の alt・alt_track（つなぎの相手のカメラとコマの並び）には、ショット表の wipes が要ります")
+    atomic_json(outputs["cameras"], contracts.validate("cameras", cameras))
+    atomic_json(outputs["track"], contracts.validate("stage-track", track))
+    if "alt" in outputs:
+        atomic_json(outputs["alt"], contracts.validate("cameras", alt))
+    if "alt_track" in outputs:
+        atomic_json(outputs["alt_track"], contracts.validate("stage-track", report["alt_track"]))
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    observation = {"kind": "shot_plan", "frames": report["frames"], "seconds": report["seconds"], "points": report["points"],
+                   "shots": sum(1 for s in report["shots"] if s["frames"]), "held_frames": report["held_frames"],
+                   "alt_frames": len(report["alt"]), "references": sorted(report["references"]),
+                   "anchor_error_px": report["anchor_error_px"], "outside_samples": report["samples"]["outside"], "f": report["f"]}
+    return StepResult(observations=[observation])
+
+
 RETIME_PARAMETERS = {"fps", "motion_fps", "start", "frames"}
 
 
