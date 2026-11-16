@@ -18,6 +18,7 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "poses": "poses.json",                             [{"t": 秒, "points": [[x, y], …]}]（骨格。正規化座標）
      "beats": "analysis.json",                          "downbeats"・"beats"・"beats_s" のどれかの配列（無ければ timeline の beats）
      "flash": {"delta": 0.10, "max_per_s": 3},          書いたときだけ、master（無ければ video）の明滅を測る検査を足す（gate/flashes.py）
+     "tail": {"max_tail_s": 1.0},                       書いたときだけ、master（無ければ video）の音の終わりと絵の終わりを測る（gate/tail.py）
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
@@ -28,6 +29,7 @@ warn があれば pass_with_warnings、なければ pass。
 timeline は dance-timeline/0.1 と 0.2 の両方を読む。dance/dance_timeline.schema.json で検証し、知らない欄は無視する。
 
 "flash" を書かない設定では、検査は今までの 9 つだけで、結果も合否も出力のファイルも変わらない（明滅の検査は既定で掛けない）。
+"tail" も同じく、書いたときだけ「音の終わり」の行を足す（余韻の長さは好みなので、目安を超えても要確認で、不合格にはしない）。
 """
 import bisect
 import itertools
@@ -40,7 +42,7 @@ from pathlib import Path
 import jsonschema
 
 from ..fx.probe import decode
-from ..io import PipelineError, sha256
+from ..io import PipelineError, atomic_json, sha256
 from ..media import ffmpeg
 
 THRESHOLDS = {
@@ -527,6 +529,28 @@ def check_flashes(timeline, video, master, limits):
     return result(name, measured["status"], summary, problems), measured
 
 
+TAIL_CHECK = "音の終わり"
+
+
+def check_tail(timeline, video, master, limits):
+    """完成動画の音の終わりと絵の終わり（gate.json に tail を書いたときだけ）。(検査の行, tail_report.json の中身 | None)。
+    master（無ければ video）を gate/tail.py で測る。目安を超える余韻と、音が鳴っている所で終わる音は要確認（不合格にしない）。
+    音の無い動画・読めない動画は不合格（測れていないものを合格にしない）。"""
+    target, label = _flash_source(video, master)
+    if target is None:
+        return skip(TAIL_CHECK, "master か video"), None
+    from . import tail
+    try:
+        measured = tail.measure(target, limits)
+    except PipelineError as error:
+        return result(TAIL_CHECK, "fail", f"{label} の音の終わりを測れません", [{"t": 0, "text": "", "detail": str(error)[:400]}]), None
+    m = measured["measure"]
+    summary = (f"{label} を測定、音は {m['audio_end_s']:.2f} 秒で切れ、絵はその後 {m['picture_after_s']:.2f} 秒続く"
+               f"（目安 {limits['max_tail_s']:g} 秒以下）")
+    problems = [{"t": _window(timeline)[0] + m["audio_end_s"], "text": "", "detail": reason} for reason in measured["reasons"]]
+    return result(TAIL_CHECK, measured["status"], summary, problems), measured
+
+
 def _extract_stills(report, video, out, first=0.0, sources=None):
     """問題のコマを静止画で書き出す（検査ごとに最大 MAX_STILLS 枚）。first は動画の先頭のショット時刻。
 
@@ -587,6 +611,10 @@ def run(config_path, out=None):
     if flash is not None:
         from . import flashes
         flash = flashes.settings(flash, 'gate の設定の "flash"')
+    ending = config.get("tail")       # 書いたときだけ音の終わりを測る
+    if ending is not None:
+        from . import tail
+        ending = tail.settings(ending, 'gate の設定の "tail"')
     video, master = path_of("video"), path_of("master")
     scoped = _scoped(timeline)
     confirmed = load("confirmed")
@@ -610,18 +638,28 @@ def run(config_path, out=None):
     if flash is not None:
         row, flash_report = check_flashes(timeline, video, master, flash)
         checks.append(row)
+    tail_report = None
+    if ending is not None:
+        row, tail_report = check_tail(timeline, video, master, ending)
+        checks.append(row)
     statuses = {c["status"] for c in checks}
     overall = ("fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses
                else "pass_with_warnings" if "warn" in statuses else "pass")
     report = {"overall": overall, "timeline": str(path_of("timeline")), "thresholds": th, "checks": checks}
     if flash is not None:
         report["flash"] = {**flash, "report": flashes.REPORT_NAME if flash_report is not None else None}
+    if ending is not None:
+        report["tail"] = {**ending, "report": tail.REPORT_NAME if tail_report is not None else None}
     out = Path(out) if out else base / "gate_report"
     out.mkdir(parents=True, exist_ok=True)
     if flash_report is not None:
         flashes.write(flash_report, out)
+    if tail_report is not None:
+        atomic_json(out / tail.REPORT_NAME, tail_report)
     # flash を書いたときだけ、明滅の静止画を測った動画（master があれば master）から取る。ほかは今までどおり video から
     sources = {FLASH_CHECK: _flash_source(video, master)[0]} if flash is not None else None
+    if ending is not None:            # 音の終わりの静止画も、測った動画から取る
+        sources = {**(sources or {}), TAIL_CHECK: _flash_source(video, master)[0]}
     _extract_stills(report, video, out, _window(timeline)[0], sources)
     (out / "gate_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out / "gate_report.md").write_text(_markdown(report), encoding="utf-8")
