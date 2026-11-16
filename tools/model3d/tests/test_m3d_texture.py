@@ -316,3 +316,58 @@ def test_recipe_marks_an_empty_projection_for_review(workspace):
     atomic_json(workspace / "recipe.json", data)
     result = executor.run_recipe(workspace / "recipe.json", workspace / "runs")
     assert result["status"] == "needs_review" and "1 画素も" in result["steps"]["paint"]["unresolved"][0]
+
+
+# ---- 顔の絵を写すときの追加の設定（visibility・two_sided_depth・core・regions） -------------------------------------------------
+
+def test_soft_ellipses_are_one_inside_and_fade_to_the_rim():
+    shapes = [{"center": [32, 32], "radius": [10, 20], "inner": 0.5}]
+    weight = texture.soft_ellipses(np.array([32.0, 37.0, 39.0, 42.0, 50.0]), np.array([32.0] * 5), shapes)
+    assert weight[:2] == pytest.approx([1.0, 1.0]) and 0 < weight[2] < 1 and weight[3] == 0 and weight[4] == 0
+    assert texture.soft_ellipses(np.array([40.5]), np.array([32.0]), [{"center": [32, 32], "radius": [10, 20]}])[0] == pytest.approx(
+        0.5)                                                  # inner を省くと 0.7（距離 0.7 → 1 で 1 → 0。0.85 で半分）
+
+
+def test_visibility_false_paints_the_hidden_surface_too():
+    mesh = mesh_of(quad(), quad(y=-0.5, x0=-1.0, x1=0.0, uv_box=(0.0, 0.0, 0.01, 0.01)))
+    new, weights, _ = project(mesh, faces=[0], visibility=False)
+    assert np.allclose(new[20, 10], [220, 30, 30]) and weights[20, 10] == pytest.approx(1.0)   # 手前の板に隠れた所にも写す
+
+
+def test_two_sided_depth_paints_back_faces_in_front_only():
+    near, _, report = project(mesh_of(quad(y=-0.5, flip=True)), two_sided_depth=-0.4)
+    assert report["two_sided_fragments"] > 0 and np.allclose(near[20, 10], [220, 30, 30])      # 手前の裏向きの板にも写す
+    far, _, report = project(mesh_of(quad(y=0.0, flip=True)), two_sided_depth=-0.4)
+    assert report["painted_texels"] == 0                                                       # 奥の裏向きの面は写さない
+
+
+def test_core_keeps_the_full_weight_on_sideways_faces():
+    corners = [[-1.0, -2.0, -1.0], [1.0, -2.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]]       # 上を向いて 45° 傾いた板
+    tilted = Mesh(corners, [[0, 1, 2, 3]], [[0, 0], [1, 0], [1, 1], [0, 1]], name="tilted")
+    matrix, offset, _ = texture.alignment(*IDENTITY)
+    plain, weights, _ = texture.project_reference(tilted, gray(), halves(), FRONT, matrix, offset, expand=0.0, min_facing=0.8,
+                                                  facing_ramp=0.1)
+    raised, more, report = texture.project_reference(tilted, gray(), halves(), FRONT, matrix, offset, expand=0.0, min_facing=0.8,
+                                                     facing_ramp=0.1, core={"center": [32, 32], "radius": [40, 40], "inner": 0.9})
+    assert weights.max() == 0 and more[32, 32] == pytest.approx(1.0) and report["core_raised_fragments"] > 0   # 向きの余弦 0.71 < 0.8
+
+
+def test_regions_soften_the_edge_of_the_projection():
+    _, weights, _ = project(mesh_of(quad()), regions=[{"center": [32, 32], "radius": [20, 20], "inner": 0.5}])
+    assert weights[32, 32] == pytest.approx(1.0) and weights[32, 5] == 0 and 0 < weights[32, 49] < 1   # 縁はなめらかに 0 へ
+
+
+def test_new_projection_settings_are_checked():
+    from model3d.ops.texture_ops import projection_settings
+    base = {"view": FRONT, "alignment": {"model": IDENTITY[0], "reference": IDENTITY[1]}}
+    _, _, options, _ = projection_settings({**base, "visibility": False, "two_sided_depth": -0.04,
+                                            "core": {"center": [32, 32], "radius": [10, 12], "inner": 0.85, "name": "芯"},
+                                            "regions": [{"center": [32, 30], "radius": [25, 30], "inner": 0.94}]})
+    assert options["visibility"] is False and options["core"] == {"center": [32, 32], "radius": [10, 12], "inner": 0.85}
+    assert "visibility" not in projection_settings(base)[2]                                     # 省けば今までと同じ
+    for extra, message in (({"visibility": "no"}, "visibility"), ({"core": {"center": [1, 2], "radius": [0, 3]}}, "radius"),
+                           ({"regions": []}, "regions"), ({"core": {"center": [1, 2], "radius": [3, 3], "inner": 1.0}}, "inner"),
+                           ({"core": {"center": [1, 2], "radius": [3, 3], "tilt": 3}}, "知らない"),
+                           ({"visibility": False, "occlusion_part": "head"}, "occlusion_part")):
+        with pytest.raises(ToolError, match=message):
+            projection_settings({**base, **extra})

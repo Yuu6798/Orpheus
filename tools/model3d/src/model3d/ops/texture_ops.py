@@ -1,5 +1,6 @@
 """テクスチャの操作: 参照画像（設定画など）を UV テクスチャへ写す、テクスチャを貼ったメッシュを正射影で描く、マスクを描く、
 GLB から材質のテクスチャを取り出す。"""
+import math
 from pathlib import Path
 
 from .. import glb, texture
@@ -13,7 +14,8 @@ APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "apply_
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
-                         "review_note", "occlusion_part", "color_match")
+                         "review_note", "occlusion_part", "color_match", "visibility", "two_sided_depth", "core", "regions")
+ELLIPSE_KEYS = ("center", "radius", "inner", "name")
 VIEW_PARTS_PARAMETERS = ("view", "parts", "margin", "background")
 ALIGNMENT_KEYS = ("model", "reference", "kind")
 MASK_PARAMETERS = ("size", "shapes", "feather")
@@ -46,11 +48,48 @@ def projection_settings(parameters):
                "depth_tolerance": number(parameters, "depth_tolerance", 0.002, minimum=0),
                "expand": number(parameters, "expand", 1.0, minimum=0),
                "max_stretch": number(parameters, "max_stretch", 8.0, minimum=1.0)}
+    visibility = parameters.get("visibility", True)
+    if not isinstance(visibility, bool):
+        raise ToolError(f"visibility は true か false にしてください: {visibility!r}")
+    if not visibility:
+        options["visibility"] = False
+        if parameters.get("occlusion_part") is not None:
+            raise ToolError("visibility: false では見え隠れを見ないので、occlusion_part は使えません")
+    if parameters.get("two_sided_depth") is not None:
+        options["two_sided_depth"] = number(parameters, "two_sided_depth")
+    if parameters.get("core") is not None:
+        options["core"] = _ellipse(parameters["core"], "core")
+    if parameters.get("regions") is not None:
+        regions = parameters["regions"]
+        if not isinstance(regions, list) or not regions:
+            raise ToolError(f"regions は楕円 {{\"center\": [x, y], \"radius\": [rx, ry], \"inner\": 0〜1}} の並びにしてください: {regions!r}")
+        options["regions"] = [_ellipse(region, f"regions[{k}]") for k, region in enumerate(regions)]
     note = parameters.get("review_note")
     if note is not None and (not isinstance(note, str) or not note.strip()):
         raise ToolError("texture.project_reference の review_note は空でない文字列にしてください")
     color_match_settings(parameters, view["size"])
     return view, fitted, options, note
+
+
+def _ellipse(value, where):
+    """視点の画素の楕円 {"center": [x, y], "radius": [rx, ry], "inner": 0〜1（任意）, "name": メモ（任意）} を確かめて返す（name は外す）。"""
+    if not isinstance(value, dict):
+        raise ToolError(f"{where} は {{\"center\": [x, y], \"radius\": [rx, ry], \"inner\": 0〜1}}（視点の画素）にしてください: {value!r}")
+    _refuse_unknown(value, ELLIPSE_KEYS, f"texture.project_reference の {where}")
+    center, radius = value.get("center"), value.get("radius")
+    if (not isinstance(center, list) or len(center) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in center)):
+        raise ToolError(f"{where}.center は [x, y]（視点の画素、有限の数）にしてください: {center!r}")
+    if (not isinstance(radius, list) or len(radius) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in radius)):
+        raise ToolError(f"{where}.radius は [rx, ry]（視点の画素、正の数）にしてください: {radius!r}")
+    out = {"center": list(center), "radius": list(radius)}
+    if "inner" in value:
+        inner = value["inner"]
+        if isinstance(inner, bool) or not isinstance(inner, (int, float)) or not 0 <= inner < 1:
+            raise ToolError(f"{where}.inner は 0 以上 1 未満にしてください（ここより内は 1、縁へなめらかに 0）: {inner!r}")
+        out["inner"] = inner
+    return out
 
 
 def color_match_settings(parameters, size=None):
