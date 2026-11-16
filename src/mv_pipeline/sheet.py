@@ -334,3 +334,153 @@ def build(source_path, out, at=None, events_path=None, fps=None, backgrounds=DEF
     atomic_json(out.with_suffix(".json"), record)
     return {"sheet": str(out), "json": str(out.with_suffix(".json")), "format": record["format"], "cells": len(cells), "rows": -(-len(cells) // per_row),
             "size": record["size"], "missing": len(record["missing"]), "transparent": source["transparent"], "labels": record["labels"]}
+
+
+# ---- 並べる（版どうし） ------------------------------------------------------------
+
+def _source_labels(sources, labels):
+    names = list(labels) if labels else [Path(s).stem or Path(s).name for s in sources]
+    if len(names) != len(sources):
+        raise PipelineError(f"--labels の数（{len(names)}）が並べる動画・連番の数（{len(sources)}）と違います")
+    return names
+
+
+def build_rows(sources, out, at=None, every=None, count=None, fps=None, labels=None, cell_width=None, font=None):
+    """複数の動画（か不透明な連番）を、同じ時刻のコマで 1 段ずつ並べたシート（段 = 動画、列 = 時刻）と sheet.json を書く。
+    直す前後・参照と完成版と新しい版を見比べるため。時刻は --at と、1 本目の長さで数えた --every・--count。"""
+    has_at = at is not None and len(at) > 0
+    if not has_at and every is None and count is None:
+        raise PipelineError("並べる時刻を --at・--every・--count のどれかで指定してください（--events は 1 本のときだけ）")
+    if every is not None and not (math.isfinite(every) and every > 0):
+        raise PipelineError(f"--every は正の秒数にしてください: {every}")
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 1):
+        raise PipelineError(f"--count は 1 以上の整数にしてください: {count}")
+    if cell_width is not None and cell_width < 32:
+        raise PipelineError("--cell-width は 32 以上にしてください")
+    out = Path(out)
+    kind = image_format(out)
+    names = _source_labels(sources, labels)
+    described = [describe_source(path, fps) for path in sources]
+    clear = [str(s["path"]) for s in described if s["transparent"]]
+    if clear:
+        raise PipelineError(f"段で並べるのは不透明な動画・連番だけです（透過: {clear}。先に背景へ重ねてください）")
+    first = described[0]
+    times = [float(t) for t in at] if has_at else []
+    if every is not None or count is not None:
+        times += [t for t, _, _, _ in spaced_times(first["fps"], first["frames"], every, count)]
+        times = sorted(set(times))
+    font_path = find_font(font)
+    width = DEFAULT_CELL_WIDTH if cell_width is None else cell_width
+    rows, layout, missing = [], [], []
+    for row, (source, name) in enumerate(zip(described, names)):
+        indices = [validate.frame_at(t, source["fps"]) for t in times]
+        frames = _load_frames(source, [i for i in indices if 0 <= i < source["frames"]])
+        cells = []
+        for t, index in zip(times, indices):
+            if index in frames:
+                image, digest = frames[index]
+                cells.append(cell(image[..., :3], width, f"{name} f{index} {t:.3f}s", font_path))
+                layout.append({"row": row, "label": name, "t": t, "frame": index, "sha256": digest})
+            else:
+                missing.append({"row": row, "label": name, "t": t, "frame": index})
+                cells.append(None)
+        rows.append(cells)
+    shown = [c for r in rows for c in r if c is not None]
+    if not shown:
+        raise PipelineError("どの時刻も、どの動画の中にもありません")
+    shape = (max(c.shape[0] for c in shown), width, 3)
+    grid = [np.zeros(shape, np.uint8) if c is None else _fit(c, shape) for r in rows for c in r]
+    sheet = _grid(grid, len(times))
+    atomic_image(out, sheet)
+    record = {"schema_version": "sheet-rows/0.1", "sheet": str(out), "format": kind.lower(), "size": [sheet.shape[1], sheet.shape[0]],
+              "columns": len(times), "rows": [{"label": n, "source": {k: v for k, v in s.items() if k not in ("files", "info")}}
+                                              for n, s in zip(names, described)],
+              "times": times, "label_font": font_path, "cells": layout, "missing": missing,
+              "note": "閲覧用。合否は出さない。段は動画（並べた順）、列は時刻。どの段も同じ時刻のいちばん近いコマ"}
+    atomic_json(out.with_suffix(".json"), record)
+    return {"sheet": str(out), "json": str(out.with_suffix(".json")), "format": record["format"], "rows": len(described),
+            "columns": len(times), "size": record["size"], "missing": len(missing)}
+
+
+def _fit(image, shape):
+    """セルを shape（高さ, 幅, 3）にそろえる（縦横比の違う動画の段。上に寄せ、足りない所は黒）。"""
+    if image.shape == tuple(shape):
+        return image
+    out = np.zeros(shape, np.uint8)
+    h, w = min(shape[0], image.shape[0]), min(shape[1], image.shape[1])
+    out[:h, :w] = image[:h, :w]
+    return out
+
+
+def side_by_side(sources, out, height=None, audio=1, labels=None, crf=20, fps=None, font=None):
+    """複数の動画を左右に並べた 1 本の動画（BT.709。encode.write_video）と、隣の JSON を書く。
+
+    どれも高さ height（省くといちばん低い動画の高さ。偶数）に縦横比を保ってそろえ、出力の fps（省くと 1 本目）のコマ i に、
+    それぞれの動画の時刻 i ÷ fps にいちばん近いコマを置く。長さはいちばん短い動画。音は audio 本目（1 から。0 で無し）の動画の音。
+    labels があれば、それぞれの左上に名前の帯を書く。"""
+    from . import encode
+    from .fx import probe
+
+    out = Path(out)
+    if out.suffix.lower() != ".mp4":
+        raise PipelineError(f"並べた動画の --out は .mp4 にしてください: {out}")
+    if len(sources) < 2:
+        raise PipelineError("左右に並べるには、動画を 2 本以上渡してください（--with）")
+    names = _source_labels(sources, labels) if labels else None
+    described = [describe_source(path) for path in sources]
+    if any(s["kind"] != "video" for s in described):
+        raise PipelineError("左右に並べるのは動画だけです（連番は先に動画にしてください）")
+    fps = float(fps or described[0]["fps"])
+    target = int(height or min(s["size"][1] for s in described))
+    target -= target % 2
+    if target < 2:
+        raise PipelineError(f"--height は 2 以上にしてください: {height}")
+    sizes = [(max(2, int(round(s["size"][0] * target / s["size"][1] / 2.0)) * 2), target) for s in described]
+    n_frames = min(int(math.floor(s["frames"] / s["fps"] * fps + 1e-9)) for s in described)
+    if n_frames < 1:
+        raise PipelineError("並べる動画のコマがありません")
+    if isinstance(audio, bool) or not isinstance(audio, int) or not 0 <= audio <= len(sources):
+        raise PipelineError(f"--audio は 0（音なし）か 1〜{len(sources)} の番号にしてください: {audio}")
+    audio_plan = None
+    if audio:
+        chosen = described[audio - 1]
+        if probe.inspect(chosen["path"]).get("audio") is None:
+            raise PipelineError(f"{audio} 本目の動画に音がありません（--audio 0 で音なしにできます）: {chosen['path']}")
+        audio_plan = {"path": chosen["path"], "start": 0.0, "duration": n_frames / fps}
+    font_path = find_font(font) if names else None
+    bands = [cell(np.zeros((2, w, 3), np.uint8), w, name, font_path)[:-2] for (w, _), name in zip(sizes, names)] if names else None
+    total_width = sum(w for w, _ in sizes)
+
+    def frames():
+        readers = [video.frames(s["path"], size, s["info"]) for s, size in zip(described, sizes)]
+        current = [(-1, None) for _ in described]
+        try:
+            for i in range(n_frames):
+                row = []
+                for k, (s, reader) in enumerate(zip(described, readers)):
+                    want = min(validate.frame_at(i / fps, s["fps"]), s["frames"] - 1)
+                    index, image = current[k]
+                    while index < want:
+                        index, image = next(reader)
+                    current[k] = (index, image)
+                    panel = image
+                    if bands is not None:
+                        panel = panel.copy()
+                        band = bands[k][:panel.shape[0]]
+                        panel[:band.shape[0]] = band
+                    row.append(panel)
+                yield np.ascontiguousarray(np.hstack(row))
+        finally:
+            for reader in readers:
+                reader.close()
+
+    result = encode.write_video(out, frames(), (total_width, target), fps, crf, n_frames, audio_plan)
+    record = {"schema_version": "side-by-side/0.1", "video": str(out), "sha256": sha256(out), "size": [total_width, target], "fps": fps,
+              "frames": n_frames, "seconds": n_frames / fps, "crf": crf,
+              "audio": None if audio_plan is None else {"from": audio, "path": str(audio_plan["path"])},
+              "panels": [{"label": None if names is None else names[k], "source": s["path"], "fps": s["fps"], "frames": s["frames"],
+                          "size": list(sizes[k])} for k, s in enumerate(described)],
+              "note": "閲覧用。合否は出さない。コマ i にはそれぞれの動画の時刻 i ÷ fps にいちばん近いコマ。長さはいちばん短い動画"}
+    atomic_json(out.with_suffix(".json"), record)
+    return {"video": str(out), "json": str(out.with_suffix(".json")), "size": record["size"], "frames": n_frames, "fps": fps,
+            "seconds": round(n_frames / fps, 3), "audio": audio if audio_plan else 0, "write_seconds": result["seconds"]}

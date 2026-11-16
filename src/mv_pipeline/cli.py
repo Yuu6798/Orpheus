@@ -583,11 +583,32 @@ def _sheet_parser(commands):
     sheet.add_argument("--cell-width", type=int, help="cell width in pixels (default 320; with --crop, the region's own width)")
     sheet.add_argument("--columns", type=int, default=4, help="columns for opaque sources (transparent ones use one column per background)")
     sheet.add_argument("--font", type=Path, help="TTF/TTC for the labels (default: a common Japanese font if found, else ASCII labels)")
+    sheet.add_argument("--with", dest="also", type=Path, action="append", default=[],
+                       help="another video or opaque PNG sequence to compare (repeatable). With a sheet --out: one row per source at the same "
+                            "times (--at/--every/--count). With an .mp4 --out: the videos side by side")
+    sheet.add_argument("--labels", help="comma-separated names of the source and each --with (default: file names)")
+    sheet.add_argument("--height", type=int, help="side-by-side video: panel height (default: the lowest video)")
+    sheet.add_argument("--audio", type=int, default=1, help="side-by-side video: take the audio of this video (1 = the first, 0 = none)")
+    sheet.add_argument("--crf", type=int, default=20, help="side-by-side video: H.264 CRF")
 
 
 def sheet_command(args):
     from . import sheet
     split = lambda value: tuple(v.strip() for v in value.split(",") if v.strip())  # noqa: E731
+    labels = split(args.labels) if args.labels else None
+    if args.out.suffix.lower() == ".mp4":
+        if args.at or args.events or args.every is not None or args.count is not None or args.crop:
+            raise PipelineError("並べた動画（.mp4 の --out）には --at・--events・--every・--count・--crop は使えません")
+        return sheet.side_by_side([args.source, *args.also], args.out, args.height, args.audio, labels, args.crf, args.fps, args.font)
+    if args.height is not None or args.audio != 1 or args.crf != 20:
+        raise PipelineError("--height・--audio・--crf は並べた動画（.mp4 の --out）だけで使えます")
+    if args.also:
+        if args.events or args.crop:
+            raise PipelineError("段で並べるシート（--with）には --events・--crop は使えません")
+        return sheet.build_rows([args.source, *args.also], args.out, args.at, args.every, args.count, args.fps, labels,
+                                args.cell_width, args.font)
+    if labels:
+        raise PipelineError("--labels は --with と一緒に使ってください")
     return sheet.build(args.source, args.out, args.at, args.events, args.fps, split(args.backgrounds), args.cell_width, args.columns,
                        split(args.kinds), args.font, every=args.every, count=args.count, crop=args.crop, units=args.units)
 def _overlay_parser(commands):
