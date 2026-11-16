@@ -1,0 +1,238 @@
+"""mv dance passes の小さな絵（sprites）: 絵の読み方（8・16 ビット、前乗算、縮めた絵）、1 つの置き方、3D の位置からの 3 枚（遠い・近い・
+映り込み）、カメラの控えと位置の読み方、人物の前後の重ね順、spec の確かめ。実作品の要素との比べは docs/dance.md。"""
+import hashlib
+import json
+import math
+
+import numpy as np
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+
+from mv_pipeline.dance import passes, space  # noqa: E402
+from mv_pipeline.io import PipelineError  # noqa: E402
+from test_dance_passes import H, W, _passes, _spec  # noqa: E402
+
+
+def _sprite(path, size=(40, 20), depth=np.uint8, color=(255, 0, 0)):
+    """赤い四角の絵（前乗算でないアルファ。上半分は半透明）。"""
+    high, wide = size
+    top = 65535 if depth == np.uint16 else 255
+    image = np.zeros((high, wide, 4), depth)
+    image[..., 2], image[..., 1], image[..., 0] = (np.array(color) / 255 * top).astype(depth)
+    image[..., 3] = top
+    image[: high // 2, :, 3] = top // 2
+    ok, data = cv2.imencode(".png", image)
+    path.write_bytes(data.tobytes())
+    return path
+
+
+def test_sprites_are_read_premultiplied_with_smaller_copies(tmp_path):
+    levels = space.sprite_levels(_sprite(tmp_path / "a.png", (100, 52)))
+    first = levels[0]
+    assert first.dtype == np.float32 and first.shape == (100, 52, 4)
+    assert np.allclose(first[60, 10], [1, 0, 0, 1]) and np.allclose(first[10, 10], [127 / 255, 0, 0, 127 / 255])   # 色 × アルファ
+    assert [lv.shape[:2] for lv in levels] == [(100, 52), (50, 26), (25, 13), (12, 6)]        # 短い辺が 12 以下になるまで半分ずつ
+    deep = space.sprite_levels(_sprite(tmp_path / "b.png", (100, 52), np.uint16))
+    assert np.allclose(deep[0][60, 10], [1, 0, 0, 1]) and abs(deep[0][10, 10, 3] - 0.5) < 1e-4
+    (tmp_path / "rgb.png").write_bytes(cv2.imencode(".png", np.zeros((8, 8, 3), np.uint8))[1].tobytes())
+    with pytest.raises(ValueError, match="RGBA"):
+        space.sprite_levels(tmp_path / "rgb.png")
+
+
+def test_a_sprite_is_pasted_upright_at_its_size(tmp_path):
+    levels = space.sprite_levels(_sprite(tmp_path / "a.png", (40, 20)))
+    layer = np.zeros((200, 200, 4), np.float32)
+    space.paste(layer, levels, (100.0, 100.0), (100.0, 80.0), 1.0, 0.0)          # 中心 (100, 100)、上端は 20 画素上 → 高さ 40
+    cover = layer[..., 3] > 0.25
+    ys, xs = np.nonzero(cover)
+    assert abs(ys.min() - 80) <= 1 and abs(ys.max() - 119) <= 1 and abs(xs.min() - 90) <= 1 and abs(xs.max() - 109) <= 1
+    tilted = np.zeros((200, 200, 4), np.float32)
+    space.paste(tilted, levels, (100.0, 100.0), (120.0, 100.0), 1.0, 0.0)        # 上端が右 → 横に寝た絵
+    ys, xs = np.nonzero(tilted[..., 3] > 0.25)
+    assert xs.max() - xs.min() > ys.max() - ys.min()
+    tiny = np.zeros((50, 50, 4), np.float32)
+    space.paste(tiny, levels, (10.0, 10.0), (10.0, 9.0), 1.0, 0.0)               # 高さ 2 画素は置かない
+    assert not tiny.any()
+
+
+def _camera():
+    """原点から +Y を水平に見るカメラ（焦点距離 100 画素、主点は 200×200 の画面の中心）。踊り手は 5 m 先。"""
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+    matrix[:3, 3] = [0.0, 0.0, 1.0]
+    return {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": 5.0}
+
+
+def test_sprites_split_far_and_near_and_reflect_on_the_floor(tmp_path):
+    sprites = [space.sprite_levels(_sprite(tmp_path / "a.png", (40, 20)))]
+    items = [[0.0, 8.0, 1.0, 1.0, 1.0, 0], [0.5, 3.0, 1.0, 0.5, 1.0, 0], [0.0, 0.1, 1.0, 1.0, 1.0, 0]]   # 遠い・近い・近すぎる
+    far, near, mirror = space.sprite_layers((200, 200), _camera(), items, sprites)
+    assert far[..., 3].max() > 0.5 and near[..., 3].max() > 0.5
+    fy, fx = np.nonzero(far[..., 3] > 0.25)
+    ny, nx = np.nonzero(near[..., 3] > 0.25)
+    assert abs(fy.mean() - 100) < 2 and nx.mean() > 110                            # 遠い絵は画面の中央、近い絵は右
+    my, mx = np.nonzero(mirror[..., 3] > 0.1)
+    assert my.min() > 100                                                           # 映り込みは床（地平より下）に
+    blurred = space.sprite_layers((200, 200), _camera(), items[:1], sprites, {"focus_blur": 1.0})[0]
+    sharp = space.sprite_layers((200, 200), _camera(), items[:1], sprites, {"focus_blur": 0.0})[0]
+    assert (blurred[..., 3] > 0.01).sum() > (sharp[..., 3] > 0.01).sum()          # 踊り手から 3 m 奥はぼける
+    dim = space.sprite_layers((200, 200), _camera(), items[:1], sprites, {"fade": [1.25, 40.0, 0.45, 0.5]})[0]
+    assert dim[..., 0].max() < sharp[..., 0].max()
+    empty = space.sprite_layers((200, 200), _camera(), [], sprites)
+    assert all(not layer.any() for layer in empty)
+
+
+def test_a_sprite_whose_top_is_behind_the_camera_is_skipped(tmp_path):
+    """下へ 45° 向いたカメラ: 中心は near_clip より先でも、上端がカメラの後ろに回る絵は置かない（Codex の指摘。NaN で止まらない）。"""
+    levels = space.sprite_levels(_sprite(tmp_path / "a.png", (40, 20)))
+    c, s = math.cos(math.radians(45)), math.sin(math.radians(45))
+    matrix = np.eye(4)
+    matrix[:3, 0] = [1, 0, 0]
+    matrix[:3, 1] = [0, c, s]                                               # 上
+    matrix[:3, 2] = [0, -s, c]                                              # 後ろ（前は +Y で 45° 下）
+    matrix[:3, 3] = [0.0, 0.0, 1.0]
+    camera = {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": 3.0}
+    crossing = [[0.0, 0.565685, 1.0, 1.6, 1.0, 0]]                          # 中心の奥行き 0.4 m、上端の奥行き −0.17 m
+    far, near, mirror = space.sprite_layers((200, 200), camera, crossing, [levels], {"near_clip": 0.3, "floor": 0.0})
+    assert not far.any() and not near.any()                                 # 止まらずに、その絵だけ置かない
+    upward = np.eye(4)                                                      # 上へ 45° 向いたカメラ: 床で返した絵の下端がカメラの後ろ
+    upward[:3, 0], upward[:3, 1], upward[:3, 2], upward[:3, 3] = [1, 0, 0], [0, -s, c], [0, -c, -s], [0.0, 0.0, 1.0]
+    looking_up = {**camera, "matrix": upward.tolist()}
+    sunk = [[0.0, 0.565685, -1.0, 1.6, 1.0, 0]]                             # 返した中心の奥行き 0.4 m、下端の奥行き −0.17 m
+    _, _, below = space.sprite_layers((200, 200), looking_up, sunk, [levels], {"near_clip": 0.3, "floor": 0.0})
+    assert not below.any()
+    ahead = [[0.0, 3.0, 0.5, 0.2, 1.0, 0]]
+    far, near, _ = space.sprite_layers((200, 200), camera, ahead, [levels], {"near_clip": 0.3})
+    assert near.any() or far.any()
+
+
+def test_the_reflection_can_keep_left_and_right(tmp_path):
+    """左が赤・右が青の絵: 映り込みは既定（rotate。試作と同じ）では左右が入れ替わり、flip では左右を保つ（Codex の指摘）。"""
+    image = np.zeros((40, 20, 4), np.uint8)
+    image[:, :10, 2], image[:, 10:, 0], image[..., 3] = 255, 255, 255         # BGRA: 左は赤、右は青
+    (tmp_path / "half.png").write_bytes(cv2.imencode(".png", image)[1].tobytes())
+    levels = space.sprite_levels(tmp_path / "half.png")
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+    matrix[:3, 3] = [0.0, -5.0, 1.0]
+    camera = {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": 5.0}
+    items = [[0.0, 0.0, 0.5, 0.8, 1.0, 0]]
+
+    def sides(mode):
+        _, _, mirror = space.sprite_layers((200, 200), camera, items, [levels], {"mirror_mode": mode, "mirror_blur": 0.0, "focus_blur": 0.0})
+        ys, xs = np.nonzero(mirror[..., 3] > 0.5)
+        row = int(np.median(ys))
+        left, right = mirror[row, xs.min() + 1], mirror[row, xs.max() - 1]
+        return ("red" if left[0] > left[2] else "blue"), ("red" if right[0] > right[2] else "blue")
+
+    assert sides("rotate") == ("blue", "red")                                 # 試作と同じ（180° 回す）
+    assert sides("flip") == ("red", "blue")                                   # 左右を保つ
+    data = passes.load_spec(_spec(tmp_path, cameras="cameras.json", sprites={"items": "s.json", "images": ["half.png"],
+                                                                             "mirror_mode": "flip"})).data
+    assert data["sprites"]["mirror_mode"] == "flip"
+    with pytest.raises(PipelineError):
+        passes.load_spec(_spec(tmp_path, cameras="cameras.json", sprites={"items": "s.json", "images": ["half.png"], "mirror_mode": "turn"}))
+
+
+def test_the_reflections_can_be_stacked_by_their_reflected_depth(tmp_path):
+    """下へ 60° 向いたカメラ: 高さの違う 2 つの絵は、映ると前後が入れ替わる。reflected では近い映り込みが上、既定（source）は試作と同じ
+    元の奥行きの順（Codex の指摘）。"""
+    red = space.sprite_levels(_sprite(tmp_path / "red.png", (40, 20), color=(255, 0, 0)))
+    blue = space.sprite_levels(_sprite(tmp_path / "blue.png", (40, 20), color=(0, 0, 255)))
+    c, s = math.cos(math.radians(60)), math.sin(math.radians(60))
+    matrix = np.eye(4)
+    matrix[:3, 0], matrix[:3, 1], matrix[:3, 2], matrix[:3, 3] = [1, 0, 0], [0, s, c], [0, -c, s], [0.0, 0.0, 3.0]
+    camera = {"matrix": matrix.tolist(), "focal": 400.0, "principal": (200.0, 200.0), "focus": 3.0}   # 元の奥行き 赤 3.2・青 2.7、映ると 4・5
+    items = [[0.0, 2.0, 0.4641, 0.5, 1.0, 0], [0.0, 2.5, 1.3301, 0.5, 1.0, 1]]   # 赤は元で遠い（映ると近い）、青は元で近い（映ると遠い）
+
+    def mirror(order, chosen):
+        settings = {"mirror_order": order, "mirror_blur": 0.0, "focus_blur": 0.0, "near_clip": 0.3}
+        return space.sprite_layers((400, 400), camera, [items[i] for i in chosen], [red, blue], settings)[2]
+
+    overlap = (mirror("source", [0])[..., 3] > 0.9) & (mirror("source", [1])[..., 3] > 0.9)
+    assert overlap.sum() > 10                                                # 2 つの映り込みが重なる
+
+    def top_colour(order):
+        both = mirror(order, [0, 1])[overlap]
+        return "red" if both[:, 0].sum() > both[:, 2].sum() else "blue"
+
+    assert top_colour("reflected") == "red"                                  # 映って近い赤が上
+    assert top_colour("source") == "blue"                                    # 元の奥行きの順（試作と同じ）では、映って遠い青が上
+
+
+def test_the_dancer_can_be_placed_by_its_camera_depth(tmp_path):
+    """踊り手が画面の端（カメラ (0, 0, 1) が +Y を見て、踊り手は (3, 5, 1)）: 直線の距離 5.83 と比べると、奥行き 5.5 の絵（踊り手の
+    すぐ後ろ）が手前の層に入る。depth では踊り手の奥行き 5 と比べて奥の層（Codex の指摘）。"""
+    levels = space.sprite_levels(_sprite(tmp_path / "a.png", (40, 20)))
+    matrix = np.eye(4)
+    matrix[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+    matrix[:3, 3] = [0.0, 0.0, 1.0]
+    camera = {"matrix": matrix.tolist(), "focal": 100.0, "principal": (100.0, 100.0), "focus": math.hypot(3.0, 5.0),
+              "dancer": [3.0, 5.0, 1.0]}
+    items = [[3.3, 5.5, 1.0, 0.4, 1.0, 0]]
+    far, near, _ = space.sprite_layers((200, 200), camera, items, [levels], {"focus_blur": 0.0})
+    assert near.any() and not far.any()                                     # 既定（distance。試作と同じ）
+    far, near, _ = space.sprite_layers((200, 200), camera, items, [levels], {"focus_blur": 0.0, "focus_metric": "depth"})
+    assert far.any() and not near.any()
+    with pytest.raises(ValueError, match="dancer"):
+        space.sprite_layers((200, 200), {**camera, "dancer": None}, items, [levels], {"focus_metric": "depth"})
+
+
+def _sprite_spec(tmp_path, items, near_frames=()):
+    _passes(tmp_path)
+    _sprite(tmp_path / "lamp.png", (40, 20), color=(0, 255, 0))
+    camera = np.eye(4)
+    camera[:3, :3] = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+    camera[:3, 3] = [0.0, -5.0, 1.0]
+    cameras = {"schema_version": "model3d-cameras/0.1", "unit": "m", "resolution": [W * 10, H * 10],
+               "frames": [{"T": T, "matrix": camera.tolist(), "focal_px": 300.0, "principal_px": [W * 5, H * 5], "distance_m": 5.0}
+                          for T in (1, 2, 3)]}
+    (tmp_path / "cameras.json").write_text(json.dumps(cameras), encoding="utf-8")
+    placed = {"schema_version": "dance-sprites/0.1", "unit": "m", "frames": [{"T": T, "items": items} for T in (1, 2)]}
+    (tmp_path / "sprites.json").write_text(json.dumps(placed), encoding="utf-8")
+    return {"floor_shadow": None, "cameras": "cameras.json",
+            "sprites": {"items": "sprites.json", "images": ["lamp.png"], "glow": 0.0, "focus_blur": 0.0, "room_blur": 0.0}}
+
+
+def test_far_sprites_hide_behind_the_dancer_and_near_ones_cover_it(tmp_path):
+    far_dir, near_dir = tmp_path / "far", tmp_path / "near"
+    far_dir.mkdir()
+    near_dir.mkdir()
+    # 人物の四角は画面の中央より少し上（画素 10〜30 行、8〜24 列）。絵を同じ所に、踊り手より奥（8 m）と手前（3 m）に置く
+    far = passes.load_spec(_spec(far_dir, **_sprite_spec(far_dir, [[0.0, 3.0, 1.05, 2.0, 1.0, 0]])))
+    near = passes.load_spec(_spec(near_dir, **_sprite_spec(near_dir, [[0.0, -2.0, 1.05, 0.8, 1.0, 0]])))
+    plan_far, plan_near = passes.load_passes(far_dir / "passes.json"), passes.load_passes(near_dir / "passes.json")
+    where_far, where_near = passes.load_space(far, plan_far), passes.load_space(near, plan_near)
+    behind = passes.compose(far.data, plan_far, 1, where=where_far).astype(int)
+    front = passes.compose(near.data, plan_near, 1, where=where_near).astype(int)
+    assert tuple(behind[20, 16]) == (200, 0, 0)                                    # 奥の絵は人物に隠れる
+    assert front[20, 16, 1] > 100                                                   # 手前の絵は人物の上に
+    assert np.array_equal(passes.compose(far.data, plan_far, 3, where=where_far),
+                          passes.compose(passes.load_spec(_spec(far_dir, floor_shadow=None)).data, plan_far, 3))   # 位置の無いコマ
+
+
+def test_the_sprite_inputs_are_checked(tmp_path):
+    parts = _sprite_spec(tmp_path, [[0.0, 3.0, 1.0, 1.0, 1.0, 0]])
+    with pytest.raises(PipelineError, match="cameras"):
+        passes.load_spec(_spec(tmp_path, **{**parts, "cameras": None}))
+    spec = passes.load_spec(_spec(tmp_path, **parts))
+    assert spec.data["sprites"]["gain"] == 1.05 and spec.data["sprites"]["fade"] == [1.25, 40.0, 0.45, 1.1]
+    plan = passes.load_passes(tmp_path / "passes.json")
+    record = json.loads((tmp_path / "cameras.json").read_text(encoding="utf-8"))
+    record["frames"] = record["frames"][:2]
+    (tmp_path / "cameras.json").write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(PipelineError, match="T がありません"):
+        passes.load_space(spec, plan)
+    record = json.loads((tmp_path / "cameras.json").read_text(encoding="utf-8"))
+    record["resolution"] = [W, W]
+    (tmp_path / "cameras.json").write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(PipelineError, match="縦横比"):
+        passes.load_space(spec, plan)
+    (tmp_path / "sprites.json").write_text(json.dumps({"schema_version": "dance-sprites/0.1", "unit": "m",
+                                                       "frames": [{"T": 1, "items": [[0, 1, 2]]}]}), encoding="utf-8")
+    _sprite_spec(tmp_path, [])
+    (tmp_path / "sprites.json").write_text(json.dumps({"schema_version": "dance-sprites/0.1", "unit": "m",
+                                                       "frames": [{"T": 1, "items": [[0, 1, 2]]}]}), encoding="utf-8")
+    with pytest.raises(PipelineError, match="形が違います"):
+        passes.load_space(passes.load_spec(_spec(tmp_path, **parts)), plan)

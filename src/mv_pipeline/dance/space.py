@@ -6,7 +6,12 @@
 
     mirror(size, parts, unit)                         床への映り込み: 床で反転したカメラで描いた要素をぼかして倍率を掛け、足し合わせる
     ripple(image, amount, clock, settings, unit)      水鏡: 映り込みを行ごとに横へゆらす（2 つのうねり）
+    phantom(target, picture, strength, settings)      分身を炎の色の光として足す（phantom_glow は分身の映り込みのもと）
+    sprite_layers(size, camera, items, sprites, …)    小さな絵を 3D の位置とカメラの控えから画面に置く（遠い・近い・映り込みの 3 枚）
+    over_glow(image, layer, glow, glow_blur)          小さな絵の層を重ね、にじませる
 """
+import math
+
 import cv2
 import numpy as np
 
@@ -83,3 +88,153 @@ def phantom(target, picture, strength, settings=None, unit=1.0):
 def phantom_glow(picture, dark, hot):
     """床への映り込みの分身の項のもと: 炎の色 × アルファ（mirror の parts に入れて、ぼかして強さを掛ける）。"""
     return flame_colors(picture[..., :3].mean(axis=2), dark, hot) * picture[..., 3:4]
+
+
+# ---- 小さな絵を 3D の位置に置く（提灯など） ----------------------------------------------------------
+
+SPRITES = {"gain": 1.05, "glow": 0.45, "glow_blur": 18.0, "focus_blur": 0.10, "max_blur": 5.0, "room_blur": 0.15, "near_clip": 0.3,
+           "margin": 200.0, "fade": [1.25, 40.0, 0.45, 1.1], "mirror_blur": 2.0, "floor": 0.0, "mirror_mode": "rotate",
+           "mirror_order": "source", "focus_metric": "distance"}
+FOCUS_METRICS = ("distance", "depth")    # 踊り手の遠さ: distance は控えの distance_m（直線の距離。試作と同じ）、depth はカメラから見た奥行き
+MIRROR_ORDERS = ("source", "reflected")  # 映り込みを重ねる順: source は元の位置の奥行き（試作と同じ）、reflected は映った奥行き
+MIRROR_MODES = ("rotate", "flip")        # 映り込みの絵の向き: rotate は 180° 回す（試作と同じ）、flip は左右を保って上下だけ返す
+_flipped = {}
+
+
+def flipped(levels):
+    """左右を返した絵の並び（作り置く）。映り込みを flip で置くとき、上下を返す置き方と合わせて、左右を保った上下反転になる。"""
+    key = id(levels)
+    if key not in _flipped or _flipped[key][0] is not levels:
+        _flipped[key] = (levels, [np.ascontiguousarray(level[:, ::-1]) for level in levels])
+    return _flipped[key][1]
+
+
+def sprite_levels(path):
+    """小さな絵（RGBA の PNG。8 か 16 ビット、アルファは前乗算でない）→ 前乗算の (色, 不透明度) の float32 と、半分ずつ縮めたもの
+    （短い辺が 12 画素以下になるまで。INTER_AREA）の並び。"""
+    from pathlib import Path
+    data = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
+    image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if image is None or image.ndim != 3 or image.shape[2] != 4:
+        raise ValueError(f"小さな絵は RGBA の PNG にしてください: {path}")
+    top = 65535.0 if image.dtype == np.uint16 else 255.0
+    rgba = image[..., [2, 1, 0, 3]].astype(np.float32) / np.float32(top)
+    alpha = rgba[..., 3:4]
+    levels = [np.concatenate([rgba[..., :3] * alpha, alpha], axis=2).astype(np.float32)]
+    while min(levels[-1].shape[:2]) > 12:
+        levels.append(cv2.resize(levels[-1], (levels[-1].shape[1] // 2, levels[-1].shape[0] // 2), interpolation=cv2.INTER_AREA))
+    return levels
+
+
+def paste(layer, levels, centre, top, tone, sigma):
+    """小さな絵を 1 つ置く（layer は前乗算の (色, 不透明度) の (H, W, 4)。書き換える）。centre と top は、絵の中心と上端の画面の
+    位置（画素）。絵の縦を centre → top の向きに合わせ、高さ 2 × |top − centre| に縮める（倍率に近い大きさの縮めた絵から）。
+    σ が 0.4 より大きければぼかす。重ねは前乗算の over（色 × tone）。"""
+    half = math.hypot(top[0] - centre[0], top[1] - centre[1])
+    if half < 1.5:
+        return
+    tall = 2 * half
+    picture = levels[-1]
+    for candidate in levels:
+        picture = candidate
+        if candidate.shape[0] <= tall * 2:
+            break
+    sprite_h, sprite_w = picture.shape[:2]
+    s = tall / sprite_h
+    down = ((centre[0] - top[0]) / half, (centre[1] - top[1]) / half)
+    right = (down[1], -down[0])
+    origin_x = centre[0] - (sprite_w / 2 * right[0] + sprite_h / 2 * down[0]) * s
+    origin_y = centre[1] - (sprite_w / 2 * right[1] + sprite_h / 2 * down[1]) * s
+    corners = np.array([[0, 0], [sprite_w, 0], [sprite_w, sprite_h], [0, sprite_h]], np.float64)
+    xs = origin_x + (corners[:, 0] * right[0] + corners[:, 1] * down[0]) * s
+    ys = origin_y + (corners[:, 0] * right[1] + corners[:, 1] * down[1]) * s
+    pad = int(3 * sigma + 2)
+    height, width = layer.shape[:2]
+    x0, x1 = max(int(math.floor(xs.min())) - pad, 0), min(int(math.ceil(xs.max())) + pad, width)
+    y0, y1 = max(int(math.floor(ys.min())) - pad, 0), min(int(math.ceil(ys.max())) + pad, height)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return
+    transform = np.array([[right[0] * s, down[0] * s, origin_x - x0], [right[1] * s, down[1] * s, origin_y - y0]], np.float64)
+    warped = cv2.warpAffine(picture, transform, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR, borderValue=0)
+    if sigma > 0.4:
+        warped = cv2.GaussianBlur(warped, (0, 0), sigma)
+    cover = warped[..., 3:4]
+    region = layer[y0:y1, x0:x1]
+    region[..., :3] = region[..., :3] * (1 - cover) + warped[..., :3] * tone
+    region[..., 3:4] = region[..., 3:4] * (1 - cover) + cover
+
+
+def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, unit=1.0):
+    """小さな絵を置いた 3 枚（踊り手より遠いもの、近いもの、床への映り込み）。どれも前乗算の (色, 不透明度) の (H, W, 4)。
+
+    camera: {"matrix": 4×4（m）, "focal": 焦点距離（出力の画素）, "principal": 主点（出力の画素）, "focus": 踊り手までの距離 m}。
+    items: (N, 6) の [x, y, z, 高さ, 明るさ, 絵の番号]（m）。絵の中心がその点で、上端は高さの半分だけ上。
+    遠い順に置き、踊り手までの距離 focus より遠ければ遠い方に、近ければ近い方に。明るさ = 明るさ × clip(fade[0] − 奥行き ÷ fade[1],
+    fade[2], fade[3]) × gain。ぼかし = min(|奥行き − focus| × focus_blur, max_blur) × unit + room_blur × 部屋の σ × unit。
+    床への映り込みは、床の面（floor）で上下を返した位置に、ぼかしを mirror_blur × unit 足して置く（絵の向きは mirror_mode。rotate は
+    180° 回す（試作と同じ。左右も入れ替わる）、flip は左右を保って上下だけ返す（床の映り込みとして正しい向き））。映り込みを重ねる順は
+    mirror_order（source は元の位置の奥行きの遠い順（試作と同じ）、reflected は映った奥行きの遠い順（重なる映り込みの前後が正しい））。
+    踊り手の遠さ focus は、focus_metric が distance なら控えの直線の距離（試作と同じ。踊り手が画面の端にいると、絵の奥行きと測り方が違う）、
+    depth なら控えの踊り手の点のカメラから見た奥行き（絵の奥行きと同じ測り方）。奥行き near_clip 以下と、
+    画面の外 margin 画素より外と、上端（映り込みは下端）がカメラの後ろ（奥行き 0.05 m 以下）に回る絵は置かない。"""
+    s = {**SPRITES, **(settings or {})}
+    width, height = size
+    far = np.zeros((height, width, 4), np.float32)
+    near = np.zeros((height, width, 4), np.float32)
+    mirror = np.zeros((height, width, 4), np.float32)
+    items = np.asarray(items, np.float64).reshape(-1, 6)
+    if not len(items):
+        return far, near, mirror
+    centres, heights, tones, kinds = items[:, :3], items[:, 3], items[:, 4], items[:, 5].astype(int)
+    matrix = np.asarray(camera["matrix"], np.float64)
+    right, up, back, position = matrix[:3, 0], matrix[:3, 1], matrix[:3, 2], matrix[:3, 3]
+    focal, (px, py), focus = camera["focal"], camera["principal"], camera["focus"]
+    if s["focus_metric"] == "depth":                                 # 踊り手の点のカメラから見た奥行き（絵の奥行きと同じ測り方）
+        if camera.get("dancer") is None:
+            raise ValueError("focus_metric depth には、カメラの控えの dancer（踊り手の点）が要ります")
+        focus = float(-((np.asarray(camera["dancer"], np.float64) - position) @ back))
+
+    def project(points):
+        relative = points - position
+        depth = -(relative @ back)
+        safe = np.where(depth > 0.05, depth, np.nan)
+        return focal * (relative @ right) / safe + px, -focal * (relative @ up) / safe + py, depth
+
+    lift = np.zeros_like(centres)
+    lift[:, 2] = heights / 2
+    cu, cv_, depth = project(centres)
+    tu, tv, _ = project(centres + lift)
+    mirrored = centres * np.array([1.0, 1.0, -1.0])
+    if s["floor"]:
+        mirrored[:, 2] += 2 * s["floor"]
+    mu, mv, mirror_depth = project(mirrored)
+    nu, nv, _ = project(mirrored - lift)
+    margin, (near_fade, per_m, low, high) = s["margin"], s["fade"]
+    def look(index):
+        """明るさとぼかしは、元の位置の奥行きで決める（映り込みも同じ）。"""
+        brightness = float(tones[index] * np.clip(near_fade - depth[index] / per_m, low, high) * s["gain"])
+        sigma = float(min(abs(depth[index] - focus) * s["focus_blur"], s["max_blur"]) * unit + s["room_blur"] * room_sigma * unit)
+        return sprites[int(kinds[index]) % len(sprites)], brightness, sigma
+
+    for index in np.argsort(-depth):                                 # 遠いものから置く
+        if not depth[index] > s["near_clip"]:
+            continue
+        levels, brightness, sigma = look(index)
+        if (np.isfinite(cu[index]) and np.isfinite(tu[index]) and -margin < cu[index] < width + margin
+                and -margin < cv_[index] < height + margin):
+            paste(far if depth[index] > focus else near, levels, (cu[index], cv_[index]), (tu[index], tv[index]), brightness, sigma)
+    order = np.argsort(-mirror_depth) if s["mirror_order"] == "reflected" else np.argsort(-depth)
+    for index in order:                                              # 映り込みを置く順（mirror_order。既定は試作と同じ元の奥行き）
+        if not depth[index] > s["near_clip"]:
+            continue
+        if (mirror_depth[index] > s["near_clip"] and np.isfinite(mu[index]) and np.isfinite(nu[index])
+                and -margin < mu[index] < width + margin and -margin < mv[index] < height + margin):
+            levels, brightness, sigma = look(index)
+            shown = flipped(levels) if s["mirror_mode"] == "flip" else levels
+            paste(mirror, shown, (mu[index], mv[index]), (nu[index], nv[index]), brightness, sigma + s["mirror_blur"] * unit)
+    return far, near, mirror
+
+
+def over_glow(image, layer, glow, glow_blur, unit=1.0):
+    """小さな絵の層（前乗算）を image に重ね、σ glow_blur でぼかした色を glow 倍足す（光ってにじむ）。"""
+    return image * (1 - layer[..., 3:4]) + layer[..., :3] + finish.blur(layer[..., :3], glow_blur, unit) * glow
