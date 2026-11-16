@@ -195,6 +195,11 @@ def _dance_parser(commands):
                         help="draw the UI regions and the boxes of the visible lines (all: every line)")
     stills.add_argument("--layers", action="store_true", help="one row per time: final, stage, performer alpha, behind text, front text")
     stills.add_argument("--hooks", type=Path, help="finishing hooks (Python). Runs only when given here")
+    passes = sub.add_parser("passes", help="composite element passes from model3d render.passes into dance.mp4 as a run")
+    passes.add_argument("spec", type=Path)
+    passes.add_argument("--out", type=Path, help="default: <spec dir>/dance_runs")
+    passes.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    passes.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
     accept = sub.add_parser("accept", help="append a human decision to acceptance.jsonl")
     accept.add_argument("run_dir", type=Path)
     accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
@@ -436,6 +441,9 @@ def dance_command(args):
     if command == "demo":
         from .dance import demo
         return demo.create(args.dir, args.width, args.height, args.duration, args.fps, args.schema)
+    if command == "passes":
+        from .dance import passes
+        return passes.render_run(args.spec, args.out, args.force, _progress, args.quiet)
     from .dance import runs
     if command == "render":
         return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress, args.quiet, args.hooks)
