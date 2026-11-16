@@ -15,6 +15,7 @@
 - 壁は 1 枚（絵の面と平行なので、1 枚でも投影と同じ）。wall.x（左右の端）と wall.top（上の端の y）。
 - shell があれば、部屋を暗い色の箱で囲う（絵の届かない向き）。位置と大きさは m、色は Workbench の物体の色（シーンの線形）。
 物体は collection（既定 model3d_room）に入れ、render.passes の room.collection で描く。絵は .blend に詰め込む。
+コレクションは、アーマチュア（armature か最初のアーマチュア。無ければ今のシーン）の入ったシーンに足す（render.passes と同じシーン）。
 リポジトリ外の試作の台本（2 作目の VRM のダンスの下見）と同じ式・同じ順で計算する（倍精度で計算して、Blender の単精度に入れる）。
 """
 import argparse
@@ -22,12 +23,18 @@ import json
 import os
 import sys
 
+try:   # パッケージとして読むとき（テスト）
+    from .vrm_apply_motion import use_scene_of
+except ImportError:   # Blender が台本として動かすとき
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from vrm_apply_motion import use_scene_of
+
 DEFAULTS = {
     "scale": 1.0,
     "floor": {"rows": None, "x": [-70.0, -35.0] + [-13.0 + 0.5 * k for k in range(53)] + [35.0, 70.0]},
     "wall": {"x": [-70.0, 70.0], "top": -45.0},
     "shell": {"location": [0.0, 4.0, 9.9], "size": [40.0, 44.0, 20.0], "color": [0.012, 0.007, 0.005]},
-    "collection": "model3d_room",
+    "collection": "model3d_room", "armature": None,
 }
 
 
@@ -59,7 +66,7 @@ def room_geometry(settings, image_size):
     def uv_of(point):
         return ((f * point[0] / point[2] + cx) / width, 1.0 - (f * point[1] / point[2] + cy) / height)
 
-    rows = settings["floor"]["rows"] or [int(settings["wall_px"]), 2 * height, 24]      # 既定は絵の下の端の先まで
+    rows = floor_rows(settings, height)
     xs = [float(v) for v in settings["floor"]["x"]]
     verts, faces, uvs = [], [], []
     for py in range(int(rows[0]), int(rows[1]), int(rows[2])):
@@ -87,8 +94,14 @@ def room_geometry(settings, image_size):
     return verts, faces, uvs, info
 
 
+def floor_rows(settings, height):
+    """床の段の行 [最初, 終わり（含まない）, きざみ]。既定は [wall_px, 絵の高さ × 2, 24]（絵の下の端の先まで）。"""
+    return settings["floor"]["rows"] or [int(settings["wall_px"]), 2 * int(height), 24]
+
+
 def room_problem(settings, image_size):
-    """置き方が成り立たないとき（床に立つ所・壁の行が水平線より上、床の段が壁より奥など）の説明。"""
+    """置き方が成り立たないとき（床に立つ所・壁の行が水平線より上、壁が踊り手より手前、床の段が 2 つに満たない）の説明。
+    image_size（幅, 高さ）は、既定の床の段を数えるのに使う。"""
     cy = float(settings["center_px"][1])
     if float(settings["origin_px"][1]) <= cy:
         return "origin_px の y（床に立つ所）は、主点の y（水平線）より下（大きい値）にしてください"
@@ -96,9 +109,11 @@ def room_problem(settings, image_size):
         return "wall_px（床と壁の境の行）は、主点の y（水平線）より下にしてください"
     if float(settings["wall_px"]) >= float(settings["origin_px"][1]):
         return "wall_px（床と壁の境の行）は、床に立つ所（origin_px の y）より上（小さい値）にしてください（壁が踊り手より手前になる）"
-    rows = settings["floor"]["rows"]
-    if rows is not None and float(rows[0]) <= cy:
+    rows = floor_rows(settings, image_size[1])
+    if float(rows[0]) <= cy:
         return "floor.rows の最初の行は、主点の y（水平線）より下にしてください"
+    if len(range(int(rows[0]), int(rows[1]), int(rows[2]))) < 2:
+        return f"床の段が 2 つに満たない（行 {rows}）。floor.rows を、終わりの行が最初の行よりきざみの 2 倍以上先になるようにしてください"
     return None
 
 
@@ -122,7 +137,14 @@ def main(argv=None):
     with open(a.settings, encoding="utf-8") as stream:
         settings = merged(json.load(stream))
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
-    sc = bpy.context.scene
+    # 部屋は、踊り手（アーマチュア）の入ったシーンに足す（render.passes もそのシーンで描く。作業用のシーンを開いたまま保存されたファイルがある）
+    if settings["armature"]:
+        arm = bpy.data.objects.get(settings["armature"])
+        if arm is None or arm.type != "ARMATURE":
+            raise SystemExit(f"アーマチュアの物体がありません: {settings['armature']}")
+    else:
+        arm = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
+    sc = use_scene_of(bpy, arm) if arm is not None else bpy.context.scene
     if bpy.data.collections.get(settings["collection"]) is not None:
         raise SystemExit(f"同じ名前のコレクションがもうあります: {settings['collection']}")
     if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
@@ -168,7 +190,7 @@ def main(argv=None):
         coll.objects.link(shell)
         objects.append(shell.name)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
-    report = {"schema_version": "model3d-box-room/0.1", "blender": bpy.app.version_string, "collection": coll.name,
+    report = {"schema_version": "model3d-box-room/0.1", "blender": bpy.app.version_string, "collection": coll.name, "scene": sc.name,
               "objects": objects, "image": {"size": list(image.size)}, "vertices": len(verts), "faces": len(faces),
               "scale_length": unit, **info, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:

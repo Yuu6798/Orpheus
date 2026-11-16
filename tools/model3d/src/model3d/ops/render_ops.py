@@ -522,7 +522,7 @@ def render_passes(inputs, parameters, outputs, context):
 
 BOX_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "box_room.py"
 BOX_PARAMETERS = {"blender", "focal_px", "center_px", "camera_height", "scale", "origin_px", "wall_px", "floor", "wall", "shell",
-                  "collection", "timeout"}
+                  "collection", "armature", "timeout"}
 
 
 def _pair(value, where):
@@ -531,8 +531,8 @@ def _pair(value, where):
     return [float(v) for v in value]
 
 
-def _box_settings(parameters):
-    """render.box_room のパラメーターを確かめる（絵の中の仮の部屋の置き方。docs/model3d.md の「箱の部屋」）。"""
+def _box_settings(parameters, image_size):
+    """render.box_room のパラメーターを確かめる（絵の中の仮の部屋の置き方。docs/model3d.md の「箱の部屋」）。image_size は絵の（幅, 高さ）。"""
     from ..blender_adapter import box_room
     missing = [k for k in ("focal_px", "center_px", "camera_height", "origin_px", "wall_px") if k not in parameters]
     if missing:
@@ -588,7 +588,9 @@ def _box_settings(parameters):
             s["shell"] = sh
     if "collection" in parameters:
         s["collection"] = _name(parameters["collection"], "collection")
-    problem = box_room.room_problem(box_room.merged(s), None)
+    if parameters.get("armature") is not None:
+        s["armature"] = _name(parameters["armature"], "armature")
+    problem = box_room.room_problem(box_room.merged(s), image_size)
     if problem:
         raise ToolError(f"render.box_room: {problem}")
     return s
@@ -611,7 +613,13 @@ def box_room(inputs, parameters, outputs, context):
     missing = [name for name in ("blend", "report") if name not in outputs]
     if missing:
         raise ToolError(f"render.box_room には outputs の {', '.join(missing)} が要ります")
-    settings = _box_settings(parameters)
+    from PIL import Image
+    try:
+        with Image.open(inputs["image"]) as picture:
+            image_size = picture.size
+    except OSError as error:
+        raise ToolError(f"render.box_room: 背景の絵を読めません: {inputs['image']}（{error}）") from error
+    settings = _box_settings(parameters, image_size)
     blender = _blender(parameters, context, "render.box_room")
     settings_path = Path(context.step_dir) / "box_room_settings.json"
     atomic_json(settings_path, settings)
@@ -622,6 +630,7 @@ def box_room(inputs, parameters, outputs, context):
     report = read_json(outputs["report"])
     observation = {"kind": "box_room", "exit_code": run["exit_code"], "seconds": run["seconds"],
                    "blender_version": run["blender_version"], "collection": report.get("collection"), "objects": report.get("objects"),
-                   "vertices": report.get("vertices"), "faces": report.get("faces"), "wall_depth": report.get("wall_depth"),
+                   "scene": report.get("scene"), "vertices": report.get("vertices"), "faces": report.get("faces"),
+                   "wall_depth": report.get("wall_depth"),
                    "camera_m": report.get("camera_m")}
     return StepResult(observations=[observation])

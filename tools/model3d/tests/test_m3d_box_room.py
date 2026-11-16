@@ -50,17 +50,20 @@ def test_the_defaults_match_the_production_room():
 
 
 def test_bad_rooms_are_stopped_before_blender():
-    assert box_room.room_problem(box_room.merged(ROOM), None) is None
+    size = (1000, 800)
+    assert box_room.room_problem(box_room.merged(ROOM), size) is None
     for change, word in (({"origin_px": [600, 300]}, "origin_px"), ({"wall_px": 350}, "wall_px"), ({"wall_px": 950}, "wall_px"),
                          ({"floor": {"rows": [300, 900, 10]}}, "floor.rows")):
-        assert word in box_room.room_problem(box_room.merged({**ROOM, **change}), None)
+        assert word in box_room.room_problem(box_room.merged({**ROOM, **change}), size)
+    # 既定の床の段（壁の行から絵の高さの 2 倍の行まで）が 2 つに満たない絵は止める
+    assert "床の段" in box_room.room_problem(box_room.merged(ROOM), (1000, 260))
     for params, word in (({}, "focal_px"), ({**ROOM, "focal_px": 0}, "focal_px"), ({**ROOM, "center_px": [1]}, "center_px"),
                          ({**ROOM, "floor": {"rows": [500, 520, 24]}}, "floor.rows"), ({**ROOM, "floor": {"x": [1, 0]}}, "floor.x"),
                          ({**ROOM, "wall": {"x": [2, 1]}}, "wall.x"), ({**ROOM, "wall": {"top": 2}}, "wall.top"),
                          ({**ROOM, "shell": {"size": [1, 0, 1]}}, "shell.size"), ({**ROOM, "wall_px": 950}, "wall_px"),
                          ({**ROOM, "collection": ""}, "collection"), ({**ROOM, "floor": {"step": 1}}, "floor")):
         with pytest.raises(ToolError, match=word):
-            render_ops._box_settings(params)
+            render_ops._box_settings(params, (1000, 800))
 
 
 STAND_IN = r'''
@@ -74,7 +77,7 @@ settings = json.load(open(value("--settings"), encoding="utf-8"))
 open(value("--out-blend"), "wb").write(b"room " + open(value("--blend"), "rb").read())
 json.dump({"schema_version": "model3d-box-room/0.1", "collection": settings.get("collection", "model3d_room"),
            "objects": ["model3d_room", "model3d_room_shell"], "vertices": 10, "faces": 4, "wall_depth": 10.0,
-           "camera_m": [0, -2, 1], "image": open(value("--image"), "rb").read().decode(), "settings": settings},
+           "camera_m": [0, -2, 1], "image_bytes": len(open(value("--image"), "rb").read()), "settings": settings},
           open(value("--report"), "w"))
 '''
 
@@ -82,7 +85,8 @@ json.dump({"schema_version": "model3d-box-room/0.1", "collection": settings.get(
 def test_the_operation_adds_the_room_to_a_copy(tmp_path):
     from model3d import executor
     (tmp_path / "dance.blend").write_bytes(b"dance")
-    (tmp_path / "room.png").write_bytes(b"picture")
+    from PIL import Image
+    Image.new("RGB", (1000, 800), (90, 60, 40)).save(tmp_path / "room.png")
     params = {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), **ROOM, "scale": 1.03, "collection": "set"}
     atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "room",
                                            "inputs": {"dance": {"path": "dance.blend"}, "room": {"path": "room.png"}},
@@ -94,6 +98,25 @@ def test_the_operation_adds_the_room_to_a_copy(tmp_path):
     assert result["status"] == "succeeded", step.get("error")
     assert Path(step["artifacts"]["blend"]).read_bytes() == b"room dance"
     report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
-    assert report["image"] == "picture" and report["settings"]["scale"] == 1.03 and report["settings"]["collection"] == "set"
+    assert report["image_bytes"] > 0 and report["settings"]["scale"] == 1.03 and report["settings"]["collection"] == "set"
     obs = step["observations"][0]
     assert obs["kind"] == "box_room" and obs["collection"] == "set" and obs["objects"] == ["model3d_room", "model3d_room_shell"]
+
+
+def test_the_operation_stops_on_a_picture_it_cannot_read(tmp_path):
+    from model3d import executor
+    (tmp_path / "dance.blend").write_bytes(b"dance")
+    (tmp_path / "room.png").write_bytes(b"not a picture")
+    params = {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), **ROOM}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "room",
+                                           "inputs": {"dance": {"path": "dance.blend"}, "room": {"path": "room.png"}},
+                                           "steps": [{"id": "room", "operation": "render.box_room",
+                                                      "inputs": {"blend": "$inputs.dance", "image": "$inputs.room"},
+                                                      "parameters": params, "outputs": {"blend": "room.blend", "report": "room.json"}}]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "failed" and "背景の絵を読めません" in result["steps"]["room"]["error"]
+
+
+def test_the_room_goes_to_the_dancers_scene():
+    from model3d.blender_adapter import vrm_apply_motion
+    assert box_room.use_scene_of is vrm_apply_motion.use_scene_of      # render.passes と同じ切り替え
