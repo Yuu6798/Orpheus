@@ -82,6 +82,30 @@ def test_pc2_bytes_have_the_point_cache_header():
         cs.read_pc2(data[:-4])
 
 
+def test_object_space_uses_each_frames_matrix_when_the_object_moves():
+    rng = np.random.default_rng(5)
+    local = rng.normal(size=(4, 6, 3))
+    still = np.tile(np.array([[1, 0, 0, 0.5], [0, 0, -1, 0.2], [0, 1, 0, 1.0], [0, 0, 0, 1.0]]), (4, 1, 1))
+    world = np.einsum("fij,fvj->fvi", still[:, :3, :3], local) + still[:, None, :3, 3]
+    inverses = np.linalg.inv(still)
+    back, moves = cs.to_object_space(world, inverses)
+    assert moves is False and np.array_equal(back, world @ inverses[0][:3, :3].T + inverses[0][:3, 3])   # 台本と同じ 1 つの行列
+    assert np.allclose(back, local)
+    moving = still.copy()
+    moving[:, 0, 3] += np.arange(4) * 0.3                                  # 親が動いて、物体そのものが動く
+    world = np.einsum("fij,fvj->fvi", moving[:, :3, :3], local) + moving[:, None, :3, 3]
+    back, moves = cs.to_object_space(world, np.linalg.inv(moving))
+    assert moves is True and np.allclose(back, local)                     # コマごとの行列で直すと、物体の中の座標に戻る
+    wrong = world @ np.linalg.inv(moving)[-1][:3, :3].T + np.linalg.inv(moving)[-1][:3, 3]
+    assert not np.allclose(wrong, local)                                   # 最後のコマの行列だけで直すとずれる
+
+
+def test_topology_changes_are_refused():
+    assert cs.topology_problem("Skirt", 2137, 2137) is None
+    assert "Subdivision" in cs.topology_problem("Skirt", 2137, 8548) and "2137 → 変形の後 8548" in cs.topology_problem(
+        "Skirt", 2137, 8548)
+
+
 def test_cache_paths_are_relative_to_the_blend(tmp_path):
     blend = tmp_path / "run" / "smooth.blend"
     assert cs.relative_to_blend(tmp_path / "run" / "smooth_skirt.pc2", blend) == "//smooth_skirt.pc2"

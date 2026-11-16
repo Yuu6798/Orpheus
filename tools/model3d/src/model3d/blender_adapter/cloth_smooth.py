@@ -16,6 +16,8 @@
   4. detail（細かい裾）も、ならした筒に付いて行く動きを読み、σ detail_sigma で同じようにならして、ファイルに置き換える
      （detail_sigma 0 なら細かい裾はそのまま）。読むときは、読む物と、その変形が使う物（貼り付けの相手・押し戻しの相手）だけを残し、
      ほかのメッシュは評価しない（速くするため。保存の前に戻す）。
+  - 変形で頂点の数が変わる（Subdivision・Mirror・Solidify などがある）物は止める（.pc2 は元のメッシュの頂点の並びで読むため）。
+  - 物体の中の座標へは、物体が動かなければ 1 つの行列で（台本と同じ）、物体そのものが動けばコマごとの行列で直す。
 ファイルは .blend と同じフォルダか、その下に置く（Mesh Cache は .blend からの相対パス //… で読む）。
 
 報告は model3d-cloth-smooth/0.1（ならす前後のずれ。前後のコマの中間からのずれの平均と 99 百分位、動かした量）。
@@ -104,6 +106,26 @@ def read_pc2(data):
     return points.reshape(frames, count, 3), start, step
 
 
+def to_object_space(world_points, inverses):
+    """世界の座標の頂点（コマ, 頂点, 3）を、物体の中の座標に直す（Mesh Cache はこの座標で頂点を上書きし、物体の行列はその後に効く）。
+    inverses はコマごとの物体の世界の行列の逆（コマ, 4, 4）。物体が動かない（全部のコマで同じ行列）ときは、1 つの行列で直す
+    （リポジトリ外の台本と同じ計算）。物体そのものが動く（動きのある親に付いているなど）ときは、コマごとの行列で直す。
+    戻り: (物体の中の座標, 物体が動いたか)。"""
+    inverses = np.asarray(inverses)
+    if all(np.array_equal(inverses[0], matrix) for matrix in inverses[1:]):
+        return world_points @ inverses[0][:3, :3].T + inverses[0][:3, 3], False
+    return np.einsum("fij,fvj->fvi", inverses[:, :3, :3], world_points) + inverses[:, None, :3, 3], True
+
+
+def topology_problem(name, mesh_count, evaluated_count):
+    """変形で頂点の数が変わるときの説明（変わらなければ None）。.pc2 は元のメッシュの頂点の並びで読まれるので、頂点の数を変える
+    モディファイア（Subdivision・Mirror・Solidify など）があると、置き換えた後の形を作り直せない。"""
+    if evaluated_count == mesh_count:
+        return None
+    return (f"{name} の変形で頂点の数が変わります（メッシュ {mesh_count} → 変形の後 {evaluated_count}）。頂点の数を変えるモディファイア"
+            "（Subdivision・Mirror・Solidify など）は、先に当てるか外してください（.pc2 は元のメッシュの頂点の並びで読むため）")
+
+
 def relative_to_blend(path, blend):
     """Mesh Cache が読むパス（.blend のフォルダからの相対パス //…。区切りは /）。.blend のフォルダの外なら None。"""
     relative = os.path.relpath(os.path.abspath(path), os.path.dirname(os.path.abspath(blend)))
@@ -155,25 +177,30 @@ def main(argv=None):
     readers = []
 
     def read_frames(target):
-        """全コマの頂点（世界の座標）と骨の行列。"""
-        points, bones = [], []
+        """全コマの頂点（世界の座標）・骨の行列・物体の世界の行列の逆。変形で頂点の数が変わるなら止める。"""
+        points, bones, inverses = [], [], []
         for frame in range(start, end + 1):
             scene.frame_set(frame)
             depsgraph = bpy.context.evaluated_depsgraph_get()
             evaluated = target.evaluated_get(depsgraph)
             mesh = evaluated.to_mesh()
+            problem = topology_problem(target.name, len(target.data.vertices), len(mesh.vertices))
+            if problem:
+                evaluated.to_mesh_clear()
+                raise SystemExit(problem)
             world = np.array(evaluated.matrix_world)
             local = np.empty(len(mesh.vertices) * 3)
             mesh.vertices.foreach_get("co", local)
             points.append(local.reshape(-1, 3) @ world[:3, :3].T + world[:3, 3])
+            inverses.append(np.array(evaluated.matrix_world.inverted()))
             evaluated.to_mesh_clear()
             bones.append(np.array(armature.matrix_world @ bone.matrix))
-        return np.array(points), np.array(bones)
+        return np.array(points), np.array(bones), np.array(inverses)
 
-    def replace_with_cache(target, world_points, path):
-        """頂点の動きをファイル（PC2）に書き、target の変形を「このファイルを読む」だけに置き換える。外した変形の名前を返す。"""
-        inverse_object = np.array(target.matrix_world.inverted())
-        object_space = world_points @ inverse_object[:3, :3].T + inverse_object[:3, 3]
+    def replace_with_cache(target, world_points, inverses, path):
+        """頂点の動きをファイル（PC2）に書き、target の変形を「このファイルを読む」だけに置き換える。外した変形の名前と、物体
+        そのものが動いたか（コマごとの行列で直したか）を返す。"""
+        object_space, moves = to_object_space(world_points, inverses)
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, "wb") as handle:
             handle.write(pc2_bytes(object_space, start))
@@ -190,7 +217,7 @@ def main(argv=None):
         reader.deform_mode = "OVERWRITE"
         reader.play_mode = "SCENE"
         reader.time_mode = "FRAME"
-        return removed
+        return removed, moves
 
     def needed_by(target):
         """target の変形が使う物（貼り付けの相手・押し戻しの相手など、モディファイアが指す物）。"""
@@ -208,25 +235,27 @@ def main(argv=None):
         if obj.type == "MESH" and obj is not proxy and not obj.hide_viewport:
             obj.hide_viewport = True
             hidden.append(obj)
-    points, bones = read_frames(proxy)
+    points, bones, inverses = read_frames(proxy)
     proxy_result, proxy_summary = smooth_in_bone_space(points, bones, settings["sigma"], settings["median"])
-    removed = replace_with_cache(proxy, proxy_result, a.proxy_cache)
+    removed, moves = replace_with_cache(proxy, proxy_result, inverses, a.proxy_cache)
     scale = np.linalg.norm(bones[:, :3, :3], axis=1)      # 骨の世界の行列の軸ごとの大きさ（ずれの数はその逆数の倍になる）
     report = {"schema_version": "model3d-cloth-smooth/0.1", "blender": bpy.app.version_string, "armature": armature.name,
               "bone": settings["bone"], "bone_scale": [float(scale.min()), float(scale.max())], "frames": [int(start), int(end)],
               "median_window": settings["median"],
               "proxy": {"object": proxy.name, "verts": int(points.shape[1]), "sigma_frames": settings["sigma"],
-                        "cache": os.path.basename(a.proxy_cache), "removed_modifiers": removed, **proxy_summary}}
+                        "cache": os.path.basename(a.proxy_cache), "removed_modifiers": removed, "object_moves": moves,
+                        **proxy_summary}}
 
     # 細かい裾: ならした筒に付いて行く動きを読む → もう一度ならす → ファイルに置き換える
     if detail is not None:
         for obj in {detail} | needed_by(detail):
             obj.hide_viewport = False
-        points, bones = read_frames(detail)
+        points, bones, inverses = read_frames(detail)
         detail_result, detail_summary = smooth_in_bone_space(points, bones, settings["detail_sigma"], settings["median"])
-        removed = replace_with_cache(detail, detail_result, a.cache)
+        removed, moves = replace_with_cache(detail, detail_result, inverses, a.cache)
         report["detail"] = {"object": detail.name, "verts": int(points.shape[1]), "sigma_frames": settings["detail_sigma"],
-                            "cache": os.path.basename(a.cache), "removed_modifiers": removed, **detail_summary}
+                            "cache": os.path.basename(a.cache), "removed_modifiers": removed, "object_moves": moves,
+                            **detail_summary}
     for obj in hidden:
         obj.hide_viewport = False
     scene.frame_set(scene.frame_start)
