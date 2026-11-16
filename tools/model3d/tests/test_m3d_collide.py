@@ -92,3 +92,51 @@ def test_empty_inputs():
     assert collide.inside(np.zeros((0, 3)), box()).shape == (0,)
     with pytest.raises(ToolError, match="面がありません"):
         collide.inside([[0, 0, 0]], Mesh([[0, 0, 0]], []))
+    assert collide.ray_hits_grid(np.zeros((0, 3)), [1.0, 0.0, 0.0], box().triangle_points()).shape == (0,)
+
+
+def _bumpy_sphere(n_lat=24, n_lon=40, wobble=0.25):
+    """凹凸のある閉じた球（頂点を共有する四角形と、極の三角形）。"""
+    vertices, faces = [], []
+    for i in range(1, n_lat):
+        th = np.pi * i / n_lat
+        for j in range(n_lon):
+            ph = 2 * np.pi * j / n_lon
+            r = 1.0 + wobble * np.sin(3 * ph) * np.sin(2 * th)
+            vertices.append([r * np.sin(th) * np.cos(ph), r * np.sin(th) * np.sin(ph), r * np.cos(th)])
+    top, bottom = len(vertices), len(vertices) + 1
+    vertices += [[0, 0, 1], [0, 0, -1]]
+    for i in range(n_lat - 2):
+        for j in range(n_lon):
+            faces.append([i * n_lon + j, i * n_lon + (j + 1) % n_lon, (i + 1) * n_lon + (j + 1) % n_lon, (i + 1) * n_lon + j])
+    base = (n_lat - 2) * n_lon
+    for j in range(n_lon):
+        faces.append([top, (j + 1) % n_lon, j])
+        faces.append([bottom, base + j, base + (j + 1) % n_lon])
+    return Mesh(vertices, faces)
+
+
+@pytest.mark.parametrize("mesh", [box(2.0), _bumpy_sphere()], ids=["cube", "bumpy_sphere"])
+def test_grid_search_counts_the_same_hits_as_checking_every_triangle(mesh):
+    """格子で候補を絞っても、総当たりと同じ数になる（頂点・辺・面の上の点や、四角形の対角線を通る光線も含めて）。"""
+    rng = np.random.default_rng(7)
+    tri = mesh.triangle_points()
+    lattice = np.stack(np.meshgrid(*[np.linspace(-1, 1, 7)] * 3), axis=-1).reshape(-1, 3)
+    edges = (tri + np.roll(tri, 1, axis=1)) / 2
+    points = np.vstack([rng.uniform(-1.4, 1.4, size=(1500, 3)), lattice, mesh.vertices, tri.mean(axis=1)[:300],
+                        edges.reshape(-1, 3)[:300]])
+    for direction in [*collide.DIRECTIONS, [1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [1.0, 1.0, 1.0]]:
+        d = np.asarray(direction, float) / np.linalg.norm(direction)
+        assert np.array_equal(collide.ray_hits_grid(points, d, tri), collide.ray_hits(points, d, tri)), d
+    assert np.array_equal(collide.inside(points, mesh), collide.inside(points, mesh, search="all"))
+
+
+def test_grid_search_splits_large_inputs_into_chunks(monkeypatch):
+    mesh = _bumpy_sphere(12, 20)
+    points = np.random.default_rng(1).uniform(-1.2, 1.2, size=(400, 3))
+    expected = collide.inside(points, mesh, search="all")
+    monkeypatch.setattr(collide, "GRID_PAIRS", 7)                  # 候補の組を細かく区切っても同じ
+    monkeypatch.setattr(collide, "GRID_CELLS", 9)
+    assert np.array_equal(collide.inside(points, mesh), expected)
+    with pytest.raises(ToolError, match="search"):
+        collide.inside(points, mesh, search="bvh")

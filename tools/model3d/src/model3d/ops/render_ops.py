@@ -1,6 +1,7 @@
 """描く: 塗りと輪郭線を付けたキャラを、舞台と光の中で、コマごとに PNG に描く（Blender の中で）。描く直前の押し出し（push）
 の準備として、当たりの写しと押し出す頂点の組も足す（render.prepare_push）。もう 1 つの描き方として、キャラを要素に分けて簡易描画で
-描き、カメラを控える（render.passes。重ね合わせは Blender の外）。"""
+描き、カメラを控える（render.passes。重ね合わせは Blender の外）。部位を色分けして描く診断の絵（render.part_colors）も描く。"""
+import math
 from pathlib import Path
 
 from ..io import ToolError, atomic_json, resolve_path, sha256
@@ -633,4 +634,135 @@ def box_room(inputs, parameters, outputs, context):
                    "scene": report.get("scene"), "vertices": report.get("vertices"), "faces": report.get("faces"),
                    "wall_depth": report.get("wall_depth"),
                    "camera_m": report.get("camera_m")}
+    return StepResult(observations=[observation])
+
+
+PART_PARAMETERS = {"blender", "addons", "blender_extensions", "frames", "bone_meshes", "bone_colors", "bone_default", "object_colors",
+                   "default_color", "show", "hide", "resolution", "format", "quality", "antialiasing", "cavity", "world", "camera",
+                   "armature", "timeout"}
+PART_CAMERA_KEYS = {"yaw", "height", "center", "lens", "target"}
+PART_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "part_colors.py"
+
+
+def _color(value, where):
+    """シーンの線形の色 [r, g, b]（0 以上の数）。"""
+    if not (isinstance(value, list) and len(value) == 3
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0 for v in value)):
+        raise ToolError(f"{where} は色 [r, g, b]（シーンの線形の値。0 以上の数）にしてください: {value!r}")
+    return [float(v) for v in value]
+
+
+def _part_settings(parameters):
+    """render.part_colors のパラメーターを確かめ、台本の settings にする（省いた値は台本の既定。長さは m）。"""
+    frames = parameters.get("frames")
+    if (not isinstance(frames, list) or not frames
+            or not all(isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) for f in frames)):
+        raise ToolError(f"frames は描く動きのコマ（数。小数は前後のコマの間の時刻）の並びにしてください: {frames!r}")
+    s = {"frames": frames}
+    for key in ("bone_meshes", "show", "hide"):
+        if key in parameters:
+            s[key] = _names(parameters[key], key)
+    if set(s.get("show", [])) & set(s.get("hide", [])):
+        raise ToolError(f"show と hide に同じ物体があります: {sorted(set(s['show']) & set(s['hide']))}")
+    if "bone_colors" in parameters:
+        pairs = parameters["bone_colors"]
+        if not isinstance(pairs, list) or not all(isinstance(p, list) and len(p) == 2 and isinstance(p[0], str) and p[0] for p in pairs):
+            raise ToolError(f"bone_colors は [頂点グループの名前の頭, [r, g, b]] の並びにしてください: {pairs!r}")
+        s["bone_colors"] = [[p[0], _color(p[1], f"bone_colors[{n}]")] for n, p in enumerate(pairs)]
+    if s.get("bone_meshes") and not s.get("bone_colors"):
+        raise ToolError("bone_meshes を挙げるときは、bone_colors（頂点グループの名前の頭と色）も書いてください")
+    if "object_colors" in parameters:
+        colors = parameters["object_colors"]
+        if not isinstance(colors, dict) or not all(isinstance(k, str) and k for k in colors):
+            raise ToolError(f"object_colors は {{物体の名前: [r, g, b]}} にしてください: {colors!r}")
+        s["object_colors"] = {k: _color(v, f"object_colors.{k}") for k, v in colors.items()}
+    for key in ("bone_default", "default_color", "world"):
+        if key in parameters:
+            s[key] = _color(parameters[key], key)
+    if "resolution" in parameters:
+        s["resolution"] = _render_settings({"resolution": parameters["resolution"]})["resolution"]
+    if "format" in parameters:
+        if parameters["format"] not in ("png", "jpeg"):
+            raise ToolError(f"format は png か jpeg にしてください: {parameters['format']!r}")
+        s["format"] = parameters["format"]
+    if "quality" in parameters:
+        quality = number(parameters, "quality", minimum=1, integer=True)
+        if quality > 100:
+            raise ToolError(f"quality は 1〜100 にしてください: {quality}")
+        s["quality"] = quality
+    if "antialiasing" in parameters:
+        if parameters["antialiasing"] not in ANTIALIASING:
+            raise ToolError(f"antialiasing は {', '.join(ANTIALIASING)} のどれかにしてください: {parameters['antialiasing']!r}")
+        s["antialiasing"] = parameters["antialiasing"]
+    if "cavity" in parameters:
+        s["cavity"] = _flag(parameters, "cavity")
+    if parameters.get("armature") is not None:
+        s["armature"] = _name(parameters["armature"], "armature")
+    camera = _section(parameters, "camera", PART_CAMERA_KEYS)
+    c = {}
+    for key in ("height", "lens"):
+        if key in camera:
+            c[key] = float(number(camera, key, minimum=0, exclusive=True))
+    for key in ("yaw", "center"):
+        if key in camera:
+            c[key] = float(number(camera, key))
+    if "target" in camera:
+        target = camera["target"]
+        if not (isinstance(target, list) and len(target) == 2
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in target)):
+            raise ToolError(f"camera.target は狙う点 [x, y]（m）にしてください: {target!r}")
+        c["target"] = [float(v) for v in target]
+    s["camera"] = c
+    return s
+
+
+@register("render.part_colors", inputs=("blend",), outputs=("frames", "report"), cacheable=False,
+          summary="部位を色分けして描く診断の絵（Blender の簡易描画）: bone_meshes のメッシュは頂点ごとにいちばん重みの大きい頂点グループの"
+                  "名前の頭（bone_colors）で、ほかのメッシュは物体ごとに 1 色（object_colors）。show で描画から隠した物（布の身代わり・"
+                  "当たり判定の写し）も描き、hide の物は描かない。カメラは狙う点の方位 yaw から水平に。コマ（frames。小数も）ごとに "
+                  "f<T>.jpg（png も）。何が何を通り抜けているかを目で見分ける（内側に入った頂点の数では、脚がまるごと布を通り抜ける"
+                  "失敗を拾えない）。.blend は変えない。frames は描いた絵の一覧（model3d-frames/0.1）。Blender が要り、再利用しない")
+def render_part_colors(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..blender_adapter import launcher
+    from ..blender_adapter import part_colors as script
+    from ..io import read_json
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "render.part_colors")
+    unknown = set(parameters) - PART_PARAMETERS
+    if unknown:
+        raise ToolError(f"render.part_colors の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(PART_PARAMETERS)}）")
+    missing = [name for name in ("frames", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"render.part_colors には outputs の {', '.join(missing)} が要ります")
+    settings = _part_settings(parameters)
+    merged = script.merged(settings)
+    blender = _blender(parameters, context, "render.part_colors")
+    addons, extensions = blender_addons(parameters, context)
+    frames_dir = Path(context.step_dir) / "frames"          # 工程のフォルダの中（実行ごとに新しい）
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = Path(context.step_dir) / "part_colors_settings.json"
+    atomic_json(settings_path, settings)
+    run = launcher.run_blender(blender, PART_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                            "--frames-dir", str(frames_dir), "--report", outputs["report"]],
+                               log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                               extensions=extensions)
+    report = read_json(outputs["report"])
+    frames, absent = [], []
+    for item in report["frames"]:
+        file = frames_dir / item["file"]
+        if not file.is_file():
+            absent.append(item["T"])
+            continue
+        frames.append({"T": item["T"], "f": item["f"], "file": item["file"], "sha256": sha256(file), "bytes": file.stat().st_size})
+    if absent:
+        raise ToolError(f"render.part_colors: 描いたはずの絵がありません（T {absent}）")
+    manifest = contracts.validate("frames", {"schema_version": "model3d-frames/0.1", "directory": str(frames_dir.resolve()),
+                                             "fps": report["fps"], "resolution": merged["resolution"], "frames": frames,
+                                             "missing": []})
+    atomic_json(outputs["frames"], manifest)
+    observation = {"kind": "part_colors", "exit_code": run["exit_code"], "seconds": run["seconds"],
+                   "blender_version": run["blender_version"], "addons": run.get("addons"), "frames": len(frames),
+                   "drawn": len(report.get("drawn") or []), "camera": report.get("camera")}
     return StepResult(observations=[observation])

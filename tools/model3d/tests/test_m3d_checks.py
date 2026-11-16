@@ -100,6 +100,26 @@ def test_penetration_reports_inside_vertices_and_depth():
     assert abs(report["max_depth"] - 1.0) < 1e-12 and report["collider_topology_sha256"]
     clean = checks.penetration(Mesh([[5, 5, 5], [6, 5, 5], [5, 6, 5]], [[0, 1, 2]]), box(2.0))
     assert clean["pass"] and clean["inside"] == 0
+    assert report["search"] == "grid"                                    # 既定は格子で絞る探し方
+    every = checks.penetration(strip, box(2.0), search="all")
+    assert every["search"] == "all" and {k: v for k, v in every.items() if k != "search"} == {
+        k: v for k, v in report.items() if k != "search"}
+
+
+def test_penetration_step_takes_the_search(tmp_path):
+    from model3d.ops import check_ops
+    Mesh([[0, 0, 0], [0.5, 0, 0], [3, 0, 0]], [[0, 1, 2]]).save(tmp_path / "strip.json")
+    box(2.0).save(tmp_path / "box.json")
+    inputs = {"mesh": tmp_path / "strip.json", "collider": tmp_path / "box.json"}
+
+    class Context:
+        selections = {}
+
+    for search in ("grid", "all"):
+        result = check_ops.check_penetration(inputs, {"search": search}, {}, Context())
+        assert result.observations[0]["search"] == search and result.observations[0]["inside"] == 2 and result.review
+    with pytest.raises(ToolError, match="search"):
+        check_ops.check_penetration(inputs, {"search": "bvh"}, {}, Context())
 
 
 def test_penetration_and_push_out_reject_different_units(tmp_path):
