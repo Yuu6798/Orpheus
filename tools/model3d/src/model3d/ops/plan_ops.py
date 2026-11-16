@@ -1,5 +1,6 @@
 """段取り: 曲の音から光のキーを作り（plan.light_keys）、段取り表と光のキーと骨の通り道から、render.stage が描くトラックを
-作る（plan.stage）。動きと違う fps で描くコマの並び（小数のコマ）も作る（plan.retime）。どれも計算だけ（Blender は使わない）。"""
+作る（plan.stage）。動きと違う fps で描くコマの並び（小数のコマ）も作る（plan.retime）。踊り手を中心にした極座標のカメラの
+キーから、render.passes が描くコマごとのカメラを作る（plan.orbit）。どれも計算だけ（Blender は使わない）。"""
 from ..io import ToolError, atomic_json
 from . import StepResult, number, register, require
 
@@ -57,6 +58,34 @@ def light_keys(inputs, parameters, outputs, context):
                    "rate": rate, "channels": int(samples.shape[1]), "audio_seconds": round(length, 6),
                    "silent_frames": frames - shown, "beats": len(keys["beats"]),
                    "mean": {name: round(sum(keys[name]) / frames, 3) for name in ("low", "mid", "high")}}
+    return StepResult(observations=[observation])
+
+
+@register("plan.orbit", inputs=("plan", "bones"), outputs=("cameras", "track", "report"),
+          summary="踊り手を中心にした極座標のカメラの段取り表（plan。model3d-orbit-plan/0.1。区間ごとの方位・距離・高さ・狙う点・"
+                  "画角・ロールのキーとつなぎ方、手持ちの揺れと打点の揺れ、踊りの時刻の止め）と、骨から決めた点の通り道（bones。"
+                  "model3d-bone-path/0.1。plan.retime のトラックで等間隔に測ったもの）から、コマごとのカメラ（cameras。"
+                  "model3d-cameras/0.1。行列・焦点距離・主点・踊り手の点）とコマの並び（track。T と動きのコマ f）を作る。"
+                  "render.passes の track と cameras にそのまま渡せる。plan.stage と同じ時刻の読み方・区間・寄りと揺れを使う。計算だけ")
+def orbit(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..orbit_plan import build
+    require(inputs, ("plan", "bones"), "plan.orbit")
+    if parameters:
+        raise ToolError(f"plan.orbit の知らないパラメーター: {sorted(parameters)}（設定は段取り表に書きます）")
+    missing = [name for name in ("cameras", "track") if name not in outputs]
+    if missing:
+        raise ToolError(f"plan.orbit には outputs の {', '.join(missing)} が要ります")
+    plan = contracts.load("orbit-plan", inputs["plan"])
+    bones = contracts.load("bone-path", inputs["bones"])
+    cameras, track, report = build(plan, bones)
+    atomic_json(outputs["cameras"], contracts.validate("cameras", cameras))
+    atomic_json(outputs["track"], contracts.validate("stage-track", track))
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    observation = {"kind": "orbit_plan", "frames": report["frames"], "seconds": report["seconds"], "points": report["points"],
+                   "shots": sum(1 for s in report["shots"] if s["frames"]), "held_frames": report["held_frames"],
+                   "outside_samples": report["samples"]["outside"], "f": report["f"]}
     return StepResult(observations=[observation])
 
 

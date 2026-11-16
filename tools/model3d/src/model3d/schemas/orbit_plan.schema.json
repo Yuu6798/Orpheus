@@ -1,0 +1,586 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-orbit-plan/0.1",
+  "title": "model3d orbit plan",
+  "description": "plan.orbit のカメラの段取り表: 踊り手のまわりの極座標のキー（方位・距離・高さ・狙う点・画角・ロール・つなぎ方）の区間、手持ちの揺れと打点の揺れ、踊りの時刻の止め。コマ T の時刻は time_offset + (T − 1) / fps 秒で、段取り表の時刻はどれもこの秒（秒の数・印 marks の名前・拍 {\"beat\": k} のどれか）。長さは m、角度は度。省いた部分は既定の値（docs/model3d.md）。曲ごとの時刻と値はリポジトリの外のレシピに置く。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fps",
+    "frames",
+    "dance",
+    "shots"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "model3d-orbit-plan/0.1"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "fps": {
+      "description": "書き出す fps",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "frames": {
+      "description": "書き出すコマの数（T = 1 から）",
+      "type": "integer",
+      "minimum": 1
+    },
+    "time_offset": {
+      "description": "T = 1 の時刻（秒。曲の秒にそろえるとき）",
+      "type": "number"
+    },
+    "marks": {
+      "description": "時刻の名前 → 秒の数か拍 {\"beat\": k}",
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/plain_time"
+      }
+    },
+    "grid": {
+      "description": "拍の格子（拍 {\"beat\": k} の時刻 = k0_time + period × k）",
+      "type": "object",
+      "required": [
+        "period",
+        "k0_time"
+      ],
+      "properties": {
+        "period": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "k0_time": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "dance": {
+      "description": "踊りの時刻 → 動きのコマ: f = frame0 + fps × 踊りの時刻。踊りの時刻はふつうコマの時刻で、holds の区間では at に止める",
+      "type": "object",
+      "required": [
+        "fps"
+      ],
+      "properties": {
+        "frame0": {
+          "description": "踊りの時刻 0 秒の動きのコマ（既定 1）",
+          "type": "number"
+        },
+        "fps": {
+          "description": "動きの fps",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "holds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "from",
+              "at"
+            ],
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/time"
+              },
+              "until": {
+                "$ref": "#/$defs/time"
+              },
+              "at": {
+                "description": "止める踊りの時刻（秒）",
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "centre": {
+      "description": "カメラが回る中心の点（骨の通り道の points か bones の名前。既定 hips）",
+      "type": "string",
+      "minLength": 1
+    },
+    "min_height": {
+      "description": "カメラの高さの下限（m。既定 0.12）",
+      "type": "number"
+    },
+    "smooth": {
+      "description": "点の通り道のならし（ガウスの σ を秒で。±ceil(reach × σ) の標本）",
+      "type": "object",
+      "properties": {
+        "sigma_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reach": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "up": {
+      "description": "上の向きの手がかりを、真上（真下）を向くほど水平の前へ寄せる割合 smoothstep((|前.z| − from) / span)",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "number"
+        },
+        "span": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "handheld": {
+      "description": "手持ちの揺れの形（区間の handheld が振れ幅の度）: Σ weights[m] × sin(2π hz[m] t + 乱数の位相)",
+      "type": "object",
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hz": {
+          "$ref": "#/$defs/triple"
+        },
+        "weights": {
+          "$ref": "#/$defs/triple"
+        }
+      },
+      "additionalProperties": false
+    },
+    "kicks": {
+      "description": "打点の揺れ（handheld が 0 より大きい区間でだけ）: at から length 秒、deg × exp(−経過 / tau) × sin(2π hz 経過 + phase) × gain",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "deg"
+        ],
+        "properties": {
+          "at": {
+            "$ref": "#/$defs/time"
+          },
+          "deg": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "kick": {
+      "type": "object",
+      "properties": {
+        "tau": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "length": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "hz": {
+          "$ref": "#/$defs/triple"
+        },
+        "phase": {
+          "$ref": "#/$defs/triple"
+        },
+        "gain": {
+          "$ref": "#/$defs/triple"
+        }
+      },
+      "additionalProperties": false
+    },
+    "effects": {
+      "description": "plan.stage と同じ寄りと揺れ（whip・push・shake・beat_push。docs/model3d.md の段取り表）",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/effect"
+      }
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "resolution": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "sensor_height": {
+          "description": "書き出す lens_mm の換算に使う縦の受光（mm）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/shot"
+      }
+    }
+  },
+  "patternProperties": {
+    "^x_": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "plain_time": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "object",
+          "required": [
+            "beat"
+          ],
+          "properties": {
+            "beat": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "time": {
+      "oneOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": [
+            "beat"
+          ],
+          "properties": {
+            "beat": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "triple": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "key": {
+      "type": "object",
+      "required": [
+        "az",
+        "dist",
+        "height",
+        "aim",
+        "fov"
+      ],
+      "properties": {
+        "u": {
+          "description": "区間の中の割合（0〜1。最初のキーは既定 0、最後は 1）",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "az": {
+          "description": "方位（度。0 で正面（中心から −Y 側）、正で +X 側）",
+          "type": "number"
+        },
+        "dist": {
+          "description": "中心からの水平の距離（m）",
+          "type": "number",
+          "minimum": 0
+        },
+        "height": {
+          "description": "カメラの高さ: 床からの m か、狙う点からの高さ {\"above\": m}",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "required": [
+                "above"
+              ],
+              "properties": {
+                "above": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "aim": {
+          "description": "狙う点の名前（骨の通り道の points か bones）",
+          "type": "string",
+          "minLength": 1
+        },
+        "dz": {
+          "description": "狙う点の高さの上乗せ（m）",
+          "type": "number"
+        },
+        "fov": {
+          "description": "縦の画角（度）",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 180
+        },
+        "roll": {
+          "description": "傾き（度）",
+          "type": "number"
+        },
+        "ease": {
+          "description": "次のキーへのつなぎ方",
+          "enum": [
+            "smooth",
+            "linear",
+            "out",
+            "in",
+            "whip"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "shot": {
+      "type": "object",
+      "required": [
+        "keys"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "until": {
+          "$ref": "#/$defs/time"
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/key"
+          }
+        },
+        "handheld": {
+          "description": "手持ちの揺れの振れ幅（度。0 で揺れも打点の揺れも無し）",
+          "type": "number",
+          "minimum": 0
+        },
+        "effects": {
+          "description": "false の区間では effects を入れない",
+          "type": "boolean"
+        }
+      },
+      "patternProperties": {
+        "^x_": {}
+      },
+      "additionalProperties": false
+    },
+    "times": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/time"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      ]
+    },
+    "pair": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "ease": {
+      "enum": [
+        "smooth",
+        "linear"
+      ]
+    },
+    "effect": {
+      "oneOf": [
+        {
+          "description": "つなぎ目の寄りと回り込み: at の before 秒前から寄りながら回り、hold 秒そのまま回り続け、after 秒で戻る",
+          "type": "object",
+          "required": [
+            "kind",
+            "at"
+          ],
+          "properties": {
+            "kind": {
+              "const": "whip"
+            },
+            "at": {
+              "$ref": "#/$defs/time"
+            },
+            "before": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "hold": {
+              "type": "number",
+              "minimum": 0
+            },
+            "after": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "zoom": {
+              "type": "number",
+              "minimum": 0,
+              "exclusiveMaximum": 1
+            },
+            "turn": {
+              "$ref": "#/$defs/pair"
+            },
+            "ease": {
+              "$ref": "#/$defs/ease"
+            }
+          },
+          "patternProperties": {
+            "^x_": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "短い寄り: at から length 秒、距離に 1 - amount × exp(-経過 / tau) を掛ける",
+          "type": "object",
+          "required": [
+            "kind",
+            "at"
+          ],
+          "properties": {
+            "kind": {
+              "const": "push"
+            },
+            "at": {
+              "$ref": "#/$defs/times"
+            },
+            "amount": {
+              "type": "number",
+              "exclusiveMaximum": 1
+            },
+            "tau": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "length": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "patternProperties": {
+            "^x_": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "揺れ: at から length 秒、横に x[0] × exp(-経過 / tau) × sin(経過 × x[1])、上下に z[0] × … × cos(経過 × z[1])（m）",
+          "type": "object",
+          "required": [
+            "kind",
+            "at"
+          ],
+          "properties": {
+            "kind": {
+              "const": "shake"
+            },
+            "at": {
+              "$ref": "#/$defs/times"
+            },
+            "tau": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "length": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "x": {
+              "$ref": "#/$defs/pair"
+            },
+            "z": {
+              "$ref": "#/$defs/pair"
+            }
+          },
+          "patternProperties": {
+            "^x_": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "拍ごとの寄り: from〜until の拍 k ごとに、距離に 1 - (k が every の倍数なら strong、ほかは weak) × exp(-拍からの経過 / tau) を掛ける",
+          "type": "object",
+          "required": [
+            "kind",
+            "from",
+            "until"
+          ],
+          "properties": {
+            "kind": {
+              "const": "beat_push"
+            },
+            "from": {
+              "$ref": "#/$defs/time"
+            },
+            "until": {
+              "$ref": "#/$defs/time"
+            },
+            "strong": {
+              "type": "number",
+              "exclusiveMaximum": 1
+            },
+            "weak": {
+              "type": "number",
+              "exclusiveMaximum": 1
+            },
+            "every": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tau": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "patternProperties": {
+            "^x_": {}
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

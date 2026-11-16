@@ -122,10 +122,10 @@ def frame_plan(track, frame_start, frame_end):
     return [(k + 1, f, {}) for k, f in enumerate(range(frame_start, frame_end + 1))]
 
 
-def gauss_smooth(values, sigma):
-    """(n, k) の列を、列ごとに σ のガウス（±round(2σ)、端は端の値で延ばす）でならす（試作と同じ）。"""
+def gauss_smooth(values, sigma, radius=None):
+    """(n, k) の列を、列ごとに σ のガウス（±radius。省くと ±round(2σ)。端は端の値で延ばす）でならす（試作と同じ）。"""
     values = np.asarray(values, float)
-    r = int(round(2 * sigma))
+    r = int(round(2 * sigma)) if radius is None else int(radius)
     w = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
     w /= w.sum()
     return np.stack([np.convolve(np.pad(values[:, k], r, mode="edge"), w, mode="valid") for k in range(values.shape[1])],
