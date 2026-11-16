@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dance-passes/0.1",
+  "title": "dance passes",
+  "description": "要素別の描画（model3d の render.passes）を重ねて 1 本の動画にする設定（mv dance passes。docs/dance.md の「要素別の描画を重ねる」）。時刻はコマ T の (T − 1) ÷ fps 秒。値は表示の値（sRGB に符号化した 0〜1）。長さ（画素）は幅 1080 の画面での値。",
+  "type": "object",
+  "required": ["schema_version", "passes"],
+  "properties": {
+    "schema_version": {"const": "dance-passes/0.1"},
+    "passes": {"description": "要素の一覧（model3d-passes/0.1）。spec のあるフォルダからの相対パス", "type": "string", "minLength": 1},
+    "output": {
+      "type": "object",
+      "properties": {
+        "crf": {"type": "integer", "minimum": 0, "maximum": 51},
+        "frames": {"description": "重ねたコマを PNG でも書く（run の frames/f<T>.png）", "type": "boolean"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "audio": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "offset_s": {"description": "T = 1 が音の何秒目か", "type": "number", "minimum": 0}},
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "room": {
+      "type": "object",
+      "properties": {
+        "blur": {"description": "部屋のぼかし（ガウスの σ。数か、区間の並び [{until, sigma}]。最後の区間は until を省ける）", "$ref": "#/$defs/segments"},
+        "level": {"description": "部屋の明るさの倍率（数か、時刻のキー）", "$ref": "#/$defs/level"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "floor_shadow": {
+      "description": "足もとの円（disc）をぼかして部屋を暗くする（finish.halo）。null で無し",
+      "type": ["object", "null"],
+      "properties": {
+        "strength": {"type": "number", "minimum": 0}, "sigma": {"type": "number", "exclusiveMinimum": 0},
+        "gain": {"type": "number", "exclusiveMinimum": 0}, "down": {"type": "integer", "minimum": 1}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "rim": {
+      "description": "人物の輪郭のすぐ内側の光（finish.rim_light）。省くと無し",
+      "type": "object",
+      "required": ["rgb", "strength"],
+      "properties": {
+        "rgb": {"$ref": "#/$defs/rgb"}, "strength": {"type": "number", "minimum": 0},
+        "kernel": {"type": "number", "exclusiveMinimum": 0}, "shape": {"enum": ["ellipse", "rect"]},
+        "blur": {"type": "number", "minimum": 0},
+        "gradient": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+        "clip": {"type": "boolean"},
+        "band": {"description": "縁の帯: erode（削ったアルファとの差。既定）か blur（ぼかしたアルファとの差）", "enum": ["erode", "blur"]}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "bloom": {
+      "description": "明るい所のにじみ（finish.stage_bloom）。省くと無し",
+      "type": "object",
+      "properties": {
+        "threshold": {"type": "number"}, "ceiling": {"type": ["number", "null"]}, "sigma": {"type": "number", "exclusiveMinimum": 0},
+        "strength": {"type": "number", "minimum": 0}, "down": {"type": "integer", "minimum": 1}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "flash": {
+      "description": "閃光（色へのスクリーン合成。強さは時刻のキー）。省くと無し",
+      "type": "object",
+      "required": ["keys"],
+      "properties": {"keys": {"$ref": "#/$defs/keys"}, "color": {"$ref": "#/$defs/rgb"}},
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "level": {"description": "仕上げの明るさの倍率（明け方・暗転。数か、時刻のキー）", "$ref": "#/$defs/level"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "rgb": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 3, "maxItems": 3},
+    "keys": {
+      "description": "キー [[時刻, 値], [時刻, 値, つなぎ方], …]（時刻の昇順。つなぎ方は linear・smooth・step。dance の cues.envelope）",
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "array", "minItems": 2, "maxItems": 3,
+        "prefixItems": [{"type": "number"}, {"type": "number"}, {"enum": ["linear", "smooth", "step"]}]
+      }
+    },
+    "level": {"oneOf": [{"type": "number", "minimum": 0}, {"$ref": "#/$defs/keys"}]},
+    "segments": {
+      "oneOf": [
+        {"type": "number", "minimum": 0},
+        {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "required": ["sigma"],
+            "properties": {"until": {"type": "number"}, "sigma": {"type": "number", "minimum": 0}},
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  }
+}

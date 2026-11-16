@@ -323,7 +323,8 @@ hooks から使う仕上げの部品。どれも**表示の値**（sRGB に符�
 | `contact_shadow(img, alpha, floor_y, …)` | `behind` | 足元の楕円の影。足の位置は人物の高さの下 6% の帯で取る（腕で動かない。`feet_span`）。足が床から上がるほど薄い |
 | `floor_reflection(img, fg, alpha, floor_y, height=300, start=0.22)` | `behind` | 床の上の人物を上下に返して、下へ薄くしながら重ねる |
 | `sharpen(fg, sigma=1.4, amount=0.4)` | `performer` | アンシャープ |
-| `rim_light(fg, alpha, rgb, strength, kernel=7, …)` | `performer` | シルエットの縁のすぐ内側に光を足す（上が強い）。`kernel=5, shape="rect", blur=0, gradient=None, clip=False` で細い縁の光 |
+| `rim_light(fg, alpha, rgb, strength, kernel=7, …)` | `performer` | シルエットの縁のすぐ内側に光を足す（上が強い）。`kernel=5, shape="rect", blur=0, gradient=None, clip=False` で細い縁の光。`band="blur"` は縁の帯を「アルファ − σ kernel でぼかしたアルファ」にする（要素別の描画の重ねの試作と同じ帯。既定の `erode` は削ったアルファとの差） |
+| `blur(img, sigma)` | — | ガウスのぼかし（σ × unit が 0.2 以下ならそのまま）。要素別の描画の重ねで、部屋を区間ごとにぼかす |
 | `tint(fg, gains)`・`over(fg, alpha, img)` | — | チャンネルの倍率、表示の値での重ね |
 | `beat_pulse(beats, t, tau=0.12, downbeats=…, bar=1.0, beat=0.55, count=1, gain=None)` | どこでも | 直前の拍（count 個）の減衰の和。小節頭は bar。`gain(拍の時刻, t)` で区間ごとの強さや休みを決める。spec の `beats`（`ctx.spec.data["beats"]`）をそのまま渡せる |
 
@@ -353,6 +354,60 @@ hooks から使う仕上げの部品。どれも**表示の値**（sRGB に符�
 ### 外部レンダラの約束
 
 `src/mv_pipeline/dance/dance_timeline.schema.json` が `timeline.json` の形（0.1 と 0.2）。独自のレンダラで仕上げる場合も、この形式で timeline を書けば `mv gate check` で検査できる。知らない欄は無視する。
+
+## 要素別の描画を重ねる（`mv dance passes`）
+
+model3d の `render.passes`（[model3d › 要素別に描く](model3d.md#要素別に描く)）が描いた要素（部屋・人物・陰影・足もとの円・顔の範囲）を重ねて、1 本の動画にする。リポジトリ外の 2 作目の VRM のダンスで、2D の再現版の仕上げを重ねた台本の手順を、既存の部品を呼ぶ形に組み直した（model3d は mv_pipeline を import しないので、重ねる側は dance に置く）。
+
+```sh
+uv run mv dance passes spec.json            # dance.mp4 を run として出す（mv dance render と同じ形。mv dance accept もそのまま使える）
+```
+
+**spec**（`dance-passes/0.1`。`src/mv_pipeline/dance/dance_passes.schema.json`。未知の鍵は止め、`x_` は許す）:
+
+```json
+{
+  "schema_version": "dance-passes/0.1",
+  "passes": "passes.json",
+  "output": {"crf": 18, "frames": false},
+  "audio": {"path": "song.wav", "offset_s": 0.0},
+  "room": {"blur": [{"until": 1.26, "sigma": 3.0}, {"sigma": 0.8}], "level": [[0.0, 1.0], [4.0, 1.2]]},
+  "floor_shadow": {"strength": 0.45, "sigma": 26},
+  "rim": {"rgb": [255, 184, 115], "strength": 0.9, "kernel": 6, "blur": 0, "gradient": null, "clip": false, "band": "blur"},
+  "bloom": {"threshold": 0.7, "ceiling": null, "sigma": 7, "strength": 0.75, "down": 4},
+  "flash": {"keys": [[3.4, 0.0], [3.4, 0.14], [3.5, 0.0]], "color": [255, 230, 191]},
+  "level": [[0.0, 0.2], [0.1, 0.8], [0.133, 1.0], [29.6, 1.0], [30.2, 0.0, "smooth"]],
+  "look": {"vignette": {"amount": 0.1, "start": 0.0, "power": 2.0, "floor": 0.0}}
+}
+```
+
+- `passes`: 要素の一覧（`model3d-passes/0.1`）。`char` は要る。どの要素のコマも一覧の大きさであること（違えばそのコマで止める）。どの要素も同じコマがそろい、T が 1 ずつ続くこと。描いていないコマ（`missing`）があれば止める。一覧の sha256 と今のファイルが違えば止める（描いた後に変わったコマ）。ファイルは一覧の `file` を読む。
+- 時刻はコマ T の (T − 1) ÷ fps 秒（fps は一覧）。長さ（画素）は幅 1080 の画面での値で、コマの幅に合わせて掛ける。値は表示の値（sRGB に符号化した 0〜1）で計算する（`finish` の部品と同じ）。
+- 時刻で変わる値は、数か時刻のキー（`[[時刻, 値], [時刻, 値, つなぎ方], …]`。`cues.envelope` と同じ。同じ時刻のキーを並べるとそこで跳ぶ）。
+
+**重ねる順**（リポジトリ外の試作の台本と同じ順）:
+
+| 順 | すること | 部品 |
+|---|---|---|
+| 1 | 部屋（`room`。無ければ黒）を区間ごとの σ でぼかし（`room.blur`。数か `[{until, sigma}]`。最後の区間は until を省ける）、明るさ（`room.level`）を掛ける | `finish.blur`（新しく足した）、`cues.envelope` |
+| 2 | 足もとの円（`disc`）をぼかして部屋を暗くする（`floor_shadow`。既定は試作の strength 0.45・sigma 26・gain 1・down 1。`null` で無し） | `finish.halo` |
+| 3 | 人物（`char` の色とアルファ）に輪郭の光（`rim`。省くと無し） | `finish.rim_light` |
+| 4 | 部屋に人物を重ねる | `finish.over` |
+| 5 | 明るい所のにじみ（`bloom`。省くと無し。省いた鍵は `stage_bloom` の既定） | `finish.stage_bloom` |
+| 6 | 閃光（`flash`。強さのキーと色。色へのスクリーン合成） | `fx.fire.screen` |
+| 7 | 明るさ（`level`。明け方・暗転） | `cues.envelope` |
+| 8 | 周辺の減光・粒（`look`。fx の look と同じ設定と確かめ（grade のキーの並びなど）。uint8 へは切り捨て）。無ければ四捨五入で uint8 | `fx.look.finish` |
+
+- 書き出しは `write_video`（BT.709）。`output.frames` なら、重ねたコマを run の `frames/f<T>.png` にも書く。音は `audio`（T = 1 が `offset_s` 秒。0 以上。一覧が T = 1 から始まらなければ、最初の T のぶん先から読む）。音が動画より短ければ、後ろを無音で足して動画の長さにそろえ、warnings に残す（読み始めより音が短ければ止める）。
+- run は `mv dance render` と同じ形（`<out>/<run_id>/spec.json manifest.json render.log dance.mp4`、`index.json`、`acceptance.jsonl`）。キャッシュ key は正規化した spec・要素の一覧と音の sha256・エンジンの指紋・ライブラリの版。`technical_pass` も同じ構造検査。timeline.json は書かない（歌詞・切れ目の無い重ね合わせなので、`mv gate check` の字の検査は対象外）。
+
+**確かめたこと**:
+- CI では、区間とキーの値（同じ時刻のキーで跳ぶ閃光）、spec の確かめと既定、要素の一覧の確かめ（char の無い一覧・T のとび・描いた後に変わったコマ・描いていないコマを止める）、重ねる順（円の所だけ部屋が暗い・明るさ・スクリーン合成の閃光・区間のぼかし・縁の光）、`rim_light` の `band="blur"`（既定の帯は変わらない）、run の受け渡し（動画・コマ・再利用・`accept`）を、合成の小さな要素で確かめた。
+- 2026-11-16 に、リポジトリ外の 2 作目の VRM のダンスの要素（2D の再現版の 906 コマ。部屋・人物・足もとの円）を入力にして、試作の重ね合わせの台本の写しと比べた（実測）。比べるために、どちらも人物の染め・手前の板・柱の切り替え・粒を切った（板と柱は演出の部品の単位で持ち帰る。粒は乱数の作りが違う）。spec には、試作の設定と台本の定数（ショットごとの部屋のぼかし、灯りの明滅、閃光、明け方と暗転、周辺の減光）を写した。
+  - 906 コマで、差の平均は 0.65/255（符号つきの平均も −0.65。ほぼ全部が、試作の四捨五入と look の切り捨ての違い）、99% 点はどのコマも 6/255 以下、最大 14/255。
+  - 輪郭の光を既定の帯（削ったアルファとの差）で重ねると、人物の輪郭の帯で差が平均 11/255 になった（帯の作りが違う）。`band="blur"` で試作の帯にそろえて、上の差になった。
+  - にじみは、試作が明るさを引いてから縮めるのに対し、`stage_bloom` は縮めてから引く。周辺の減光は look で最後に掛ける（試作は閃光と暗転の前）。上の差は、これらを含めた大きさ。
+  - 906 コマの重ねと書き出しは約 13 分（ほかの処理と並べて回した。`technical_pass` は通った）。
 
 ## run
 
@@ -389,6 +444,7 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 | `mv dance render SPEC [--start S] [--duration D] [--out DIR] [--scale 1.0] [--force] [--quiet] [--hooks FILE]` | dance.mp4 と timeline.json を run として出す。約 5% ごとに stderr へ進み具合（コマ数・経過時間・残りの見込み）を出す（`--quiet` で消す） |
 | `mv dance plan SPEC` | 解決した時刻の一覧（clips・retime・replace_frames・つなぎ・accents・seams・フラッシュ・歌詞）を表で出す。判定はしない |
 | `mv dance stills SPEC --times T… [--out DIR] [--scale 1.0] [--guides [all]] [--layers] [--hooks FILE]` | 指定時刻を 4 列に並べた静止画シート。`--guides` はその時刻に見えている行の箱（層名つき）と UI 枠、fit の地面の線、seams の pivot を重ねる。`--guides all` は全行の箱 |
+| `mv dance passes SPEC [--out DIR] [--force] [--quiet]` | 要素別の描画（model3d の `render.passes`）を重ねて dance.mp4 を run として出す（上の「要素別の描画を重ねる」） |
 | `mv dance accept RUN_DIR --decision accepted\|rejected\|hold --by NAME [--note TEXT]` | 人間の判定を追記する |
 
 ## 限界

@@ -121,12 +121,17 @@ def over(fg, alpha, img):
 
 # ---- 人物 ------------------------------------------------------------------------------
 
-def rim_light(fg, alpha, rgb, strength, kernel=7, shape="ellipse", blur=1.6, gradient=(1.25, 0.75), clip=True, unit=1.0):
+def rim_light(fg, alpha, rgb, strength, kernel=7, shape="ellipse", blur=1.6, gradient=(1.25, 0.75), clip=True, unit=1.0, band="erode"):
     """輪郭の光。シルエットの縁のすぐ内側（アルファ − kernel で削ったアルファ）を blur でぼかし、上から下へ gradient の
-    比で強さを変えて、色 rgb（0〜255。画の色の並びに合わせる）× strength を fg に足す。clip なら 0〜1 に切る。"""
-    size = max(1, int(round(_px(kernel, unit))))
-    element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)) if shape == "ellipse" else np.ones((size, size), np.uint8)
-    band = np.clip(alpha - cv2.erode(alpha, element), 0, 1)
+    比で強さを変えて、色 rgb（0〜255。画の色の並びに合わせる）× strength を fg に足す。clip なら 0〜1 に切る。
+    band="blur" は縁の帯を「アルファ − σ kernel でぼかしたアルファ」（0〜1 に切る）にする（要素別の描画の重ねの試作と同じ帯。
+    縁でちょうど 0.5 前後になり、内側へなだらかに消える。shape は使わない）。"""
+    if band == "blur":
+        band = np.clip(alpha - cv2.GaussianBlur(alpha, (0, 0), _px(kernel, unit)), 0, 1)
+    else:
+        size = max(1, int(round(_px(kernel, unit))))
+        element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)) if shape == "ellipse" else np.ones((size, size), np.uint8)
+        band = np.clip(alpha - cv2.erode(alpha, element), 0, 1)
     if blur:
         band = cv2.GaussianBlur(band, (0, 0), _px(blur, unit))
     if gradient is not None:
@@ -154,6 +159,13 @@ def stage_bloom(img, threshold=0.45, ceiling=0.8, sigma=7.0, strength=0.6, down=
     small = cv2.resize(img, (w // down, h // down), interpolation=cv2.INTER_AREA)
     glow = cv2.GaussianBlur(np.clip(small - threshold, 0, ceiling), (0, 0), _px(sigma, unit))
     return img + cv2.resize(glow, (w, h), interpolation=cv2.INTER_LINEAR) * strength
+
+
+def blur(img, sigma, unit=1.0):
+    """ガウスのぼかし（σ は画素。unit を掛ける）。掛けた σ が 0.2 以下なら、そのまま返す（試作の部屋のぼかしと同じ）。
+    区間ごとに σ を変えるのは、要素別の描画の重ね（passes.py の room.blur）。"""
+    s = _px(sigma, unit)
+    return cv2.GaussianBlur(img, (0, 0), s) if s > 0.2 else img
 
 
 # ---- 拍の脈 ---------------------------------------------------------------------------
