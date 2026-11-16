@@ -86,10 +86,16 @@ def main(argv=None):
     if extension is None:
         raise SystemExit("VRM Add-on の設定がありません（アドオンを有効にして起動してください）")
 
-    # 基本の姿勢に戻す（動きは VRM に入らない。書き出しの基本の姿勢をずらさない）
+    # 基本の姿勢に戻す（動きは VRM に入らない。書き出しの基本の姿勢をずらさない）。動きはアクションも NLA の層も外す
+    # （層が残ると、POSE に戻したときに動きが当たり直す。vrm_apply_motion.py と同じく、ドライバーはリグの仕組みなので残す）
     armature.data.pose_position = "REST"
+    cleared = None
     if armature.animation_data:
-        armature.animation_data.action = None
+        animation = armature.animation_data
+        cleared = {"action": animation.action.name if animation.action else None, "nla_tracks": len(animation.nla_tracks)}
+        animation.action = None
+        for track in list(animation.nla_tracks):
+            animation.nla_tracks.remove(track)
     for bone in armature.pose.bones:
         bone.location = (0, 0, 0)
         bone.rotation_quaternion = (1, 0, 0, 0)
@@ -97,7 +103,8 @@ def main(argv=None):
         bone.rotation_axis_angle = (0, 0, 1, 0)
         bone.scale = (1, 1, 1)
     bpy.context.view_layer.update()
-    report = {"schema_version": "model3d-vrm-export/0.1", "blender": bpy.app.version_string, "armature": armature.name}
+    report = {"schema_version": "model3d-vrm-export/0.1", "blender": bpy.app.version_string, "armature": armature.name,
+              "cleared_animation": cleared}
 
     if meta is not None:
         target = extension.vrm1.meta
