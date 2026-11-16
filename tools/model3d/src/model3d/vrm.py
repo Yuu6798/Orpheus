@@ -65,11 +65,23 @@ def inspect(data, where="VRM"):
                 failures.append(f"人型の骨 {name} と {used[index]} が同じ node {index} です")
             else:
                 used[index] = name
+        if "thumbnailImage" in meta and not _node(meta["thumbnailImage"], len(document.get("images") or [])):
+            failures.append(f"メタの thumbnailImage が画像の範囲の外です: {meta['thumbnailImage']!r}")
+        for number, annotation in enumerate((vrm.get("firstPerson") or {}).get("meshAnnotations") or []):
+            if not _node((annotation or {}).get("node"), nodes):
+                failures.append(f"firstPerson の meshAnnotations {number} の node が範囲の外です: {(annotation or {}).get('node')!r}")
+        materials = len(document.get("materials") or [])
         expressions = vrm.get("expressions") or {}
         for group in ("preset", "custom"):
             for name, expression in (expressions.get(group) or {}).items():
-                if any((expression or {}).get(kind) for kind in ("morphTargetBinds", "materialColorBinds", "textureTransformBinds")):
+                expression = expression or {}
+                if any(expression.get(kind) for kind in ("morphTargetBinds", "materialColorBinds", "textureTransformBinds")):
                     report["expressions_bound"].append(name)
+                bad = [bind.get("node") for bind in expression.get("morphTargetBinds") or [] if not _node((bind or {}).get("node"), nodes)]
+                bad += [bind.get("material") for kind in ("materialColorBinds", "textureTransformBinds")
+                        for bind in expression.get(kind) or [] if not _node((bind or {}).get("material"), materials)]
+                if bad:
+                    failures.append(f"表情 {name} の割り当ての node か material が範囲の外です: {bad}")
     springs = extensions.get("VRMC_springBone")
     if isinstance(springs, dict):
         colliders = springs.get("colliders") or []
@@ -93,6 +105,8 @@ def inspect(data, where="VRM"):
             bad = [index for index in spring.get("colliderGroups") or [] if not _node(index, len(groups))]
             if bad:
                 failures.append(f"揺れもの {spring.get('name')!r} の colliderGroups が範囲の外です: {bad}")
+            if "center" in spring and not _node(spring["center"], nodes):    # 揺れものの中心の空間（あれば node の番号）
+                failures.append(f"揺れもの {spring.get('name')!r} の center が範囲の外です: {spring['center']!r}")
     report["bin_bytes"] = len(blob) if blob is not None else None
     report["failures"] = failures
     report["pass"] = not failures

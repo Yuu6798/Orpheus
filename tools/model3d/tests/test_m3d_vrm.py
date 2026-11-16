@@ -411,11 +411,16 @@ def test_check_vrm_fails_on_what_vrm_1_requires():
     document["extensions"]["VRMC_vrm"]["humanoid"]["humanBones"]["neck"] = {"node": 0}
     document["extensions"]["VRMC_springBone"]["springs"][0]["joints"].append({"node": -1})
     document["extensions"]["VRMC_springBone"]["springs"][0]["colliderGroups"] = [3]
+    document["extensions"]["VRMC_springBone"]["springs"][0]["center"] = 999
     document["extensions"]["VRMC_springBone"]["colliderGroups"][0]["colliders"] = [0, 7]
+    document["extensions"]["VRMC_vrm"]["meta"]["thumbnailImage"] = 5
+    document["extensions"]["VRMC_vrm"]["firstPerson"] = {"meshAnnotations": [{"node": 99, "type": "auto"}]}
+    document["extensions"]["VRMC_vrm"]["expressions"] = {"custom": {"blush": {"materialColorBinds": [{"material": 9}]}}}
     report = vrm.inspect(_glb(document))
     text = " / ".join(report["failures"])
     assert report["pass"] is False and report["missing_human_bones"] == ["leftHand"]
-    for part in ("specVersion", "authors", "licenseUrl", "leftHand", "chest", "neck", "hair", "当たりの組 0", "colliderGroups"):
+    for part in ("specVersion", "authors", "licenseUrl", "leftHand", "chest", "neck", "hair", "当たりの組 0", "colliderGroups",
+                 "center", "thumbnailImage", "meshAnnotations", "表情 blush"):
         assert part in text, part
     assert vrm.inspect(_glb({"asset": {"version": "2.0"}}))["failures"] == ["VRMC_vrm（VRM 1.0 の拡張）がありません"]
     with pytest.raises(ToolError, match="GLB"):
