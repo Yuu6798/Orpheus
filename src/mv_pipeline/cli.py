@@ -247,6 +247,13 @@ def _gate_parser(commands):
     flashes.add_argument("--out", type=Path, help="default: <video stem>_flash_report next to the video")
     flashes.add_argument("--delta", type=float, default=0.10, help="a change is a rise or fall of at least this from the last peak or valley (linear relative luminance 0-1)")
     flashes.add_argument("--max-per-s", type=float, default=3, help="most flashes allowed in any one-second window")
+    tail = sub.add_parser("tail", help="when the sound of a finished video ends and how long the picture goes on after it (no "
+                                       "timeline); warns above --max-tail-s or when the sound is still on at the end. Numbers only")
+    tail.add_argument("video", type=Path)
+    tail.add_argument("--out", type=Path, help="default: <video stem>_tail_report next to the video")
+    tail.add_argument("--max-tail-s", type=float, help="warn when the picture goes on longer than this after the sound ends (default 1.0)")
+    tail.add_argument("--window", type=float, help="loudness window in seconds (default 0.1)")
+    tail.add_argument("--floor-db", type=float, help="a window sounds when within this many dB of the loudest (default -60)")
     voice = sub.add_parser("voice", help="numbers only: where the vocal stem has voice (segments and the gaps between them), "
                                          "to find line starts, ends and breaths")
     voice.add_argument("vocals", type=Path)
@@ -474,6 +481,10 @@ def gate_command(args):
         report, out = flashes.run(args.video, args.out, args.delta, args.max_per_s)
         args.failed = 1 if report["status"] == "fail" else 0
         return flashes.summary(report, out)
+    if args.gate_command == "tail":
+        from .gate import tail
+        report, out = tail.run(args.video, args.out, args.max_tail_s, args.window, args.floor_db)
+        return tail.summary(report, out)
     if args.gate_command in ("voice", "notes", "repeat"):
         from .gate import vocals
         if args.gate_command == "voice":
@@ -720,6 +731,14 @@ def _audio_parser(commands):
     keys.add_argument("--by-strength", action="store_true", help="scale each flash by the hit strength (not in the production rule)")
     keys.add_argument("--out", type=Path, help="spec to write, in the same folder as --spec (default: <spec stem>_keys.json)")
     keys.add_argument("--force", action="store_true", help="overwrite a spec whose contents differ")
+    end = sub.add_parser("end", help="when the sound ends: the last 0.1 s window whose loudness is within --floor-db of the "
+                                     "loudest window (measured), and the digital silence after it")
+    end.add_argument("source", type=Path, help="audio file, or a project folder with analysis.json (then analysis.end.json is "
+                                               "written beside it)")
+    end.add_argument("--window", type=float, default=0.1, help="window length in seconds (default 0.1)")
+    end.add_argument("--floor-db", type=float, default=-60.0, help="a window sounds when within this many dB of the loudest (default -60)")
+    end.add_argument("--out", type=Path, help="record to write (default: <audio stem>.end.json beside the audio)")
+    end.add_argument("--force", action="store_true", help="overwrite a record whose contents differ")
 
 
 def audio_command(args):
@@ -734,6 +753,9 @@ def audio_command(args):
         from .audio import keys
         return keys.run(args.hits, args.spec, args.light, args.out, args.start, args.source, args.min_strength, args.section,
                         args.min_gap_s, args.base, args.gain, args.by_strength, args.force)
+    if args.audio_command == "end":
+        from .audio import end
+        return end.run(args.source, args.out, args.window, args.floor_db, args.force)
     raise PipelineError(f"Unsupported audio command: {args.audio_command}")
 
 

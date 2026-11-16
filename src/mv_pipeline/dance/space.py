@@ -161,7 +161,7 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
     遠い順に置き、踊り手までの距離 focus より遠ければ遠い方に、近ければ近い方に。明るさ = 明るさ × clip(fade[0] − 奥行き ÷ fade[1],
     fade[2], fade[3]) × gain。ぼかし = min(|奥行き − focus| × focus_blur, max_blur) × unit + room_blur × 部屋の σ × unit。
     床への映り込みは、床の面（floor）で上下を返した位置に、ぼかしを mirror_blur × unit 足して置く。奥行き near_clip 以下と、
-    画面の外 margin 画素より外は置かない。"""
+    画面の外 margin 画素より外と、上端（映り込みは下端）がカメラの後ろ（奥行き 0.05 m 以下）に回る絵は置かない。"""
     s = {**SPRITES, **(settings or {})}
     width, height = size
     far = np.zeros((height, width, 4), np.float32)
@@ -197,10 +197,11 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
         levels = sprites[int(kinds[index]) % len(sprites)]
         brightness = float(tones[index] * np.clip(near_fade - depth[index] / per_m, low, high) * s["gain"])
         sigma = float(min(abs(depth[index] - focus) * s["focus_blur"], s["max_blur"]) * unit + s["room_blur"] * room_sigma * unit)
-        if np.isfinite(cu[index]) and -margin < cu[index] < width + margin and -margin < cv_[index] < height + margin:
+        if (np.isfinite(cu[index]) and np.isfinite(tu[index]) and -margin < cu[index] < width + margin
+                and -margin < cv_[index] < height + margin):
             paste(far if depth[index] > focus else near, levels, (cu[index], cv_[index]), (tu[index], tv[index]), brightness, sigma)
-        if (mirror_depth[index] > s["near_clip"] and np.isfinite(mu[index]) and -margin < mu[index] < width + margin
-                and -margin < mv[index] < height + margin):
+        if (mirror_depth[index] > s["near_clip"] and np.isfinite(mu[index]) and np.isfinite(nu[index])
+                and -margin < mu[index] < width + margin and -margin < mv[index] < height + margin):
             paste(mirror, levels, (mu[index], mv[index]), (nu[index], nv[index]), brightness, sigma + s["mirror_blur"] * unit)
     return far, near, mirror
 
