@@ -150,3 +150,31 @@ def test_the_run_writes_the_video_and_frames(tmp_path):
     from mv_pipeline.fx import runs as fxruns
     fxruns.accept(run, VARIANT, "hold", "test", None)
     assert "hold" in (tmp_path / "runs" / "acceptance.jsonl").read_text(encoding="utf-8")
+
+
+def test_every_pass_must_have_the_listed_size(tmp_path):
+    _passes(tmp_path)
+    plan = passes.load_passes(tmp_path / "passes.json")
+    _write(tmp_path / "passes" / "room" / "f0001.png", np.full((H // 2, W // 2, 3), 100, np.uint8))
+    plan.files["room"][1] = tmp_path / "passes" / "room" / "f0001.png"
+    with pytest.raises(PipelineError, match="room のコマ T 1 の大きさ"):
+        passes.compose(passes.load_spec(_spec(tmp_path)).data, plan, 1)
+
+
+def test_a_short_song_is_padded_to_the_video(tmp_path):
+    import wave
+    with wave.open(str(tmp_path / "song.wav"), "wb") as song:      # 0.05 秒の音
+        song.setnchannels(1)
+        song.setsampwidth(2)
+        song.setframerate(48000)
+        song.writeframes(bytes(2 * 2400))
+    warnings = []
+    plan = passes.audio_plan(tmp_path / "song.wav", 0.0, 0.1, warnings)
+    assert plan["pad"] is True and plan["length"] == pytest.approx(0.05, abs=0.011) and warnings
+    assert passes.audio_plan(tmp_path / "song.wav", 0.0, 0.04, []) == {"path": tmp_path / "song.wav", "start": 0.0, "duration": 0.04}
+    with pytest.raises(PipelineError, match="読み始め"):
+        passes.audio_plan(tmp_path / "song.wav", 1.0, 0.1, [])
+    _passes(tmp_path, frames=6)
+    spec = _spec(tmp_path, audio={"path": "song.wav"})
+    result = passes.render_run(spec, out=tmp_path / "runs", quiet=True)           # 6 コマ（0.2 秒）に 0.05 秒の音: 無音で足して通す
+    assert result["status"] == "succeeded" and result["technical_pass"] is True and any("無音" in w for w in result["warnings"])

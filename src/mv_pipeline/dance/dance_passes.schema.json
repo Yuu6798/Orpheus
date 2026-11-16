@@ -20,7 +20,7 @@
     "audio": {
       "type": "object",
       "required": ["path"],
-      "properties": {"path": {"type": "string", "minLength": 1}, "offset_s": {"description": "T = 1 が音の何秒目か", "type": "number"}},
+      "properties": {"path": {"type": "string", "minLength": 1}, "offset_s": {"description": "T = 1 が音の何秒目か", "type": "number", "minimum": 0}},
       "patternProperties": {"^x_": {}},
       "additionalProperties": false
     },

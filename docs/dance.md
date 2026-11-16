@@ -381,7 +381,7 @@ uv run mv dance passes spec.json            # dance.mp4 を run として出す�
 }
 ```
 
-- `passes`: 要素の一覧（`model3d-passes/0.1`）。`char` は要る。どの要素も同じコマがそろい、T が 1 ずつ続くこと。描いていないコマ（`missing`）があれば止める。一覧の sha256 と今のファイルが違えば止める（描いた後に変わったコマ）。ファイルは一覧の `file` を読む。
+- `passes`: 要素の一覧（`model3d-passes/0.1`）。`char` は要る。どの要素のコマも一覧の大きさであること（違えばそのコマで止める）。どの要素も同じコマがそろい、T が 1 ずつ続くこと。描いていないコマ（`missing`）があれば止める。一覧の sha256 と今のファイルが違えば止める（描いた後に変わったコマ）。ファイルは一覧の `file` を読む。
 - 時刻はコマ T の (T − 1) ÷ fps 秒（fps は一覧）。長さ（画素）は幅 1080 の画面での値で、コマの幅に合わせて掛ける。値は表示の値（sRGB に符号化した 0〜1）で計算する（`finish` の部品と同じ）。
 - 時刻で変わる値は、数か時刻のキー（`[[時刻, 値], [時刻, 値, つなぎ方], …]`。`cues.envelope` と同じ。同じ時刻のキーを並べるとそこで跳ぶ）。
 
@@ -398,7 +398,7 @@ uv run mv dance passes spec.json            # dance.mp4 を run として出す�
 | 7 | 明るさ（`level`。明け方・暗転） | `cues.envelope` |
 | 8 | 周辺の減光・粒（`look`。fx の look と同じ設定。uint8 へは切り捨て）。無ければ四捨五入で uint8 | `fx.look.finish` |
 
-- 書き出しは `write_video`（BT.709）。`output.frames` なら、重ねたコマを run の `frames/f<T>.png` にも書く。音は `audio`（T = 1 が `offset_s` 秒）。
+- 書き出しは `write_video`（BT.709）。`output.frames` なら、重ねたコマを run の `frames/f<T>.png` にも書く。音は `audio`（T = 1 が `offset_s` 秒。0 以上）。音が動画より短ければ、後ろを無音で足して動画の長さにそろえ、warnings に残す（読み始めより音が短ければ止める）。
 - run は `mv dance render` と同じ形（`<out>/<run_id>/spec.json manifest.json render.log dance.mp4`、`index.json`、`acceptance.jsonl`）。キャッシュ key は正規化した spec・要素の一覧と音の sha256・エンジンの指紋・ライブラリの版。`technical_pass` も同じ構造検査。timeline.json は書かない（歌詞・切れ目の無い重ね合わせなので、`mv gate check` の字の検査は対象外）。
 
 **確かめたこと**:

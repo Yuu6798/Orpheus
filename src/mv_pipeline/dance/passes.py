@@ -207,15 +207,13 @@ def compose(data, plan, T, look=None):
     width, height = plan.size
     unit = width / 1080
     files = plan.files
-    character = read_image(files["char"][T], alpha=True)
-    if character.shape[:2] != (height, width):
-        raise PipelineError(f"char のコマ T {T} の大きさが一覧（{width}×{height}）と違います")
-    room = read_image(files["room"][T]) if "room" in files else np.zeros((height, width, 3), np.float32)
+    character = _same_size(read_image(files["char"][T], alpha=True), plan, "char", T)
+    room = _same_size(read_image(files["room"][T]), plan, "room", T) if "room" in files else np.zeros((height, width, 3), np.float32)
     room = finish.blur(room, segment_value(data["room"]["blur"], t), unit=unit)
     room = room * np.float32(level_at(data["room"]["level"], t))
     shadow = data["floor_shadow"]
     if shadow is not None and "disc" in files:
-        disc = read_image(files["disc"][T]).mean(axis=2)
+        disc = _same_size(read_image(files["disc"][T]), plan, "disc", T).mean(axis=2)
         room = finish.halo(room, disc, strength=shadow["strength"], gain=shadow["gain"], sigma=shadow["sigma"], down=shadow["down"],
                            unit=unit)
     alpha = character[..., 3]
@@ -241,6 +239,32 @@ def compose(data, plan, T, look=None):
     return (np.clip(frame, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
 
+def audio_plan(path, offset, seconds, warnings):
+    """write_video の音（T = 1 が音の offset 秒）。音が動画より短ければ、足りない分を無音で足して動画の長さにそろえ、warnings に残す
+    （そろえないと、重ね終えた後の技術検査で音の長さが合わずに止まる）。読み始めより音が短ければ止める。"""
+    if path is None:
+        return None
+    from ..fx import probe
+    plan = {"path": path, "start": offset, "duration": seconds}
+    available = probe.media_seconds(path)
+    if available is None:
+        return plan
+    remaining = available - offset
+    if remaining <= 0:
+        raise PipelineError(f"音の読み始め（{offset:g} 秒）が音の長さ（{available:g} 秒）より後です: {path}")
+    if remaining < seconds:
+        warnings.append(f"audio: 音が動画より {seconds - remaining:.3f} 秒短いので、後ろを無音で足します")
+        plan.update(length=remaining, pad=True)
+    return plan
+
+
+def _same_size(image, plan, kind, T):
+    width, height = plan.size
+    if image.shape[:2] != (height, width):
+        raise PipelineError(f"{kind} のコマ T {T} の大きさ（{image.shape[1]}×{image.shape[0]}）が一覧（{width}×{height}）と違います")
+    return image
+
+
 def default_out(spec):
     return spec.base_dir / "dance_runs"
 
@@ -256,7 +280,6 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     from ..fx import probe
     from ..fx import render as fxrender
     from ..fx import runs as fxruns
-    from ..io import atomic_json
     from . import VARIANT, fingerprint
     from .runs import _meter
 
@@ -308,7 +331,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
                 yield image
                 meter(i + 1)
 
-        audio = None if audio_path is None else {"path": audio_path, "start": data["audio"]["offset_s"], "duration": seconds}
+        audio = audio_plan(audio_path, data["audio"]["offset_s"] if audio_path is not None else 0.0, seconds, run.manifest["warnings"])
         path = run.dir / f"{VARIANT}.mp4"
         result = fxrender.write_video(path, frames(), plan.size, plan.fps, data["output"]["crf"], n_frames, audio, run.log_path)
         checks = probe.check_video(path, width=width, height=height, fps=plan.fps, frames=n_frames, audio=audio is not None,
