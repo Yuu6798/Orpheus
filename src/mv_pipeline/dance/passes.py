@@ -3,16 +3,17 @@
 1 コマの重ね方（表示の値。sRGB に符号化した 0〜1 の float32。リポジトリ外の試作の重ね合わせの台本と同じ順）:
 
     部屋（room）→ ぼかし（room.blur。区間ごとの σ）→ 明るさ（room.level）→ 足もとの円（disc）の影（finish.halo）
-    → 床への映り込み（rchar。reflection。space.mirror・space.ripple）
+    → 床への映り込み（rchar・rph<i>。reflection。space.mirror・space.ripple）→ 奥の分身（ph<i>。phantoms。space.phantom）
     人物（char の色・アルファ）→ 灯りの色で染める（shade と head。finish.face_shade・finish.light_tint）→ 輪郭の光（finish.rim_light）
-    重ね（finish.over）→ にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
+    重ね（finish.over）→ 手前の分身 → にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
 
 既存の部品（dance の finish・cues、fx の fire と look、encode.write_video）を呼ぶ。新しく足したのは、区間ごとの部屋のぼかし
 （finish.blur と、区間の値を引く segment_value）と、灯りの色で人物を染める部品（finish.light_tint・finish.face_shade）。
 時刻はコマ T の (T − 1) ÷ fps 秒。長さ（画素）は幅 1080 の画面での値で、コマの幅に合わせて掛ける。
 """
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import jsonschema
@@ -26,6 +27,7 @@ from . import space
 SCHEMA_VERSION = "dance-passes/0.1"
 SCHEMA_FILE = Path(__file__).resolve().parent / "dance_passes.schema.json"
 KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade")
+PHANTOM_KIND = re.compile(r"^r?ph([0-9]+)$")       # 分身 ph<i> と、床で反転したカメラの rph<i>
 FLOOR_SHADOW = {"strength": 0.45, "sigma": 26.0, "gain": 1.0, "down": 1}      # 既定は試作の値
 FLASH_COLOR = [255.0, 255.0, 255.0]
 
@@ -111,11 +113,25 @@ def color_at(value, t):
     return np.asarray(dancecues.envelope(keys[1], t), np.float32)
 
 
+def _phantoms(raw):
+    """分身の設定（書いたときだけ。既定は試作の値）。"""
+    if raw is None:
+        return None
+    out = {"strength": _level(raw.get("strength", 0.62), "phantoms.strength")}
+    for key in ("dark", "hot"):
+        out[key] = [float(v) for v in raw.get(key, space.PHANTOM[key])]
+    for key in ("fill", "edge", "edge_blur", "edge_gain", "glow", "glow_gain"):
+        out[key] = float(raw.get(key, space.PHANTOM[key]))
+    return out
+
+
 def _reflection(raw):
     """床への映り込みの設定（書いた部分だけ。既定は試作の値）。"""
     if raw is None:
         return None
-    out = {"char": None, "ripple": None}
+    out = {"char": None, "ripple": None, "phantoms": None}
+    if raw.get("phantoms") is not None:
+        out["phantoms"] = {"blur": float(raw["phantoms"].get("blur", 3.0)), "gain": float(raw["phantoms"].get("gain", 0.45))}
     if raw.get("char") is not None:
         char = raw["char"]
         out["char"] = {"strength": _level(char.get("strength", 0.16), "reflection.char.strength"), "blur": float(char.get("blur", 2.5)),
@@ -142,7 +158,7 @@ def normalize(raw):
                                                       for k, v in (raw.get("floor_shadow") or {}).items() if not k.startswith("x_")}}),
             "figure": None, "rim": None, "bloom": None, "flash": None, "level": _level(raw.get("level", 1.0), "level"),
             "clock": None if raw.get("clock") is None else _check_keys(raw["clock"], "clock"),
-            "reflection": _reflection(raw.get("reflection")),
+            "reflection": _reflection(raw.get("reflection")), "phantoms": _phantoms(raw.get("phantoms")),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
     if raw.get("figure") is not None:
         figure = raw["figure"]
@@ -199,13 +215,18 @@ def load_spec(path):
 
 @dataclass
 class Plan:
-    """重ねるコマの並び。files[要素][T] は要素のファイルの絶対パス。"""
+    """重ねるコマの並び。files[要素][T] は要素のファイルの絶対パス（分身は描いた時間のコマだけ）。near[要素][T] は分身が手前か。"""
     manifest: dict
     directory: Path
     fps: float
     size: tuple
     frames: list
     files: dict
+    near: dict = field(default_factory=dict)
+
+    def phantoms(self):
+        """分身の番号（ph<i> のある i の小さい順）。"""
+        return sorted(int(PHANTOM_KIND.match(kind)[1]) for kind in self.files if kind.startswith("ph"))
 
 
 def load_passes(path, verify=True):
@@ -217,7 +238,7 @@ def load_passes(path, verify=True):
     passes = manifest.get("passes") or {}
     if "char" not in passes:
         raise PipelineError("要素の一覧に char（人物）がありません")
-    unknown = sorted(set(passes) - set(KINDS))
+    unknown = sorted(kind for kind in passes if kind not in KINDS and not PHANTOM_KIND.match(kind))
     if unknown:
         raise PipelineError(f"要素の一覧に知らない要素があります: {unknown}")
     directory = Path(manifest["directory"])
@@ -226,15 +247,18 @@ def load_passes(path, verify=True):
         raise PipelineError("char のコマがありません")
     if any(b != a + 1 for a, b in zip(frames, frames[1:])):
         raise PipelineError("char のコマの T が 1 ずつ続いていません（とびがあると 1 本の動画にできません）")
-    files = {}
+    files, near = {}, {}
     for kind, entry in passes.items():
         if entry.get("missing"):
             raise PipelineError(f"{kind} に描いていないコマがあります: {entry['missing'][:10]}")
         by_T = {fr["T"]: fr for fr in entry["frames"]}
-        if sorted(by_T) != frames:
-            raise PipelineError(f"{kind} のコマが char とそろっていません")
+        outside = set(entry.get("outside", []))
+        if outside & set(by_T) or sorted(set(by_T) | outside) != frames:
+            raise PipelineError(f"{kind} のコマが char とそろっていません（描いたコマと描く時間の外のコマ outside を合わせて）")
         files[kind] = {}
-        for T in frames:
+        if PHANTOM_KIND.match(kind):
+            near[kind] = {T: bool(fr.get("near", False)) for T, fr in by_T.items()}
+        for T in sorted(by_T):
             file = directory / by_T[T]["file"]
             if not file.is_file():
                 raise PipelineError(f"{kind} のコマ T {T} のファイルがありません: {file}")
@@ -242,7 +266,7 @@ def load_passes(path, verify=True):
                 raise PipelineError(f"{kind} のコマ T {T} が、一覧を書いた後に変わっています: {file}")
             files[kind][T] = file
     width, height = manifest["resolution"]
-    return Plan(manifest, directory, float(manifest["fps"]), (int(width), int(height)), frames, files)
+    return Plan(manifest, directory, float(manifest["fps"]), (int(width), int(height)), frames, files, near)
 
 
 def read_image(path, alpha=False):
@@ -272,11 +296,35 @@ def reflection_layer(data, plan, T):
         mirrored = _same_size(read_image(plan.files["rchar"][T], alpha=True), plan, "rchar", T)
         char = reflection["char"]
         parts.append((mirrored[..., :3] * mirrored[..., 3:4], char["blur"], [color_at(char["tint"], t), level_at(char["strength"], t)]))
+    ghosts, glow = data["phantoms"], reflection["phantoms"]
+    if ghosts is not None and glow is not None:       # 分身の映り込み（炎の色 × アルファをぼかして、分身の強さと gain を掛ける）
+        strength = level_at(ghosts["strength"], t)
+        for i in plan.phantoms():
+            kind = f"rph{i}"
+            if T in plan.files.get(kind, {}):
+                picture = _same_size(read_image(plan.files[kind][T], alpha=True), plan, kind, T)
+                parts.append((space.phantom_glow(picture, ghosts["dark"], ghosts["hot"]), glow["blur"], [strength, glow["gain"]]))
     mirror = space.mirror(plan.size, parts, unit)
     ripple = reflection["ripple"]
     if ripple is not None:
         mirror = space.ripple(mirror, level_at(ripple["amount"], t), clock_at(data, t), ripple, unit)
     return mirror
+
+
+def phantom_layer(data, plan, T, image, near):
+    """分身（ph<i>。一覧の near が手前か奥か）を、炎の色の光として image に足す（space.phantom。番号の小さい順）。"""
+    ghosts = data["phantoms"]
+    if ghosts is None:
+        return image
+    t = (T - 1) / plan.fps
+    unit = plan.size[0] / 1080
+    strength = level_at(ghosts["strength"], t)
+    for i in plan.phantoms():
+        kind = f"ph{i}"
+        if T in plan.files[kind] and plan.near[kind][T] == near:
+            picture = _same_size(read_image(plan.files[kind][T], alpha=True), plan, kind, T)
+            image = space.phantom(image, picture, strength, ghosts, unit)
+    return image
 
 
 def compose(data, plan, T, look=None):
@@ -301,6 +349,7 @@ def compose(data, plan, T, look=None):
     mirror = reflection_layer(data, plan, T)
     if mirror is not None:
         room = room + mirror
+    room = phantom_layer(data, plan, T, room, near=False)          # 奥の分身（踊り手より遠い）
     alpha = character[..., 3]
     figure = character[..., :3]
     tint = data["figure"]
@@ -315,6 +364,7 @@ def compose(data, plan, T, look=None):
         figure = finish.rim_light(figure, alpha, rim["rgb"], rim["strength"], kernel=rim["kernel"], shape=rim["shape"],
                                   blur=rim["blur"], gradient=rim["gradient"], clip=rim["clip"], unit=unit, band=rim["band"])
     frame = finish.over(figure, alpha, room)
+    frame = phantom_layer(data, plan, T, frame, near=True)         # 手前の分身
     bloom = data["bloom"]
     if bloom is not None:
         frame = finish.stage_bloom(frame, threshold=bloom["threshold"], ceiling=bloom["ceiling"], sigma=bloom["sigma"],
@@ -385,6 +435,8 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         raise PipelineError("figure（灯りの色で染める）には、要素の一覧に shade（陰影）が要ります")
     if data["reflection"] is not None and data["reflection"]["char"] is not None and "rchar" not in plan.files:
         raise PipelineError("reflection.char（人物の映り込み）には、要素の一覧に rchar（床で反転したカメラで描いた人物）が要ります")
+    if data["phantoms"] is not None and not plan.phantoms():
+        raise PipelineError("phantoms（分身）には、要素の一覧に ph<i>（model3d の render.passes の phantoms で描いた分身）が要ります")
     notes = list(spec.warnings)
     if data["figure"] is not None and data["figure"]["face_smooth"] > 0 and "head" not in plan.files:
         notes.append("figure.face_smooth: 要素の一覧に head（顔の範囲）が無いので、顔の陰影はならしません")

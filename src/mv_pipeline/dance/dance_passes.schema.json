@@ -91,6 +91,23 @@
     },
     "level": {"description": "仕上げの明るさの倍率（明け方・暗転。数か、時刻のキー）", "$ref": "#/$defs/level"},
     "clock": {"description": "効果の時刻のキー（省くと t のまま）。時間停止で効果だけゆっくり進めるときなど（水鏡のうねりが使う）", "$ref": "#/$defs/keys"},
+    "phantoms": {
+      "description": "分身（model3d の render.passes の phantoms で描いた ph<i>。白い人物にスタジオの光）を炎の色の光として足す。一覧の near が手前なら人物の後に、そうでなければ人物の前（部屋の上）に。省くと無し",
+      "type": "object",
+      "properties": {
+        "strength": {"description": "強さ（数か時刻のキー。既定 0.62）", "$ref": "#/$defs/level"},
+        "dark": {"description": "陰の所の炎の色（表示の値 0〜1。既定 [0.75, 0.16, 0.03]）", "$ref": "#/$defs/rgb"},
+        "hot": {"description": "光の当たる所の炎の色（既定 [1.0, 0.78, 0.36]）", "$ref": "#/$defs/rgb"},
+        "fill": {"description": "中の濃さ（既定 0.38）", "type": "number", "minimum": 0},
+        "edge": {"description": "輪郭の光の強さ（既定 1.1）", "type": "number", "minimum": 0},
+        "edge_blur": {"description": "輪郭の帯の σ（幅 1080 の画素。既定 9）", "type": "number", "minimum": 0},
+        "edge_gain": {"description": "輪郭の帯の倍率（既定 2）", "type": "number", "minimum": 0},
+        "glow": {"description": "光のにじみの σ（既定 14）", "type": "number", "minimum": 0},
+        "glow_gain": {"description": "光のにじみの倍率（既定 0.7）", "type": "number", "minimum": 0}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
     "reflection": {
       "description": "床への映り込み（床で反転したカメラで描いた要素 r<要素> を、ぼかして色を掛け、部屋に足す）。省くと無し",
       "type": "object",
@@ -102,6 +119,16 @@
             "strength": {"description": "強さ（数か時刻のキー。既定 0.16）", "$ref": "#/$defs/level"},
             "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 2.5）", "type": "number", "minimum": 0},
             "tint": {"description": "色の倍率（R・G・B か色のキー。既定 [1, 1, 1]）", "$ref": "#/$defs/color"}
+          },
+          "patternProperties": {"^x_": {}},
+          "additionalProperties": false
+        },
+        "phantoms": {
+          "description": "分身の映り込み（要素 rph<i> の炎の色 × アルファを σ blur でぼかし、分身の強さ phantoms.strength と gain を掛ける。phantoms が要る）",
+          "type": "object",
+          "properties": {
+            "blur": {"description": "ぼかしの σ（幅 1080 の画素。既定 3）", "type": "number", "minimum": 0},
+            "gain": {"description": "分身の強さに掛ける倍率（既定 0.45）", "type": "number", "minimum": 0}
           },
           "patternProperties": {"^x_": {}},
           "additionalProperties": false

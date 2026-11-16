@@ -151,10 +151,13 @@ plan = [(fr["T"], fr["f"]) for fr in track["frames"]]
 only = set(settings["only"] or [T for T, _ in plan])
 rendered = {k: [] for k in pass_render.all_kinds(settings)}
 existing = {k: [] for k in pass_render.all_kinds(settings)}
+ghosts = set(pass_render.phantom_kinds(settings))
 for T, f in plan:
     if T not in only:
         continue
     for kind in pass_render.all_kinds(settings):
+        if kind in ghosts and not pass_render.within((T - 1) / track.get("fps", 24), settings["phantoms"]["during"]):
+            continue
         path = os.path.join(value("--passes-dir"), pass_render.pass_file(kind, T, settings["format"]))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.exists(path):
@@ -170,7 +173,8 @@ json.dump({"schema_version": "model3d-cameras/0.1", "unit": "m", "resolution": s
 json.dump({"schema_version": "model3d-pass-render/0.1", "planned": [{"T": T, "f": f} for T, f in plan], "rendered": rendered,
            "skipped_existing": existing, "fps": track.get("fps", 24), "resolution": settings["resolution"],
            "camera": {"from_record": sum(1 for T, _ in plan if T in by_record), "from_track": sum(1 for T, _ in plan if T not in by_record)},
-           "objects": {"character": ["Body", "Head"], "room": [], "head": settings["head"]}, "argv": args, "settings": settings},
+           "objects": {"character": ["Body", "Head"], "room": [], "head": settings["head"]}, "argv": args, "settings": settings,
+           "phantoms": {"count": len(settings["phantoms"]["items"]), "dance_fps": 24.0}},
           open(value("--report"), "w"))
 '''
 
