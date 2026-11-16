@@ -81,10 +81,10 @@ def _fake_bpy(rest, wobble):
         matrix_world = _Matrix(np.eye(4))
 
         def to_mesh(self):
-            pose = _pose(state["f"])
-            points = rest @ pose[:3, :3].T + pose[:3, 3]
+            world = np.array(armature.matrix_world) @ _pose(state["f"])     # 骨（とアーマチュア）に付いて動く
+            points = rest @ world[:3, :3].T + world[:3, 3]
             if state["f"] == 3:
-                points = points + wobble
+                points = points + wobble                                    # 世界の長さで足す跳び
             return Mesh(points)
 
         def to_mesh_clear(self):
@@ -118,17 +118,41 @@ def test_sample_reads_vertices_in_the_bone_space():
     rest = np.array([[0.0, 0.1, -0.5], [0.2, 0.0, -0.6]])
     wobble = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.012]])
     bpy, scene, armature, obj = _fake_bpy(rest, wobble)
-    tracks = jitter_sample.sample(bpy, scene, armature, "hips", [obj], [1, 2, 3, 4, 5], 1.0)
+    tracks, scale = jitter_sample.sample(bpy, scene, armature, "hips", [obj], [1, 2, 3, 4, 5], 1.0)
     track = tracks["skirt"]
+    assert scale == pytest.approx((1.0, 1.0))
     assert track.shape == (5, 2, 3)
     assert np.allclose(track[[0, 1, 3, 4]], rest)                   # 骨に付いて動く所は、骨から見ると動かない
     offset = jitter_sample.offsets(track)
     assert np.allclose(offset[:, 0], 0.0) and offset[1, 1] == pytest.approx(0.012, abs=1e-9)
     # scale_length（1 Blender 単位が何 m か）で m に直す
-    assert np.allclose(jitter_sample.sample(bpy, scene, armature, "hips", [obj], [1, 2], 0.01)["skirt"][0], rest * 0.01)
+    assert np.allclose(jitter_sample.sample(bpy, scene, armature, "hips", [obj], [1, 2], 0.01)[0]["skirt"][0], rest * 0.01)
     # 世界の座標で見ると、骨の動きそのもの（速さの変わる回転）が大きなずれになる
     world = np.array([rest @ _pose(f)[:3, :3].T + _pose(f)[:3, 3] for f in (1, 2, 3, 4, 5)])
     assert jitter_sample.offsets(world).max() > 0.05
+
+
+def test_rigid_space_keeps_world_lengths_when_the_rig_is_scaled():
+    """アーマチュアが 2 倍のとき、骨の行列をそのまま逆にすると 12 mm の跳びが 6 mm に縮む。rigid は世界の長さのまま測る。"""
+    rest = np.array([[0.0, 0.1, -0.5], [0.2, 0.0, -0.6]])
+    wobble = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.012]])
+    bpy, scene, armature, obj = _fake_bpy(rest, wobble)
+    armature.matrix_world = _Matrix(np.diag([2.0, 2.0, 2.0, 1.0]))
+    tracks, scale = jitter_sample.sample(bpy, scene, armature, "hips", [obj], [1, 2, 3, 4, 5], 1.0)
+    assert scale == pytest.approx((2.0, 2.0))
+    assert jitter_sample.offsets(tracks["skirt"])[1, 1] == pytest.approx(0.006, abs=1e-9)
+    tracks, _ = jitter_sample.sample(bpy, scene, armature, "hips", [obj], [1, 2, 3, 4, 5], 1.0, space="rigid")
+    assert jitter_sample.offsets(tracks["skirt"])[1, 1] == pytest.approx(0.012, abs=1e-9)
+    # 回転と位置だけの逆行列: 大きさを外し、回転と位置は元に戻す
+    angle = 0.7
+    c, s = np.cos(angle), np.sin(angle)
+    placed = np.array([[c, -s, 0, 1.0], [s, c, 0, 2.0], [0, 0, 1, 3.0], [0, 0, 0, 1]])
+    inverse = jitter_sample.rigid_inverse(placed @ np.diag([2.0, 3.0, 2.0, 1.0]))
+    assert np.allclose(inverse, np.linalg.inv(placed))
+    # 鏡写し（負の大きさ）も、正しい回転（行列式 1）と位置で戻す
+    inverse = jitter_sample.rigid_inverse(placed @ np.diag([2.0, 2.0, -2.0, 1.0]))
+    assert np.allclose(inverse[:3, :3] @ inverse[:3, :3].T, np.eye(3)) and np.linalg.det(inverse[:3, :3]) == pytest.approx(1.0)
+    assert np.allclose(inverse @ np.array([1.0, 2.0, 3.0, 1.0]), [0, 0, 0, 1])
 
 
 def test_sample_stops_on_meshes_it_cannot_measure():
@@ -190,6 +214,7 @@ toggled = [{"object": settings["objects"][0], "modifier": "cloth", "type": "CLOT
 report = {"schema_version": "model3d-jitter/0.1", "check": "jitter", "status": "done", "armature": "Rig", "bone": settings["bone"],
           "objects": settings["objects"], "frames": {"source": settings["frames_source"], "count": len(frames)},
           "jump_mm": settings["jump_m"] * 1000, "scale_length": 1.0, "measured": measured, "toggled": toggled,
+          "space": settings["space"], "warnings": ["骨 hips の世界の行列に大きさ 2〜2 があり"] if settings["bone"] == "scaled" else [],
           "x_settings": settings, "x_argv": sys.argv[1:]}
 json.dump(report, open(value("--report"), "w", encoding="utf-8"))
 '''
@@ -242,6 +267,16 @@ def test_check_jitter_passes_the_frames_and_the_bone_to_blender(tmp_path):
     report = json.loads(Path(executor.run_recipe(recipe, tmp_path / "runs")["steps"]["jitter"]["artifacts"]["report"])
                         .read_text(encoding="utf-8"))
     assert report["x_settings"]["frames"] is None and report["x_settings"]["frames_source"] == "scene"   # シーンの全コマ
+    assert report["x_settings"]["space"] == "bone"                                                        # 既定は台本と同じ
+    # 骨の大きさの注意（warnings）は、しきい値に通っても要確認にする。space: rigid は台本へ渡る
+    recipe = _recipe(tmp_path, {"blender": blender, "objects": ["skirt"], "bone_prefix": "", "bone": "scaled", "max_mean_mm": 5.0})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "needs_review" and any("大きさ" in u for u in result["steps"]["jitter"]["unresolved"])
+    recipe = _recipe(tmp_path, {"blender": blender, "objects": ["skirt"], "space": "rigid", "max_mean_mm": 5.0})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "succeeded"
+    report = json.loads(Path(result["steps"]["jitter"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["x_settings"]["space"] == "rigid"
 
 
 @pytest.mark.parametrize("parameters, track, message", [
@@ -261,6 +296,7 @@ def test_check_jitter_passes_the_frames_and_the_bone_to_blender(tmp_path):
     ({"objects": ["skirt"]}, [3, 2, 1], "等間隔"),
     ({"objects": ["skirt"], "jump_mm": 0}, None, "jump_mm"),
     ({"objects": ["skirt"], "top": 0}, None, "top"),
+    ({"objects": ["skirt"], "space": "world"}, None, "space"),
     ({"objects": ["skirt"], "max_mean_mm": -1}, None, "max_mean_mm"),
     ({"objects": ["skirt"], "no_blender": True}, None, "Blender"),
 ])
