@@ -1,4 +1,5 @@
 """動きの下ごしらえ: 推定した 3D の点（SAM 3D Body の MHR70）を、キャラに載せる前に整える。"""
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -624,14 +625,78 @@ def sleeve_bones(inputs, parameters, outputs, context):
 
 
 BONE_PATH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "bone_path.py"
-BONE_PATH_PARAMETERS = {"blender", "bone_prefix", "bones", "armature", "frame_range", "timeout"}
+BONE_PATH_PARAMETERS = {"blender", "bone_prefix", "bones", "points", "armature", "frame_range", "timeout"}
+BONE_TERM_KEYS = {"bone", "at", "offset", "weight"}
+POINT_TERM_KEYS = {"point", "weight"}
+
+
+def _point_terms(points, prefix):
+    """points（点の名前 → 項の並び）を確かめ、台本の settings の形（骨の名前に bone_prefix を付け、at・offset・weight を埋める）にする。
+    点の項が無い点・知らない点・輪になった参照は止める。"""
+    if not isinstance(points, dict) or not points:
+        raise ToolError(f"points は点の名前 → 項の並び の辞書にしてください: {points!r}")
+    out = {}
+    for name, terms in points.items():
+        where = f"points.{name}"
+        if not isinstance(name, str) or not name:
+            raise ToolError(f"points の名前は空でない文字列にしてください: {name!r}")
+        if not isinstance(terms, list) or not terms:
+            raise ToolError(f"{where} は項の並び（1 つ以上）にしてください: {terms!r}")
+        resolved = []
+        for n, term in enumerate(terms):
+            at = f"{where}[{n}]"
+            if not isinstance(term, dict) or ("bone" in term) == ("point" in term):
+                raise ToolError(f"{at} は bone（骨の名前）か point（別の点の名前）のどちらか 1 つを持つ辞書にしてください: {term!r}")
+            allowed = BONE_TERM_KEYS if "bone" in term else POINT_TERM_KEYS
+            unknown = sorted(set(term) - allowed)
+            if unknown:
+                raise ToolError(f"{at} の知らない鍵: {unknown}（使えるのは {sorted(allowed)}）")
+            weight = number(term, "weight", 1.0, minimum=0, exclusive=True)
+            if not math.isfinite(weight):
+                raise ToolError(f"{at} の weight は有限の数にしてください: {weight!r}")
+            if "point" in term:
+                if not isinstance(term["point"], str) or term["point"] not in points:
+                    raise ToolError(f"{at} の point（{term['point']!r}）が points にありません（あるのは {sorted(points)}）")
+                resolved.append({"point": term["point"], "weight": float(weight)})
+                continue
+            if not isinstance(term["bone"], str) or not term["bone"]:
+                raise ToolError(f"{at} の bone は骨の名前（bone_prefix の後ろ）にしてください: {term['bone']!r}")
+            offset = term.get("offset", [0.0, 0.0, 0.0])
+            if (not isinstance(offset, list) or len(offset) != 3
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in offset)):
+                raise ToolError(f"{at} の offset は骨の x・y・z 軸に沿ったずらし [x, y, z]（m）にしてください: {offset!r}")
+            position = number(term, "at", 0.0)
+            if not math.isfinite(position):
+                raise ToolError(f"{at} の at は有限の数にしてください: {position!r}")
+            resolved.append({"bone": prefix + term["bone"], "at": float(position),
+                             "offset": [float(v) for v in offset], "weight": float(weight)})
+        out[name] = resolved
+    state = {}
+
+    def visit(name, chain):
+        if state.get(name) == "done":
+            return
+        if state.get(name) == "open":
+            raise ToolError(f"points の参照が輪になっています: {' → '.join(chain + [name])}")
+        state[name] = "open"
+        for term in out[name]:
+            if "point" in term:
+                visit(term["point"], chain + [name])
+        state[name] = "done"
+
+    for name in out:
+        visit(name, [])
+    return out
 
 
 def _bone_path_settings(parameters, track):
     prefix = _bone_prefix(parameters)
-    bones = parameters.get("bones", ["Hips", "Head"])
-    if not isinstance(bones, list) or not bones or not all(isinstance(b, str) and b for b in bones) or len(set(bones)) != len(bones):
-        raise ToolError(f"bones は骨の名前（bone_prefix の後ろ。空でない・重ならない文字列）の並びにしてください: {bones!r}")
+    points = _point_terms(parameters["points"], prefix) if parameters.get("points") is not None else None
+    bones = parameters.get("bones", ["Hips", "Head"] if points is None else [])
+    if (not isinstance(bones, list) or (not bones and points is None) or not all(isinstance(b, str) and b for b in bones)
+            or len(set(bones)) != len(bones)):
+        raise ToolError(f"bones は骨の名前（bone_prefix の後ろ。空でない・重ならない文字列）の並びにしてください"
+                        f"（points が無いときは 1 つ以上）: {bones!r}")
     armature = parameters.get("armature")
     if armature is not None and not (isinstance(armature, str) and armature):
         raise ToolError(f"armature はアーマチュアの物体の名前にしてください: {armature!r}")
@@ -647,11 +712,15 @@ def _bone_path_settings(parameters, track):
                 or span[0] > span[1]):
             raise ToolError(f"frame_range は [最初, 最後] のコマ（整数、最初 ≤ 最後）にしてください: {span!r}")
         frames = list(range(span[0], span[1] + 1))
-    return {"bones": [prefix + b for b in bones], "frames": frames, "armature": armature}
+    settings = {"bones": [prefix + b for b in bones], "frames": frames, "armature": armature}
+    if points is not None:
+        settings["points"] = points
+    return settings
 
 
 @register("motion.bone_path", inputs=("blend", "track"), outputs=("path",), cacheable=False,
-          summary="動きのコマごとに、骨（既定は腰と頭）の付け根の位置（世界の座標、m）を測る（Blender の中で）。track（描くコマの"
+          summary="動きのコマごとに、骨（既定は腰と頭）の付け根の位置（世界の座標、m）を測る（Blender の中で）。points を書くと、"
+                  "骨の付け根から先への割合・骨の軸に沿ったずらし・重みつきの平均で決めた点（顔・胸・手の先など）も測る。track（描くコマの"
                   "並び。model3d-stage-track/0.1）があればその動きのコマを重ねず小さい順に、無ければ frame_range か .blend のシーンの"
                   "全コマを測る。path は model3d-bone-path/0.1（plan.stage がカメラの狙いに使う）。Blender は外部の実行ファイル"
                   "なので再利用しない（毎回実行）")
@@ -678,4 +747,9 @@ def bone_path(inputs, parameters, outputs, context):
     observation = {"kind": "bone_path", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "frames": len(path["frames"]), "bones": sorted(path["bones"]),
                    "scale_length": path.get("scale_length")}
+    if "points" in settings:
+        missing = sorted(set(settings["points"]) - set(path.get("points") or {}))
+        if missing:
+            raise ToolError(f"motion.bone_path: 測った通り道に点がありません: {missing}")
+        observation["points"] = sorted(settings["points"])
     return StepResult(observations=[observation])
