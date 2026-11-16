@@ -83,8 +83,9 @@ class Orbit:
         self.frames = int(p["frames"])
         self.offset = float(p["time_offset"])
         self.clock = Clock(p.get("marks"), p.get("grid") or {"k0_time": 0.0, "period": 1.0})
-        if p.get("grid") is None and _uses_beats(plan):
-            raise ToolError("段取り表に拍 {\"beat\": k} がありますが、grid（拍の格子）がありません")
+        beat_push = any(effect.get("kind") == "beat_push" for effect in p.get("effects", []))
+        if p.get("grid") is None and (_uses_beats(plan) or beat_push):   # 光のキーの無い plan.orbit には、ほかに拍の出どころが無い
+            raise ToolError("段取り表に拍 {\"beat\": k} か beat_push（拍ごとの寄り）がありますが、grid（拍の格子）がありません")
         self.shots = p["shots"]
         self.spans = spans(self.shots, self.clock, "shots", start=self.offset)   # 最初の区間の頭は T = 1 の時刻（u をそこから数える）
         for n, (shot, (start, end)) in enumerate(zip(self.shots, self.spans)):
