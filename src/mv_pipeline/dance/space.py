@@ -9,6 +9,8 @@
     phantom(target, picture, strength, settings)      分身を炎の色の光として足す（phantom_glow は分身の映り込みのもと）
     sprite_layers(size, camera, items, sprites, …)    小さな絵を 3D の位置とカメラの控えから画面に置く（遠い・近い・映り込みの 3 枚）
     over_glow(image, layer, glow, glow_blur)          小さな絵の層を重ね、にじませる
+    world(room, alpha, mix, settings, …)              背景を、部屋から別の世界（空・床の光のたまり）へ、踊り手から焼け抜けて切り替える（fx.burn）
+    impact(frame, amount, zoom, steps)                衝撃: 少しずつ拡大した画を重ねて、奥へ吸い込まれる筋にする
 """
 import math
 
@@ -238,3 +240,58 @@ def sprite_layers(size, camera, items, sprites, settings=None, room_sigma=0.0, u
 def over_glow(image, layer, glow, glow_blur, unit=1.0):
     """小さな絵の層（前乗算）を image に重ね、σ glow_blur でぼかした色を glow 倍足す（光ってにじむ）。"""
     return image * (1 - layer[..., 3:4]) + layer[..., :3] + finish.blur(layer[..., :3], glow_blur, unit) * glow
+
+
+# ---- 世界の切り替え・衝撃 ----------------------------------------------------------------
+
+WORLD = {"sky": [0.012, 0.009, 0.018], "pool": [0.40, 0.15, 0.055], "halo": {"sigma": 110.0, "color": [0.10, 0.04, 0.015]}}
+
+
+def centroid(alpha):
+    """アルファの重みの中心（画素）。人物が 50 画素ぶんより小さければ画面の中心。"""
+    height, width = alpha.shape
+    total = float(alpha.sum())
+    if total <= 50:
+        return width / 2, height / 2
+    ys, xs = grid((width, height))
+    return float((xs * alpha).sum() / total), float((ys * alpha).sum() / total)
+
+
+def other_world(alpha, pool, settings, unit=1.0):
+    """別の世界の背景: 空の色 + 床の光のたまり（要素 pool の明るさ × pool の色）+ 人物のまわりのほのかな明るみ（アルファを σ halo でぼかし、
+    halo の色を掛ける）。"""
+    s = settings
+    halo = finish.blur(alpha, s["halo"]["sigma"], unit)[..., None]
+    return (np.asarray(s["sky"], np.float32) + (pool if pool is not None else 0) * np.asarray(s["pool"], np.float32)
+            + halo * np.asarray(s["halo"]["color"], np.float32))
+
+
+def world(room, alpha, mix, pool, settings, burn_settings, unit=1.0):
+    """背景を、部屋（room）から別の世界（other_world）へ切り替える。mix が 0 以下なら部屋のまま（部屋が無ければ黒）、1 以上か部屋が
+    無ければ別の世界、その間は fx.burn の焼け抜け（進み mix。場は踊り手の重心 from から広がる）。room は表示の値の (H, W, 3)（無ければ None）。"""
+    height, width = alpha.shape
+    if mix <= 0.0:
+        return room if room is not None else np.zeros((height, width, 3), np.float32)
+    dark = other_world(alpha, pool, settings, unit)
+    if room is None or mix >= 1.0:
+        return dark * np.ones((height, width, 3), np.float32)
+    from ..fx import burn as fxburn
+    cx, cy = centroid(alpha)
+    burn = {**burn_settings, "from": [cx / width, cy / height]}
+    field = fxburn.field(burn, (width, height))
+    before = room * np.float32(255.0)
+    now = np.broadcast_to(dark, room.shape) * np.float32(255.0)
+    return fxburn.composite(before, now, field, mix, burn) / np.float32(255.0)
+
+
+def impact(frame, amount, zoom=0.05, steps=3):
+    """衝撃: 画の中心のまわりに 1 + zoom × amount × k 倍（k = 1〜steps）に拡大した画（線形補間、端は鏡）を、元の画と平均する。"""
+    if not amount > 0.01:
+        return frame
+    height, width = frame.shape[:2]
+    total = frame.copy()
+    for step in range(1, int(steps) + 1):
+        scale = 1 + zoom * amount * step
+        move = np.array([[scale, 0, (1 - scale) * width / 2], [0, scale, (1 - scale) * height / 2]], np.float64)
+        total += cv2.warpAffine(frame, move, (width, height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    return total / (int(steps) + 1)
