@@ -6,6 +6,9 @@
 - 補正は、中の点を最も近い面の上へ出し、面の外向き法線の方向に余裕（clearance）だけ離す。外にあっても余裕より
   近い点は、面から点へ向かう方向に余裕まで離す（pad_outside）。
 - 速さに入れない: ここは位置だけを直す。押し出し量を速度に混ぜると弾んで裏返る（同じ記録）。
+- 速い探し方（search="grid"、既定）: 光線の向きに垂直な面に三角形を写し、その面の格子の目ごとに、写した三角形の範囲が掛かる
+  三角形を並べておく。点は、写した位置の目の三角形とだけ交わりを調べる。光線が通る三角形は、写すと必ず点を含むので、候補から
+  漏れない（範囲は少し広げてある）。交わりの式と同じ距離の畳み方は総当たり（search="all"）と同じで、答えも同じになる。
 """
 import numpy as np
 
@@ -14,6 +17,9 @@ from .io import ToolError
 DIRECTIONS = np.array([[0.3137, 0.7121, 0.6273], [-0.6071, 0.3463, -0.7152], [0.5205, -0.8101, 0.2697]])
 DIRECTIONS = DIRECTIONS / np.linalg.norm(DIRECTIONS, axis=1)[:, None]
 BUDGET = 1_500_000  # 1 回の計算で扱う 点 × 三角形 の数（メモリの上限）
+SEARCHES = ("grid", "all")   # 内外の判定の候補の探し方（格子で絞る・総当たり）
+GRID_CELLS = 4096            # 格子の目の数の上限（三角形の数より多くしない）
+GRID_PAIRS = 2_000_000       # 1 回の計算で扱う（点, 候補の三角形）の組の数（メモリの上限）
 
 
 def _triangles(mesh):
@@ -72,8 +78,91 @@ def ray_hits(origins, direction, tri, eps=1e-12):
     return counts
 
 
-def inside(points, mesh, directions=None):
-    """閉じたメッシュ mesh の中にある点の真偽 (P,)。bounding box の外は見ずに外とする。"""
+def _plane(d):
+    """向き d に垂直な面の、直交する 2 本の向き（3, 2）。"""
+    helper = np.array([1.0, 0.0, 0.0]) if abs(d[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    first = np.cross(d, helper)
+    first /= np.linalg.norm(first)
+    return np.stack([first, np.cross(d, first)], axis=1)
+
+
+def _pair_chunks(counts, budget):
+    """点の並びを、（点, 候補の三角形）の組の数が budget ほどの区切りに分ける（点 1 つの候補が多ければ、その点だけで 1 区切り）。"""
+    begin, total = 0, 0
+    for index, count in enumerate(counts.tolist()):
+        if total and total + count > budget:
+            yield begin, index
+            begin, total = index, 0
+        total += count
+    yield begin, len(counts)
+
+
+def ray_hits_grid(origins, direction, tri, eps=1e-12):
+    """ray_hits と同じ数（各点から direction へ飛ばした光線が三角形と交わる回数。同じ距離の交点は 1 回）を、光線の向きに垂直な面の
+    格子で候補の三角形を絞って数える。"""
+    origins = np.asarray(origins, dtype=np.float64).reshape(-1, 3)
+    d = np.asarray(direction, dtype=np.float64)
+    counts = np.zeros(len(origins), dtype=np.int64)
+    if not len(origins):
+        return counts
+    tolerance = 1e-9 * max(1.0, float(np.abs(tri).max()), float(np.abs(origins).max()))
+    v0, e1, e2 = tri[:, 0], tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]
+    h = np.cross(d[None, :], e2)
+    a = np.einsum("ij,ij->i", e1, h)
+    parallel = np.abs(a) < eps
+    f = np.where(parallel, 0.0, 1.0 / np.where(parallel, 1.0, a))
+    plane = _plane(d)
+    projected = tri @ plane                                       # (T, 3, 2)
+    margin = 1e-7 * max(1.0, float(np.abs(projected).max()))      # 写した範囲を少し広げる（丸めで候補から漏らさない）
+    low, high = projected.min(axis=1) - margin, projected.max(axis=1) + margin
+    area_low, area_high = low.min(axis=0), high.max(axis=0)
+    cells = int(max(1, min(GRID_CELLS, len(tri))) ** 0.5)
+    size = np.maximum((area_high - area_low) / cells, 1e-300)
+    first = np.clip(np.floor((low - area_low) / size).astype(np.int64), 0, cells - 1)
+    last = np.clip(np.floor((high - area_low) / size).astype(np.int64), 0, cells - 1)
+    width = last[:, 0] - first[:, 0] + 1
+    spans = width * (last[:, 1] - first[:, 1] + 1)
+    owner = np.repeat(np.arange(len(tri)), spans)                 # 三角形ごとに、掛かる目の数だけ並べる
+    local = np.arange(len(owner)) - np.repeat(np.cumsum(spans) - spans, spans)
+    cell = (first[owner, 1] + local // width[owner]) * cells + first[owner, 0] + local % width[owner]
+    members = owner[np.argsort(cell, kind="stable")]             # 目の順に並べた三角形
+    per_cell = np.bincount(cell, minlength=cells * cells)
+    starts = np.cumsum(per_cell) - per_cell
+    flat = origins @ plane
+    within = np.all((flat >= area_low) & (flat <= area_high), axis=1)
+    at = np.clip(np.floor((flat - area_low) / size).astype(np.int64), 0, cells - 1)
+    point_cell = at[:, 1] * cells + at[:, 0]
+    candidates = np.where(within, per_cell[point_cell], 0)
+    for begin, end in _pair_chunks(candidates, GRID_PAIRS):
+        chunk = np.arange(begin, end)
+        n = candidates[chunk]
+        if not n.sum():
+            continue
+        pair_point = np.repeat(chunk, n)
+        offset = np.arange(len(pair_point)) - np.repeat(np.cumsum(n) - n, n)
+        pair_tri = members[np.repeat(starts[point_cell[chunk]], n) + offset]
+        s = origins[pair_point] - v0[pair_tri]                    # 交わりの式は ray_hits と同じ（Möller–Trumbore）
+        u = f[pair_tri] * np.einsum("kj,kj->k", s, h[pair_tri])
+        q = np.cross(s, e1[pair_tri])
+        v = f[pair_tri] * np.einsum("kj,j->k", q, d)
+        t = f[pair_tri] * np.einsum("kj,kj->k", q, e2[pair_tri])
+        hit = (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t > eps) & ~parallel[pair_tri]
+        hit_point, hit_t = pair_point[hit], t[hit]
+        if not len(hit_point):
+            continue
+        order = np.lexsort((hit_t, hit_point))                    # 点ごとに、近い順
+        hit_point, hit_t = hit_point[order], hit_t[order]
+        first_of_point = np.r_[True, hit_point[1:] != hit_point[:-1]]
+        distinct = first_of_point | np.r_[False, np.diff(hit_t) > tolerance]   # 辺・頂点を共有する三角形の重複を畳む
+        counts += np.bincount(hit_point[distinct], minlength=len(origins))
+    return counts
+
+
+def inside(points, mesh, directions=None, search="grid"):
+    """閉じたメッシュ mesh の中にある点の真偽 (P,)。bounding box の外は見ずに外とする。search は候補の三角形の探し方
+    （grid: 光線の向きに垂直な面の格子で絞る。all: 総当たり）。どちらも同じ答え。"""
+    if search not in SEARCHES:
+        raise ToolError(f"search は {' か '.join(SEARCHES)} にしてください: {search!r}")
     points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     tri = _triangles(mesh)
     dirs = directions_of(directions)
@@ -84,9 +173,10 @@ def inside(points, mesh, directions=None):
     candidate = np.all((points >= lo) & (points <= hi), axis=1)
     if not candidate.any():
         return result
+    hits = ray_hits_grid if search == "grid" else ray_hits
     votes = np.zeros(int(candidate.sum()), dtype=np.int64)
     for d in dirs:
-        votes += ray_hits(points[candidate], d, tri) % 2
+        votes += hits(points[candidate], d, tri) % 2
     result[candidate] = votes * 2 > len(dirs)
     return result
 

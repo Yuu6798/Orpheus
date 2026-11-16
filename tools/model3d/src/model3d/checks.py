@@ -131,8 +131,12 @@ def require_same_frame(mesh, collider):
 require_same_units = require_same_frame
 
 
-def penetration(mesh, collider, directions=None, limit=50, vertices=None):
-    """mesh の頂点（vertices があればその番号の頂点だけ）のうち collider（閉じたメッシュ）の中にあるものの数・番号・深さ。"""
+def penetration(mesh, collider, directions=None, limit=50, vertices=None, search="grid"):
+    """mesh の頂点（vertices があればその番号の頂点だけ）のうち collider（閉じたメッシュ）の中にあるものの数・番号・深さ。
+    search は内外の判定の候補の三角形の探し方（grid: 格子で絞る、all: 総当たり。答えは同じ）。
+
+    限界: 数えるのは「collider の中に入った頂点」だけ。脚がまるごと布を通り抜ける失敗（布の頂点はどれも脚の外にあり、脚の面が布の
+    面を突き抜ける）は数に出ない。目で見分けるには render.part_colors の色分けの絵を使う（docs/model3d.md）。"""
     require_same_frame(mesh, collider)
     report = collider.edge_report()
     if not report["closed"]:
@@ -141,11 +145,11 @@ def penetration(mesh, collider, directions=None, limit=50, vertices=None):
     checked = np.arange(mesh.vertex_count) if vertices is None else np.asarray(sorted(set(vertices)), dtype=np.int64)
     if len(checked) and (checked.min() < 0 or checked.max() >= mesh.vertex_count):
         raise ToolError("検査する頂点の番号がメッシュの範囲外です")
-    indices = checked[collide.inside(mesh.vertices[checked], collider, directions)]
+    indices = checked[collide.inside(mesh.vertices[checked], collider, directions, search=search)]
     depth = np.zeros(0)
     if len(indices):
         _, depth, _ = collide.closest_points(mesh.vertices[indices], collider)
-    return {"check": "penetration", "pass": not len(indices), "vertices": mesh.vertex_count,
+    return {"check": "penetration", "pass": not len(indices), "vertices": mesh.vertex_count, "search": search,
             **({"checked": int(len(checked))} if vertices is not None else {}), "inside": int(len(indices)),
             "inside_indices": indices[:limit].tolist(), "truncated": bool(len(indices) > limit),
             "max_depth": float(depth.max()) if len(depth) else 0.0, "mean_depth": float(depth.mean()) if len(depth) else 0.0,

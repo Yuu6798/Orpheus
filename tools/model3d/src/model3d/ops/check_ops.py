@@ -49,12 +49,17 @@ def check_structure(inputs, parameters, outputs, context):
 
 
 @register("check.penetration", inputs=("mesh", "collider"), outputs=("report",), selectable=("mesh",),
-          summary="mesh の頂点（select で役割の面の頂点だけ）が閉じた collider の中にないことを検査する")
+          summary="mesh の頂点（select で役割の面の頂点だけ）が閉じた collider の中にないことを検査する。内外の判定の候補の三角形は、"
+                  "光線の向きに垂直な面の格子で絞る（search: grid。all で総当たり。答えは同じ）。中に入った頂点を数えるだけなので、"
+                  "脚がまるごと布を通り抜ける失敗は拾えない（render.part_colors の色分けの絵で見る）")
 def check_penetration(inputs, parameters, outputs, context):
     require(inputs, ("mesh", "collider"), "check.penetration")
     chosen = selected(context, "mesh", parameters, "check.penetration")
+    search = parameters.get("search", "grid")
+    if search not in ("grid", "all"):
+        raise ToolError(f"check.penetration の search は grid か all にしてください: {search!r}")
     report = checks.penetration(Mesh.load(inputs["mesh"]), Mesh.load(inputs["collider"]), parameters.get("directions"),
-                                vertices=chosen["vertices"] if chosen else None)
+                                vertices=chosen["vertices"] if chosen else None, search=search)
     if report["inside"]:
         report["failures"] = [f"{report['inside']} 頂点が中にあります（最大の深さ {report['max_depth']:.4g}）"]
     return _finish(report, outputs, parameters, "貫通の検査")
