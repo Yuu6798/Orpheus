@@ -129,6 +129,18 @@ def test_build_writes_cameras_alt_and_references(tmp_path):
     assert entry["shift"][0] == pytest.approx((540 - entry["principal_px"][0]) / 1920)
 
 
+def test_the_alt_side_uses_the_shot_boundary_tolerance():
+    """つなぎの時刻がコマの時刻よりわずかに後ろに丸められても（0.1 + 0.2）、本のカメラと相手のカメラが同じショットにならない（Codex の指摘）。"""
+    plan = _plan(time_offset=0.0, frames=20, wipes=[{"at": 0.1 + 0.2, "seconds": 0.1}])
+    plan["shots"][0]["until"] = 0.1 + 0.2
+    plan["shots"][1]["orbit"]["keys"] = [[0.0, 30.0, 2.5, 2.0], [1.0, 0.0, 2.4, 1.5]]
+    cameras, track, alt, report = build(plan, _bones())
+    sides = {a["T"]: a["shot"] for a in report["alt"]}
+    shots = Shots(plan)
+    assert shots.shot_at(shots.time(10)) == 1 and sides[10] == 0                              # t = 0.3: 本は後のショット、相手は前
+    assert all(sides[T] != shots.shot_at(shots.time(T)) for T in sides)
+
+
 def test_bad_plans_are_stopped():
     with pytest.raises(ToolError, match="keys"):
         Shots(_plan(shots=[{"name": "x"}]))

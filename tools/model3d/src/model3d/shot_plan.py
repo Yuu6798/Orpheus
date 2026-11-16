@@ -37,7 +37,7 @@ import numpy as np
 from .blender_adapter.point_track import PathError, Samples
 from .io import ToolError
 from .orbit_plan import EASE, handheld, rotation
-from .stage_plan import Clock, find, inside, spans
+from .stage_plan import EPS, Clock, find, inside, spans
 
 DEFAULTS = {
     "time_offset": 0.0, "dancer": "hips",
@@ -344,8 +344,8 @@ def build(plan, path):
         rows.append({"T": T, "f": f})
         hits.append(n)
         for at, seconds in shots.wipes:                  # つなぎの最中は、相手のショットのカメラも同じ時刻で
-            if abs(t - at) < seconds / 2:
-                other = shots.shot_at(at + NEXT if t < at else at - NEXT)
+            if abs(t - at) < seconds / 2:                  # at の前か後かは、ショットの境目と同じく EPS 秒前のコマから後の側
+                other = shots.shot_at(at + NEXT if t < at - EPS else at - NEXT)
                 m2, f2, p2, _, _ = shots.camera(t, other, samples)
                 alt.append({**shots.entry(T, f, m2, f2, p2, dancer), "shot": other})
                 break
