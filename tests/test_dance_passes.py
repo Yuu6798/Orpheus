@@ -196,6 +196,7 @@ def test_the_audio_starts_at_the_first_listed_T(tmp_path, monkeypatch):
     monkeypatch.setattr(passes, "audio_plan", plan)
     result = passes.render_run(_spec(tmp_path, audio={"path": "song.wav", "offset_s": 0.5}), out=tmp_path / "runs", quiet=True)
     assert result["status"] == "succeeded" and seen["start"] == pytest.approx(1.5) and seen["seconds"] == pytest.approx(0.1)
+    assert result["interval"]["start"] == pytest.approx(1.0) and result["interval"]["duration"] == pytest.approx(0.1)   # 記録も T 31 の時刻から
 
 
 def test_look_grade_keys_must_be_in_order(tmp_path):

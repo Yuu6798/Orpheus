@@ -313,7 +313,9 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         seconds = n_frames / plan.fps
         run.manifest.update(
             spec=fxruns.spec_record(spec), assets=assets, engine=fxruns.engine_record(dance, "dance"), libraries=libraries,
-            interval={"start": 0.0, "duration": seconds, "fps": plan.fps, "frames": n_frames, "T": [plan.frames[0], plan.frames[-1]]},
+            # 最初のコマの時刻（T = 1 が 0 秒）。fx の比較（compare_run）などが、ここから基準の動画のコマを選ぶ
+            interval={"start": (plan.frames[0] - 1) / plan.fps, "duration": seconds, "fps": plan.fps, "frames": n_frames,
+                      "T": [plan.frames[0], plan.frames[-1]]},
             output={"size": [width, height], "scale": 1.0, "crf": data["output"]["crf"]}, passes=sorted(plan.files),
             variants={}, grid=None, warnings=list(spec.warnings), look=data["look"] is not None)
         run.save()
