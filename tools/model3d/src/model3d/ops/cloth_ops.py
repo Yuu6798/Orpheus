@@ -2,6 +2,7 @@
 再利用しない（毎回実行）。
 
 - cloth.skirt_proxy: 裾を身代わりの筒の布で動かす（細かい裾は筒に貼り付けて付いて行かせる）。
+- cloth.smooth: 布の動きを骨から見た座標で時間方向にならし、頂点の動きのファイル（.pc2）に置き換える。
 """
 import math
 from pathlib import Path
@@ -127,3 +128,69 @@ def skirt_proxy(inputs, parameters, outputs, context):
     unresolved = [] if report.get("baked") or settings.get("bake") is False else ["布の計算を焼けませんでした"]
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
 
+
+SMOOTH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_smooth.py"
+SMOOTH_PARAMETERS = {"blender", "addons", "blender_extensions", "timeout", "armature", "proxy", "detail", "bone", "bone_prefix",
+                     "sigma", "detail_sigma", "median"}
+
+
+@register("cloth.smooth", inputs=("blend",), outputs=("blend", "report", "proxy_cache", "cache"), cacheable=False,
+          summary="布の計算を焼いた筒（proxy。既定 skirt_proxy）の動きを、骨（bone）から見た座標で時間方向にならし（1 コマだけの飛びを"
+                  "median コマの中央値で消してから σ sigma コマのガウス）、頂点の動きのファイル（proxy_cache の .pc2）に置き換える（Blender の"
+                  "中で）。detail（細かい裾）も、ならした筒に付いて行く動きを σ detail_sigma でならして cache に置き換える。ファイルは "
+                  ".blend と同じフォルダに書き、.blend からの相対パスで読む。ならす前後のずれを報告に出す。元のファイルは変えない")
+def cloth_smooth(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _bone_prefix, _timeout
+    require(inputs, ("blend",), "cloth.smooth")
+    unknown = set(parameters) - SMOOTH_PARAMETERS
+    if unknown:
+        raise ToolError(f"cloth.smooth の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(SMOOTH_PARAMETERS)}）")
+    bone = parameters.get("bone", "Hips")
+    if not isinstance(bone, str) or not bone:
+        raise ToolError(f"bone は骨の名前（bone_prefix の後ろ）にしてください: {bone!r}")
+    settings = {"proxy": parameters.get("proxy", "skirt_proxy"), "bone": _bone_prefix(parameters) + bone,
+                "sigma": float(number(parameters, "sigma", 1.2, minimum=0, exclusive=True)),
+                "detail_sigma": float(number(parameters, "detail_sigma", 0.8, minimum=0)),
+                "median": number(parameters, "median", 3, minimum=1, integer=True)}
+    if not isinstance(settings["proxy"], str) or not settings["proxy"]:
+        raise ToolError(f"proxy は布の筒のメッシュの名前にしてください: {settings['proxy']!r}")
+    if settings["median"] % 2 == 0:
+        raise ToolError(f"median は奇数のコマ数にしてください（前後に同じだけ見る）: {settings['median']}")
+    if parameters.get("armature") is not None:
+        settings["armature"] = _name(parameters, "armature", "cloth.smooth")
+    detail = settings["detail_sigma"] > 0
+    if detail:
+        settings["detail"] = _name(parameters, "detail", "cloth.smooth（detail_sigma > 0 のとき）")
+        if settings["detail"] == settings["proxy"]:
+            raise ToolError("detail と proxy は別のメッシュにしてください")
+    elif parameters.get("detail") is not None:
+        raise ToolError("detail を挙げるときは detail_sigma を 0 より大きくしてください")
+    required = ["blend", "report", "proxy_cache"] + (["cache"] if detail else [])
+    missing = [name for name in required if name not in outputs]
+    if missing:
+        raise ToolError(f"cloth.smooth には outputs の {', '.join(missing)} が要ります")
+    if not detail and "cache" in outputs:
+        raise ToolError("outputs の cache（細かい裾の .pc2）は detail_sigma > 0 のときだけ書けます")
+    for name in ("proxy_cache", "cache"):
+        if name in outputs and Path(outputs[name]).suffix.lower() != ".pc2":
+            raise ToolError(f"outputs の {name} は .pc2 のファイルにしてください: {Path(outputs[name]).name}")
+        if name in outputs and Path(outputs[name]).resolve().parent != Path(outputs["blend"]).resolve().parent:
+            raise ToolError(f"outputs の {name} は blend と同じフォルダに置いてください（.blend からの相対パスで読む）")
+    blender = _blender(parameters, context, "cloth.smooth")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "smooth_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--proxy-cache", outputs["proxy_cache"]]
+    if detail:
+        args += ["--cache", outputs["cache"]]
+    record = launcher.run_blender(blender, SMOOTH_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "cloth_smooth", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "addons": record.get("addons"), "frames": report.get("frames"),
+                   **{part: {key: report[part].get(key) for key in ("object", "verts", "jitter_mm_before", "jitter_mm_after", "moved_mm")}
+                      for part in ("proxy", "detail") if part in report}}
+    return StepResult(observations=[observation])
