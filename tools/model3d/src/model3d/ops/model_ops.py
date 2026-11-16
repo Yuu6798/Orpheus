@@ -6,6 +6,7 @@
 - model.twist_bones: ねじれを分ける補助の骨（ねじらない骨）を足し、重みを付け根から先へ振り分ける。
 - check.twist: 骨の軸のまわりのねじれの角をコマごとに測る。
 - model.recolor_part・model.recolor: 色の絵を、部品の uv の範囲だけ・色相の範囲だけ塗り替える。model.remove_parts: 部品を外す。
+- model.smooth_skin・model.clean_skin: 肌の島の色の絵を、頂点の色をならして塗り直す（溝と焼き込まれた明暗・外した部品の下のしみ）。
 """
 import math
 from pathlib import Path
@@ -509,3 +510,124 @@ def recolor(inputs, parameters, outputs, context):
     observation = {"kind": "recolor", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "rules": report.get("rules")}
     return StepResult(observations=[observation])
+
+
+SKIN_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "skin_repaint.py"
+
+
+def _range(value, where, low=None, high=None):
+    if (not isinstance(value, list) or len(value) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in value) or value[0] > value[1]):
+        raise ToolError(f"{where} は [下, 上]（有限の数、下 ≤ 上）にしてください: {value!r}")
+    if (low is not None and value[0] < low) or (high is not None and value[1] > high):
+        raise ToolError(f"{where} は {low}〜{high} の中にしてください: {value!r}")
+    return value
+
+
+def _skin(value):
+    if not isinstance(value, dict):
+        raise ToolError(f"skin は {{\"hue_deg\": [下, 上], \"saturation\": [下, 上], \"value_min\": 下}} にしてください: {value!r}")
+    _refuse_unknown(value, ("hue_deg", "saturation", "value_min"), "skin")
+    return {"hue_deg": _range(value.get("hue_deg"), "skin.hue_deg", 0.0, 360.0),
+            "saturation": _range(value.get("saturation"), "skin.saturation", 0.0, 1.0),
+            "value_min": _real(value.get("value_min"), "skin.value_min", 0.0, maximum=1.0)}
+
+
+def _run_skin(mode, inputs, parameters, outputs, context, settings, operation):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    _outputs(outputs, ("blend", "texture", "report"), operation)
+    if Path(outputs["texture"]).suffix.lower() != ".png":
+        raise ToolError(f"outputs の texture は .png にしてください: {Path(outputs['texture']).name}")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / f"{mode}_skin_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, SKIN_SCRIPT, None, ["--mode", mode, "--blend", inputs["blend"], "--settings", str(settings_path),
+                                                               "--out-blend", outputs["blend"], "--texture", str(outputs["texture"]),
+                                                               "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    return record, read_json(outputs["report"])
+
+
+@register("model.smooth_skin", inputs=("blend",), outputs=("blend", "texture", "report"), cacheable=False,
+          summary="肌の島の、選んだ範囲の溝（形）と、色の絵に焼き込まれた明暗（色）をならす（Blender の中で）。肌色（skin）の頂点のうち、"
+                  "seed_z の高さの横を向いた肌をいちばん多く含む島だけを相手にし、高さ z_range・体の中心からの横の距離 x_min〜x_max・"
+                  "横を向いた面 facing のなだらかな重みで、色は頂点の色を隣どうしでならして塗り直し、形は shape で縮まないならし方"
+                  "（Taubin）をかける。色だけで選ばず島に限るので、色の近い服は崩さない。塗り直した絵は texture の PNG に書いて詰め込む。"
+                  "元のファイルは変えない")
+def smooth_skin(inputs, parameters, outputs, context):
+    require(inputs, ("blend",), "model.smooth_skin")
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"body", "image", "skin", "seed_z", "z_range", "z_soft", "x_min", "x_max", "x_soft",
+                                                         "facing", "shape", "color_iterations", "paint_margin_px"}, "model.smooth_skin")
+    settings = {"body": _name(parameters.get("body"), "body"), "image": _name(parameters.get("image"), "image"),
+                "skin": _skin(parameters.get("skin")), "seed_z": _range(parameters.get("seed_z"), "seed_z"),
+                "z_range": _range(parameters.get("z_range"), "z_range"),
+                "x_min": _real(parameters.get("x_min"), "x_min", 0.0), "x_max": _real(parameters.get("x_max"), "x_max", 0.0),
+                "facing": _range(parameters.get("facing"), "facing", 0.0, 1.0)}
+    if settings["x_max"] <= settings["x_min"]:
+        raise ToolError(f"x_max（{settings['x_max']}）は x_min（{settings['x_min']}）より大きくしてください")
+    for key in ("z_soft", "x_soft"):
+        if key in parameters:
+            settings[key] = _real(parameters[key], key, 0.0, exclusive=True)
+    if "color_iterations" in parameters:
+        settings["color_iterations"] = number(parameters, "color_iterations", minimum=0, integer=True)
+    if "paint_margin_px" in parameters:
+        settings["paint_margin_px"] = _real(parameters["paint_margin_px"], "paint_margin_px", 0.0)
+    shape = parameters.get("shape")
+    if shape is not None:
+        if not isinstance(shape, dict):
+            raise ToolError(f"shape は {{\"iterations\": …, \"factor\": …, \"inflate\": …}} にしてください: {shape!r}")
+        _refuse_unknown(shape, ("iterations", "factor", "inflate", "z_max", "z_soft"), "shape")
+        checked = {}
+        if "iterations" in shape:
+            checked["iterations"] = number(shape, "iterations", minimum=0, integer=True)
+        if "factor" in shape:
+            checked["factor"] = _real(shape["factor"], "shape.factor", 0.0, exclusive=True, maximum=1.0)
+        if "inflate" in shape:
+            checked["inflate"] = _real(shape["inflate"], "shape.inflate", maximum=0.0)
+        if shape.get("z_max") is not None:
+            checked["z_max"] = _real(shape["z_max"], "shape.z_max")
+        if "z_soft" in shape:
+            checked["z_soft"] = _real(shape["z_soft"], "shape.z_soft", 0.0, exclusive=True)
+        settings["shape"] = checked
+    record, report = _run_skin("smooth", inputs, parameters, outputs, context, settings, "model.smooth_skin")
+    observation = {"kind": "smooth_skin", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("skin_island_verts", "selected_verts", "shape_moved_mm", "texels_painted")}}
+    unresolved = [] if report.get("selected_verts") else ["ならす頂点がありません（範囲の設定を確かめてください）"]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+@register("model.clean_skin", inputs=("blend",), outputs=("blend", "texture", "report"), cacheable=False,
+          summary="外した部品の下の肌のしみを消す（Blender の中で）: island_groups（手など。名前の頭）がいちばん重い頂点を island_min 以上"
+                  "含む島の、region_groups（上腕・前腕など。名前の頭）の頂点のうち、肌色（skin）でないもの（しみ）を、まわりのきれいな"
+                  "肌の色で外側から順に埋め、範囲の中を軽くならして、色の絵を塗り直す（手は触らない）。塗り直した絵は texture の PNG に"
+                  "書いて詰め込む。元のファイルは変えない")
+def clean_skin(inputs, parameters, outputs, context):
+    require(inputs, ("blend",), "model.clean_skin")
+    _refuse_unknown(parameters, COMMON | {"body", "image", "skin", "island_groups", "island_min", "region_groups",
+                                           "fill_iterations", "smooth_iterations", "smooth_factor", "paint_margin_px"},
+                    "model.clean_skin")
+    settings = {"body": _name(parameters.get("body"), "body"), "image": _name(parameters.get("image"), "image"), "armature": _armature(parameters),
+                "skin": _skin(parameters.get("skin")), "island_groups": _names(parameters.get("island_groups"), "island_groups"),
+                "region_groups": _names(parameters.get("region_groups"), "region_groups")}
+    for key in ("island_min", "fill_iterations", "smooth_iterations"):
+        if key in parameters:
+            settings[key] = number(parameters, key, minimum=1 if key == "island_min" else 0, integer=True)
+    if "smooth_factor" in parameters:
+        settings["smooth_factor"] = _real(parameters["smooth_factor"], "smooth_factor", 0.0, exclusive=True, maximum=1.0)
+    if "paint_margin_px" in parameters:
+        settings["paint_margin_px"] = _real(parameters["paint_margin_px"], "paint_margin_px", 0.0)
+    record, report = _run_skin("clean", inputs, parameters, outputs, context, settings, "model.clean_skin")
+    observation = {"kind": "clean_skin", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("islands", "region_verts", "dirty_verts", "not_filled", "texels_painted")}}
+    unresolved = []
+    if not report.get("region_verts"):
+        unresolved.append("塗り直す頂点がありません（island_groups・region_groups を確かめてください）")
+    if report.get("not_filled"):
+        unresolved.append(f"きれいな肌の色で埋めきれない頂点が {report['not_filled']} あります（fill_iterations を増やすか、範囲を確かめてください）")
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
