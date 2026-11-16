@@ -12,7 +12,9 @@
 - disc: 足もとの影のもとになる円（半径 disc.radius・頂点 disc.vertices の多角形）を、踊り手の点の真下の高さ disc.height に白で。
   背景は黒
 - head: 顔の範囲。head に挙げた物体を白、ほかの人物の物体を黒で（髪などに隠れた所は黒）。背景は黒
-ファイルは <passes-dir>/<要素>/f<T>.png（char 以外は format が jpeg なら .jpg）。描いてあるファイルはとばす（続きから描ける）。
+- r<要素>（mirror.passes に挙げた char・shade）: 同じ要素を、カメラを床の面（高さ mirror.height）で反転して描いたもの（床への映り込み）。
+  反転したカメラの行列は、入れた行列（記録のカメラなら記録の行列、トラックのカメラなら Blender の行列）に左から鏡の行列を掛けたもの
+ファイルは <passes-dir>/<要素>/f<T>.png（char・rchar 以外は format が jpeg なら .jpg）。描いてあるファイルはとばす（続きから描ける）。
 画像に日時などの控え（メタデータ）を書かない（同じ入力なら同じバイト列）。
 
 settings.json（render.passes が書く。DEFAULTS に重ねる）:
@@ -20,6 +22,7 @@ settings.json（render.passes が書く。DEFAULTS に重ねる）:
 - camera: sensor_height（縦の受光の大きさ mm。受光は縦に合わせる）、lens（トラックのカメラにレンズが無いときの mm）、clip（写る範囲 m）
 - dancer: bones（踊り手の点にする骨の付け根の平均）、sigma（動きのコマの並びでならすガウスの σ。コマ）
 - disc（m）、head（物体の名前の並び）、room（collection・world）、shade（studio_light・rotate_z 度）、armature、only（描く T）
+- mirror: passes（反転したカメラでも描く要素の並び。char・shade）、height（床の面の高さ m）
 
 カメラ（コマ T ごと）:
 - 入力 cameras（model3d-cameras/0.1）にあれば、その行列（matrix_world に入れる。回転の持ち方は物体の既定の XYZ のオイラー角のまま）と、
@@ -49,6 +52,8 @@ except ImportError:   # Blender が台本として動かすとき
     from vrm_apply_motion import use_scene_of
 
 PASSES = ("room", "char", "shade", "disc", "head")
+MIRRORED = ("char", "shade")                      # 床で反転したカメラでも描ける要素（r<要素>）
+ALPHA = ("char",)                                 # 透けの RGBA の PNG で書く要素（反転したものも）
 DEFAULTS = {
     "resolution": [1080, 1920], "passes": ["char", "shade", "disc"], "format": "png", "quality": 90, "antialiasing": "5",
     "camera": {"sensor_height": 24.0, "lens": 35.0, "clip": [0.1, 1000.0]},
@@ -56,9 +61,9 @@ DEFAULTS = {
     "disc": {"radius": 0.42, "vertices": 48, "height": 0.004},
     "head": [], "room": {"collection": None, "world": [0.0, 0.0, 0.0]},
     "shade": {"studio_light": "Default", "rotate_z": 0.0},
-    "armature": None, "fps": None, "only": None,
+    "armature": None, "fps": None, "only": None, "mirror": {"passes": [], "height": 0.0},
 }
-SECTIONS = ("camera", "dancer", "disc", "room", "shade")
+SECTIONS = ("camera", "dancer", "disc", "room", "shade", "mirror")
 DRAWN = {"MESH", "CURVE", "CURVES", "SURFACE", "META", "FONT", "POINTCLOUD", "VOLUME", "GREASEPENCIL"}   # 描画に出る物体の種類
 DISC_NAME = "model3d_passes_disc"
 
@@ -83,8 +88,23 @@ def merged(settings):
     return out
 
 
+def base_kind(kind):
+    """r<要素>（反転したカメラで描いたもの）の元の要素の名前。そのほかはそのまま。"""
+    return kind[1:] if kind.startswith("r") and kind[1:] in MIRRORED else kind
+
+
 def extension(kind, fmt):
-    return "png" if kind == "char" or fmt == "png" else "jpg"
+    return "png" if base_kind(kind) in ALPHA or fmt == "png" else "jpg"
+
+
+def all_kinds(settings):
+    """描く要素の名前の並び（passes の後に、反転したカメラで描く r<要素>）。"""
+    return list(settings["passes"]) + ["r" + k for k in settings["mirror"]["passes"]]
+
+
+def mirror_values(height):
+    """床の面（高さ height。Blender 単位）で反転する 4×4 の行列の値（z → 2 height − z）。"""
+    return [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 2.0 * height], [0.0, 0.0, 0.0, 1.0]]
 
 
 def pass_file(kind, T, fmt):
@@ -149,7 +169,9 @@ def camera_entry(T, f, matrix, lens, shift, sensor_height, resolution, unit, dan
 
 
 def set_pass(bpy, kind, handles, settings):
-    """要素ごとに、何を描くかと描き方を切り替える（どの要素も毎回すべてを入れ直す。前の要素の値を引き継がない）。"""
+    """要素ごとに、何を描くかと描き方を切り替える（どの要素も毎回すべてを入れ直す。前の要素の値を引き継がない）。
+    r<要素> は元の要素と同じ描き方（カメラだけが反転している）。"""
+    kind = base_kind(kind)
     sc = bpy.context.scene
     shading = sc.display.shading
     show_character = kind in ("char", "shade", "head")
@@ -174,8 +196,8 @@ def set_pass(bpy, kind, handles, settings):
     sc.render.film_transparent = kind == "char"
     handles["world"].color = tuple(settings["room"]["world"]) if kind == "room" else (0.0, 0.0, 0.0)
     image = sc.render.image_settings
-    if kind == "char" or settings["format"] == "png":
-        image.file_format, image.color_mode, image.color_depth, image.compression = "PNG", "RGBA" if kind == "char" else "RGB", "8", 15
+    if kind in ALPHA or settings["format"] == "png":
+        image.file_format, image.color_mode, image.color_depth, image.compression = "PNG", "RGBA" if kind in ALPHA else "RGB", "8", 15
     else:
         image.file_format, image.color_mode, image.quality = "JPEG", "RGB", settings["quality"]
 
@@ -240,7 +262,9 @@ def main(argv=None):
     if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     unit = float(sc.unit_settings.scale_length)          # 1 Blender 単位が何 m か（トラック・記録・設定の長さは m）
-    kinds = list(settings["passes"])
+    kinds = all_kinds(settings)
+    mirrored = {k for k in kinds if base_kind(k) != k}
+    flip = Matrix(mirror_values(settings["mirror"]["height"] / unit))
 
     room = set()
     if settings["room"]["collection"]:
@@ -292,13 +316,15 @@ def main(argv=None):
     record_res = record["resolution"] if record is not None else None
 
     def place(T, f, spec):
-        """コマ T のカメラを置く。戻り: (レンズ, ずらし, 踊り手の点 m)。"""
+        """コマ T のカメラを置く。戻り: (レンズ, ずらし, 踊り手の点 m, 入れた行列（記録のカメラのとき。トラックのカメラは None）)。"""
+        assigned = None
         if T in by_record:
             matrix, focal, principal, dancer = by_record[T]
             cam.rotation_mode = "XYZ"
             M = Matrix(matrix)
             M.translation = M.translation / unit
             cam.matrix_world = M
+            assigned = M
             width, height = record_res
             cam_d.lens = lens_from_focal(focal, height, cam_d.sensor_height)
             cam_d.shift_x, cam_d.shift_y = shift_from_principal(principal, width, height)
@@ -307,6 +333,7 @@ def main(argv=None):
             camera = spec["camera"]
             cam.rotation_mode = "QUATERNION"
             loc, target = Vector(camera["location"]) / unit, Vector(camera["target"]) / unit
+            cam.scale = (1.0, 1.0, 1.0)                  # 前のコマの反転したカメラの大きさ（−1）を残さない
             cam.location = loc
             cam.rotation_quaternion = (target - loc).to_track_quat("-Z", "Y")
             cam_d.lens = camera.get("lens", cam_s["lens"])
@@ -314,7 +341,7 @@ def main(argv=None):
             point = path[f]
         if disc is not None:
             disc.location = (point[0] / unit, point[1] / unit, settings["disc"]["height"] / unit)
-        return cam_d.lens, (cam_d.shift_x, cam_d.shift_y), point
+        return cam_d.lens, (cam_d.shift_x, cam_d.shift_y), point, assigned
 
     only = set(settings["only"]) if settings["only"] else None
     for kind in kinds:
@@ -333,20 +360,31 @@ def main(argv=None):
             continue
         t0 = time.time()
         stage_render.set_frame(sc, f)
-        place(T, f, spec)
+        assigned = place(T, f, spec)[3]
         bpy.context.view_layer.update()
         for k in todo:
+            if k in mirrored:
+                continue
             set_pass(bpy, k, handles, settings)
             sc.render.filepath = files[k]
             bpy.ops.render.render(write_still=True)
             rendered[k].append(T)
+        flipped = [k for k in todo if k in mirrored]
+        if flipped:                                      # 床で反転したカメラ（入れた行列に左から鏡の行列。試作と同じ）
+            cam.matrix_world = flip @ (assigned if assigned is not None else cam.matrix_world.copy())
+            bpy.context.view_layer.update()
+            for k in flipped:
+                set_pass(bpy, k, handles, settings)
+                sc.render.filepath = files[k]
+                bpy.ops.render.render(write_still=True)
+                rendered[k].append(T)
         print(f"T {T} f {f} {len(todo)} passes {time.time() - t0:.2f}s", flush=True)
     seconds = time.time() - began
 
     # カメラの控え: 並びの全部の T（描いたコマに関係なく）。Blender が持ち直した行列を読む
     entries = []
     for T, f, spec in plan:
-        lens, shift, point = place(T, f, spec)
+        lens, shift, point, _ = place(T, f, spec)
         bpy.context.view_layer.update()
         entries.append(camera_entry(T, f, cam.matrix_world, lens, shift, cam_d.sensor_height, settings["resolution"], unit, point))
     fps = settings["fps"] or track.get("fps") or sc.render.fps / sc.render.fps_base

@@ -149,12 +149,12 @@ track = json.load(open(value("--track"), encoding="utf-8"))
 record = json.load(open(value("--cameras"), encoding="utf-8")) if value("--cameras") else None
 plan = [(fr["T"], fr["f"]) for fr in track["frames"]]
 only = set(settings["only"] or [T for T, _ in plan])
-rendered = {k: [] for k in settings["passes"]}
-existing = {k: [] for k in settings["passes"]}
+rendered = {k: [] for k in pass_render.all_kinds(settings)}
+existing = {k: [] for k in pass_render.all_kinds(settings)}
 for T, f in plan:
     if T not in only:
         continue
-    for kind in settings["passes"]:
+    for kind in pass_render.all_kinds(settings):
         path = os.path.join(value("--passes-dir"), pass_render.pass_file(kind, T, settings["format"]))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.exists(path):

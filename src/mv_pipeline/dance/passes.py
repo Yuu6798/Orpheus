@@ -3,6 +3,7 @@
 1 コマの重ね方（表示の値。sRGB に符号化した 0〜1 の float32。リポジトリ外の試作の重ね合わせの台本と同じ順）:
 
     部屋（room）→ ぼかし（room.blur。区間ごとの σ）→ 明るさ（room.level）→ 足もとの円（disc）の影（finish.halo）
+    → 床への映り込み（rchar。reflection。space.mirror・space.ripple）
     人物（char の色・アルファ）→ 灯りの色で染める（shade と head。finish.face_shade・finish.light_tint）→ 輪郭の光（finish.rim_light）
     重ね（finish.over）→ にじみ（finish.stage_bloom）→ 閃光（fx.fire.screen）→ 明るさ（level）→ look（周辺の減光・粒。fx の look）
 
@@ -20,10 +21,11 @@ import numpy as np
 from ..fx import spec as fxspec
 from ..io import PipelineError, read_json, sha256
 from . import cues as dancecues
+from . import space
 
 SCHEMA_VERSION = "dance-passes/0.1"
 SCHEMA_FILE = Path(__file__).resolve().parent / "dance_passes.schema.json"
-KINDS = ("room", "char", "shade", "disc", "head")
+KINDS = ("room", "char", "shade", "disc", "head", "rchar", "rshade")
 FLOOR_SHADOW = {"strength": 0.45, "sigma": 26.0, "gain": 1.0, "down": 1}      # 既定は試作の値
 FLASH_COLOR = [255.0, 255.0, 255.0]
 
@@ -73,8 +75,57 @@ def level_at(level, t):
     return float(level) if isinstance(level, (int, float)) else float(dancecues.envelope(level, t))
 
 
+def clock_at(data, t):
+    """効果の時刻（spec の clock。省くと t）。時間停止でゆっくり進む時計など（水鏡のうねりが使う）。"""
+    return t if data.get("clock") is None else float(dancecues.envelope(data["clock"], t))
+
+
 def _level(value, where):
     return float(value) if isinstance(value, (int, float)) else _check_keys(value, where)
+
+
+def _color(value, where):
+    """色（チャンネルごとの倍率 [R, G, B]）か、色のキー [[時刻, [R, G, B]], [時刻, [R, G, B], つなぎ方], …]。"""
+    if len(value) == 3 and all(isinstance(v, (int, float)) for v in value):
+        return [float(v) for v in value]
+    keys = [[float(key[0]), [float(v) for v in key[1]], *key[2:]] for key in value]
+    try:
+        dancecues.envelope([[key[0], np.asarray(key[1], np.float32), *key[2:]] for key in keys], 0.0)
+    except ValueError as error:
+        raise PipelineError(f"{where}: {error}") from error
+    return keys
+
+
+_color_cache = {}
+
+
+def color_at(value, t):
+    """色か色のキーの t での値（float32 の [R, G, B]）。キーの間は cues.envelope と同じ（同じ時刻のキーを並べるとそこで跳ぶ）。"""
+    if not value or not isinstance(value[0], list):
+        return np.asarray(value, np.float32)
+    keys = _color_cache.get(id(value))
+    if keys is None or keys[0] is not value:
+        keys = (value, [[key[0], np.asarray(key[1], np.float32), *key[2:]] for key in value])
+        _color_cache.clear()
+        _color_cache[id(value)] = keys
+    return np.asarray(dancecues.envelope(keys[1], t), np.float32)
+
+
+def _reflection(raw):
+    """床への映り込みの設定（書いた部分だけ。既定は試作の値）。"""
+    if raw is None:
+        return None
+    out = {"char": None, "ripple": None}
+    if raw.get("char") is not None:
+        char = raw["char"]
+        out["char"] = {"strength": _level(char.get("strength", 0.16), "reflection.char.strength"), "blur": float(char.get("blur", 2.5)),
+                       "tint": _color(char.get("tint", [1.0, 1.0, 1.0]), "reflection.char.tint")}
+    if raw.get("ripple") is not None:
+        ripple = raw["ripple"]
+        out["ripple"] = {"amount": _level(ripple.get("amount", 1.0), "reflection.ripple.amount"),
+                         **{k: float(ripple.get(k, space.RIPPLE[k])) for k in ("px", "wave_px")},
+                         "speed": [float(v) for v in ripple.get("speed", space.RIPPLE["speed"])]}
+    return out
 
 
 def normalize(raw):
@@ -90,6 +141,8 @@ def normalize(raw):
                              else {**FLOOR_SHADOW, **{k: float(v) if k != "down" else int(v)
                                                       for k, v in (raw.get("floor_shadow") or {}).items() if not k.startswith("x_")}}),
             "figure": None, "rim": None, "bloom": None, "flash": None, "level": _level(raw.get("level", 1.0), "level"),
+            "clock": None if raw.get("clock") is None else _check_keys(raw["clock"], "clock"),
+            "reflection": _reflection(raw.get("reflection")),
             "look": None if raw.get("look") is None else fxspec.normalize_look(raw["look"])}
     if raw.get("figure") is not None:
         figure = raw["figure"]
@@ -206,6 +259,26 @@ def read_image(path, alpha=False):
     return image[..., ::-1].astype(np.float32) / 255
 
 
+def reflection_layer(data, plan, T):
+    """床への映り込みの画（部屋に足す前。表示の値）。reflection が無ければ None。床で反転したカメラで描いた要素を、ぼかして色と強さを
+    掛けて足し合わせ（space.mirror）、水鏡ならゆらす（space.ripple。効果の時刻 clock で）。"""
+    reflection = data["reflection"]
+    if reflection is None:
+        return None
+    t = (T - 1) / plan.fps
+    unit = plan.size[0] / 1080
+    parts = []
+    if reflection["char"] is not None:
+        mirrored = _same_size(read_image(plan.files["rchar"][T], alpha=True), plan, "rchar", T)
+        char = reflection["char"]
+        parts.append((mirrored[..., :3] * mirrored[..., 3:4], char["blur"], [color_at(char["tint"], t), level_at(char["strength"], t)]))
+    mirror = space.mirror(plan.size, parts, unit)
+    ripple = reflection["ripple"]
+    if ripple is not None:
+        mirror = space.ripple(mirror, level_at(ripple["amount"], t), clock_at(data, t), ripple, unit)
+    return mirror
+
+
 def compose(data, plan, T, look=None):
     """コマ T を重ねて uint8 (H, W, 3) RGB を返す（表示の値で計算する。上の順）。"""
     from ..fx import fire
@@ -225,6 +298,9 @@ def compose(data, plan, T, look=None):
         disc = _same_size(read_image(files["disc"][T]), plan, "disc", T).mean(axis=2)
         room = finish.halo(room, disc, strength=shadow["strength"], gain=shadow["gain"], sigma=shadow["sigma"], down=shadow["down"],
                            unit=unit)
+    mirror = reflection_layer(data, plan, T)
+    if mirror is not None:
+        room = room + mirror
     alpha = character[..., 3]
     figure = character[..., :3]
     tint = data["figure"]
@@ -307,6 +383,8 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     plan = load_passes(passes_path)
     if data["figure"] is not None and "shade" not in plan.files:
         raise PipelineError("figure（灯りの色で染める）には、要素の一覧に shade（陰影）が要ります")
+    if data["reflection"] is not None and data["reflection"]["char"] is not None and "rchar" not in plan.files:
+        raise PipelineError("reflection.char（人物の映り込み）には、要素の一覧に rchar（床で反転したカメラで描いた人物）が要ります")
     notes = list(spec.warnings)
     if data["figure"] is not None and data["figure"]["face_smooth"] > 0 and "head" not in plan.files:
         notes.append("figure.face_smooth: 要素の一覧に head（顔の範囲）が無いので、顔の陰影はならしません")
