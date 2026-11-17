@@ -85,6 +85,16 @@ def test_helpers_match_the_definitions():
     assert np.abs(handoff.gaussian_blur(mask, 1.5) - cv2.GaussianBlur(mask, (0, 0), 1.5)).max() < 1e-6
 
 
+def test_erode_is_the_window_minimum():
+    rng = np.random.default_rng(11)
+    mask = (rng.random((23, 31)) > 0.2).astype(np.float32)
+    for size in (1, 3, 7):
+        half = size // 2
+        padded = np.pad(mask, half, constant_values=1.0)
+        expected = np.array([[padded[y:y + size, x:x + size].min() for x in range(31)] for y in range(23)])
+        assert (handoff.erode(mask, size) == expected).all()
+
+
 def test_bad_regions_stop():
     for text in ("1,2,3", "5,5,1,9", "a,b,c,d"):
         with pytest.raises(PipelineError, match="--region"):

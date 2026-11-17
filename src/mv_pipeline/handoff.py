@@ -63,11 +63,18 @@ def region_mask(regions, width, height, scale):
 
 
 def erode(mask, size):
-    """正方形 size × size の最小値の窓（中心が基準。画像の外は 1 として扱う。OpenCV の erode の既定と同じ）。"""
+    """正方形 size × size の最小値の窓（中心が基準。画像の外は 1 として扱う。OpenCV の erode の既定と同じ）。窓をずらした写しは積まず、
+    1 枚の作業配列に最小を重ねる（大きな絵と広い窓でもメモリは絵の数枚分）。"""
     half = size // 2
+    height, width = mask.shape
     padded = np.pad(mask, half, mode="constant", constant_values=1.0)
-    rows = np.min(np.stack([padded[:, i:i + mask.shape[1]] for i in range(size)]), axis=0)
-    return np.min(np.stack([rows[i:i + mask.shape[0], :] for i in range(size)]), axis=0)
+    rows = padded[:, :width].copy()
+    for i in range(1, size):
+        np.minimum(rows, padded[:, i:i + width], out=rows)
+    out = rows[:height, :].copy()
+    for i in range(1, size):
+        np.minimum(out, rows[i:i + height, :], out=out)
+    return out
 
 
 def gaussian_blur(mask, sigma):
