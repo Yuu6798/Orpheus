@@ -127,7 +127,7 @@ def _geometry(path):
         raise ToolError(f"目の形の値（geometry）: {error}") from error
 
 
-def _blender_common(parameters, context, operation, allowed):
+def _blender_common(parameters, context, operation, allowed, vrm=True):
     from . import number
     from .blender_ops import blender_addons
     from .motion_ops import _blender
@@ -140,7 +140,7 @@ def _blender_common(parameters, context, operation, allowed):
         raise ToolError(f"armature はアーマチュアの名前にしてください: {armature!r}")
     if parameters.get("timeout") is not None:
         number(parameters, "timeout", minimum=0, exclusive=True)
-    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,) if vrm else ())
     return _blender(parameters, context, operation), addons, extensions, armature
 
 
@@ -174,3 +174,92 @@ def eye_rig(inputs, parameters, outputs, context):
     return StepResult(observations=[{"kind": "eye_rig", "bones": report["bones"], "groups_added": report["groups_added"],
                                      "eyes": {side: {"length_mm": e["length_mm"], "iris_vertices": e["iris_vertices"]}
                                               for side, e in report["eyes"].items()}}])
+
+
+KEYS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "eye_keys.py"
+KEY_AMOUNTS = ("lid_front", "lid_margin", "close_below", "close_reach", "close_max_scale", "wide_up", "wide_down", "iris_small", "iris_lift")
+KEY_PAIRS = ("iris_stretch", "iris_squash")
+KEY_SHAPES = ("side_fade", "bump_power", "upper_fall", "lower_fall")
+KEY_NAMES = {"wide": "eye_wide_", "small": "iris_small_", "stretch": "iris_wide_", "squash": "iris_squash_"}
+KEYS_PARAMETERS = {"blink", "smile", "names", *KEY_AMOUNTS, *KEY_PAIRS, *KEY_SHAPES, "blender", "addons", "blender_extensions", "timeout"}
+
+
+def _sides(value, where, default):
+    if value is None:
+        return default
+    if not isinstance(value, dict) or set(value) != {"R", "L"} or not all(isinstance(v, str) and v for v in value.values()):
+        raise ToolError(f"{where} は {{\"R\": 右目の名前, \"L\": 左目の名前}} にしてください: {value!r}")
+    return dict(value)
+
+
+def key_settings(parameters):
+    """model.eye_keys の量と形を確かめる（量にも形にも既定は無い。頭ごとに決める）。"""
+    cfg = {}
+    for key in KEY_AMOUNTS:
+        if key not in parameters:
+            raise ToolError(f"model.eye_keys には {key} が要ります（量に既定は無い）")
+        cfg[key] = _number(parameters[key], key, positive=key not in ("close_below",))
+    if not 0 < cfg["close_reach"] <= 1:
+        raise ToolError(f"close_reach は 0 より大きく 1 以下にしてください（元のまばたきのキーが開きの何割まで閉じるか）: {cfg['close_reach']}")
+    if cfg["close_max_scale"] < 1:
+        raise ToolError(f"close_max_scale は 1 以上にしてください: {cfg['close_max_scale']}")
+    for key in KEY_PAIRS:
+        value = parameters.get(key)
+        if (not isinstance(value, list) or len(value) != 2
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in value)):
+            raise ToolError(f"model.eye_keys には {key}（[横の倍率, たての倍率]。正の数）が要ります: {value!r}")
+        cfg[key] = [float(v) for v in value]
+    for key in KEY_SHAPES:
+        if key not in parameters:
+            raise ToolError(f"model.eye_keys には {key} が要ります（形に既定は無い）")
+        value = parameters[key]
+        if key == "upper_fall":
+            if (not isinstance(value, list) or len(value) != 2
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value) or value[1] <= 0):
+                raise ToolError(f"upper_fall は [縁から減らし始める m, 減らす幅 m] にしてください: {value!r}")
+            cfg[key] = [float(v) for v in value]
+        else:
+            cfg[key] = _number(value, key, positive=True)
+    return cfg
+
+
+@register("model.eye_keys", inputs=("blend", "geometry"), outputs=("blend", "report"), cacheable=False,
+          summary="目の板と瞳を入れた頭の、まばたきのキーを直し（上まぶたを下まぶたのふちより close_below 下まで届かせる・下りてきたまぶたを"
+                  "板より lid_margin 手前の球の面へ押し出す・瞳は動かさない）、新しい形状キー（瞳が縮む・横へ伸びる・つぶれる・見開き。左右別）を"
+                  "足す（Blender の中で。計算は numpy）。geometry は目の形の値（model3d-eye-geometry/0.1）。量と形に既定は無い。入力の .blend は"
+                  "変えない。Blender が要り、再利用しない（毎回実行）")
+def eye_keys(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _timeout
+    require(inputs, ("blend", "geometry"), "model.eye_keys")
+    blender, addons, extensions, _armature = _blender_common(parameters, context, "model.eye_keys", KEYS_PARAMETERS, vrm=False)
+    for name in ("blend", "report"):
+        if name not in outputs:
+            raise ToolError(f"model.eye_keys には outputs の {name} が要ります")
+    cfg = key_settings(parameters)
+    blink = _sides(parameters.get("blink"), "blink", {"R": "blink_R", "L": "blink_L"})
+    smile = parameters.get("smile", {"R": "blink_smile_R", "L": "blink_smile_L"})
+    smile = None if smile is False else _sides(smile, "smile", None)
+    names = parameters.get("names", KEY_NAMES)
+    if not isinstance(names, dict) or set(names) != set(KEY_NAMES) or not all(isinstance(v, str) and v for v in names.values()):
+        raise ToolError(f"names は {sorted(KEY_NAMES)} を鍵にした、新しいキーの名前の頭にしてください: {names!r}")
+    if len(set(names.values())) != len(names):
+        raise ToolError(f"names の名前の頭が重なっています: {names!r}")
+    fixing = list(blink.values()) + (list(smile.values()) if smile else [])
+    if len(set(fixing)) != len(fixing):
+        raise ToolError(f"blink と smile の名前が重なっています（同じキーを 2 回直してしまう）: {fixing}")
+    geometry = _geometry(inputs["geometry"])
+    no_lids = [side for side in ("R", "L") if geometry["eyes"][side].get("lid_vertices") is None]
+    if no_lids:
+        raise ToolError(f"model.eye_keys には、目の形の値の lid_vertices（見開きで動かすまぶたの頂点）が要ります: {no_lids}")
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "eye_keys_settings.json"
+    atomic_json(settings_path, {"geometry": geometry, "blink": blink, "smile": smile, "names": names, "cfg": cfg})
+    record = launcher.run_blender(blender, KEYS_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                "--out", str(outputs["blend"]), "--report", str(outputs["report"])],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    report["blender_version"] = record["blender_version"]
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "eye_keys", "blink": report["blink"], "new_keys": sorted(report["new_keys"])}])
