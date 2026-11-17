@@ -100,8 +100,24 @@ def apply_motion(inputs, parameters, outputs, context):
 
 BAKE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_bake_springs.py"
 BAKE_PARAMETERS = {"blender", "addons", "blender_extensions", "settle_s", "rate", "no_spring", "armature", "timeout", "cuts",
-                   "cut_settle_s"}
+                   "cut_settle_s", "carry", "carry_bone", "carry_skip"}
 JOIN_SCHEMA = "model3d-motion-join/0.1"
+
+
+def _carry(parameters):
+    """運ぶ区間（[最初, 最後] の並び。両端を含む）を「a:b,c:d」にする。運ぶ骨と運ばない揺れものは、区間と一緒のときだけ。"""
+    spans = parameters.get("carry", [])
+    if not isinstance(spans, list) or not all(
+            isinstance(span, list) and len(span) == 2 and all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in span)
+            and span[0] <= span[1] for span in spans):
+        raise ToolError(f"carry は運ぶ区間 [最初, 最後]（Blender のコマ番号。1 以上の整数、最初 ≤ 最後）の並びにしてください: {spans!r}")
+    bone = parameters.get("carry_bone", "")
+    if not isinstance(bone, str):
+        raise ToolError(f"carry_bone は骨の名前（文字列）にしてください: {bone!r}")
+    skip = _names(parameters, "carry_skip")
+    if (bone or skip) and not spans:
+        raise ToolError("vrm.bake_springs: carry_bone・carry_skip は carry（運ぶ区間）と一緒に使ってください")
+    return ",".join(f"{first}:{last}" for first, last in spans), bone, skip
 
 
 def _cuts(parameters, inputs):
@@ -130,8 +146,9 @@ def _cuts(parameters, inputs):
           summary="動きを付けた VRM のキャラ（blend）の揺れもの（VRM 1.0 のばね）を、VRM Add-on の計算を 1/rate 秒（既定 1/60）刻みで"
                   "進めて、コマごとの骨の回転のキーに焼く（Blender の中で）。最初のコマで settle_s 秒（既定 2）落ち着かせる。"
                   "切り替えのコマ（cuts か、joined＝motion.join_clips の report の cuts）では、揺れものを初期に戻し、そのコマの姿勢で"
-                  "cut_settle_s 秒（既定は settle_s と同じ）落ち着かせ直す。overrides（JSON）で硬さ・重力・当たり判定をこの .blend の中だけ"
-                  "上書きし、no_spring に挙げた文字を名前に含む揺れものは動かさない。元のファイルは変えない")
+                  "cut_settle_s 秒（既定は settle_s と同じ）落ち着かせ直す。carry の区間では、揺れものの節の位置を carry_bone（既定は人型の"
+                  "hips）の動きで運び、急な動きの勢いを伝えない（carry_skip の揺れものは運ばない）。overrides（JSON）で硬さ・重力・当たり判定を"
+                  "この .blend の中だけ上書きし、no_spring に挙げた文字を名前に含む揺れものは動かさない。元のファイルは変えない")
 def bake_springs(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher, vrm_bake_springs
     require(inputs, ("blend",), "vrm.bake_springs")
@@ -143,6 +160,7 @@ def bake_springs(inputs, parameters, outputs, context):
     cut_settle = number(parameters, "cut_settle_s", settle, minimum=0)
     if parameters.get("cut_settle_s") is not None and not cuts and "joined" not in inputs:
         raise ToolError("vrm.bake_springs: cut_settle_s は切り替えのコマ（cuts か joined）と一緒に使ってください")
+    carry, carry_bone, carry_skip = _carry(parameters)
     if "overrides" in inputs:
         try:
             vrm_bake_springs.check_overrides(read_json(inputs["overrides"]))
@@ -164,6 +182,12 @@ def bake_springs(inputs, parameters, outputs, context):
         args += ["--cuts", ",".join(str(cut) for cut in cuts), "--cut-settle", repr(float(cut_settle))]
     if joined_frames is not None:                         # 組んだ動きの報告と、焼く .blend のコマの範囲が同じかを台本が確かめる
         args += ["--joined-frames", f"{joined_frames[0]}:{joined_frames[1]}"]
+    if carry:
+        args += ["--carry", carry]
+        if carry_bone:
+            args += ["--carry-bone", carry_bone]
+        if carry_skip:
+            args += ["--carry-skip", ",".join(carry_skip)]
     record = launcher.run_blender(blender, BAKE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                   timeout=_timeout(parameters), addons=addons, extensions=extensions)
     report = read_json(outputs["report"])
@@ -173,6 +197,9 @@ def bake_springs(inputs, parameters, outputs, context):
                    "steps": report.get("steps"), "overridden": sorted(report.get("overridden") or {})}
     if cuts:
         observation["cuts"] = report.get("cuts")
+    if carry:
+        observation["carried_frames"] = report.get("carried_frames")
+        observation["carry_bone"] = report.get("carry_bone")
     return StepResult(observations=[observation])
 
 
