@@ -146,6 +146,7 @@ def _with(**changes):
     (_with(inside_color=[300, 0, 0]), None, "inside_color"),
     (_with(grow=-1), None, "grow"),
     (_with(window={"half_width": 0.03, "z": [1.47, 1.43]}), None, "window.z"),
+    (_with(zone={"half_width": 0.04}), None, r"window\.half_width（0\.035）以下"),               # 窓の外の頂点は比べられない
     (_with(colour=1), None, "知らない設定"),
     (SETTINGS, {"texture": "m.jpg", "report": "r.json"}, ".png"),
     (SETTINGS, {"texture": "m.png"}, "report"),

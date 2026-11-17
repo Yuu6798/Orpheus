@@ -206,7 +206,17 @@ def _mouth_settings(raw, resolution):
     if "min_points" in raw:
         mouth["min_points"] = _integer(raw["min_points"], "mouth.min_points", 1)
     _raster_size(2 * mouth["window"]["half_width"], mouth["window"]["z"], resolution, "mouth.window")
+    _zone_in_window(mouth, "mouth.")
     return mouth
+
+
+def _zone_in_window(settings, prefix):
+    """口のまわり（zone）は、正面から描く窓（window）の中だけにする。窓の外の頂点は、窓の端の列の奥行きと比べてしまい、
+    見える面（ほおなど）を見えないと数えうる（model.face_shapes の口・texture.mouth_inside・check.mouth で同じ）。"""
+    zone, window = settings["zone"]["half_width"], settings["window"]["half_width"]
+    if zone > window:
+        raise ToolError(f"{prefix}zone.half_width（{zone}）は {prefix}window.half_width（{window}）以下にしてください"
+                        "（窓の外の頂点は、見えるかどうかを窓の端の奥行きと比べてしまう）")
 
 
 def face_shapes_settings(parameters):
@@ -452,6 +462,7 @@ def mouth_window_settings(parameters, where):
     if "visible" in parameters:
         settings["visible"] = _real(parameters["visible"], "visible", 0.0)
     _raster_size(2 * settings["window"]["half_width"], settings["window"]["z"], settings.get("resolution", 0.0001), "window")
+    _zone_in_window(settings, "")
     return settings
 
 
