@@ -111,3 +111,66 @@ def check_eyes(inputs, parameters, outputs, context):
     eyes = {side: ({"fan_tris": e["fan_tris"], "valence": e["valence"], "parts_in_ring": len(e["parts_in_ring"])} if e.get("found") else None)
             for side, e in report["eyes"].items()}
     return StepResult(observations=[{"kind": "eye_check", "islands": report["islands"], "parts": len(report["parts"]), "eyes": eyes}])
+
+
+RIG_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "eye_rig.py"
+RIG_PARAMETERS = {"bones", "armature", "blender", "addons", "blender_extensions", "timeout"}
+
+
+def _geometry(path):
+    """目の形の値（model3d-eye-geometry/0.1）を読んで確かめる。"""
+    from ..blender_adapter.eye_math import GeometryError, validate
+    from ..io import read_json
+    try:
+        return validate(read_json(path))
+    except GeometryError as error:
+        raise ToolError(f"目の形の値（geometry）: {error}") from error
+
+
+def _blender_common(parameters, context, operation, allowed):
+    from . import number
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender
+    from .vrm_ops import VRM_ADDON
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    armature = parameters.get("armature")
+    if armature is not None and (not isinstance(armature, str) or not armature):
+        raise ToolError(f"armature はアーマチュアの名前にしてください: {armature!r}")
+    if parameters.get("timeout") is not None:
+        number(parameters, "timeout", minimum=0, exclusive=True)
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    return _blender(parameters, context, operation), addons, extensions, armature
+
+
+@register("model.eye_rig", inputs=("blend", "geometry"), outputs=("blend", "report"), cacheable=False,
+          summary="目の骨の根もとを目の球の中心へ移し（先は中心 + 目の板の向き × 半径。ロールは上へ）、瞳の頂点の重みを目の骨だけに付ける"
+                  "（Blender の中で）。geometry は目の形の値（model3d-eye-geometry/0.1。球・瞳・縁・瞳の頂点）。骨を少し回すと、瞳が板から"
+                  "浮きも沈みもせずに滑る作りにするため。目の骨は bones か VRM の人型の骨の割り当て。入力の .blend は変えない。"
+                  "Blender（VRM Add-on）が要り、再利用しない（毎回実行）")
+def eye_rig(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _timeout
+    require(inputs, ("blend", "geometry"), "model.eye_rig")
+    blender, addons, extensions, armature = _blender_common(parameters, context, "model.eye_rig", RIG_PARAMETERS)
+    for name in ("blend", "report"):
+        if name not in outputs:
+            raise ToolError(f"model.eye_rig には outputs の {name} が要ります")
+    bones = parameters.get("bones")
+    if bones is not None and (not isinstance(bones, dict) or set(bones) != {"R", "L"}
+                              or not all(isinstance(v, str) and v for v in bones.values()) or bones["R"] == bones["L"]):
+        raise ToolError(f"bones は {{\"R\": 右目の骨, \"L\": 左目の骨}}（別の名前）にしてください: {bones!r}")
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "eye_rig_settings.json"
+    atomic_json(settings_path, {"geometry": _geometry(inputs["geometry"]), "bones": bones, "armature": armature})
+    record = launcher.run_blender(blender, RIG_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                               "--out", str(outputs["blend"]), "--report", str(outputs["report"])],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    report["blender_version"] = record["blender_version"]
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "eye_rig", "bones": report["bones"], "groups_added": report["groups_added"],
+                                     "eyes": {side: {"length_mm": e["length_mm"], "iris_vertices": e["iris_vertices"]}
+                                              for side, e in report["eyes"].items()}}])
