@@ -3,6 +3,8 @@
 
 - model.body_shape: 体つきを部位ごとに広げる（腕・脚は骨の軸のまわり、胴は高さごとの幅と厚み、腕輪は形を保ってずらす）。
 - check.body_size: 体の太さを測る（腕・脚の直径、胴の幅と厚み）。測るだけ。
+- model.twist_bones: ねじれを分ける補助の骨（ねじらない骨）を足し、重みを付け根から先へ振り分ける。
+- check.twist: 骨の軸のまわりのねじれの角をコマごとに測る。
 """
 import math
 from pathlib import Path
@@ -258,3 +260,134 @@ def body_size(inputs, parameters, outputs, context):
     report.update({"check": "body_size", "blend": str(inputs["blend"]), "blender_version": record["blender_version"], "pass": None,
                    "reason": "測っただけ（合否は出さない。report_only で測るだけにできる）", "failures": []})
     return _finish(report, outputs, parameters, "体の太さ")
+
+
+TWIST_BONES_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "twist_bones.py"
+TWIST_MEASURE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "twist_measure.py"
+
+
+def twist_bones_settings(parameters):
+    """model.twist_bones のパラメーターを確かめ、台本の settings にする。"""
+    _refuse_unknown(parameters, COMMON | {"bones", "meshes", "rigid_max_verts", "rigid_share"}, "model.twist_bones")
+    entries = parameters.get("bones")
+    if not isinstance(entries, list) or not entries:
+        raise ToolError(f"bones は [{{\"bone\": ねじれる骨, \"aim\": 向く骨, \"name\": 足す骨}}, …] にしてください: {entries!r}")
+    bones = []
+    for k, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ToolError(f"bones[{k}] は {{\"bone\": …, \"aim\": …}} にしてください: {entry!r}")
+        _refuse_unknown(entry, ("bone", "aim", "name"), f"bones[{k}]")
+        bone, aim = _name(entry.get("bone"), f"bones[{k}].bone"), _name(entry.get("aim"), f"bones[{k}].aim")
+        name = _name(entry.get("name", f"{bone}_swing"), f"bones[{k}].name")
+        if len({bone, aim, name}) != 3:
+            raise ToolError(f"bones[{k}] の bone・aim・name は別の骨にしてください: {entry!r}")
+        bones.append({"bone": bone, "aim": aim, "name": name})
+    for key in ("bone", "name"):
+        values = [entry[key] for entry in bones]
+        if len(set(values)) != len(values):
+            raise ToolError(f"bones の {key} が重なっています: {values}")
+    if {entry["name"] for entry in bones} & ({entry["bone"] for entry in bones} | {entry["aim"] for entry in bones}):
+        raise ToolError("bones の name（足す骨）は、bone・aim の骨と別の名前にしてください")
+    settings = {"bones": bones, "armature": _armature(parameters)}
+    if parameters.get("meshes") is not None:
+        settings["meshes"] = _names(parameters["meshes"], "meshes")
+    if "rigid_max_verts" in parameters:
+        settings["rigid_max_verts"] = number(parameters, "rigid_max_verts", minimum=0, integer=True)
+    if "rigid_share" in parameters:
+        settings["rigid_share"] = _real(parameters["rigid_share"], "rigid_share", 0.0, maximum=1.0)
+    return settings
+
+
+@register("model.twist_bones", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="ねじれを分ける補助の骨を足す（Blender の中で）: 骨（bone。上腕など）と同じ位置に、Damped Track で aim の骨を向くだけの"
+                  "「ねじらない骨」（name）を足し、メッシュの bone の重みを、骨に沿った位置（付け根 0〜先 1）で元の骨と足した骨に分ける"
+                  "（付け根に近いほど足した骨へ）。bone だけにほぼ付いた小さな島（腕輪など）は島の平均の割合。動きは変えない。"
+                  "骨の拘束はアプリによって効かないので、動画の中だけで使う。元のファイルは変えない")
+def twist_bones(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "model.twist_bones")
+    settings = twist_bones_settings(parameters)
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"model.twist_bones には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "model.twist_bones")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "twist_bones_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, TWIST_BONES_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                      "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "twist_bones", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
+                   "bones": [entry.get("name") for entry in report.get("bones") or []], "weights": report.get("weights")}
+    unresolved = [f"{entry['bone']} の重みを持つメッシュがありません（足した骨は何も動かしません）" for entry in settings["bones"]
+                  if not any(entry["bone"] in value for value in (report.get("weights") or {}).values())]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+def twist_summary(raw, over_deg=(60.0, 90.0), top=8, max_twist_deg=None):
+    """check.twist の測った値（骨ごとのコマのねじれの角）の要約と合否（max_twist_deg を渡したときだけ）。"""
+    import numpy as np
+    frames = raw["frames"]
+    bones = {}
+    failures = []
+    for name, values in raw["twist_deg"].items():
+        values = np.asarray(values, dtype=np.float64)
+        magnitude = np.abs(values)
+        order = np.argsort(-magnitude, kind="stable")[:top]
+        bones[name] = {"min_deg": float(values.min()), "max_deg": float(values.max()), "max_abs_deg": float(magnitude.max()),
+                       "over": {f"{limit:g}": int((magnitude > limit).sum()) for limit in over_deg},
+                       "worst": [[int(frames[i]), float(values[i])] for i in order]}
+        if max_twist_deg is not None and magnitude.max() > max_twist_deg:
+            failures.append(f"{name}: ねじれが最大 {magnitude.max():.1f}°（しきい値 {max_twist_deg:g}°。超えたコマ "
+                            f"{int((magnitude > max_twist_deg).sum())}）")
+    report = {"check": "twist", "frames": [frames[0], frames[-1]] if frames else [], "frame_count": len(frames), "bones": bones,
+              "thresholds": {} if max_twist_deg is None else {"max_twist_deg": max_twist_deg}}
+    if max_twist_deg is None:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+    else:
+        report.update({"pass": not failures, "failures": failures})
+    return report
+
+
+@register("check.twist", inputs=("blend",), outputs=("report",), cacheable=False,
+          summary="骨が自分の軸（Y）のまわりにどれだけねじれているかを、コマごとに測る（Blender の中で。骨の回転を振りとねじれに分けた、"
+                  "ねじれの角）。骨ごとの最小・最大・over_deg（既定 60° と 90°）を超えたコマの数・大きいコマ。コマは frames（[最初, 最後]）"
+                  "か、シーンの全コマ。max_twist_deg を渡したときだけ合否を出す。好みは判定しない")
+def check_twist(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .check_ops import _finish
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "check.twist")
+    _refuse_unknown(parameters, COMMON | {"bones", "frames", "over_deg", "top", "max_twist_deg", "strict", "report_only"}, "check.twist")
+    settings = {"bones": _names(parameters.get("bones"), "bones"), "armature": _armature(parameters)}
+    span = parameters.get("frames")
+    if span is not None:
+        if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)
+                or span[0] > span[1]):
+            raise ToolError(f"frames は [最初のコマ, 最後のコマ]（整数、最初 ≤ 最後）にしてください: {span!r}")
+        settings["frames"] = span
+    over = parameters.get("over_deg", [60, 90])
+    if not isinstance(over, list) or not over:
+        raise ToolError(f"over_deg は数えるねじれの角（度）の並びにしてください: {over!r}")
+    over = [_real(v, "over_deg", 0.0) for v in over]
+    top = number(parameters, "top", 8, minimum=1, integer=True)
+    limit = None if parameters.get("max_twist_deg") is None else _real(parameters["max_twist_deg"], "max_twist_deg", 0.0)
+    blender = _blender(parameters, context, "check.twist")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path, raw_path = step_dir / "twist_settings.json", step_dir / "twist_raw.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, TWIST_MEASURE_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                       "--report", str(raw_path)],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    raw = read_json(raw_path)
+    report = twist_summary(raw, over, top, limit)
+    report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "armature": raw.get("armature"),
+                   "raw": str(raw_path)})
+    return _finish(report, outputs, parameters, "ねじれの検査")
