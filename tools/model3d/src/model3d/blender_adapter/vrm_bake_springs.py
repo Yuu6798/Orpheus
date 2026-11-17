@@ -21,7 +21,8 @@
 - --no-spring に挙げた文字を名前に含む揺れものの骨は、動かさず初期の向きのままにする（布の計算など、別の方法で動かす部位）。
 
 **検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスでリポジトリの外の台本と同じキーになることを
-確かめた（docs/model3d.md）。CI には Blender が無い。
+確かめた。切り替えのコマ（--cuts）は、3 作目の VRM のダンスで、リポジトリの外の台本と同じキーになることを確かめた（docs/model3d.md）。
+CI には Blender が無い。
 """
 import argparse
 import importlib
