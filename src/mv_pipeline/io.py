@@ -25,6 +25,25 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"), parse_constant=invalid)
 
 
+def read_json_file(path, missing, invalid):
+    """spec・計画・設定の JSON のファイルを読む（read_json）。ファイルが無ければ文言 missing、JSON として読めなければ
+    「invalid: 読めなかった理由」の PipelineError。文言は呼ぶ側が渡す。"""
+    path = Path(path)
+    if not path.is_file():
+        raise PipelineError(missing)
+    try:
+        return read_json(path)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise PipelineError(f"{invalid}: {error}") from error
+
+
+def schema_lines(errors, message=None):
+    """jsonschema の誤り（並べたもの）の先頭 8 つを「  場所: 文言」の行にする。場所は道を . でつないだもの（無ければ (top)）、
+    文言は誤りの message の先頭 200 字（message を渡せば message(誤り)）。"""
+    return [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200] if message is None else message(e)}"
+            for e in errors[:8]]
+
+
 def atomic_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

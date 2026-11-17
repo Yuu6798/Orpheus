@@ -21,7 +21,7 @@ import jsonschema
 import numpy as np
 from PIL import Image
 
-from ..io import PipelineError, atomic_json, read_json, safe_path, same_file, sha256
+from ..io import PipelineError, atomic_json, read_json_file, safe_path, same_file, schema_lines, sha256
 from ..runner import now
 from . import VERSION, fingerprint
 
@@ -51,12 +51,7 @@ def schema():
 def load_plan(path):
     """計画を読み、検証して既定値を埋めた (plan, 計画のディレクトリ) を返す。"""
     path = Path(path)
-    if not path.is_file():
-        raise PipelineError(f"マスクの計画が見つかりません: {path}")
-    try:
-        raw = read_json(path)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise PipelineError(f"マスクの計画が JSON として読めません ({path.name}): {error}") from error
+    raw = read_json_file(path, f"マスクの計画が見つかりません: {path}", f"マスクの計画が JSON として読めません ({path.name})")
     return parse_plan(raw, path.resolve().parent), path.resolve().parent
 
 
@@ -65,7 +60,7 @@ def parse_plan(raw, base_dir):
         raise PipelineError(f"マスクの計画の schema_version は {SCHEMA_VERSION!r} にしてください")
     errors = sorted(jsonschema.Draft202012Validator(schema()).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
+        lines = schema_lines(errors)
         raise PipelineError("マスクの計画が正しくありません:\n" + "\n".join(lines))
     plan = {
         "schema_version": SCHEMA_VERSION, "base": raw["base"], "size": raw.get("size"), "units": raw.get("units", "norm"),

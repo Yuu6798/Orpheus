@@ -32,7 +32,7 @@ import jsonschema
 import numpy as np
 from PIL import Image
 
-from ..io import PipelineError, atomic_json, sha256
+from ..io import PipelineError, atomic_json, schema_lines, sha256
 from . import fingerprint, probe, runs
 from .layering import (LAYERS_SCHEMA_PATH, LAYERS_VERSION, PLAIN, STYLE_DEFAULTS, apply_layer, entry_options,  # noqa: F401
                        natural_key, validate_entries)
@@ -172,21 +172,15 @@ def select_frames(layer, n_frames):
 
 def load_layers(path):
     """`--layers` の設定を読んで検証し、[(パス, 設定)] を返す（素材パスは設定ファイルのあるディレクトリ基準）。"""
-    from ..io import read_json, safe_path
+    from ..io import read_json_file, safe_path
     path = Path(path)
-    if not path.is_file():
-        raise PipelineError(f"--layers が見つかりません: {path}")
-    try:
-        raw = read_json(path)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise PipelineError(f"--layers が JSON として読めません ({path.name}): {error}") from error
+    raw = read_json_file(path, f"--layers が見つかりません: {path}", f"--layers が JSON として読めません ({path.name})")
     if not isinstance(raw, dict) or raw.get("schema_version") != LAYERS_VERSION:
         raise PipelineError(f"--layers の schema_version は {LAYERS_VERSION!r} にしてください")
     from .layering import layers_schema
     errors = sorted(jsonschema.Draft202012Validator(layers_schema()).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        raise PipelineError("--layers の設定が正しくありません:\n" + "\n".join(
-            f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]))
+        raise PipelineError("--layers の設定が正しくありません:\n" + "\n".join(schema_lines(errors)))
     base_dir = path.resolve().parent
     return [(safe_path(base_dir, item.get("path") or item["image"]), entry_options(item, f"layers[{index}]"))
             for index, item in enumerate(raw["layers"])]
@@ -341,8 +335,7 @@ def _validate(record):
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(record), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        raise PipelineError("overlay の記録の形式が違います:\n" + "\n".join(
-            f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]))
+        raise PipelineError("overlay の記録の形式が違います:\n" + "\n".join(schema_lines(errors)))
 
 
 def _meter(say, total):

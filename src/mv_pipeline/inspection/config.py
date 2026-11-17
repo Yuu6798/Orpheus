@@ -15,7 +15,7 @@ from pathlib import Path
 
 import jsonschema
 
-from ..io import PipelineError, read_json, sha256
+from ..io import PipelineError, read_json_file, schema_lines, sha256
 from . import SCHEMA_VERSION
 
 SCHEMA_PATH = Path(__file__).with_name("inspect.schema.json")
@@ -85,7 +85,7 @@ def _validate(raw):
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
+        lines = schema_lines(errors)
         if any(e.validator == "oneOf" and not e.absolute_path for e in errors):
             lines.insert(0, "  clips と dance_spec のどちらか 1 つだけを書いてください")
         raise PipelineError("inspect の設定の形が違います:\n" + "\n".join(lines))
@@ -111,12 +111,7 @@ def _box_ok(box):
 
 def load(path):
     path = Path(path)
-    if not path.is_file():
-        raise PipelineError(f"inspect の設定が見つかりません: {path}")
-    try:
-        raw = read_json(path)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise PipelineError(f"inspect の設定が JSON として読めません（{path.name}）: {error}") from error
+    raw = read_json_file(path, f"inspect の設定が見つかりません: {path}", f"inspect の設定が JSON として読めません（{path.name}）")
     if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
         raise PipelineError(f"inspect の設定の schema_version は {SCHEMA_VERSION!r} にしてください")
     _validate(raw)

@@ -16,7 +16,7 @@ import jsonschema
 import numpy as np
 from PIL import Image
 
-from ..io import PipelineError, atomic_json, read_json, sha256
+from ..io import PipelineError, atomic_json, read_json, schema_lines, sha256
 from . import CATEGORIES, video
 from .detect import SHORT   # この長さ以下の出来事は、分類が違っても同じ時の指摘として添える
 
@@ -230,7 +230,7 @@ def read_response(path, request, request_sha, legacy=False):
     response = read_json(path)
     errors = sorted(jsonschema.Draft202012Validator(RESPONSE_JSON_SCHEMA).iter_errors(response), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
+        lines = schema_lines(errors)
         raise PipelineError("VLM の返答の形が違います:\n" + "\n".join(lines))
     known = {item["id"] for item in request["frames"]}
     unknown = sorted({f["frame_id"] for f in response["findings"]} - known)

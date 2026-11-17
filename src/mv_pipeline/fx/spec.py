@@ -21,7 +21,7 @@ from pathlib import Path
 
 import jsonschema
 
-from ..io import PipelineError, read_json, safe_path, sha256
+from ..io import PipelineError, read_json_file, safe_path, schema_lines, sha256
 from . import SCHEMA_V01, SCHEMA_V02, SCHEMA_VERSION, spec_layers
 
 _SCHEMAS = {SCHEMA_VERSION: Path(__file__).with_name("fx_shot.schema.json"),
@@ -88,12 +88,7 @@ def asset_refs(data):
 
 def load_spec(path):
     path = Path(path)
-    if not path.is_file():
-        raise PipelineError(f"fx spec not found: {path}")
-    try:
-        raw = read_json(path)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise PipelineError(f"fx spec is not valid JSON ({path.name}): {error}") from error
+    raw = read_json_file(path, f"fx spec not found: {path}", f"fx spec is not valid JSON ({path.name})")
     return parse_spec(raw, path.resolve().parent, path.resolve(), sha256(path))
 
 
@@ -117,7 +112,7 @@ def _validate_schema(raw):
     validator = jsonschema.Draft202012Validator(schema(version))
     errors = sorted(validator.iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {_message(e)}" for e in errors[:8]]
+        lines = schema_lines(errors, _message)
         more = f"\n  ... and {len(errors) - 8} more" if len(errors) > 8 else ""
         raise PipelineError("fx spec is invalid:\n" + "\n".join(lines) + more)
 
