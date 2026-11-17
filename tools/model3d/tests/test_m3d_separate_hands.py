@@ -138,6 +138,19 @@ def test_wrist_acceleration_skips_short_clips_and_cuts_outside_the_range():
     assert sh.wrist_acceleration(w, 30.0, list(range(1, 21)), [-5, 40]) == plain       # 範囲の外の切り替えは何もしない
 
 
+def test_body_loss_compares_each_hand_point():
+    # 1 つの点はもとから 2 cm 体に入っていて、もう 1 つの点が外から 1.5 cm 入る: コマごとの最小では変わらないが、点ごとに比べると 3 cm 近づいた
+    before = np.array([[-0.02, 0.01]])
+    after = np.array([[-0.02, -0.015]])
+    assert sh.body_loss(before.min(axis=1)[:, None], after.min(axis=1)[:, None]) == 0.0
+    assert sh.body_loss(before, after) == pytest.approx(0.025)
+    assert sh.body_loss(np.array([[0.2]]), np.array([[0.05]])) == 0.0              # 3 cm より遠い所で近づくのは数えない
+    plan = separator()
+    pos = plan.add_forearm(arms())
+    per_point = plan.body_clearance(pos, per_point=True)
+    assert per_point.shape[0] == 20 and np.array_equal(per_point.min(axis=1), plan.body_clearance(pos))
+
+
 def test_detour_runs_are_split_at_cuts():
     # 切り替えのコマ（11）をまたいで手が通り抜ける区間は、切り替えの前と後で別の区間として手当てする（後ろを捨てない）
     plan = separator(bones={**BONES, "fingers": ["thumb", "index"], "parts": ["proximal"]}, detour_max=0.2, threshold=0.003, cuts=[11])

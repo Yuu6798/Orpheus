@@ -133,6 +133,12 @@ def wrist_acceleration(w, fps, frames, cuts):
             "max_at_frame": frames[int(np.argmax(values)) + 1]}
 
 
+def body_loss(before, after):
+    """手当てで手が頭や胴へ近づいた量の最大（m）。before・after は同じ形（コマ, 点）の離れ。もともと 3 cm より離れていた点は 3 cm から測る
+    （遠くで少し近づくのは数えない）。点ごとに比べるので、別の点が新しく体に入るのを、ほかの点の小さい値で隠さない。"""
+    return float(np.max(np.maximum(np.minimum(before, 0.03) - after, 0.0)))
+
+
 class Separator:
     """腕どうしの重なりの測り方と直し方（Blender なしで計算できる所）。pos は {(骨, "head"|"tail") か ("forearm", 側, t): (コマ, 3)}。"""
 
@@ -298,28 +304,29 @@ class Separator:
             out[key] = arr
         return out
 
-    def body_clearance(self, pos):
-        """手の点（手首・指の付け根・指先）が、頭と胴にどれだけ近いか（コマごと。小さいほど近い。負は中に入っている）。"""
+    def body_clearance(self, pos, per_point=False):
+        """手の点（手首・指の付け根・指先）が、頭と胴にどれだけ近いか（小さいほど近い。負は中に入っている）。
+        per_point なら点ごと (コマ, 点)（頭と胴のうち近いほう）。そうでなければコマごとのいちばん小さい値 (コマ,)。"""
         names, s = self.names, self.s
         m = len(pos[(names.hand(names.sides[0]), "head")])
-        best = np.full(m, 9.0)
         points = []
         for side in names.sides:
             points.append(pos[(names.hand(side), "head")])
             for finger in names.fingers:
                 points.append(pos[(names.finger(side, finger, names.parts[0]), "head")])
                 points.append(pos[(names.finger(side, finger, names.parts[-1]), "tail")])
+        clear = np.full((m, len(points)), 9.0)
         if self.head and (self.head, "head") in pos:
             axis = pos[(self.head, "tail")] - pos[(self.head, "head")]
             axis = axis / np.maximum(np.linalg.norm(axis, axis=1), 1e-9)[:, None]
             centre = pos[(self.head, "head")] + axis * s["head_radius"]
-            for p in points:
-                best = np.minimum(best, np.linalg.norm(p - centre, axis=1) - s["head_radius"])
+            for i, p in enumerate(points):
+                clear[:, i] = np.minimum(clear[:, i], np.linalg.norm(p - centre, axis=1) - s["head_radius"])
         for a, b in zip(self.torso[:-1], self.torso[1:]):
-            for p in points:
+            for i, p in enumerate(points):
                 _, q = closest(p, p, pos[(a, "head")], pos[(b, "head")])
-                best = np.minimum(best, np.linalg.norm(p - q, axis=1) - s["torso_radius"])
-        return best
+                clear[:, i] = np.minimum(clear[:, i], np.linalg.norm(p - q, axis=1) - s["torso_radius"])
+        return clear if per_point else clear.min(axis=1)
 
     def plan_detours(self, pos):
         """くり返しのあとに残った短い重なりごとに、すれ違う向きと量を探す（モジュールの説明）。
@@ -355,7 +362,7 @@ class Separator:
             bump = bump / max(float(bump.max()), 1e-9)
             win = {k: v[a0:a1] for k, v in pos.items()}
             before_ov, pl_w, pr_w, _, which_w = self.measure(win)
-            before_clear = self.body_clearance(win)
+            before_clear = self.body_clearance(win, per_point=True)        # 点ごとに比べる（別の点が体に入るのを、いちばん小さい値で隠さない）
             core = np.zeros(a1 - a0, dtype=bool)
             core[g0 - a0:g1 - a0 + 1] = True
             if float(before_ov[core].max()) <= limit:                       # 前の区間の手当てで、もう解けている
@@ -393,7 +400,7 @@ class Separator:
                     omegas[side] = np.cross(r, delta) / np.maximum((r * r).sum(1), 1e-8)[:, None]
                     out = self.rotate_arm(out, side, omegas[side])
                 ov = self.measure(out)[0]
-                loss = float(np.max(np.maximum(np.minimum(before_clear, 0.03) - self.body_clearance(out), 0.0)))
+                loss = body_loss(before_clear, self.body_clearance(out, per_point=True))
                 worst = float(ov[core].max())
                 outside = float(np.max(np.maximum(ov[~core] - np.maximum(before_ov[~core], tol), 0.0))) if (~core).any() else 0.0
                 return worst, outside, loss, omegas
