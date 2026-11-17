@@ -3,6 +3,7 @@
 
 - model.export_mesh: 物体のメッシュ（頭など）と色の絵を、Blender の外で計算するための npz と PNG に書き出す（Blender の中で）。
 - model.face_shapes: 頭のメッシュから、表情の形状キーの頂点の動き（まばたき・笑顔の閉じ目・眉・口角）を計算する（Blender の外。numpy だけ）。
+- model.shape_keys: 計算した形を、メッシュの形状キーとして入れる（Blender の中で）。VRM の表情への割り当ては vrm.expressions（vrm_ops）。
 """
 import math
 from pathlib import Path
@@ -271,3 +272,39 @@ def face_shapes(inputs, parameters, outputs, context):
                    "mouth": {key: report["mouth"].get(key) for key in ("seam_z_centre", "corner_x")} if "mouth" in report else None}
     unresolved = [f"動く頂点の無い形があります（部品の箱と量を確かめてください）: {still}"] if still else []
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+SHAPE_KEYS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "shape_keys.py"
+
+
+@register("model.shape_keys", inputs=("blend", "shapes"), outputs=("blend", "report"), cacheable=False,
+          summary="計算した形（shapes。model.face_shapes の npz の、形の名前ごとの世界の座標の動き）を、物体（object）の形状キーとして入れる"
+                  "（Blender の中で）。並びは npz の並び、値は 0。同じ名前のキーがあれば止める（replace で入れ直す）。元のファイルは変えない")
+def shape_keys(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend", "shapes"), "model.shape_keys")
+    _refuse_unknown(parameters, COMMON | {"object", "replace"}, "model.shape_keys")
+    settings = {"object": _name(parameters.get("object"), "object")}
+    replace = parameters.get("replace", False)
+    if not isinstance(replace, bool):
+        raise ToolError(f"replace は true か false にしてください: {replace!r}")
+    settings["replace"] = replace
+    if "blend" not in outputs or "report" not in outputs:
+        raise ToolError("model.shape_keys には outputs の blend と report が要ります")
+    blender = _blender(parameters, context, "model.shape_keys")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "shape_keys_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, SHAPE_KEYS_SCRIPT, None, ["--blend", inputs["blend"], "--shapes", inputs["shapes"], "--settings",
+                                                                     str(settings_path), "--out-blend", outputs["blend"], "--report",
+                                                                     outputs["report"]],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "shape_keys", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "object": report.get("object"),
+                   "keys": [key.get("name") for key in report.get("keys") or []], "replaced": [key.get("name") for key in report.get("keys") or []
+                                                                                              if key.get("replaced")]}
+    return StepResult(observations=[observation])
