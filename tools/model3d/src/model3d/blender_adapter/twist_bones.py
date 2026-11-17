@@ -20,7 +20,8 @@
      分ける: roll が無ければ、元の骨に t、足した骨に 1 − t。roll があれば、t が start までは足した骨から元の骨へ、start から先は元の骨から
      roll の骨へ、折れ線で移す。腕輪のように bone だけにほぼ付いた小さな島（rigid_max_verts 頂点以下で、bone が
      いちばん重い頂点が rigid_share を超える島）は、島の t の平均で分ける（島の中でねじれて模様が歪まないように）。
-     min_weight があれば、重みがその値以下になる所は、足した骨の頂点グループに入れず、元の骨の頂点グループからは外す。
+     min_weight があれば、重みがその値以下になる所は、その頂点グループ（元の骨・足した骨のどちらも）から外す（足した骨の名前の
+     グループが前から残っていても、古い重みを残さない）。
      メッシュのデータをほかの物体と分け合う（リンク複製）物体は、先にその物体だけのデータにする（重みはデータに付くので）。
   4. max_influences があれば、重みを分けた頂点の骨（変形に使う骨）を、重みの大きい順にその本数までにする（VRM は 1 頂点 4 本まで）。
      切った重みは、残した骨に同じ割合で割り振る（合計は変えない）。
@@ -93,6 +94,12 @@ def part_shares(along, start=None):
     swing = np.maximum(0.0, 1.0 - along / start)
     roll = np.maximum(0.0, (along - start) / (1.0 - start))
     return swing, 1.0 - swing - roll, roll
+
+
+def writes(value, floor):
+    """分けた重み value を頂点グループに書くか（True）、その頂点グループから外すか（False）。min_weight（floor）が無ければいつも書く。
+    外すのは、元の骨のグループでも足した骨のグループでも同じ（足した骨の名前のグループが前から残っていても、古い重みを残さない）。"""
+    return floor is None or value > floor
 
 
 def capped(items, limit):
@@ -270,9 +277,9 @@ def main(argv=None):
             for index in np.flatnonzero(touched):
                 for group, values in parts:
                     value = float(values[index])
-                    if floor is None or value > floor:
+                    if writes(value, floor):
                         group.add([int(index)], value, "REPLACE")
-                    elif group is source_group:
+                    else:                                # 足した骨のグループが前からあっても、古い重みを残さない（無い頂点を外すのは何もしない）
                         group.remove([int(index)])
                 touched_all.add(int(index))
             weights_report.setdefault(obj.name, {})[entry["bone"]] = {"verts": int(touched.sum()), "rigid_islands": rigid}

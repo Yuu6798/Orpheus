@@ -41,6 +41,11 @@ def test_influences_are_cut_to_the_largest_and_keep_the_total():
     assert [g for g, _ in kept] == [5, 6] and dropped == [7, 8, 9, 10]
 
 
+def test_small_weights_leave_both_the_bone_and_the_added_groups():
+    assert tb.writes(0.0, None) and tb.writes(1e-9, None)                  # min_weight が無ければ 0 でも書く（2 作目の台本と同じ）
+    assert tb.writes(0.2, 1e-5) and not tb.writes(1e-5, 1e-5) and not tb.writes(0.0, 1e-5)   # 以下は外す（足した骨のグループからも）
+
+
 def test_roll_settings_fill_defaults_and_refuse_bad_values():
     assert tb.check_roll({"name": "lower_arm_twist.L", "from": "hand.L"}, "roll") == {
         "name": "lower_arm_twist.L", "from": "hand.L", "start": 0.5, "euler_order": "ZYX"}
