@@ -272,7 +272,9 @@ TWIST_MEASURE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" /
 
 def twist_bones_settings(parameters):
     """model.twist_bones のパラメーターを確かめ、台本の settings にする。"""
-    _refuse_unknown(parameters, COMMON | {"bones", "meshes", "rigid_max_verts", "rigid_share"}, "model.twist_bones")
+    from ..blender_adapter.twist_bones import check_roll
+    _refuse_unknown(parameters, COMMON | {"bones", "meshes", "rigid_max_verts", "rigid_share", "min_weight", "max_influences"},
+                    "model.twist_bones")
     entries = parameters.get("bones")
     if not isinstance(entries, list) or not entries:
         raise ToolError(f"bones は [{{\"bone\": ねじれる骨, \"aim\": 向く骨, \"name\": 足す骨}}, …] にしてください: {entries!r}")
@@ -280,19 +282,32 @@ def twist_bones_settings(parameters):
     for k, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ToolError(f"bones[{k}] は {{\"bone\": …, \"aim\": …}} にしてください: {entry!r}")
-        _refuse_unknown(entry, ("bone", "aim", "name"), f"bones[{k}]")
+        _refuse_unknown(entry, ("bone", "aim", "name", "roll"), f"bones[{k}]")
         bone, aim = _name(entry.get("bone"), f"bones[{k}].bone"), _name(entry.get("aim"), f"bones[{k}].aim")
         name = _name(entry.get("name", f"{bone}_swing"), f"bones[{k}].name")
         if len({bone, aim, name}) != 3:
             raise ToolError(f"bones[{k}] の bone・aim・name は別の骨にしてください: {entry!r}")
         bones.append({"bone": bone, "aim": aim, "name": name})
-    for key in ("bone", "name"):
-        values = [entry[key] for entry in bones]
+        if entry.get("roll") is not None:
+            try:
+                roll = check_roll(entry["roll"], f"bones[{k}].roll")
+            except ValueError as error:
+                raise ToolError(str(error)) from error
+            if roll["name"] in (bone, aim, name) or roll["from"] == bone:
+                raise ToolError(f"bones[{k}].roll の name は bone・aim・name と、from は bone と別の骨にしてください: {entry!r}")
+            bones[-1]["roll"] = roll
+    added = [entry["name"] for entry in bones] + [entry["roll"]["name"] for entry in bones if "roll" in entry]
+    for key, values in (("bone", [entry["bone"] for entry in bones]), ("name（roll の name も）", added)):
         if len(set(values)) != len(values):
             raise ToolError(f"bones の {key} が重なっています: {values}")
-    if {entry["name"] for entry in bones} & ({entry["bone"] for entry in bones} | {entry["aim"] for entry in bones}):
-        raise ToolError("bones の name（足す骨）は、bone・aim の骨と別の名前にしてください")
+    used = {entry["bone"] for entry in bones} | {entry["aim"] for entry in bones} | {e["roll"]["from"] for e in bones if "roll" in e}
+    if set(added) & used:
+        raise ToolError("bones の name（足す骨。roll の name も）は、bone・aim・roll の from の骨と別の名前にしてください")
     settings = {"bones": bones, "armature": _armature(parameters)}
+    if parameters.get("min_weight") is not None:
+        settings["min_weight"] = _real(parameters["min_weight"], "min_weight", 0.0)
+    if parameters.get("max_influences") is not None:
+        settings["max_influences"] = number(parameters, "max_influences", minimum=1, integer=True)
     if parameters.get("meshes") is not None:
         settings["meshes"] = _names(parameters["meshes"], "meshes")
     if "rigid_max_verts" in parameters:
@@ -305,8 +320,11 @@ def twist_bones_settings(parameters):
 @register("model.twist_bones", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
           summary="ねじれを分ける補助の骨を足す（Blender の中で）: 骨（bone。上腕など）と同じ位置に、Damped Track で aim の骨を向くだけの"
                   "「ねじらない骨」（name）を足し、メッシュの bone の重みを、骨に沿った位置（付け根 0〜先 1）で元の骨と足した骨に分ける"
-                  "（付け根に近いほど足した骨へ）。bone だけにほぼ付いた小さな島（腕輪など）は島の平均の割合。動きは変えない。"
-                  "骨の拘束はアプリによって効かないので、動画の中だけで使う。元のファイルは変えない")
+                  "（付け根に近いほど足した骨へ）。roll（前腕など）があれば、先の側に、roll.from の骨の軸のまわりの回転を写す骨"
+                  "（Copy Rotation の Y だけ・Add・ローカル）も足し、重みを 3 つに折れ線で分ける。bone だけにほぼ付いた小さな島"
+                  "（腕輪など）は島の平均の割合。min_weight 以下の重みは外す・max_influences で 1 頂点の骨の数を切る。動きは変えない。"
+                  "拘束は VRM 1.0 の aim・roll として書き出せる形（VRMC_node_constraint に対応しないアプリでは腕が崩れうる）。"
+                  "元のファイルは変えない")
 def twist_bones(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
     from .blender_ops import blender_addons
@@ -327,7 +345,8 @@ def twist_bones(inputs, parameters, outputs, context):
     report = read_json(outputs["report"])
     observation = {"kind": "twist_bones", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
-                   "bones": [entry.get("name") for entry in report.get("bones") or []], "weights": report.get("weights")}
+                   "bones": [entry.get("name") for entry in report.get("bones") or []], "weights": report.get("weights"),
+                   "influences": report.get("influences")}
     unresolved = [f"{entry['bone']} の重みを持つメッシュがありません（足した骨は何も動かしません）" for entry in settings["bones"]
                   if not any(entry["bone"] in value for value in (report.get("weights") or {}).values())]
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))

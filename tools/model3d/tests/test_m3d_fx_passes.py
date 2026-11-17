@@ -142,6 +142,10 @@ def test_the_operation_draws_effects_and_the_pool_in_their_windows(tmp_path):
     assert "--bones" in report["argv"]                                                 # 点を読む形があれば、Blender に骨の通り道を渡す
     data["steps"][0]["parameters"] = {**params, "fx": {"shapes": {"embers": {}, "ring": {}}}}
     atomic_json(recipe, data)
+    same_folder = executor.run_recipe(recipe, tmp_path / "runs2")                    # 設定を変えて同じフォルダへは、描く前に止まる
+    assert same_folder["status"] == "failed" and "別の入力で描いたもの" in same_folder["error"]
+    data["steps"][0]["parameters"]["passes_dir"] = "out_passes2"
+    atomic_json(recipe, data)
     again = executor.run_recipe(recipe, tmp_path / "runs2")
     assert again["status"] == "succeeded"
     report2 = json.loads(Path(again["steps"]["passes"]["artifacts"]["report"]).read_text(encoding="utf-8"))
