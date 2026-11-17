@@ -304,6 +304,7 @@ def _with(change):
     (_with(lambda p: p["eyes"].pop("brow")), "eyes.brow"),
     (_with(lambda p: p["brows"]["shapes"].update(blink={"inner": 0.001, "outer": 0.001})), "blink"),
     (_with(lambda p: p["mouth"].pop("smile")), "mouth に smile"),
+    (_with(lambda p: p["mouth"]["zone"].update(half_width=0.04)), r"mouth\.window\.half_width（0\.03）以下"),   # 窓の外は比べられない
     (_with(lambda p: p.update(resolution=0.000001)), "画素"),
     (_with(lambda p: p["eyes"].update(wink=1)), "知らない設定"),
     (_with(lambda p: p.update(nose=1)), "知らない設定"),
