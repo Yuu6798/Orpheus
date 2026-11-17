@@ -85,3 +85,19 @@ def to_armature(point, armature_matrix):
     """世界の座標の点を、アーマチュアの中の座標へ（試しと同じ解き方: 行列の 3×3 で解く）。"""
     a = np.asarray(armature_matrix, dtype=np.float64)
     return np.linalg.solve(a[:3, :3], np.asarray(point, dtype=np.float64) - a[:3, 3])
+
+
+def up_in_armature(armature_matrix):
+    """世界の上（+Z）を、アーマチュアの中の向きへ（骨のロールをそろえる向き。アーマチュアの物体が回っていても、世界の上にそろう）。
+    アーマチュアの置き場所の 3×3 が単位行列なら (0, 0, 1) のまま（試しと同じ）。"""
+    a = np.asarray(armature_matrix, dtype=np.float64)[:3, :3]
+    if np.array_equal(a, np.eye(3)):
+        return np.array([0.0, 0.0, 1.0])
+    up = np.linalg.solve(a, np.array([0.0, 0.0, 1.0]))
+    return up / np.linalg.norm(up)
+
+
+def world_length(armature_matrix, head, tail):
+    """アーマチュアの中の 2 点（骨の根もとと先）の、世界での長さ（m。アーマチュアの物体の大きさを入れる）。"""
+    a = np.asarray(armature_matrix, dtype=np.float64)[:3, :3]
+    return float(np.linalg.norm(a @ (np.asarray(tail, dtype=np.float64) - np.asarray(head, dtype=np.float64))))

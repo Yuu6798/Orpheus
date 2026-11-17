@@ -66,6 +66,21 @@ def test_bone_reaches_the_plate_from_the_sphere_centre():
     assert np.allclose(placed[:3, :3] @ local + placed[:3, 3], [1.0, 2.0, 3.5])
 
 
+def test_roll_up_and_length_follow_the_armature_placement():
+    still = np.eye(4)
+    still[:3, 3] = (0.3, 0.0, 0.2)                                              # 動かしただけなら、世界の上のまま（試しと同じ）
+    assert eye_math.up_in_armature(still).tolist() == [0.0, 0.0, 1.0]
+    tilted = np.eye(4)
+    c, s = math.cos(math.radians(30)), math.sin(math.radians(30))
+    tilted[:3, :3] = [[1, 0, 0], [0, c, -s], [0, s, c]]                       # X のまわりに 30° 傾けたアーマチュア
+    up = eye_math.up_in_armature(tilted)
+    assert np.allclose(tilted[:3, :3] @ up, [0.0, 0.0, 1.0])                  # アーマチュアの中の向きを世界へ戻すと、世界の上
+    scaled = np.diag([2.0, 2.0, 2.0, 1.0])
+    assert np.allclose(eye_math.up_in_armature(scaled), [0.0, 0.0, 1.0]) and np.linalg.norm(eye_math.up_in_armature(scaled)) == pytest.approx(1.0)
+    assert eye_math.world_length(scaled, [0.0, 0.0, 0.0], [0.0, 0.06, 0.0]) == pytest.approx(0.12)   # 大きさ 2 なら、中の 6 cm は世界で 12 cm
+    assert eye_math.world_length(tilted, [0.0, 0.0, 0.0], [0.0, 0.12, 0.0]) == pytest.approx(0.12)
+
+
 def test_eye_bones_come_from_the_humanoid_when_not_given():
     assert eye_rig.eye_bones(None, {"right_eye": "eye.R", "left_eye": "eye.L"}) == {"R": "eye.R", "L": "eye.L"}
     assert eye_rig.eye_bones({"R": "EyeR", "L": "EyeL"}, {}) == {"R": "EyeR", "L": "EyeL"}

@@ -12,7 +12,8 @@
 すること（試しと同じ手順と計算）:
 - 目の骨の頂点グループが無ければ、左目・右目の順に足す。瞳の頂点は、ほかの頂点グループから外し、その目の骨に重み 1 で付ける。
 - 目の骨（編集の骨）: つながり（use_connect）を外し、根もと = 球の中心、先 = 中心 + 板の向き × 半径（骨の先がちょうど目の板に届く）、
-  ロールは世界の上（+Z）にそろえる。アーマチュアの置き場所の行列の 3×3 で解いて、アーマチュアの中の座標にする。
+  ロールは世界の上（+Z）にそろえる。アーマチュアの置き場所の行列の 3×3 で解いて、アーマチュアの中の座標にする（世界の上の向きも
+  アーマチュアの中へ直してからそろえる。アーマチュアの物体が回っていなければ試しと同じ）。報告の骨の長さ length_mm は世界での長さ。
 入力の .blend は変えない（別のファイルに書く）。
 """
 import argparse
@@ -24,11 +25,11 @@ import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
     from .animation_sample import humanoid_map, pick_armature
-    from .eye_math import bone_ends, to_armature, validate
+    from .eye_math import bone_ends, to_armature, up_in_armature, validate, world_length
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from animation_sample import humanoid_map, pick_armature
-    from eye_math import bone_ends, to_armature, validate
+    from eye_math import bone_ends, to_armature, up_in_armature, validate, world_length
 
 GROUP_ORDER = ("L", "R")         # 頂点グループを足す順（試しと同じ）
 BONE_ORDER = ("R", "L")          # 骨を直す順（試しと同じ。結果は順によらない）
@@ -89,6 +90,7 @@ def main(argv=None):
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="EDIT")
     world = np.array(armature.matrix_world)
+    up = Vector(up_in_armature(world))                                    # 世界の上を、アーマチュアの中の向きへ
     for side in BONE_ORDER:
         sphere = geometry["eyes"][side]["sphere"]
         bone = armature.data.edit_bones[names[side]]
@@ -97,9 +99,9 @@ def main(argv=None):
         bone.use_connect = False
         bone.head = Vector(to_armature(root, world))
         bone.tail = Vector(to_armature(tip, world))
-        bone.align_roll(Vector((0.0, 0.0, 1.0)))
+        bone.align_roll(up)
         report["eyes"][side].update(before=before, head=[round(v, 6) for v in bone.head], tail=[round(v, 6) for v in bone.tail],
-                                    length_mm=round(bone.length * 1000, 3))
+                                    length_mm=round(world_length(world, bone.head, bone.tail) * 1000, 3))   # 世界での長さ
     bpy.ops.object.mode_set(mode="OBJECT")
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out), copy=True)
