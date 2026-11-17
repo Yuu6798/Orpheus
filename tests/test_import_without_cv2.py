@@ -3,8 +3,8 @@
 fx extra（opencv-python-headless）の無い環境でも、mv の CLI は起動し、cv2 を使わない命令（fx accept・fx legacy・fx timeline plan・
 dance plan・dance accept など）は動く（docs/fx.md。cv2 が要る命令は cli._require_fx で止まる）。そのために、cv2 は使う関数の中で
 読み、import の道に置かない。CI は fx extra をいつも入れるので、ここが壊れても普通のテストでは気づけない。
-並びは、2026-11-17 の main（bece1ad）で cv2 なしで読めたモジュール全部（94 のうち 63）。cv2 を import の道に置くモジュールを
-意図して増やすときは、ここから外す理由を PR に書く。"""
+並びは、2026-11-17 の main（bece1ad）で cv2 なしで読めたモジュール全部（94 のうち 63）と、そのあとリファクタリングで分けた先の
+モジュール（fx の sequence_*）。cv2 を import の道に置くモジュールを意図して増やすときは、ここから外す理由を PR に書く。"""
 import json
 import subprocess
 import sys
@@ -19,7 +19,9 @@ WITHOUT_CV2 = (
     "mv_pipeline.deliver", "mv_pipeline.demo", "mv_pipeline.encode",
     "mv_pipeline.fx", "mv_pipeline.fx.burn", "mv_pipeline.fx.clipprep", "mv_pipeline.fx.color", "mv_pipeline.fx.hooks",
     "mv_pipeline.fx.layering", "mv_pipeline.fx.legacy", "mv_pipeline.fx.look", "mv_pipeline.fx.overlay", "mv_pipeline.fx.probe",
-    "mv_pipeline.fx.runs", "mv_pipeline.fx.sequence", "mv_pipeline.fx.spec", "mv_pipeline.fx.spec_layers", "mv_pipeline.fx.timeline",
+    "mv_pipeline.fx.runs", "mv_pipeline.fx.sequence", "mv_pipeline.fx.sequence_demo", "mv_pipeline.fx.sequence_plan",
+    "mv_pipeline.fx.sequence_render", "mv_pipeline.fx.sequence_spec", "mv_pipeline.fx.spec", "mv_pipeline.fx.spec_layers",
+    "mv_pipeline.fx.timeline",
     "mv_pipeline.gate", "mv_pipeline.gate.checks", "mv_pipeline.gate.demo", "mv_pipeline.gate.flashes", "mv_pipeline.gate.frames_timeline",
     "mv_pipeline.gate.lines", "mv_pipeline.gate.tail", "mv_pipeline.gate.vocals",
     "mv_pipeline.handoff",
@@ -54,4 +56,4 @@ def test_the_list_holds_the_entry_points_used_without_cv2():
     """cv2 なしで使う命令の入口（fx timeline plan・fx accept・dance plan・gate・sheet）と、書き出しの共通の部品 encode。"""
     promised = {"mv_pipeline.cli", "mv_pipeline.fx.sequence", "mv_pipeline.fx.runs", "mv_pipeline.fx.probe", "mv_pipeline.dance.spec",
                 "mv_pipeline.dance.plan", "mv_pipeline.dance.cues", "mv_pipeline.gate.checks", "mv_pipeline.sheet", "mv_pipeline.encode"}
-    assert promised <= set(WITHOUT_CV2) and len(set(WITHOUT_CV2)) == len(WITHOUT_CV2) == 63
+    assert promised <= set(WITHOUT_CV2) and len(set(WITHOUT_CV2)) == len(WITHOUT_CV2) == 67
