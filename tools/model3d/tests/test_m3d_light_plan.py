@@ -130,6 +130,26 @@ def test_a_flash_on_a_beat_starts_on_the_frame_of_the_beat():
                                                            math.exp(-(0.5 - p.clock({"beat": 2}, "at")) / 0.10), 0.0]   # 長さ 0.3 秒は 3 コマ
 
 
+@pytest.mark.parametrize("flash, message", [
+    ({"decay": 0}, "flashes.0..decay（減り方の秒）は 0 より大きい"), ({"decay": -0.1}, "は 0 より大きい"),
+    ({"decay": [0.1, 0.1, 0.1]}, "decay は数か式"), ({"length": [0.1, 0.2, 0.3]}, "length は数か式"),
+])
+def test_bad_flash_decays_and_shapes_are_refused_when_read(flash, message):
+    """減り方 0 は 0 で割り、負は強まっていく閃光になるので、読むときに止める（3 つの並びも）。"""
+    with pytest.raises(ToolError, match=message):
+        light_plan.Plan(_plan({"key": 0.0}, [{"flashes": [{"at": 1.0, "strength": 1.0, **flash}]}]))
+
+
+def test_flash_values_from_expressions_are_checked_on_the_frame():
+    """式の decay は、求めた値が 0 以下ならそのコマで止める。strength・length は、3 つの並びになれば止める。"""
+    p = light_plan.Plan(_plan({"key": 0.0}, [{"flashes": [{"at": 0.0, "strength": 1.0, "decay": "0.15 - t"}]}]))
+    assert p.at(2)[0]["flash"] == math.exp(-0.1 / (0.15 - 0.1))                    # t = 0.1: 減り方 0.05 秒
+    with pytest.raises(ToolError, match="T 3 の segments.0..flashes.0..decay（減り方の秒）は 0 より大きい"):
+        p.at(3)                                                                   # t = 0.2: 減り方 −0.05 秒
+    with pytest.raises(ToolError, match="T 1 の segments.0..flashes.0..strength は数にしてください"):
+        light_plan.Plan(_plan({"key": 0.0}, [{"flashes": [{"at": 0.0, "strength": "WHITE"}]}])).at(1)
+
+
 def test_flash_and_fade_are_always_there_and_must_not_be_negative():
     v = _at(_plan({"key": 0.0}), 1)
     assert v["flash"] == 0.0 and v["flash_color"] == (1.0, 1.0, 1.0) and v["fade"] == 1.0
@@ -159,6 +179,14 @@ def test_hit_is_one_on_the_frame_of_the_beat():
     p = light_plan.Plan(plan)
     assert [p.at(T)[0]["pulse"] for T in (8, 9)] == [1.0, math.exp(-((0.8 - 0.2) % 0.5) / 0.13)]   # 次のコマは拍の頭から減る
     assert p.at(7)[0]["pulse"] == math.exp(-((0.6 - 0.2) % 0.5) / 0.13)                          # 拍の前のコマは前の拍から
+
+
+@pytest.mark.parametrize("band, values", [("low", [0.0]), ("mid", [0.1, 0.5]), ("high", [0.1, 0.5, 0.9, 0.2])])
+def test_light_keys_with_bands_of_another_length_are_refused(band, values):
+    """帯の数が frames と違う光のキー（契約は数のそろいまでは見ない）は、黙って値を止めたり読めなくなったりせず、止める。"""
+    keys = {**_keys(3), band: values}
+    with pytest.raises(ToolError, match=f"光のキーの {band} の数（{len(values)}）が frames（3）と違います"):
+        light_plan.Plan(_plan(), keys)
 
 
 def test_the_grid_fps_and_frames_come_from_the_keys_or_the_plan():
