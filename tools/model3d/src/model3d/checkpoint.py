@@ -206,3 +206,290 @@ def draw_view(rgb, mask, report, path, green_background=False):
         for y in (report["top_y"], report["bottom_y"]):
             draw.line([(0, y), (width, y)], fill=MAGENTA, width=1)
     save_picture(image, path)
+
+
+# ---------- 絵どうしを同じ物差しで比べる ----------
+
+LEG_SEARCH = {"start_above_sole": 3, "misses": 6, "follow": 0.2, "smooth": 9}
+BODY_TABLE = (("waist_w", "ウエストの幅"), ("thigh_w", "太ももの幅（0.65 U）"), ("knee_w", "ひざの幅"), ("calf_w", "ふくらはぎの幅"),
+              ("ankle_w", "足首の幅"), ("hem_h", "裾の高さ"), ("knee_h", "ひざの高さ"), ("calf_h", "ふくらはぎの高さ"), ("ankle_h", "足首の高さ"))
+
+
+def measure_legs(mask, min_run=6):
+    """正面の全身の絵（腕の形は問わない）を、足の裏からウエストまでの高さ U を物差しに測る。脚は、足の裏の少し上から上へ、体の中心を
+    またがない左右の区間の組が続く行（中心はなめらかに追う）。裾は脚の見えるいちばん上の行。ウエストは、裾から上へ、脚の見える高さの
+    0.05〜0.55 倍の行で、中心をまたぐ区間がいちばん狭い行。足首は 0.10〜0.30 U でいちばん細い行、ふくらはぎはその上 0.50 U まででいちばん
+    太い行、ひざはふくらはぎの上 0.62 U までで、いちばん細い幅の 3% 以内の行の真ん中（ひざは細い所が上下に長く続くので 1 行に決めない）、
+    太ももは 0.65 U の行（脚の幅は 9 行でならす）。幅と高さは U に対する割合。"""
+    sole = int(_present(mask)[-1])
+    leg_w, centre_x = {}, {}
+    y, misses, c = sole - LEG_SEARCH["start_above_sole"], 0, None
+    while y > 0 and misses < LEG_SEARCH["misses"]:
+        rr = runs(mask[y], min_run)
+        if c is None and len(rr) == 2:
+            c = (rr[0][1] + rr[1][0]) / 2.0
+        if c is not None and len(rr) >= 2 and not any(a <= c <= e for a, e in rr):
+            left = max((r for r in rr if r[1] < c), key=lambda r: r[1], default=None)
+            right = min((r for r in rr if r[0] > c), key=lambda r: r[0], default=None)
+            if left and right:
+                leg_w[y] = (left[1] - left[0] + right[1] - right[0]) / 2.0
+                centre_x[y] = (left[1] + right[0]) / 2.0
+                c = (1 - LEG_SEARCH["follow"]) * c + LEG_SEARCH["follow"] * centre_x[y]
+                misses = 0
+            else:
+                misses += 1
+        else:
+            misses += 1
+        y -= 1
+    if not leg_w:
+        raise ToolError("脚（体の中心の左右の 2 つの区間）が見つかりません（正面の全身の絵か確かめてください）")
+    ys = np.array(sorted(leg_w))
+    hem = int(ys[0])
+    visible = sole - hem
+    cx = float(np.median([centre_x[v] for v in ys]))
+    waist = None
+    for yy in range(max(0, int(hem - 0.55 * visible)), int(hem - 0.05 * visible)):
+        for a, e in runs(mask[yy], min_run):
+            if a <= cx <= e and (waist is None or e - a < waist[1]):
+                waist = (yy, e - a)
+    if waist is None:
+        raise ToolError("ウエスト（裾の上で体の中心をまたぐ区間）が見つかりません")
+    U = sole - waist[0]
+    h = sole - ys
+    w = np.array([leg_w[v] for v in ys])
+    order = np.argsort(h)
+    half = LEG_SEARCH["smooth"] // 2
+    h, w = h[order], np.convolve(np.pad(w[order], half, mode="edge"), np.ones(LEG_SEARCH["smooth"]) / LEG_SEARCH["smooth"], mode="valid")
+
+    def pick(low, high, choose, what):
+        sel = np.where((h >= low) & (h <= high))[0]
+        if not len(sel):
+            raise ToolError(f"{what}を探す高さ（足の裏から {low / U:.2f}〜{high / U:.2f} U）に脚が見えません")
+        i = sel[choose(w[sel])]
+        return float(h[i]), float(w[i])
+
+    ankle_h, ankle_w = pick(0.10 * U, 0.30 * U, np.argmin, "足首")
+    calf_h, calf_w = pick(ankle_h, 0.50 * U, np.argmax, "ふくらはぎ")
+    sel = np.where((h > calf_h) & (h <= 0.62 * U))[0]
+    if not len(sel):
+        raise ToolError("ひざを探す高さ（ふくらはぎの上、0.62 U まで）に脚が見えません")
+    knee_w = float(w[sel].min())
+    knee_h = float(h[sel][w[sel] <= knee_w * 1.03].mean())
+    thigh = float(np.interp(0.65 * U, h, w)) if h.max() >= 0.65 * U else None
+    return {"sole_y": sole, "waist_y": int(waist[0]), "hem_y": hem, "U_px": int(U), "centre_x": cx,
+            "waist_w": waist[1] / U, "thigh_w": None if thigh is None else thigh / U, "knee_w": knee_w / U, "calf_w": calf_w / U,
+            "ankle_w": ankle_w / U, "hem_h": visible / U, "knee_h": knee_h / U, "calf_h": calf_h / U, "ankle_h": ankle_h / U}
+
+
+def compare_legs(reference, body):
+    """元絵と体の絵の measure_legs の表（値と、体の絵 ÷ 元絵）。"""
+    return {key: {"label": label, "reference": reference[key], "body": body[key],
+                  "body_vs_reference": None if reference[key] is None or body[key] is None else body[key] / reference[key]}
+            for key, label in BODY_TABLE}
+
+
+def whitened(rgb, mask):
+    """人物の外を白にした (H, W, 3)。"""
+    out = rgb.copy()
+    out[~mask] = (255, 255, 255)
+    return out
+
+
+def outline(mask, width=2):
+    """人物の輪郭の画素（人物の画素のうち、上下左右のどこかが人物でない画素）を width 画素の太さにした (H, W) の真偽。"""
+    inner = mask.copy()
+    inner[1:, :] &= mask[:-1, :]
+    inner[:-1, :] &= mask[1:, :]
+    inner[:, 1:] &= mask[:, :-1]
+    inner[:, :-1] &= mask[:, 1:]
+    edge = mask & ~inner
+    for _ in range(width - 1):
+        grown = edge.copy()
+        grown[1:, :] |= edge[:-1, :]
+        grown[:, 1:] |= edge[:, :-1]
+        edge = grown
+    return edge
+
+
+def _affine(image, size, scale, offset, resample, fill):
+    """出力 = scale × 元 + offset の絵（Pillow の AFFINE には、出力から元へ戻す式を渡す）。"""
+    from PIL import Image
+    return image.transform(size, Image.Transform.AFFINE,
+                           (1 / scale, 0, -offset[0] / scale, 0, 1 / scale, -offset[1] / scale), resample=resample, fillcolor=fill)
+
+
+def body_overlay(ref_rgb, ref_mask, body_rgb, body_mask, reference, body, path):
+    """体の絵を、足の裏とウエストの行が元絵と重なるように拡大・縮小して重ねた絵: 左は元絵に両方の輪郭（元絵は水色・体の絵は赤）、右は
+    重ねた体の絵に元絵の輪郭。足の裏とウエストに灰色の線。高さは足の裏の 1.25 U 上から 20 画素下まで。"""
+    from PIL import Image
+    s = reference["U_px"] / body["U_px"]
+    offset = (reference["centre_x"] - s * body["centre_x"], reference["sole_y"] - s * body["sole_y"])
+    height, width = ref_mask.shape
+    mask_image = Image.fromarray(body_mask.astype(np.uint8) * 255)
+    warped_mask = np.asarray(_affine(mask_image, (width, height), s, offset, Image.Resampling.BILINEAR, 0)) > 127
+    warped = np.asarray(_affine(Image.fromarray(whitened(body_rgb, body_mask)), (width, height), s, offset,
+                                Image.Resampling.BILINEAR, (255, 255, 255))).copy()
+    left = whitened(ref_rgb, ref_mask)
+    left[outline(ref_mask)] = (0, 200, 255)
+    left[outline(warped_mask)] = (255, 0, 0)
+    warped[outline(ref_mask)] = (0, 200, 255)
+    sheet = np.concatenate([left, warped], axis=1)
+    for y in (reference["sole_y"], reference["waist_y"]):
+        sheet[y] = (160, 160, 160)
+    top = max(0, int(reference["sole_y"] - 1.25 * reference["U_px"]))
+    save_picture(Image.fromarray(sheet[top:min(height, reference["sole_y"] + 20)]), path)
+
+
+def _shift(mask, dy, dx, fill):
+    """out[y, x] = mask[y + dy, x + dx]（絵の外は fill）。"""
+    h, w = mask.shape
+    out = np.full((h, w), fill, dtype=bool)
+    y0, y1, x0, x1 = max(0, -dy), min(h, h - dy), max(0, -dx), min(w, w - dx)
+    if y0 < y1 and x0 < x1:
+        out[y0:y1, x0:x1] = mask[y0 + dy:y1 + dy, x0 + dx:x1 + dx]
+    return out
+
+
+def open_mask(mask, size):
+    """OpenCV の morphologyEx（MORPH_OPEN、size × size の四角、中心 (size // 2, size // 2)）と同じ開き（縮めてから広げる）。縮めるときは
+    絵の外を真、広げるときは偽として扱う。縮めると広げるで同じ向きに寄せるので、size が偶数だと OpenCV と同じく 1 画素ずれる。"""
+    offsets = range(-(size // 2), size - size // 2)
+    eroded = np.ones_like(mask, dtype=bool)
+    for dy in offsets:
+        for dx in offsets:
+            eroded &= _shift(mask, dy, dx, True)
+    opened = np.zeros_like(mask, dtype=bool)
+    for dy in offsets:
+        for dx in offsets:
+            opened |= _shift(eroded, dy, dx, False)
+    return opened
+
+
+def components(mask):
+    """8 近傍でつながった真の画素のかたまりの [(面積, 重心 x, 重心 y)]。並びは OpenCV の connectedComponentsWithStats（既定の
+    Spaghetti）の番号の順: 2 × 2 の区画を上から 2 行ずつ・左から見て、かたまりが最初に現れる区画の順。"""
+    segments = [(y, a, e) for y in range(mask.shape[0]) for a, e in runs(mask[y])]
+    parent = list(range(len(segments)))
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    previous, start = [], 0
+    for y in range(mask.shape[0]):
+        current = []
+        while start < len(segments) and segments[start][0] == y:
+            current.append(start)
+            start += 1
+        for k in current:
+            _, a, e = segments[k]
+            for j in previous:
+                _, pa, pe = segments[j]
+                if pa <= e and pe >= a:                 # 上の行の区間と、斜めも含めて触れる
+                    ra, rb = find(k), find(j)
+                    if ra != rb:
+                        parent[max(ra, rb)] = min(ra, rb)
+        previous = current
+    blobs = {}
+    for k, (y, a, e) in enumerate(segments):
+        n = e - a
+        entry = blobs.setdefault(find(k), [0, 0.0, 0.0, (y // 2, a // 2)])
+        entry[0] += n
+        entry[1] += (a + e - 1) * n / 2.0
+        entry[2] += y * n
+        entry[3] = min(entry[3], (y // 2, a // 2))
+    return [(area, sx / area, sy / area) for area, sx, sy, _ in sorted(blobs.values(), key=lambda b: b[3])]
+
+
+EYE_PAIR = {"blobs": 14, "min_dx": 20, "max_dy": 0.25, "max_area_ratio": 2.5}
+
+
+def find_eyes(rgb, rule, kernel=3):
+    """瞳の色の決まり rule に入る画素を開いて（kernel × kernel）かたまりに分け、大きい順の 14 個から、ほぼ同じ高さに並ぶ（横に 20 画素
+    以上離れ、縦のずれが横の 0.25 倍以下）、同じくらいの大きさ（2.5 倍以内）の 2 つの組のうち、小さいほうがいちばん大きい組を両目とする
+    （左、右の順の [x, y]）。見つからなければ None。"""
+    blobs = sorted(components(open_mask(color_rule(rgb, rule), kernel)), key=lambda b: -b[0])[:EYE_PAIR["blobs"]]
+    best = None
+    for i in range(len(blobs)):
+        for j in range(i + 1, len(blobs)):
+            (a1, x1, y1), (a2, x2, y2) = blobs[i], blobs[j]
+            dx, dy = abs(x1 - x2), abs(y1 - y2)
+            if dx < EYE_PAIR["min_dx"] or dy > EYE_PAIR["max_dy"] * dx or max(a1, a2) > EYE_PAIR["max_area_ratio"] * min(a1, a2):
+                continue
+            if best is None or min(a1, a2) > best[0]:
+                best = (min(a1, a2), (x1, y1), (x2, y2))
+    if best is None:
+        return None
+    left, right = sorted([best[1], best[2]], key=lambda p: p[0])
+    return [list(left), list(right)]
+
+
+def face_crop(rgb, eyes, size):
+    """両目の間隔を size 画素・傾きを 0 に合わせた顔のまわり（幅 4.4 size、高さ 5.4 size。目は上から 2.2 size、横の真ん中）と、
+    目の間隔（画素）と傾き（度）。"""
+    from PIL import Image
+    left, right = np.asarray(eyes[0], float), np.asarray(eyes[1], float)
+    d = float(np.linalg.norm(right - left))
+    if d <= 0:
+        raise ToolError(f"両目が同じ位置です: {eyes}")
+    angle = float(np.arctan2(right[1] - left[1], right[0] - left[0]))
+    s = size / d
+    width, height = int(4.4 * size), int(5.4 * size)
+    image, mid = Image.fromarray(rgb), (left + right) / 2
+    if s < 1:                                      # 縮めるときは先に全体を縮めて、細かい模様のちらつきを抑える
+        image = image.resize((max(1, round(image.width * s)), max(1, round(image.height * s))), Image.Resampling.LANCZOS)
+        mid, scale = mid * s, 1.0
+    else:
+        scale = s
+    c, sn = np.cos(angle), np.sin(angle)
+    cx, cy = width / 2, 2.2 * size
+    data = (c / scale, -sn / scale, mid[0] - (c * cx - sn * cy) / scale, sn / scale, c / scale, mid[1] - (sn * cx + c * cy) / scale)
+    out = image.transform((width, height), Image.Transform.AFFINE, data, resample=Image.Resampling.BICUBIC, fillcolor=(255, 255, 255))
+    return np.asarray(out).copy(), d, float(np.degrees(angle))
+
+
+def face_guides(crop, size):
+    """目の高さ（橙）から下へ 0.5 size ごとの線と目盛り、目の真ん中から左右へ 0.5 size の縦の線。"""
+    from PIL import Image, ImageDraw
+    image = Image.fromarray(crop)
+    draw = ImageDraw.Draw(image)
+    for k in range(7):
+        y = int(2.2 * size + k * 0.5 * size)
+        draw.line([(0, y), (image.width, y)], fill=(255, 160, 0) if k == 0 else (200, 200, 200), width=1)
+        draw.text((4, y - 12), "%.1fd" % (k * 0.5), fill=(120, 120, 120))
+    for dx in (-0.5, 0.5):
+        x = int(image.width / 2 + dx * size)
+        draw.line([(x, 0), (x, image.height)], fill=(220, 220, 220), width=1)
+    return np.asarray(image)
+
+
+def face_zoom(crop, size):
+    """目の 0.5 size 上から 1.4 size 下までを 2 倍にし、0.1 size ごとの目盛りを引いた絵（口とあごの位置を読むため）。"""
+    from PIL import Image, ImageDraw
+    eye_y, cx = int(2.2 * size), crop.shape[1] // 2
+    part = Image.fromarray(crop[eye_y - int(0.5 * size):eye_y + int(1.4 * size), cx - int(1.2 * size):cx + int(1.2 * size)])
+    part = part.resize((part.width * 2, part.height * 2), Image.Resampling.BICUBIC)
+    draw = ImageDraw.Draw(part)
+    for k in range(-5, 15):
+        y = int((0.5 * size + k * 0.1 * size) * 2)
+        major = k % 5 == 0
+        draw.line([(0, y), (part.width, y)], fill=(255, 160, 0) if k == 0 else ((150, 150, 150) if major else (225, 225, 225)), width=1)
+        if major:
+            draw.text((4, y - 12), "%.1fd" % (k * 0.1), fill=(90, 90, 90))
+    for k in range(-12, 13, 2):
+        x = int(part.width / 2 + k * 0.1 * size * 2)
+        draw.line([(x, 0), (x, part.height)], fill=(225, 225, 225) if k % 10 else (150, 150, 150), width=1)
+    return np.asarray(part)
+
+
+def side_by_side(images, gap=8):
+    """高さをそろえて横に並べる（間は白）。"""
+    height = min(image.shape[0] for image in images)
+    parts = []
+    for k, image in enumerate(images):
+        if k:
+            parts.append(np.full((height, gap, 3), 255, np.uint8))
+        parts.append(image[:height, :, :3])
+    return np.concatenate(parts, axis=1)
