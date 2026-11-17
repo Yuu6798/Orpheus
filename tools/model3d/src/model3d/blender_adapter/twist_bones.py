@@ -13,7 +13,7 @@
      付け根を向くだけにする（いちばん小さい回転で向くので、軸のまわりには回らない）。
   2. roll があれば、bone の start（骨に沿った割合）から先までに、名前 roll.name の骨を足す（親は bone、ロールは bone と同じ、変形に使う）。
      Copy Rotation の拘束（Y だけ・Add・ローカルどうし、角度の分け方の順 euler_order）で、骨 roll.from の軸のまわりの回転を足す。
-     この 2 つの拘束の形は、VRM Add-on が VRM 1.0 の拘束（VRMC_node_constraint の aim と roll）として書き出せる形（vrm.export の報告に出る）。
+     この 2 つの拘束の形は、VRM Add-on が VRM 1.0 の拘束（VRMC_node_constraint の aim と roll）として書き出せる形。
      Blender の Copy Rotation は回転を 3 つの角度に分けた Y を使うので、手を大きく曲げたコマでは、VRM の roll（本当のねじれ）とずれる
      （3 作目で最大 30〜55°）。動画では、正確な値を骨のキーに焼いて拘束を止めるとよい（3 作目はそうした）。
   3. メッシュ（meshes。省くとこのアーマチュアで動く全部のメッシュ）の bone の頂点グループの重みを、骨に沿った位置 t（0 = 付け根、1 = 先。初期姿勢）で
