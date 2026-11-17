@@ -39,6 +39,7 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .io import PipelineError, atomic_json, read_json, sha256
+from .io import same_file as _same_file   # 以前の名前
 
 SCHEMA = "subtitles-export/0.1"
 FORMATS = ("srt", "vtt", "lrc", "description")
@@ -284,10 +285,6 @@ def _stem(name, path, kind):
     if stem in ("", ".", "..") or PurePosixPath(stem).name != stem or PureWindowsPath(stem).name != stem:
         raise PipelineError(f"--name はフォルダを含まないファイル名の頭にしてください（フォルダの区切り・..・ドライブは使えません）: {stem!r}")
     return stem
-
-
-def _same_file(path):
-    return os.path.normcase(str(Path(path).resolve()))
 
 
 def export(source, out, name=None, formats=("srt", "vtt", "lrc"), field="text", lead=LEAD_S, tail=TAIL_S, duration=None,

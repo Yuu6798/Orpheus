@@ -91,6 +91,12 @@ def safe_path(root, value):
     return result
 
 
+def same_file(path):
+    """同じファイルかを比べるための形（絶対パスにして、Windows では大文字と小文字をそろえる）。出力が入力と同じファイルに
+    ならないかの確かめに使う（audio・deliver・subtitles・fx の clips・masks・points）。絵は変えない。"""
+    return os.path.normcase(str(Path(path).resolve()))
+
+
 def _render_error_summary(stderr):
     """Keep the renderer's cause visible before the truncated stderr tail."""
     def short(value):

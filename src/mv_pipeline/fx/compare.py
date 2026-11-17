@@ -8,16 +8,15 @@
 最下段にコマ番号と時刻を置く（実制作の比較の台本と同じ並び）。どれも見るための道具で、絵の差を数で出さない。
 """
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .. import media
 from ..io import PipelineError
 from . import VARIANTS, render
+from .probe import RawFrames
 
 SLOTS = {variant: (index % 2, index // 2) for index, variant in enumerate(VARIANTS)}
 GAP = 6
@@ -66,40 +65,14 @@ def label_for(variant, note=None):
     return f"{variant} [no-op]" if note and note.get("empty") and variant != "base" else variant
 
 
-class _Reader:
+class _Reader(RawFrames):
     """書き出し済み MP4 を tile 寸法の rgb24 で 1 枚ずつ読む（ffmpeg の復号をパイプで受ける）。"""
 
     def __init__(self, path, tile, n_frames):
         width, height = tile
-        self.path, self.bytes_per_frame = Path(path), width * height * 3
-        self.shape = (height, width, 3)
-        self.errors = tempfile.TemporaryFile()
         # 色変換は書き出しと同じ bt709 / tv を明示する（タグ任せにしない）。面積平均で縮小。
         scale = f"scale={width}:{height}:flags=area+accurate_rnd+full_chroma_int:in_color_matrix=bt709:in_range=tv"
-        self.proc = subprocess.Popen(
-            [media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-an",
-             "-frames:v", str(n_frames), "-vf", scale, "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
-            stdout=subprocess.PIPE, stderr=self.errors)
-
-    def read(self):
-        data = self.proc.stdout.read(self.bytes_per_frame)
-        while data is not None and len(data) < self.bytes_per_frame:
-            more = self.proc.stdout.read(self.bytes_per_frame - len(data))
-            if not more:
-                break
-            data += more
-        if data is None or len(data) != self.bytes_per_frame:
-            self.errors.seek(0)
-            detail = self.errors.read()[-400:].decode("utf-8", "replace")
-            raise PipelineError(f"グリッド用に {self.path.name} を復号できませんでした: {detail or '途中で終わりました'}")
-        return np.frombuffer(data, dtype=np.uint8).reshape(self.shape)
-
-    def close(self):
-        if self.proc.poll() is None:
-            self.proc.kill()
-        self.proc.stdout.close()
-        self.proc.wait()
-        self.errors.close()
+        super().__init__(path, (height, width, 3), ["-frames:v", str(n_frames)], scale, "rgb24", lead="グリッド用に ")
 
 
 def grid_frames(sources, notes, size, n_frames):

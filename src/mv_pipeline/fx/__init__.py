@@ -57,6 +57,17 @@ VARIANTS = ("base", "layers", "light", "both")
 _PACKAGE = Path(__file__).resolve().parent
 
 
+def tree_digest(digest, package):
+    """package の下の .py と .json（__pycache__ を除く）の（相対パス, sha256）を、パスの順に digest に足して返す。
+    fx・dance・inspection の指紋が使う（種はそれぞれ）。"""
+    files = sorted(p for p in package.rglob("*") if p.is_file()
+                   and p.suffix in {".py", ".json"} and "__pycache__" not in p.parts)
+    for path in files:
+        digest.update(path.relative_to(package).as_posix().encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest
+
+
 def fingerprint():
     """fx パッケージの .py と .schema.json の（相対パス, sha256）と、共通の書き出し（../encode.py）から作る 16 進 64 桁の指紋。
 
@@ -66,9 +77,4 @@ def fingerprint():
     shared = _PACKAGE.parent / "encode.py"          # fx の書き出し（write_video）の本体
     digest.update(b"../encode.py\0")
     digest.update(hashlib.sha256(shared.read_bytes()).digest())
-    files = sorted(p for p in _PACKAGE.rglob("*") if p.is_file()
-                   and p.suffix in {".py", ".json"} and "__pycache__" not in p.parts)
-    for path in files:
-        digest.update(path.relative_to(_PACKAGE).as_posix().encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
+    return tree_digest(digest, _PACKAGE).hexdigest()

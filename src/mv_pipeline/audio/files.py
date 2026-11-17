@@ -11,12 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from ..io import PipelineError, read_json, safe_path, sha256
-
-
-def same_file(path):
-    """同じファイルかを比べるための形（絶対パスにして、Windows では大文字と小文字をそろえる）。"""
-    return os.path.normcase(str(Path(path).resolve()))
+from ..io import PipelineError, read_json, safe_path, same_file, sha256
 
 
 def source(source, suffix):

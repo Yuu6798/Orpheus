@@ -36,6 +36,7 @@ from . import VARIANTS, camera, layers, light, spec_layers, timeline
 from . import look as fxlook
 from .assets import Assets, load_assets, resolve_pivot
 from .color import soft_add, to_srgb8
+from .spec import scaled_size   # 以前の置き場所（dance の compose と同じもの）
 
 
 @dataclass
@@ -95,15 +96,6 @@ class Context:
         both = base + (["layers"] if self.has_layers else []) + (["light"] if self.has_lights else [])
         notes["both"] = {"features": both, "empty": not (self.has_layers or self.has_lights)}
         return notes
-
-
-def scaled_size(spec, scale=1.0):
-    """出力寸法 × scale を偶数に丸めた (W, H)。scale=1.0 なら spec の output どおり。"""
-    out = spec.data["output"]
-    if not 0 < scale <= 4:
-        raise PipelineError(f"scale は 0 より大きく 4 以下にしてください: {scale}")
-    even = lambda v: max(16, 2 * int(round(v * scale / 2)))  # noqa: E731
-    return even(out["width"]), even(out["height"])
 
 
 def prepare(spec, scale=1.0, size=None):

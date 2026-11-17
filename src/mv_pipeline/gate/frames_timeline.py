@@ -22,22 +22,17 @@
 """
 import hashlib
 import io
-import re
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
+from ..fx.layering import natural_key  # noqa: F401（以前の名前。fx の overlay・sheet と同じもの）
 from ..io import PipelineError, atomic_json, read_json, sha256
 
 FRAME_SUFFIXES = (".png", ".webp", ".tif", ".tiff")
 DEFAULT_ALPHA_THRESHOLD = 64
 PROPS_SCHEMA = "remotion-props/0.1"
-
-
-def natural_key(path):
-    """frame2 < frame10 になる並び（数字の桁をそろえていない連番でも順序を間違えない）。"""
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", Path(path).name)]
 
 
 def _frame_files(folder):

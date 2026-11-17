@@ -41,10 +41,4 @@ _PACKAGE = Path(__file__).resolve().parent
 
 def fingerprint():
     """dance パッケージの .py と .schema.json に、使っている fx の指紋を足した 16 進 64 桁。"""
-    digest = hashlib.sha256(fx.fingerprint().encode("ascii"))
-    files = sorted(p for p in _PACKAGE.rglob("*") if p.is_file()
-                   and p.suffix in {".py", ".json"} and "__pycache__" not in p.parts)
-    for path in files:
-        digest.update(path.relative_to(_PACKAGE).as_posix().encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
+    return fx.tree_digest(hashlib.sha256(fx.fingerprint().encode("ascii")), _PACKAGE).hexdigest()

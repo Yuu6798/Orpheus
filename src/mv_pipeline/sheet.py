@@ -22,13 +22,13 @@ cv2 は使わない（Pillow・numpy・ffmpeg）。
 """
 import hashlib
 import math
-import re
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from . import validate
+from .fx.layering import natural_key  # noqa: F401（以前の名前。fx の overlay と同じもの）
 from .inspection import video
 from .io import PipelineError, atomic_image, atomic_json, image_format, read_json, sha256
 
@@ -48,11 +48,6 @@ FONT_CANDIDATES = (
 
 
 # ---- 入力 -----------------------------------------------------------------------
-
-def natural_key(path):
-    """frame2 < frame10 になる並び。"""
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", Path(path).name)]
-
 
 def _frame_files(folder):
     files = sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in FRAME_SUFFIXES), key=natural_key)

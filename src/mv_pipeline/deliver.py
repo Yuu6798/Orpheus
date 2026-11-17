@@ -53,6 +53,7 @@ from pathlib import Path
 from . import media
 from .fx import probe
 from .io import PipelineError, atomic_json, sha256
+from .io import same_file as _same_file   # 以前の名前
 
 SCHEMA = "deliver-join/0.1"
 REVIEW_SCHEMA = "deliver-review/0.1"
@@ -166,10 +167,6 @@ def _concat_list(segments, path, lengths):
         name = segment.resolve().as_posix().replace("'", "'\\''")
         lines.append(f"file '{name}'\nduration {_microseconds(length)}\n")
     path.write_bytes("".join(lines).encode("utf-8"))
-
-
-def _same_file(path):
-    return os.path.normcase(str(Path(path).resolve()))
 
 
 def join(segments, out, audio=None, audio_start=0.0, fade_in=FADE_IN_S, fade_out=FADE_OUT_S, force=False):

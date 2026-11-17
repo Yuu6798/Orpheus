@@ -26,13 +26,12 @@
 """
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import jsonschema
 import numpy as np
 
-from ..io import PipelineError, atomic_json, read_json, safe_path, sha256
+from ..io import PipelineError, atomic_json, read_json, safe_path, same_file, sha256
 from ..runner import now
 from . import VERSION, fingerprint, spec as fxspec
 
@@ -124,8 +123,7 @@ def output_targets(plan, out_dir, plan_path, base_dir):
     重なると、そのファイルが消える。"""
     from .render import partial_path
 
-    def key(path):
-        return os.path.normcase(str(Path(path).resolve()))
+    key = same_file
 
     inputs = {key(plan_path): "計画"}
     for clip in plan["clips"]:
