@@ -134,13 +134,15 @@ class Frame:
 
 def fix_blink(base, key, frame, eye, cfg, lower_close, skip=()):
     """まばたきのキー 1 つ（物体の中の座標 (N, 3)）を直した値を返す（試しと同じ手順で、頂点ごとに）:
-    - 窓の中で動く頂点だけを見る（動かない頂点はそのまま）。skip（瞳の頂点）は見ない。
+    - 窓の中で、目の球の中心より板の側（板の向き normal の側。顔の前）にあって、キーで動く頂点だけを見る（動かない頂点はそのまま）。
+      skip（瞳の頂点）は見ない。試しは世界の y < 0 で前を選んでいた。頭が動いても同じ頂点を選ぶよう、目の球を基準にする。
     - lower_close（まばたき。笑顔の閉じ目は False）なら、下りてくる上まぶたを、下まぶたのふちより close_below 下まで届くように伸ばす
       （元のキーは開きの close_reach の所まで閉じる。伸ばす倍率は close_max_scale まで）。
     - 下りてきたまぶた（もとは板より lid_front より手前にある頂点）が板より lid_margin 手前に居るように、球の面へ押し出す。
     base と key は Blender が持つ 32 ビットの配列で渡す（試しと同じく、頂点ごとの計算を 32 ビットで始める）。
     返す: (直したキー, 数の記録)。"""
     centre, radius = np.asarray(eye["sphere"]["centre"], dtype=np.float64), eye["sphere"]["radius"]
+    facing = np.asarray(eye["sphere"]["normal"], dtype=np.float64)          # 板の向き（球の中心から板へ。顔の前）
     r_out = radius + cfg["lid_margin"]
     x0, x1, z0, z1 = eye["window"]
     xcol, upper, lower = eye["rim"]["x"], eye["rim"]["upper"], eye["rim"]["lower"]
@@ -151,7 +153,7 @@ def fix_blink(base, key, frame, eye, cfg, lower_close, skip=()):
         if v in skip:
             continue
         p0 = frame.world(base[v])
-        if not (x0 < p0[0] < x1 and z0 < p0[2] < z1 and p0[1] < 0):
+        if not (x0 < p0[0] < x1 and z0 < p0[2] < z1 and float(np.dot(p0 - centre, facing)) > 0):
             continue
         p1 = frame.world(key[v])
         if np.abs(p1 - p0).max() < 1e-7:

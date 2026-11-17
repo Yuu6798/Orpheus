@@ -75,6 +75,18 @@ def test_smile_blink_is_not_stretched():
     assert np.linalg.norm(fixed[1] - CENTRE) == pytest.approx(0.101, abs=1e-6)
 
 
+def test_blink_fix_does_not_depend_on_where_the_head_is():
+    """頭と目を一緒に後ろ（+Y）へ 0.5 m 動かしても、直す頂点と直し方は同じ（前は目の球を基準に決める。世界の y < 0 ではない）。"""
+    base, key = _blink()
+    fixed, info = eye_math.fix_blink(base, key, IDENTITY, EYE, CFG, True, skip=[5])
+    placed = np.eye(4)
+    placed[:3, 3] = (0.0, 0.5, 0.0)
+    eye = {**EYE, "sphere": {**EYE["sphere"], "centre": (CENTRE + [0.0, 0.5, 0.0]).tolist()}}
+    moved, moved_info = eye_math.fix_blink(base, key, eye_math.Frame(placed), eye, CFG, True, skip=[5])
+    assert moved_info == info and info["scaled_vertices"] == 3
+    assert np.allclose(moved, fixed, atol=1e-6)
+
+
 def _sphere_point(x, z, radius):
     return [x, float(eye_math.sphere_y(CENTRE, radius, x, z)), z]
 
