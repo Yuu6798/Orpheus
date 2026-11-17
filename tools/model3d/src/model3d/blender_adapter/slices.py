@@ -1,5 +1,5 @@
 """メッシュを水平な面で切った切り口を、面のつながりでたどって輪にし、胴のくびれを探す部品（numpy だけ。Blender の中でも外でも
-読める）。check.candidate（model3d/mesh_slices.py）が使う。座標は世界の座標（m、Z が上）。
+読める）。check.candidate（model3d/mesh_slices.py）と check.assembly（assembly_measure.py）が使う。座標は世界の座標（m、Z が上）。
 V は (N, 3) の頂点、T は (M, 3) の三角形の頂点の番号。"""
 import numpy as np
 

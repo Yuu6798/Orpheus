@@ -8,6 +8,7 @@
 - check.body_image・check.face_image: 体の絵と顔の絵を、元絵と同じ物差しで比べる（numpy と Pillow）。
 - check.three_view: 三面図の同じ部位の高さがそろっているかを測る。texture.face_length: 頭の絵の目から下を縦に詰める（numpy と Pillow）。
 - check.candidate: 骨の無い 3D の候補を読み込んで太さを測り、粘土の見た目で描く（Blender で読み込み、測るのは model3d/mesh_slices.py）。
+- check.assembly: 組み立てたモデルの頭身を測り、頭の大きさと位置の提案を出す（Blender の中で。測るのは blender_adapter/assembly_measure.py）。
 """
 import math
 from pathlib import Path
@@ -559,3 +560,113 @@ def candidate(inputs, parameters, outputs, context):
 def _view_names(kind):
     from ..blender_adapter.candidate_mesh import view_list
     return view_list(kind)
+
+
+ASSEMBLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "assembly.py"
+ASSEMBLY_PARAMETERS = {"body", "head", "hair", "reference", "anchor", "place", "pivot", "bust", "illustration_rows", "sheet_scale",
+                       "blender", "timeout", "strict", "report_only"}
+WHOLE_VIEWS = ("front_tex", "side_tex", "back_tex", "front_clay", "side_clay")
+BUST_VIEWS = ("bust_front_tex", "bust_side_tex", "bust_oblique_tex", "bust_front_clay", "bust_side_clay")
+BUST_DEFAULT = {"size": 0.62, "drop": 0.10}       # 胸から上の絵: 写す幅と、頭の真ん中から下げる量（m。人の大きさのキャラ向け）
+
+
+def _numbers(parameters, key, names, required=False):
+    """パラメーター key（名前 → 有限の数の対応）。names の外の名前は止める。required なら names の全部が要る。"""
+    value = parameters.get(key)
+    if (not isinstance(value, dict) or not value or set(value) - set(names)
+            or (required and set(names) - set(value))):
+        need = "全部" if required else "どれか"
+        raise ToolError(f"{key} は {{{', '.join(names)}}} の{need}を数で書いた対応にしてください: {value!r}")
+    return {name: _real(value, name, required=True) for name in names if name in value}
+
+
+def assembly_settings(parameters):
+    """check.assembly のパラメーターを確かめ、台本の settings にする（元絵の比率・目印・頭身に既定は無い）。"""
+    _refuse_unknown(parameters, ASSEMBLY_PARAMETERS, "check.assembly")
+    settings = {key: _names(parameters.get(key), key) for key in ("body", "head", "hair")}
+    reference = anchor = None
+    if "reference" in parameters:
+        reference = _numbers(parameters, "reference", ("top_U", "chin_U"), required=True)
+        if not 0 < reference["chin_U"] < reference["top_U"]:
+            raise ToolError(f"reference は 0 < chin_U < top_U にしてください（U に対する、あごと髪のてっぺんの高さ）: {reference}")
+    if "anchor" in parameters:
+        anchor = _numbers(parameters, "anchor", ("z", "gap", "heads"), required=True)
+        if anchor["gap"] < 0 or not anchor["heads"] > 1 + anchor["gap"]:
+            raise ToolError(f"anchor は gap ≥ 0、heads > 1 + gap にしてください: {anchor}")
+    place = _numbers(parameters, "place", ("scale", "z", "y")) if "place" in parameters else {}
+    if "scale" in place and not place["scale"] > 0:
+        raise ToolError(f"place の scale は正の数にしてください: {place['scale']}")
+    if reference is None and anchor is None and not {"scale", "z"} <= set(place):
+        raise ToolError("check.assembly には reference か anchor が要ります（place に scale と z の両方があるときは要りません）")
+    pivot = parameters.get("pivot")
+    if pivot is not None and (not isinstance(pivot, list) or len(pivot) != 3 or any(
+            isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in pivot)):
+        raise ToolError(f"pivot は [x, y, z]（m）にしてください: {pivot!r}")
+    bust = {**BUST_DEFAULT, **(_numbers(parameters, "bust", ("size", "drop")) if "bust" in parameters else {})}
+    if not bust["size"] > 0:
+        raise ToolError(f"bust の size は正の数（m）にしてください: {bust['size']}")
+    settings.update({"reference": reference, "anchor": anchor, "place": place, "pivot": pivot, "bust": [bust["size"], bust["drop"]]})
+    return settings
+
+
+@register("check.assembly", inputs=("blend", "illustration"), outputs=("report", "views", "bust", "compare"), cacheable=False,
+          summary="組み立てたモデル（体・頭・髪が別の物体の .blend。T ポーズ）の頭身を測り、頭と髪の大きさと位置の提案を出す（Blender の中で、"
+                  "保存しない）。物差しは足の裏からくびれまでの高さ U。reference（元絵の髪のてっぺんとあごの U に対する高さ）か anchor（体の側の目印の"
+                  "高さ・あごとの間隔・頭身）から、頭と髪を pivot を中心に何倍にして pivot をどこへ動かすかを出し（place で手で決めた値にもできる）、"
+                  "メモリの中で動かして測り直す。views・bust は、今の配置と動かした後を正射影で描いて目印の高さの線を引いた絵、compare は元絵"
+                  "（illustration と illustration_rows）を足の裏とくびれでそろえて並べた絵。元絵の比率・目印・頭身に既定は無い。どう置くかは決めない"
+                  "（合否は出さない。report_only で要確認にしない）。Blender が要り、再利用しない（毎回実行）")
+def assembly(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+
+    from .. import checkpoint
+    from ..blender_adapter import launcher
+    from .check_ops import _finish
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "check.assembly")
+    settings = assembly_settings(parameters)
+    _outputs(outputs, ("report",), "check.assembly")
+    rows = None
+    if "compare" in outputs:
+        if "illustration" not in inputs:
+            raise ToolError("compare（元絵と並べた絵）には入力 illustration（元絵）が要ります")
+        rows = _numbers(parameters, "illustration_rows", ("sole", "waist", "top", "chin"), required=True)
+        if not rows["top"] < rows["chin"] < rows["waist"] < rows["sole"]:
+            raise ToolError(f"illustration_rows は、上から top < chin < waist < sole の行にしてください: {rows}")
+    elif "illustration_rows" in parameters or "illustration" in inputs:
+        raise ToolError("illustration と illustration_rows は、compare（元絵と並べた絵）を書くときだけ使います")
+    scale = _real(parameters, "sheet_scale", 0.0, exclusive=True, maximum=1.0)
+    scale = 0.5 if scale is None else scale
+    blender = _blender(parameters, context, "check.assembly")
+    step_dir = Path(context.step_dir)
+    atomic_json(step_dir / "assembly_settings.json", settings)
+    raw = step_dir / "assembly_raw.json"
+    folder = step_dir / "views"
+    args = ["--settings", step_dir / "assembly_settings.json", "--report", raw]
+    pictures = [name for name in ("views", "bust", "compare") if name in outputs]
+    if pictures:
+        args += ["--views", folder]
+    record = launcher.run_blender(blender, ASSEMBLY_SCRIPT, inputs["blend"], args, log=step_dir / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(raw)
+    report.update({"schema_version": "model3d-assembly/0.1", "check": "assembly", "blend": str(inputs["blend"]),
+                   "blender_version": record["blender_version"]})
+    now, after, plan = report["now"], report["after"], report["proposal"]
+    titles = ("now: %.2f heads" % now["ratio"]["heads"],
+              "after: scale %.4f, pivot to (%.3f, %.3f, %.3f): %.2f heads" % (plan["scale"], *plan["to"], after["ratio"]["heads"]))
+    for name, views in (("views", WHOLE_VIEWS), ("bust", BUST_VIEWS)):
+        if name in outputs:
+            checkpoint.assembly_sheet(folder, report["views"], [(titles[0], ["now_" + v for v in views], now),
+                                                                (titles[1], ["after_" + v for v in views], after)],
+                                      outputs[name], scale)
+    if "compare" in outputs:
+        rgb, alpha = checkpoint.read_image(inputs["illustration"])
+        illustration = Image.fromarray(rgb if alpha is None else np.dstack([rgb, alpha]))
+        report["compare"] = {"illustration": str(inputs["illustration"]), "rows": rows,
+                             "placed": checkpoint.illustration_sheet(folder, report["views"], illustration, rows,
+                                                                     [(titles[0], "now_front_tex", now), (titles[1], "after_front_tex", after)],
+                                                                     outputs["compare"], scale)}
+    report["pictures"] = {name: str(outputs[name]) for name in pictures}
+    report.update({"pass": None, "reason": "測って提案を出しただけ（どう置くかは決めない。report_only で測るだけにできる）", "failures": []})
+    return _finish(report, outputs, parameters, "組み立ての頭身")
