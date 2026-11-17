@@ -1402,20 +1402,21 @@ options:
 {"options": ["--title"], "dest": "title", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv audio
-usage: mv audio [-h] {grid,hits,keys,end} ...
+usage: mv audio [-h] {grid,hits,keys,end,lows} ...
 
 positional arguments:
-  {grid,hits,keys,end}
+  {grid,hits,keys,end,lows}
     grid                fit a constant-tempo beat grid to the onsets: beats, downbeats and drift (estimated)
     hits                strong hits (sparse) and band-difference onsets (dense, with strength), estimated
     keys                light intensity keys from the hits: writes a copy of an fx-shot spec with one light's intensity keyed to the hits
     end                 when the sound ends: the last 0.1 s window whose loudness is within --floor-db of the loudest window (measured), and the digital silence after it
+    lows                where the bass drops out: beats (with --grid) or windows whose low band is --drop-db below the median while the sound goes on (measured)
 
 options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "audio_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["grid", "hits", "keys", "end"], "required": true, "metavar": null}
+{"options": [], "dest": "audio_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["grid", "hits", "keys", "end", "lows"], "required": true, "metavar": null}
 ==== mv audio grid
 usage: mv audio grid [-h] [--bpm-min BPM_MIN] [--bpm-max BPM_MAX] [--bpm BPM] [--phase PHASE] [--downbeat {onset,chroma}] [--beats-per-bar BEATS_PER_BAR] [--out OUT] [--fair-refine] [--force] source
 
@@ -1525,5 +1526,31 @@ options:
 {"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--window"], "dest": "window", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.1, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -60.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv audio lows
+usage: mv audio lows [-h] [--grid GRID] [--window WINDOW] [--band LOW_HZ HIGH_HZ] [--drop-db DROP_DB] [--floor-db FLOOR_DB] [--out OUT] [--force] source
+
+positional arguments:
+  source                audio file, or a project folder with analysis.json (then analysis.lows.json is written beside it)
+
+options:
+  -h, --help            show this help message and exit
+  --grid GRID           mv audio grid record of the same audio: one window per beat
+  --window WINDOW       window length in seconds without --grid (default 0.5)
+  --band LOW_HZ HIGH_HZ
+                        low band in Hz (default 20 150)
+  --drop-db DROP_DB     a window drops out when its low band is this many dB below the median (default 10)
+  --floor-db FLOOR_DB   a window sounds when its total level is within this many dB of the loudest (default -30)
+  --out OUT             record to write (default: <audio stem>.lows.json beside the audio)
+  --force               overwrite a record whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--grid"], "dest": "grid", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--window"], "dest": "window", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.5, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--band"], "dest": "band", "action": "_StoreAction", "nargs": 2, "const": null, "default": [20.0, 150.0], "type": "float", "choices": null, "required": false, "metavar": ["LOW_HZ", "HIGH_HZ"]}
+{"options": ["--drop-db"], "dest": "drop_db", "action": "_StoreAction", "nargs": null, "const": null, "default": 10.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -30.0, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}

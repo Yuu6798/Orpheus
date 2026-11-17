@@ -5,8 +5,8 @@ from ..io import PipelineError
 
 
 def _audio_parser(commands):
-    """mv audio（実験的）: 曲の音から作る記録（拍の格子・打点）を、音源か analysis.json の隣の別ファイルに書く。
-    打点からは fx-shot の光の強さのキーも作る（keys）。"""
+    """mv audio（実験的）: 曲の音から作る記録（拍の格子・打点・音の終わり・低音が抜ける所）を、音源か analysis.json の隣の別ファイルに
+    書く。打点からは fx-shot の光の強さのキーも作る（keys）。"""
     audio = commands.add_parser("audio", help="experimental: records made from the song audio (beat grid, hits), written beside "
                                               "the audio or analysis.json (estimated values), and light keys from the hits")
     sub = audio.add_subparsers(dest="audio_command", required=True)
@@ -61,6 +61,20 @@ def _audio_parser(commands):
     end.add_argument("--floor-db", type=float, default=-60.0, help="a window sounds when within this many dB of the loudest (default -60)")
     end.add_argument("--out", type=Path, help="record to write (default: <audio stem>.end.json beside the audio)")
     end.add_argument("--force", action="store_true", help="overwrite a record whose contents differ")
+    lows = sub.add_parser("lows", help="where the bass drops out: beats (with --grid) or windows whose low band is --drop-db below "
+                                       "the median while the sound goes on (measured)")
+    lows.add_argument("source", type=Path, help="audio file, or a project folder with analysis.json (then analysis.lows.json is "
+                                                "written beside it)")
+    lows.add_argument("--grid", type=Path, help="mv audio grid record of the same audio: one window per beat")
+    lows.add_argument("--window", type=float, default=0.5, help="window length in seconds without --grid (default 0.5)")
+    lows.add_argument("--band", type=float, nargs=2, default=[20.0, 150.0], metavar=("LOW_HZ", "HIGH_HZ"),
+                      help="low band in Hz (default 20 150)")
+    lows.add_argument("--drop-db", type=float, default=10.0,
+                      help="a window drops out when its low band is this many dB below the median (default 10)")
+    lows.add_argument("--floor-db", type=float, default=-30.0,
+                      help="a window sounds when its total level is within this many dB of the loudest (default -30)")
+    lows.add_argument("--out", type=Path, help="record to write (default: <audio stem>.lows.json beside the audio)")
+    lows.add_argument("--force", action="store_true", help="overwrite a record whose contents differ")
 
 
 def audio_command(args):
@@ -78,4 +92,7 @@ def audio_command(args):
     if args.audio_command == "end":
         from ..audio import end
         return end.run(args.source, args.out, args.window, args.floor_db, args.force)
+    if args.audio_command == "lows":
+        from ..audio import lows
+        return lows.run(args.source, args.grid, args.out, args.window, tuple(args.band), args.drop_db, args.floor_db, args.force)
     raise PipelineError(f"Unsupported audio command: {args.audio_command}")
