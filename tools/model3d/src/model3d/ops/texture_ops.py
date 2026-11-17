@@ -475,7 +475,10 @@ def closed_eye_line(inputs, parameters, outputs, context):
     settings = eye_line_settings(parameters)
     loaded = texture.load_texture(inputs["image"])          # 透けのある絵は (H, W, 4)
     image = loaded[..., :3]
-    result, report = eye_line.draw(image, settings)
+    try:
+        result, report = eye_line.draw(image, settings)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
     pixels = np.clip(result + 0.5, 0, 255).astype(np.uint8)   # 台本と同じ丸め（+0.5 を切り捨て）
     if loaded.shape[2] == 4:                              # 透けはそのまま残す（project_reference は参照の絵の透けを重みに使う）
         pixels = np.dstack([pixels, loaded[..., 3].astype(np.uint8)])

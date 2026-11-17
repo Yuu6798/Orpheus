@@ -72,8 +72,11 @@ def erase_band(image, settings, scale):
     """消す帯の中を肌の色で埋めた絵 (H, W, 3)（帯から遠い所は元の絵のまま。計算は帯のまわりだけ）。"""
     height, width = image.shape[:2]
     (y0, y1), (x0, x1) = settings["erase_rows"], settings["erase_columns"]
-    rows = (int(y0 * scale), int(y1 * scale))
-    cols = (int(x0 * scale), int(x1 * scale))
+    rows = (min(max(int(y0 * scale), 0), height), min(max(int(y1 * scale), 0), height))   # 絵の範囲に切り詰める（負の座標を
+    cols = (min(max(int(x0 * scale), 0), width), min(max(int(x1 * scale), 0), width))      # 後ろからの添字にしない）
+    if rows[1] <= rows[0] or cols[1] <= cols[0]:
+        raise ValueError(f"消す帯（erase_rows {settings['erase_rows']}・erase_columns {settings['erase_columns']}）が、絵（{width}×{height}）の"
+                         "外です")
     close = int(settings["close_px"] * scale) | 1
     band_sigma = settings["band_blur"] * scale
     skin_sigma = settings["close_blur"] * scale

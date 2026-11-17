@@ -56,6 +56,17 @@ def test_the_thin_line_is_erased_and_the_arc_drawn():
     assert scaled_report["scale"] == 2.0 and scaled_report["changed_box"][0] >= 30   # 幅 200 で書いた位置を 400 の絵に伸ばす
 
 
+def test_bands_past_the_edge_are_clipped_to_the_image():
+    image = np.full((80, 120, 3), [240.0, 200.0, 180.0])
+    image[3, 30:90] = [40, 20, 20]                                          # 上の端の近くの細い線
+    settings = {**SETTINGS, "erase_rows": [-5, 10], "erase_columns": [20, 100], "close_px": 9}
+    erased = eye_line.erase_band(image, settings, 1.0)
+    assert np.abs(erased[3, 60] - [240, 200, 180]).max() < 5               # 負の座標でも帯は空にならず、線を消す（元は 40）
+    assert (erased[40:] == image[40:]).all()                                # 帯から遠い所はそのまま
+    with pytest.raises(ValueError, match="外"):
+        eye_line.erase_band(image, {**settings, "erase_rows": [-20, -5]}, 1.0)
+
+
 def test_closed_eye_line_step(tmp_path):
     from model3d import executor
     Image.fromarray(skin_with_thin_lines().astype(np.uint8)).save(tmp_path / "closed.png")
