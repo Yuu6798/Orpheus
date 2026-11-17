@@ -11,7 +11,7 @@
 やり方（bones の 1 つごと）:
   1. 骨 bone と同じ位置（付け根・先・ロール）に、名前 name の骨を足す（親は bone の親、変形に使う）。Damped Track の拘束で骨 aim の
      付け根を向くだけにする（いちばん小さい回転で向くので、軸のまわりには回らない）。
-  2. メッシュ（meshes。省くと全部のメッシュ）の bone の頂点グループの重みを、骨に沿った位置 t（0 = 付け根、1 = 先。初期姿勢）で
+  2. メッシュ（meshes。省くとこのアーマチュアで動く全部のメッシュ）の bone の頂点グループの重みを、骨に沿った位置 t（0 = 付け根、1 = 先。初期姿勢）で
      分ける: 元の骨に t、足した骨に 1 − t。腕輪のように bone だけにほぼ付いた小さな島（rigid_max_verts 頂点以下で、bone が
      いちばん重い頂点が rigid_share を超える島）は、島の t の平均で分ける（島の中でねじれて模様が歪まないように）。
 骨の拘束は、アプリによって効かない（VRM に書き出すと腕が崩れうる）。ねじれを分ける骨は動画の中だけにする。
@@ -27,11 +27,11 @@ import sys
 import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
-    from .model_edit import bone_world, deform_names, islands, mesh_edges, world_points
+    from .model_edit import bone_world, deform_names, deformed_by, islands, mesh_edges, world_points
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from model_edit import bone_world, deform_names, islands, mesh_edges, world_points
+    from model_edit import bone_world, deform_names, deformed_by, islands, mesh_edges, world_points
     from vrm_apply_motion import use_scene_of
 
 DEFAULTS = {"bones": [], "meshes": None, "armature": None, "rigid_max_verts": 600, "rigid_share": 0.95}
@@ -107,14 +107,16 @@ def main(argv=None):
                 raise SystemExit(f"{armature.name} に骨 {entry[key]} がありません（bones の {key}）")
         if entry["name"] in bones:
             raise SystemExit(f"{armature.name} に骨 {entry['name']} がもうあります（model.twist_bones を 2 回かけない）")
-    if settings["meshes"] is None:
-        meshes = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+    if settings["meshes"] is None:                       # 既定: このアーマチュアで動くメッシュだけ（ほかのキャラの重みは触らない）
+        meshes = [obj for obj in bpy.data.objects if obj.type == "MESH" and deformed_by(obj, armature)]
     else:
         meshes = []
         for name in settings["meshes"]:
             obj = bpy.data.objects.get(name)
             if obj is None or obj.type != "MESH":
                 raise SystemExit(f"meshes のメッシュがありません: {name}")
+            if not deformed_by(obj, armature):
+                raise SystemExit(f"meshes の {name} は {armature.name} で動きません（アーマチュアのモディファイアも、アーマチュアの親も無い）")
             meshes.append(obj)
 
     # 1. ねじらない骨を足す（親は元の骨の親。Damped Track で aim の付け根を向くだけ）
@@ -169,7 +171,7 @@ def main(argv=None):
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     report = {"schema_version": "model3d-twist-bones/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "armature": armature.name, "bones": [{"name": e["name"], "copy_of": e["bone"], "aims_at": e["aim"]} for e in settings["bones"]],
-              "weights": weights_report, "settings": settings}
+              "weights": weights_report, "meshes": [obj.name for obj in meshes], "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

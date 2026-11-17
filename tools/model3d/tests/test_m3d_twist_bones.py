@@ -42,6 +42,15 @@ def test_dominant_bone_is_chosen_among_deform_groups():
     assert list(dominant) == [True, True]                                            # 変形に使う骨のグループの中で比べる
 
 
+def test_only_meshes_moved_by_the_armature_count():
+    from types import SimpleNamespace as NS
+    from model3d.blender_adapter.model_edit import deformed_by
+    rig, other = NS(name="Rig"), NS(name="Other")
+    assert deformed_by(NS(modifiers=[NS(type="ARMATURE", object=rig)], parent=None, parent_type="OBJECT"), rig)
+    assert deformed_by(NS(modifiers=[], parent=rig, parent_type="ARMATURE"), rig)
+    assert not deformed_by(NS(modifiers=[NS(type="ARMATURE", object=other)], parent=rig, parent_type="BONE"), rig)   # ほかのキャラ・骨の子
+
+
 def test_twist_angle_from_the_quaternion():
     for angle in (0.0, 30.0, -100.0, 179.0):
         half = math.radians(angle) / 2

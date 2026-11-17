@@ -139,6 +139,12 @@ def ignored_groups(obj, allowed):
     return counts
 
 
+def deformed_by(obj, armature):
+    """メッシュ obj がアーマチュアで動くか（アーマチュアのモディファイアの相手か、アーマチュアを親にした変形。vrm.motion_rig と同じ判定）。"""
+    return (any(m.type == "ARMATURE" and m.object == armature for m in obj.modifiers)
+            or (obj.parent == armature and obj.parent_type == "ARMATURE"))
+
+
 def bone_world(armature, name):
     """骨の付け根と先の、初期姿勢の世界の座標。型は Blender の値のまま（5.2.4 の mathutils は単精度の配列になる。台本と同じ）。"""
     world = np.array(armature.matrix_world)
