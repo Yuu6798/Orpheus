@@ -122,7 +122,8 @@ def test_per_shot_smoothing_does_not_carry_motion_across_the_cut():
     shots = [{"until": 0.5, "keys": [_key()]}, {"until": 1.0, "keys": [_key()]}]
     split, report = _build(shots, path=path, smooth={"sigma_s": 4 / 30, "reach": 2.0, "per_shot": True})
     whole, _ = _build(shots, path=path, smooth={"sigma_s": 4 / 30, "reach": 2.0})
-    assert split[14]["matrix"][0][3] == 0.0 and split[15]["matrix"][0][3] == 1.0              # 区間の中だけでならすので、つなぎ目で混ざらない
+    assert split[14]["matrix"][0][3] == 0.0                                                    # 区間の中だけでならすので、つなぎ目で混ざらない
+    assert split[15]["matrix"][0][3] == pytest.approx(1.0, abs=1e-12)                         # （重みの和の丸めで 1 ± 2e-16 になる環境がある）
     assert 0.0 < whole[14]["matrix"][0][3] < 0.5 < whole[15]["matrix"][0][3] < 1.0           # 全体でならすと、つなぎ目の前後に混ざる
     assert report["samples"]["per_shot"] is True
     bump = np.zeros(count)
