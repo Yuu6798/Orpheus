@@ -151,7 +151,7 @@ def _eye_settings(raw, resolution):
             if low + high >= 1.0:
                 raise ToolError(f"eyes.smile.clip の 2 つの割合の和は 1 より小さくしてください: {clip!r}")
             eyes["smile"]["clip"] = [low, high]
-    for key, minimum in (("min_rows", 1), ("gap_px", 0), ("smooth_px", 1), ("edge_rows", 1)):
+    for key, minimum in (("min_rows", 1), ("gap_px", 1), ("smooth_px", 1), ("edge_rows", 1)):   # gap_px 0 は隣の列まで切るので 1 から
         if key in raw:
             eyes[key] = _integer(raw[key], f"eyes.{key}", minimum)
     if eyes.get("smooth_px", 15) % 2 == 0:

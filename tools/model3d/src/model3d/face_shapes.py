@@ -190,7 +190,7 @@ def eye_shapes(head, settings, side, sign):
     if not len(cols):
         raise ValueError(f"目の開きが見つかりません（{side}。eyes.window を確かめてください）")
     # いちばん長い連続区間を目の開きとする（まつ毛のすき間などの小さな飛び地を除く）
-    runs = np.split(cols, np.where(np.diff(cols) > eyes["gap_px"])[0] + 1)
+    runs = np.split(cols, np.where(np.diff(cols) > eyes["gap_px"])[0] + 1)   # 列の番号の差が gap_px（1 以上）より大きい所で切る
     cols = max(runs, key=len)
     xa, xb = lo + (cols[0] + 0.5) * res, lo + (cols[-1] + 0.5) * res
     if xb <= xa:

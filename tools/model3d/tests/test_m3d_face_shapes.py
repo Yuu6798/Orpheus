@@ -297,6 +297,7 @@ def _with(change):
     (_with(lambda p: p["eyes"].pop("find")), "eyes に find"),
     (_with(lambda p: p["eyes"]["find"].update(x=[0.07, 0.01])), "eyes.find.x"),
     (_with(lambda p: p["eyes"].update(smooth_px=14)), "奇数"),
+    (_with(lambda p: p["eyes"].update(gap_px=0)), "gap_px"),                         # 0 だと隣り合う列まで切ってしまう
     (_with(lambda p: p["eyes"].update(close_at=1.5)), "close_at"),
     (_with(lambda p: p["eyes"]["smile"].update(clip=[0.6, 0.5])), "和"),
     (_with(lambda p: p["eyes"].pop("brow")), "eyes.brow"),
