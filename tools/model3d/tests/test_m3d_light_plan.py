@@ -120,6 +120,16 @@ def test_the_strongest_flash_wins_and_keeps_its_colour():
     assert _at(plan, 19)["flash"] == 0.0                  # t = 1.8: どの閃光も長さ 0.6 秒を過ぎた
 
 
+def test_a_flash_on_a_beat_starts_on_the_frame_of_the_beat():
+    """拍の時刻の丸め（0.1 + 0.1 × 2 = 0.30000000000000004）でも、ちょうど拍のコマ（t = 0.3）から光る（区間と同じ境目のゆとり）。"""
+    plan = {**_plan({"key": 0.0}, [{"flashes": [{"at": {"beat": 2}, "strength": 1.0, "length": 0.3}]}]),
+            "grid": {"period": 0.1, "k0_time": 0.1}}
+    p = light_plan.Plan(plan)
+    assert p.clock({"beat": 2}, "at") > 0.3                                   # 拍の時刻は 0.3 より少し後
+    assert [p.at(T)[0]["flash"] for T in (3, 4, 5, 6, 7)] == [0.0, 1.0, math.exp(-(0.4 - p.clock({"beat": 2}, "at")) / 0.10),
+                                                           math.exp(-(0.5 - p.clock({"beat": 2}, "at")) / 0.10), 0.0]   # 長さ 0.3 秒は 3 コマ
+
+
 def test_flash_and_fade_are_always_there_and_must_not_be_negative():
     v = _at(_plan({"key": 0.0}), 1)
     assert v["flash"] == 0.0 and v["flash_color"] == (1.0, 1.0, 1.0) and v["fade"] == 1.0

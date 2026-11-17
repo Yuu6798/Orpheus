@@ -6,8 +6,9 @@
 1. values（名前 → 既定の値）を全部求める。値は数、3 つの並び（色や位置。要素は数か式）、色の名前、式のどれか。
 2. t を含む区間（segments。頭は前の区間の until、最後の区間だけ until を省ける。時刻は秒・拍 {"beat": k}・marks の名前）の
    let（区間の中の名前。書いた順に求める）を求め、set の値で上書きする。
-3. 区間の flashes（at・strength・color・decay・length）を並べた順に見て、0 ≤ t − at < length なら
-   strength × exp(−(t − at) / decay) を求め、今の flash より強ければ flash と flash_color をそれにする。
+3. 区間の flashes（at・strength・color・decay・length）を並べた順に見て、0 ≤ t − at < length なら（境目は区間と同じく、
+   1e-6 秒前のコマから届いたとみなす）strength × exp(−max(t − at, 0) / decay) を求め、今の flash より強ければ flash と
+   flash_color をそれにする。
 flash（閃光の強さ。既定 0）・flash_color（既定 [1, 1, 1]）・fade（暗転で掛ける割合。既定 1）は、どの段取り表にもある値。
 
 式（Python の式の書き方の一部だけ。ast で読み、決めた形のほかは読む前に止める。eval は使わない）:
@@ -25,7 +26,7 @@ import math
 import operator
 
 from .io import ToolError
-from .stage_plan import Clock, find, spans
+from .stage_plan import Clock, find, inside, spans
 
 SIGNALS = ("t", "low", "mid", "high", "hit")
 FUNCTIONS = {"beat": (1, 1), "ramp": (3, 3), "ease": (1, 2), "mix": (3, 3), "max": (2, None), "min": (2, None), "exp": (1, 1)}
@@ -311,10 +312,10 @@ class Plan:
         for flash in flashes:
             d = t - flash["at"]
             length = self._value(flash["length"], local, T, flash["where"])
-            if 0 <= d < length:
+            if inside(d, 0.0, length):                   # 区間の境目と同じゆとり（ちょうど拍のコマを、丸めで外さない）
                 strength = self._value(flash["strength"], local, T, flash["where"])
                 decay = self._value(flash["decay"], local, T, flash["where"])
-                v = strength * math.exp(-d / decay)
+                v = strength * math.exp(-max(d, 0.0) / decay)
                 if v > out["flash"]:
                     color = default_color if flash["color"] is None else self._value(flash["color"], local, T, flash["where"])
                     out["flash"], out["flash_color"] = v, color

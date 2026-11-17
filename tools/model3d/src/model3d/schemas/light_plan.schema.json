@@ -53,7 +53,7 @@
       "additionalProperties": false
     },
     "flash": {
-      "description": "0 ≤ t − at < length の間、strength × exp(−(t − at) / decay)。今の flash より強ければ flash と flash_color にする（色を省くと values の flash_color の既定）",
+      "description": "0 ≤ t − at < length の間（境目は区間と同じく 1e-6 秒前のコマから）、strength × exp(−max(t − at, 0) / decay)。今の flash より強ければ flash と flash_color にする（色を省くと values の flash_color の既定）",
       "type": "object",
       "required": ["at", "strength"],
       "properties": {

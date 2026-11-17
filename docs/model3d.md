@@ -3108,7 +3108,8 @@ VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model
 2. t を含む区間（`segments`）の `let`（区間の中の名前。書いた順に求め、後の `let`・`set`・`flashes` で使える）を求め、`set` の値で上書きする。
    - 区間の頭は前の区間の `until`（最初の区間は 0 秒）。最後の区間だけ `until` を省ける。時刻は秒・拍 `{"beat": k}`・`marks` の名前で書く（`plan.stage` と同じ読み方。ちょうど境目のコマは、次の区間）。
    - `set` は `values` と同じ形（数か 3 つの並び）にする。`values` に無い名前は止める。
-3. 区間の `flashes` を並べた順に見る。`at` ≤ t < `at` + `length` なら `strength` × exp(−(t − `at`) / `decay`) を求め、今の `flash` より強ければ `flash` と `flash_color` をそれにする（同じ強さなら先のまま）。
+3. 区間の `flashes` を並べた順に見る。`at` ≤ t < `at` + `length` なら `strength` × exp(−max(t − `at`, 0) / `decay`) を求め、今の `flash` より強ければ `flash` と `flash_color` をそれにする（同じ強さなら先のまま）。
+   - 境目は、区間と同じく 1e-6 秒前のコマから届いたとみなす（ちょうど拍に当たるコマで、拍の時刻の丸めのために閃光の頭が 1 コマ遅れないように）。
    - `color` を省くと、`values` の `flash_color` の既定。`decay`・`length` の既定は 0.10 秒・0.6 秒（3 作目の値）。
 - `flash`（閃光の強さ。既定 0）・`flash_color`（閃光の色。既定 [1, 1, 1]）・`fade`（暗転で掛ける割合。既定 1）は、どの段取り表にもある。`flash` と `fade` は 0 以上の数、`flash_color` は 3 つの並び。描く工程と仕上げが読む。
 
