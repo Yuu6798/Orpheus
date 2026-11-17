@@ -207,3 +207,85 @@ def test_the_operation_needs_its_inputs(tmp_path):
     atomic_json(tmp_path / "doubled.json", doubled)
     with pytest.raises(ToolError, match="重なって"):
         call(tmp_path, {}, inputs={"blend": tmp_path / "show.blend", "cameras": tmp_path / "doubled.json"})
+
+
+# ---- 光と影のつなぎ分け（links） ----
+
+@pytest.mark.parametrize("links, message", [
+    ({"lights": ["a"]}, "links は"), ([{"lights": ["a"], "receivers": ["s"], "glow": 1}], "links\\[0\\] は"),
+    ([{"lights": [], "receivers": ["s"]}], "lights"), ([{"lights": ["a", "a"], "receivers": ["s"]}], "lights"),
+    ([{"lights": ["a"], "receivers": ["s"], "exclude": ["s"]}], "どちらか"), ([{"lights": ["a"]}], "要ります"),
+    ([{"lights": ["a"], "receivers": "everyone"}], "receivers"), ([{"lights": ["a"], "blockers": []}], "blockers"),
+    ([{"lights": ["a"], "exclude": ["s", "s"]}], "exclude"),
+    ([{"lights": ["a"], "receivers": ["s"]}, {"lights": ["a"], "exclude": ["s"]}], "links\\[0\\] にも"),
+    ([{"lights": ["a"], "blockers": "character"}, {"lights": ["b", "a"], "blockers": ["s"]}], "blockers は links\\[0\\]"),
+])
+def test_links_problems_are_named(links, message):
+    import re
+    problem = show_render.links_problem(links)
+    assert problem is not None and re.search(message, problem), problem
+
+
+def test_links_may_split_receivers_and_blockers_between_entries():
+    assert show_render.links_problem([]) is None
+    assert show_render.links_problem([{"lights": ["shadow"], "receivers": ["screen"], "blockers": "character"},
+                                      {"lights": ["key", "fill"], "exclude": ["screen"]},
+                                      {"lights": ["key"], "blockers": ["prop"]}]) is None
+
+
+class FakeCollection:
+    """bpy.data.collections の 1 つのまね: objects.link と、物体ごとのつなぎ分けの設定（collection_objects）。"""
+
+    def __init__(self, name):
+        self.name, self.objects, self.collection_objects = name, FakeObjects(self), []
+
+
+class FakeObjects(list):
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    def link(self, ob):
+        self.append(ob)
+        self.owner.collection_objects.append(M(light_linking=M(link_state="INCLUDE")))
+
+
+def _fake_bpy(objects):
+    made = []
+
+    def new(name):
+        made.append(FakeCollection(name))
+        return made[-1]
+    by_name = {o.name: o for o in objects}
+    return M(data=M(objects=M(get=by_name.get), collections=M(new=new))), made
+
+
+def test_apply_links_makes_one_collection_per_role():
+    light = lambda name: M(name=name, type="LIGHT", light_linking=M(receiver_collection=None, blocker_collection=None))
+    shadow, key, fill = light("shadow"), light("key"), light("fill")
+    screen, body, hair = M(name="screen", type="MESH"), M(name="body", type="MESH"), M(name="hair", type="MESH")
+    bpy, made = _fake_bpy([shadow, key, fill, screen, body, hair])
+    report = show_render.apply_links(bpy, [{"lights": ["shadow"], "receivers": ["screen"], "blockers": "character"},
+                                           {"lights": ["key", "fill"], "exclude": ["screen"]}], [body, hair])
+    assert report == [{"lights": ["shadow"], "receivers": ["screen"], "blockers": ["body", "hair"]},
+                      {"lights": ["key", "fill"], "exclude": ["screen"]}]
+    receivers, blockers, excluded = made
+    assert shadow.light_linking.receiver_collection is receivers and shadow.light_linking.blocker_collection is blockers
+    assert key.light_linking.receiver_collection is fill.light_linking.receiver_collection is excluded
+    assert key.light_linking.blocker_collection is None                         # 影は、ほかの光の設定のまま（みな落とす）
+    assert [m.light_linking.link_state for m in excluded.collection_objects] == ["EXCLUDE"]   # 照らさない物
+    assert [m.light_linking.link_state for m in receivers.collection_objects] == ["INCLUDE"]
+    with pytest.raises(SystemExit, match="光の物体がありません: screen"):
+        show_render.apply_links(bpy, [{"lights": ["screen"], "receivers": ["body"]}], [])
+    with pytest.raises(SystemExit, match="receivers の物体がありません: wall"):
+        show_render.apply_links(bpy, [{"lights": ["key"], "receivers": ["wall"]}], [])
+
+
+def test_the_operation_checks_and_passes_the_links(tmp_path):
+    links = [{"lights": ["stage_shadow"], "receivers": ["stage_disc"], "blockers": "character"}]
+    with pytest.raises(ToolError, match="どちらか"):
+        call(tmp_path, {"links": [{"lights": ["a"], "receivers": ["s"], "exclude": ["s"]}]})
+    call(tmp_path, {"links": links})
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert report["settings"]["links"] == links
+
