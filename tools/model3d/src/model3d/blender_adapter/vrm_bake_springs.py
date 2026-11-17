@@ -47,6 +47,7 @@ def parse_args(argv):
     ap.add_argument("--armature", default="", help="アーマチュアの名前（揺れもののあるものが 1 つだけなら省ける）")
     ap.add_argument("--cuts", default="", help="揺れものを落ち着かせ直す切り替えのコマ（Blender のコマ番号。カンマ区切り）")
     ap.add_argument("--cut-settle", type=float, default=None, help="切り替えのコマで落ち着かせる秒数（既定は --settle と同じ）")
+    ap.add_argument("--joined-frames", default="", help="切り替えのコマを読んだ、組んだ動きのコマの範囲（a:b。シーンの範囲と同じかを確かめる）")
     return ap.parse_args(argv)
 
 
@@ -61,8 +62,16 @@ def cut_list(text):
     return sorted(cuts)
 
 
-def check_cuts(cuts, first, last):
-    """切り替えのコマが、最初のコマより後で最後のコマまでにあるか（最初のコマは、もともと落ち着かせてから始める）。"""
+def check_cuts(cuts, first, last, joined=""):
+    """切り替えのコマが、最初のコマより後で最後のコマまでにあるか（最初のコマは、もともと落ち着かせてから始める）。
+    joined（「a:b」）を渡すと、切り替えのコマを読んだ組んだ動きのコマの範囲が、シーンの範囲と同じかも確かめる（別の動きの報告を止める）。"""
+    if joined:
+        bounds = joined.split(":")
+        if len(bounds) != 2 or not all(bound.strip().lstrip("-").isdigit() for bound in bounds):
+            raise ValueError(f"--joined-frames は a:b にしてください: {joined!r}")
+        if [int(bound) for bound in bounds] != [first, last]:
+            raise ValueError(f"切り替えのコマを読んだ組んだ動きのコマの範囲（{joined.replace(':', '〜')}）が、シーンのコマの範囲（{first}〜{last}）と"
+                             "違います（同じ動きを組んだときの report を渡してください）")
     outside = [cut for cut in cuts if not first < cut <= last]
     if outside:
         raise ValueError(f"切り替えのコマ {outside} が、最初のコマ（{first}）より後で最後のコマ（{last}）までの範囲にありません")
@@ -193,7 +202,7 @@ def main(argv=None):
     armature = armatures[0]
     scene = use_scene_of(bpy, armature)
     try:
-        check_cuts(cuts, scene.frame_start, scene.frame_end)
+        check_cuts(cuts, scene.frame_start, scene.frame_end, a.joined_frames)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     action = armature.animation_data.action if armature.animation_data else None

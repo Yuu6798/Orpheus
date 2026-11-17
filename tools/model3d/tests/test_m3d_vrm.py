@@ -269,6 +269,10 @@ def test_cut_frames_are_read_and_must_lie_after_the_first_frame():
         with pytest.raises(ValueError, match=message):
             vrm_bake_springs.cut_list(bad)
     assert vrm_bake_springs.check_cuts([2, 240], 1, 240) == [2, 240]
+    assert vrm_bake_springs.check_cuts([120], 1, 240, "1:240") == [120]         # 組んだ動きの範囲とシーンの範囲が同じ
+    for joined, message in (("1:239", "違います"), ("0:240", "違います"), ("1-240", "a:b")):
+        with pytest.raises(ValueError, match=message):
+            vrm_bake_springs.check_cuts([120], 1, 240, joined)
     # 最初のコマはもともと落ち着かせてから始める。範囲の外のコマは打ち間違いとして止める
     for cuts in ([1], [241], [0, 120]):
         with pytest.raises(ValueError, match="範囲にありません"):
@@ -357,6 +361,7 @@ def test_bake_springs_takes_the_cut_frames_from_the_parameters_or_the_join_repor
     tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
     assert tail[tail.index("--cuts") + 1] == "120,240"                          # 小さい順
     assert tail[tail.index("--cut-settle") + 1] == "1.0"                        # 既定は settle_s と同じ
+    assert "--joined-frames" not in tail
     # motion.join_clips の report を joined に渡すと、その cuts を使う
     atomic_json(tmp_path / "join.json", {"schema_version": "model3d-motion-join/0.1", "cuts": [31, 61], "frames": [1, 72]})
     recipe = json.loads(recipe.read_text(encoding="utf-8"))
@@ -369,6 +374,7 @@ def test_bake_springs_takes_the_cut_frames_from_the_parameters_or_the_join_repor
     bake_report = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))
     tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
     assert tail[tail.index("--cuts") + 1] == "31,61" and tail[tail.index("--cut-settle") + 1] == "0.5"
+    assert tail[tail.index("--joined-frames") + 1] == "1:72"                   # 台本が、焼く .blend のシーンの範囲と同じかを確かめる
     assert tail[tail.index("--settle") + 1] == "2.0"
 
 
@@ -381,7 +387,9 @@ def test_bake_springs_takes_the_cut_frames_from_the_parameters_or_the_join_repor
     ({"cuts": [120], "cut_settle_s": -1}, None, "cut_settle_s"),
     ({"cuts": [120]}, {"schema_version": "model3d-motion-join/0.1", "cuts": [31]}, "どちらか"),
     ({}, {"schema_version": "model3d-vrm-bake-springs/0.1", "cuts": [31]}, "motion.join_clips の report"),
-    ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": ["31"]}, "joined の cuts"),
+    ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": ["31"], "frames": [1, 72]}, "joined の cuts"),
+    ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": [31]}, "joined の frames"),
+    ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": [31], "frames": [72, 1]}, "joined の frames"),
 ])
 def test_bake_springs_rejects_bad_cut_settings(tmp_path, parameters, joined, message):
     from model3d.ops import get

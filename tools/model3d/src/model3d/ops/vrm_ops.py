@@ -105,21 +105,25 @@ JOIN_SCHEMA = "model3d-motion-join/0.1"
 
 
 def _cuts(parameters, inputs):
-    """切り替えのコマ: パラメーターの cuts か、入力 joined（motion.join_clips の report）の cuts。両方は使えない。"""
-    cuts = parameters.get("cuts")
+    """切り替えのコマ: パラメーターの cuts か、入力 joined（motion.join_clips の report）の cuts。両方は使えない。
+    → (切り替えのコマ, joined の組んだ動きのコマの範囲 [最初, 最後]。joined でなければ None)"""
+    cuts, frames = parameters.get("cuts"), None
     if "joined" in inputs:
         if cuts is not None:
             raise ToolError("vrm.bake_springs: 切り替えのコマは、パラメーターの cuts か入力の joined のどちらかで渡してください（両方は使えない）")
         report = read_json(inputs["joined"])
         if not isinstance(report, dict) or report.get("schema_version") != JOIN_SCHEMA:
             raise ToolError(f"vrm.bake_springs の joined は motion.join_clips の report（{JOIN_SCHEMA}）にしてください")
-        cuts, where = report.get("cuts"), "joined の cuts"
+        cuts, frames, where = report.get("cuts"), report.get("frames"), "joined の cuts"
+        if not (isinstance(frames, list) and len(frames) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in frames)
+                and frames[0] <= frames[1]):
+            raise ToolError(f"vrm.bake_springs の joined の frames（組んだ動きのコマの範囲 [最初, 最後]）が読めません: {frames!r}")
     else:
         cuts, where = ([] if cuts is None else cuts), "cuts"
     if (not isinstance(cuts, list) or not all(isinstance(cut, int) and not isinstance(cut, bool) and cut >= 1 for cut in cuts)
             or len(set(cuts)) != len(cuts)):
         raise ToolError(f"{where} は切り替えのコマ（Blender のコマ番号。1 以上の整数で、重ならない）の並びにしてください: {cuts!r}")
-    return sorted(cuts)
+    return sorted(cuts), frames
 
 
 @register("vrm.bake_springs", inputs=("blend", "overrides", "joined"), outputs=("blend", "report"), cacheable=False,
@@ -135,9 +139,9 @@ def bake_springs(inputs, parameters, outputs, context):
     settle = number(parameters, "settle_s", 2.0, minimum=0)
     rate = number(parameters, "rate", 60.0, minimum=0, exclusive=True)
     no_spring = _names(parameters, "no_spring")
-    cuts = _cuts(parameters, inputs)
+    cuts, joined_frames = _cuts(parameters, inputs)
     cut_settle = number(parameters, "cut_settle_s", settle, minimum=0)
-    if parameters.get("cut_settle_s") is not None and not cuts:
+    if parameters.get("cut_settle_s") is not None and not cuts and "joined" not in inputs:
         raise ToolError("vrm.bake_springs: cut_settle_s は切り替えのコマ（cuts か joined）と一緒に使ってください")
     if "overrides" in inputs:
         try:
@@ -158,6 +162,8 @@ def bake_springs(inputs, parameters, outputs, context):
         args += ["--armature", armature]
     if cuts:
         args += ["--cuts", ",".join(str(cut) for cut in cuts), "--cut-settle", repr(float(cut_settle))]
+    if joined_frames is not None:                         # 組んだ動きの報告と、焼く .blend のコマの範囲が同じかを台本が確かめる
+        args += ["--joined-frames", f"{joined_frames[0]}:{joined_frames[1]}"]
     record = launcher.run_blender(blender, BAKE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                   timeout=_timeout(parameters), addons=addons, extensions=extensions)
     report = read_json(outputs["report"])
