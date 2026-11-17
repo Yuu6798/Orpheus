@@ -5,9 +5,13 @@
 - cloth.smooth: 布の動きを骨から見た座標で時間方向にならし、頂点の動きのファイル（.pc2）に置き換える。
 - cloth.pushout: 衣装が体に入った分を、骨盤と太ももの閉じた筒の外へ、層ごとの距離で押し出す補正（Shrinkwrap）を付ける。
 - cloth.lining_gap: 重なった布の裏地を、表から決まった距離まで内側へ離す（形を書き換える。モデル用）。
+- cloth.follow: 上に重なる布を、下の布の表面と同じ動きにする（骨の重みを、すぐ下の布の重みで置きかえる）。
+- check.cloth_over: 上に重なる布が、下の布の内側へ入っているコマを数える。
 """
 import math
 from pathlib import Path
+
+import numpy as np
 
 from ..io import ToolError, atomic_json, read_json
 from . import StepResult, number, register, require
@@ -329,3 +333,134 @@ def cloth_lining_gap(inputs, parameters, outputs, context):
     observation = {"kind": "cloth_lining_gap", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "objects": report.get("objects")}
     return StepResult(observations=[observation])
+
+
+FOLLOW_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_follow.py"
+OVER_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_over.py"
+
+
+def _positive(parameters, key, default, integer=False, exclusive=True):
+    value = parameters.get(key, default)
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+            or (integer and not isinstance(value, int)) or (value <= 0 if exclusive else value < 0)):
+        raise ToolError(f"{key} は {'0 より大きい' if exclusive else '0 以上の'}{'整数' if integer else '数'}にしてください: {value!r}")
+    return value
+
+
+@register("cloth.follow", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="上に重なる布（follower。腰の垂れなど）を、下の布（leader。裾など）の表面と同じ動きにする（Blender の中で）: 初期姿勢で、"
+                  "上の布の頂点ごとに、下の布のいちばん外の面の頂点を k 個さがし、その骨の重みを距離で混ぜた値で、上の布の骨の重みを置きかえる"
+                  "（上の布自身の揺れものの骨は使わなくなる）。1 頂点の骨は max_influences 本まで。踊りの .blend にもモデルの .blend にも使える。"
+                  "元のファイルは変えない")
+def cloth_follow(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "cloth.follow")
+    allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "follower", "leader", "axis_bone", "k", "max_influences",
+               "layer_gap"}
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"cloth.follow の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    settings = {key: _name(parameters, key, "cloth.follow") for key in ("follower", "leader", "axis_bone")}
+    if settings["follower"] == settings["leader"]:
+        raise ToolError("follower と leader は別のメッシュにしてください")
+    if parameters.get("armature") is not None:
+        settings["armature"] = _name(parameters, "armature", "cloth.follow")
+    settings.update({"k": _positive(parameters, "k", 6, integer=True), "max_influences": _positive(parameters, "max_influences", 4, integer=True),
+                     "layer_gap": float(_positive(parameters, "layer_gap", 0.015))})
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"cloth.follow には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "cloth.follow")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "follow_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, FOLLOW_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "cloth_follow", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("follower", "leader", "reweighted", "leader_outer_verts", "farthest_neighbour_mm",
+                                                        "verts_cut_to_max_influences", "largest_weight_share_cut")}}
+    return StepResult(observations=[observation])
+
+
+def over_summary(raw, min_verts=3, max_frames=None, max_mean_verts=None):
+    """check.cloth_over の測った値（コマごとの入り込んだ頂点の数）の要約と合否（しきい値を渡したときだけ）。数え方は台本と同じ。"""
+    rows = raw["rows"]
+    verts = np.array([row["verts"] for row in rows]) if rows else np.zeros(0)
+    bad = [row for row in rows if row["verts"] >= min_verts]
+    runs = []
+    for row in bad:
+        if runs and row["frame"] - runs[-1][1] <= 1:
+            runs[-1][1] = row["frame"]
+            runs[-1][2] = max(runs[-1][2], row["verts"])
+            runs[-1][3] = max(runs[-1][3], row["max_mm"])
+        else:
+            runs.append([row["frame"], row["frame"], row["verts"], row["max_mm"]])
+    report = {"check": "cloth_over", "over": raw.get("over"), "under": raw.get("under"), "frames_checked": len(rows),
+              "over_verts": raw.get("over_verts"), "ignored_at_rest": raw.get("ignored_at_rest"), "frames_inside": len(bad),
+              "frames_inside_10_verts_or_more": int((verts >= 10).sum()), "frames_inside_30_verts_or_more": int((verts >= 30).sum()),
+              "max_verts": int(verts.max()) if len(verts) else 0, "max_depth_mm": max((row["max_mm"] for row in rows), default=0.0),
+              "mean_verts_per_frame": round(float(verts.mean()), 1) if len(verts) else 0.0,
+              "runs": [{"frames": [a, b], "max_verts": n, "max_mm": d} for a, b, n, d in runs],
+              "thresholds": {k: v for k, v in (("max_frames", max_frames), ("max_mean_verts", max_mean_verts)) if v is not None}}
+    if max_frames is None and max_mean_verts is None:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+        return report
+    failures = []
+    if max_frames is not None and len(bad) > max_frames:
+        failures.append(f"上の布が下の布の内側に {min_verts} 頂点以上入ったコマが {len(bad)}（しきい値 {max_frames}）")
+    if max_mean_verts is not None and report["mean_verts_per_frame"] > max_mean_verts:
+        failures.append(f"下の布の内側にある頂点が 1 コマ平均 {report['mean_verts_per_frame']}（しきい値 {max_mean_verts}）")
+    report.update({"pass": not failures, "failures": failures})
+    return report
+
+
+@register("check.cloth_over", inputs=("blend",), outputs=("report",), cacheable=False,
+          summary="上に重なる布（over。腰の垂れなど）が、下の布（under。裾など）の内側へ入っているコマを数える（Blender の中で。.blend は変えない）:"
+                  "コマごとに、上の布の頂点から縦の軸（axis_bone）の外向きに depth まで線を伸ばし、下の布の面（当て布は数えない）に当たれば"
+                  "入り込み（初期姿勢で内側の頂点は除く）。入り込んだ頂点の数の 1 コマ平均・最大・コマの数と区間。max_frames・max_mean_verts を"
+                  "渡したときだけ合否を出す。好みは判定しない")
+def check_cloth_over(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .check_ops import _finish
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "check.cloth_over")
+    allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "over", "under", "axis_bone", "patch_group", "depth", "tol",
+               "frames", "min_verts", "max_frames", "max_mean_verts", "strict", "report_only"}
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"check.cloth_over の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    settings = {key: _name(parameters, key, "check.cloth_over") for key in ("over", "under", "axis_bone")}
+    if settings["over"] == settings["under"]:
+        raise ToolError("over と under は別のメッシュにしてください")
+    if parameters.get("armature") is not None:
+        settings["armature"] = _name(parameters, "armature", "check.cloth_over")
+    if parameters.get("patch_group") is not None:
+        settings["patch_group"] = _name(parameters, "patch_group", "check.cloth_over")
+    settings.update({"depth": float(_positive(parameters, "depth", 0.06)), "tol": float(_positive(parameters, "tol", 0.001, exclusive=False))})
+    span = parameters.get("frames")
+    if span is not None:
+        if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)
+                or span[0] > span[1]):
+            raise ToolError(f"frames は [最初のコマ, 最後のコマ]（整数、最初 ≤ 最後）にしてください: {span!r}")
+        settings["frames"] = span
+    min_verts = _positive(parameters, "min_verts", 3, integer=True)
+    max_frames = None if parameters.get("max_frames") is None else _positive(parameters, "max_frames", 0, integer=True, exclusive=False)
+    max_mean = None if parameters.get("max_mean_verts") is None else float(_positive(parameters, "max_mean_verts", 0, exclusive=False))
+    blender = _blender(parameters, context, "check.cloth_over")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path, raw_path = step_dir / "cloth_over_settings.json", step_dir / "cloth_over_raw.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, OVER_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                              "--report", str(raw_path)],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = over_summary(read_json(raw_path), min_verts, max_frames, max_mean)
+    report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "raw": str(raw_path)})
+    return _finish(report, outputs, parameters, "布の重なりの検査")
