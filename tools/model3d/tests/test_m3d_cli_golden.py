@@ -28,12 +28,15 @@ def _parsers(parser, path):
 
 
 def _row(action):
-    """引数 1 つの表の行（JSON 1 行）。サブコマンドの choices は名前だけ。--version の版の文字は help に出ないので並べない。"""
+    """引数 1 つの表の行（JSON 1 行）。サブコマンドの choices は名前だけ。--version の版の文字は help に出ないので並べない。
+    nargs が * の位置引数（blender script の args）の required は出さない（Python 3.12 までは True、3.13 からは False。どちらも
+    空の並びを受け付けるので、振る舞いは同じ）。"""
     choices = list(action.choices) if isinstance(action, argparse._SubParsersAction) else action.choices
+    starred = not action.option_strings and action.nargs == argparse.ZERO_OR_MORE
     return json.dumps({"options": action.option_strings, "dest": action.dest, "action": type(action).__name__,
                        "nargs": action.nargs, "const": action.const, "default": action.default,
                        "type": getattr(action.type, "__name__", action.type), "choices": choices,
-                       "required": action.required, "metavar": action.metavar}, ensure_ascii=False, default=str)
+                       "required": None if starred else action.required, "metavar": action.metavar}, ensure_ascii=False, default=str)
 
 
 def golden_text(parser, name):

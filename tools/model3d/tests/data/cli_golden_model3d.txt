@@ -614,7 +614,7 @@ options:
 {"options": ["--script"], "dest": "script", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--blend"], "dest": "blend", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 {"options": ["--timeout"], "dest": "timeout", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "args", "action": "_StoreAction", "nargs": "*", "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "args", "action": "_StoreAction", "nargs": "*", "const": null, "default": null, "type": null, "choices": null, "required": null, "metavar": null}
 {"options": ["--addon"], "dest": "addon", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": "MODULE"}
 {"options": ["--extensions"], "dest": "extensions", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 ==== model3d frames
