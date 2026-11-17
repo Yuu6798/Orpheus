@@ -182,14 +182,8 @@ def _precondition(text, step, inputs, semantic_map):
     return text
 
 
-def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None, progress=None):
-    """recipe を実行して RunRecord を書き、要約を返す。失敗した工程でレシピは止まる（記録は残る）。"""
-    began = time.monotonic()
-    say = progress or (lambda message: None)
-    recipe_path = Path(recipe_path).resolve()
-    recipe, inputs = recipes.load(recipe_path)
-    base = recipe_path.parent
-    ordered = recipes.order_steps(recipe)
+def _check_selects(recipe, ordered):
+    """検査の選択: 工程の select の入力が、その工程の入力にあり、操作が select（面領域の選択）に対応し、recipe に対応表があること。"""
     for step in ordered:
         op = ops.get(step["operation"])
         for name in step.get("select", {}):
@@ -201,6 +195,10 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                                 f"（対応する操作: {', '.join(usable)}）")
         if step.get("select") and not recipe.get("semantic_map"):
             raise ToolError(f"工程 {step['id']} の select には、recipe の semantic_map（面領域を持つ対応表）が要ります")
+
+
+def _context_files(recipe, base, preset_path):
+    """文脈のファイル: preset と対応表（SemanticMap）を読む。→ (preset のパス, preset, 対応表のパス, 対応表)。無ければ None。"""
     preset = None
     preset_file = Path(preset_path).resolve() if preset_path else (resolve_path(base, recipe["preset"]) if recipe.get("preset") else None)
     if preset_file is not None:
@@ -209,6 +207,209 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
     semantic_file = resolve_path(base, recipe["semantic_map"]) if recipe.get("semantic_map") else None
     if semantic_file is not None:
         semantic_map = contracts.load("semantic-map", semantic_file)
+    return preset_file, preset, semantic_file, semantic_map
+
+
+def _start_run(out, recipe_path, recipe_sha, recipe, inputs, ordered, tools, code_fingerprint, preset_file, semantic_file,
+               semantic_map, context_hashes):
+    """記録の開始: run のフォルダと recipe の写しを作り、記録の頭（recipe・入力・環境・preset・対応表・警告）と工程ごとの欄
+    （pending）を書いて保存し、run.log の 1 行目を書く。"""
+    run = Run(out, recipe_sha)
+    shutil.copyfile(recipe_path, run.dir / "recipe.json")
+    run.record.update(recipe={"path": str(recipe_path), "sha256": recipe_sha, "name": recipe["name"]}, inputs=inputs,
+                      environment=environment(tools, code_fingerprint))
+    if preset_file is not None:
+        run.record["preset"] = {"path": str(preset_file), "sha256": context_hashes["preset"]}
+    if semantic_file is not None:
+        run.record["semantic_map"] = {"path": str(semantic_file), "sha256": context_hashes["semantic_map"]}
+        unconfirmed = sum(1 for kind in ("parts", "bones", "regions") for v in semantic_map[kind].values() if v["state"] != "confirmed")
+        if unconfirmed:
+            run.record["warnings"].append(f"対応表に未確認の対応が {unconfirmed} 件あります（確認は model3d semantic confirm）")
+    for step in ordered:
+        run.record["steps"].append({"id": step["id"], "operation": step["operation"], "status": "pending", "key": None,
+                                    "started_at": None, "finished_at": None, "seconds": None,
+                                    "parameters": step.get("parameters", {}), "inputs": {}, "artifacts": {},
+                                    "observations": [], "unresolved": [], "error": None, "reused_from": None,
+                                    **({"applies_to": step["applies_to"]} if step.get("applies_to") else {}),
+                                    **({"select": step["select"]} if step.get("select") else {}),
+                                    **({"space": step["space"]} if step.get("space") else {})})
+    run.save()
+    run.log(f"recipe {recipe['name']} sha256 {recipe_sha} steps {len(ordered)}")
+    return run
+
+
+@dataclass
+class _Session:
+    """run_recipe の 1 回の実行で、工程をまたいで使う値。"""
+    run: Run
+    out: Path
+    index: dict
+    base: Path
+    inputs: dict
+    preset: object
+    semantic_map: object
+    tools: dict
+    force: bool
+    say: object
+    code_fingerprint: str
+    libraries: dict
+    context_hashes: dict
+    artifacts_by_step: dict = field(default_factory=dict)   # 工程 id → 出力の名前 → パス
+    digests_by_step: dict = field(default_factory=dict)     # 工程 id → 出力の名前 → sha256
+
+
+def _step_inputs(s, step):
+    """入力の解決: 工程の入力（$inputs か前の工程の出力）のパスと sha256 と、変わっていないかを確かめる recipe の入力の名前。
+    → (入力の名前 → パス, 入力の名前 → sha256, 入力の名前 → recipe の入力の名前)"""
+    step_inputs, hashes, pinned = {}, {}, {}
+    for name, ref in step.get("inputs", {}).items():
+        parsed = recipes.parse_ref(ref)
+        if parsed[0] == "input":
+            step_inputs[name] = Path(s.inputs[parsed[1]]["path"])
+            hashes[name] = s.inputs[parsed[1]]["sha256"]       # 読み込み時に計算済み
+            pinned[name] = parsed[1]
+        else:
+            produced = s.artifacts_by_step.get(parsed[1], {})
+            if parsed[2] not in produced:
+                raise ToolError(f"工程 {parsed[1]} の出力 {parsed[2]} がありません（その工程が失敗したか、作られていない）")
+            step_inputs[name] = produced[parsed[2]]
+            hashes[name] = s.digests_by_step[parsed[1]][parsed[2]]
+    return step_inputs, hashes, pinned
+
+
+def _roles_and_selections(s, step, step_inputs):
+    """役割と選択: applies_to の役割と前提を確かめ、select の面領域を選ぶ。→ (未解決の事柄, 入力の名前 → 選んだ面領域, 選択の観測)"""
+    semantic_map = s.semantic_map
+    unresolved = []
+    for role in step.get("applies_to", []):
+        if semantic_map is None:
+            unresolved.append(f"役割 {role} を確かめる対応表（SemanticMap）がありません")
+        else:
+            present = semantic.roles_present(semantic_map)
+            if role not in present["parts"] and role not in present["bones"]:
+                raise ToolError(f"applies_to の役割 {role} が対応表にありません（未対応か rejected）")
+    for text in step.get("preconditions", []):
+        _precondition(text, step, step_inputs, semantic_map)
+    # select: 入力メッシュの名前と頂点構成に結び付いた面領域だけを渡す。別の部品・古い対応・当たる面の無い役割は止める。
+    selections = {name: semantic.select(semantic_map, role, Mesh.load(step_inputs[name]))
+                  for name, role in sorted(step.get("select", {}).items())}
+    chosen_notes = [{"kind": "selection", "input": name, "role": chosen["role"], "faces": len(chosen["faces"]),
+                     "vertices": len(chosen["vertices"]), "topology_sha256": chosen["topology_sha256"],
+                     "sources": chosen["sources"], "ignored_stale": chosen["ignored_stale"],
+                     "ignored_other_part": chosen["ignored_other_part"]}
+                    for name, chosen in selections.items()]
+    # 使用する役割だけを候補扱いにする。無関係な未確認の対応は run の警告に留める。
+    # 同じ役割が applies_to と role: の両方に出ても、未解決事項は一度だけ記録する。
+    used_roles = set(step.get("applies_to", [])) | set(step.get("select", {}).values()) | {
+        text.split(":", 1)[1] for text in step.get("preconditions", []) if text.startswith("role:")}
+    if semantic_map is not None:
+        for role in sorted(used_roles & semantic.unconfirmed_roles(semantic_map)):
+            unresolved.append(f"役割 {role} の対応が未確認です（model3d semantic confirm で確認してください）")
+    return unresolved, selections, chosen_notes
+
+
+def _reuse_or_execute(s, step, entry, step_inputs, hashes, pinned, key, cacheable, unresolved, selections, chosen_notes):
+    """再利用か実行か: 工程のフォルダを作り、入力が変わっていないことを確かめ、同じ key の成功した工程（出力のハッシュまで
+    そろったもの）があれば出力を写し、無ければ操作を実行する。→ 出力の名前 → パス"""
+    run = s.run
+    step_dir = run.dir / step["id"]
+    step_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {name: step_dir / file for name, file in step.get("outputs", {}).items()}
+    check_unchanged(step_inputs, hashes, pinned)
+    previous = None if (s.force or not cacheable or unresolved) else reusable(s.out, s.index, key)
+    if previous is not None:
+        for name, item in previous["artifacts"].items():
+            shutil.copyfile(safe_path(s.out, item["path"]), outputs[name])
+        entry["observations"] = list(previous.get("observations", []))
+        entry["reused_from"] = previous["run_id"]
+        s.say(f"[model3d] {step['id']}: 同じ入力の成功した工程を再利用します（{previous['run_id']}）")
+        run.log(f"{step['id']}: reused from {previous['run_id']}")
+    else:
+        s.say(f"[model3d] {step['id']}: {step['operation']}")
+        run.log(f"{step['id']}: run {step['operation']}")
+        context = Context(run.dir, step_dir, s.base, s.preset, s.semantic_map, s.tools, run.log, {"force": s.force},
+                          step.get("space"), tuple(step.get("applies_to", [])), selections)
+        result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
+        check_unchanged(step_inputs, hashes, pinned)   # 実行中に変わった入力の結果も残さない
+        entry["observations"] = chosen_notes + list(result.observations)
+        unresolved.extend(result.unresolved)
+        if result.review:
+            entry["status"] = "needs_review"
+    return outputs
+
+
+def _record_artifacts(s, step, entry, outputs, unresolved, cacheable, key):
+    """成果物と索引: 宣言した出力がそろっているか確かめて記録し、工程の状態（成功・要確認）と候補、再利用の索引を書く。"""
+    run = s.run
+    missing = [name for name, path in outputs.items() if not path.is_file()]
+    if missing:
+        raise ToolError(f"工程 {step['id']} が宣言した出力を作っていません: {', '.join(missing)}")
+    entry["artifacts"] = {name: {"path": str(path.relative_to(run.dir).as_posix()), "sha256": sha256(path),
+                                 "bytes": path.stat().st_size} for name, path in outputs.items()}
+    s.artifacts_by_step[step["id"]] = outputs
+    s.digests_by_step[step["id"]] = {name: item["sha256"] for name, item in entry["artifacts"].items()}
+    entry["unresolved"] = unresolved
+    if entry["status"] == "running":
+        entry["status"] = "needs_review" if unresolved else "succeeded"
+    if entry["status"] == "needs_review":
+        run.record["candidates"].append(step["id"])
+    elif entry["status"] == "succeeded" and cacheable:
+        s.index["steps"][key] = {"run_id": run.run_id, "step": step["id"],
+                                 "artifacts": {name: {**item, "path": f"{run.run_id}/{item['path']}"}
+                                               for name, item in entry["artifacts"].items()},
+                                 "observations": entry["observations"]}
+    run.log(f"{step['id']}: {entry['status']} {'; '.join(unresolved)}")
+
+
+def _run_step(s, step, entry):
+    """工程 1 つ: 入力の解決 → key → 役割と選択 → 再利用か実行か → 成果物と索引。止めるときは ToolError（記録は呼ぶ側）。"""
+    step_inputs, hashes, pinned = _step_inputs(s, step)
+    entry["inputs"] = hashes
+    key = recipes.step_key(step, hashes, s.code_fingerprint, s.libraries, s.context_hashes)
+    entry["key"] = key
+    cacheable = ops.get(step["operation"]).cacheable
+    unresolved, selections, chosen_notes = _roles_and_selections(s, step, step_inputs)
+    outputs = _reuse_or_execute(s, step, entry, step_inputs, hashes, pinned, key, cacheable, unresolved, selections, chosen_notes)
+    _record_artifacts(s, step, entry, outputs, unresolved, cacheable, key)
+
+
+def _finish_run(run, out, index):
+    """最後の状態: 途中で止まった工程を failed にし、run の状態と誤りを決め、契約で確かめて記録と再利用の索引を保存する。"""
+    for entry in run.record["steps"]:   # KeyboardInterrupt などで途中で止まった工程を running のまま残さない
+        if entry["status"] == "running":
+            entry["status"] = "failed"
+            entry["error"] = entry["error"] or "interrupted: 工程の途中で止まりました"
+            entry["finished_at"] = entry["finished_at"] or now()
+    statuses = [s["status"] for s in run.record["steps"]]
+    if "failed" in statuses:
+        run.record["status"] = "failed"
+        run.record["error"] = next(s["error"] for s in run.record["steps"] if s["status"] == "failed")
+    elif "needs_review" in statuses:
+        run.record["status"] = "needs_review"
+    elif all(s == "succeeded" for s in statuses):
+        run.record["status"] = "succeeded"
+    else:
+        run.record["status"] = "failed"
+        run.record["error"] = run.record["error"] or "interrupted"
+    run.record["finished_at"] = now()
+    contracts.validate("run", run.record, run.dir / "run_record.json")
+    run.save()
+    atomic_json(out / "index.json", index)
+
+
+def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None, progress=None):
+    """recipe を実行して RunRecord を書き、要約を返す。失敗した工程でレシピは止まる（記録は残る）。
+
+    段: 検査の選択（_check_selects）→ 文脈のファイル（_context_files）→ 記録の開始（_start_run）→ 工程ごとに（_run_step）
+    入力の解決・役割と選択・再利用か実行か・成果物と索引 → 最後の状態（_finish_run）。"""
+    began = time.monotonic()
+    say = progress or (lambda message: None)
+    recipe_path = Path(recipe_path).resolve()
+    recipe, inputs = recipes.load(recipe_path)
+    base = recipe_path.parent
+    ordered = recipes.order_steps(recipe)
+    _check_selects(recipe, ordered)
+    preset_file, preset, semantic_file, semantic_map = _context_files(recipe, base, preset_path)
     tools = dict(tools or {})
     out = (Path(out) if out else base / "model3d_runs").resolve()
     recipe_sha = sha256(recipe_path)
@@ -216,32 +417,13 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
     libraries = library_versions()
     context_hashes = {"preset": sha256(preset_file) if preset_file is not None else None,
                       "semantic_map": sha256(semantic_file) if semantic_file is not None else None}
-    digests_by_step = {}
     with directory_lock(out):
         close_orphans(out)
         index = load_index(out)
-        run = Run(out, recipe_sha)
-        shutil.copyfile(recipe_path, run.dir / "recipe.json")
-        run.record.update(recipe={"path": str(recipe_path), "sha256": recipe_sha, "name": recipe["name"]}, inputs=inputs,
-                          environment=environment(tools, code_fingerprint))
-        if preset_file is not None:
-            run.record["preset"] = {"path": str(preset_file), "sha256": context_hashes["preset"]}
-        if semantic_file is not None:
-            run.record["semantic_map"] = {"path": str(semantic_file), "sha256": context_hashes["semantic_map"]}
-            unconfirmed = sum(1 for kind in ("parts", "bones", "regions") for v in semantic_map[kind].values() if v["state"] != "confirmed")
-            if unconfirmed:
-                run.record["warnings"].append(f"対応表に未確認の対応が {unconfirmed} 件あります（確認は model3d semantic confirm）")
-        for step in ordered:
-            run.record["steps"].append({"id": step["id"], "operation": step["operation"], "status": "pending", "key": None,
-                                        "started_at": None, "finished_at": None, "seconds": None,
-                                        "parameters": step.get("parameters", {}), "inputs": {}, "artifacts": {},
-                                        "observations": [], "unresolved": [], "error": None, "reused_from": None,
-                                        **({"applies_to": step["applies_to"]} if step.get("applies_to") else {}),
-                                        **({"select": step["select"]} if step.get("select") else {}),
-                                        **({"space": step["space"]} if step.get("space") else {})})
-        run.save()
-        run.log(f"recipe {recipe['name']} sha256 {recipe_sha} steps {len(ordered)}")
-        artifacts_by_step = {}
+        run = _start_run(out, recipe_path, recipe_sha, recipe, inputs, ordered, tools, code_fingerprint, preset_file, semantic_file,
+                         semantic_map, context_hashes)
+        session = _Session(run, out, index, base, inputs, preset, semantic_map, tools, force, say, code_fingerprint, libraries,
+                           context_hashes)
         failed = False
         try:
             for step, entry in zip(ordered, run.record["steps"]):
@@ -252,89 +434,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                 run.save()
                 step_began = time.monotonic()
                 try:
-                    step_inputs, hashes, pinned = {}, {}, {}
-                    for name, ref in step.get("inputs", {}).items():
-                        parsed = recipes.parse_ref(ref)
-                        if parsed[0] == "input":
-                            step_inputs[name] = Path(inputs[parsed[1]]["path"])
-                            hashes[name] = inputs[parsed[1]]["sha256"]       # 読み込み時に計算済み
-                            pinned[name] = parsed[1]
-                        else:
-                            produced = artifacts_by_step.get(parsed[1], {})
-                            if parsed[2] not in produced:
-                                raise ToolError(f"工程 {parsed[1]} の出力 {parsed[2]} がありません（その工程が失敗したか、作られていない）")
-                            step_inputs[name] = produced[parsed[2]]
-                            hashes[name] = digests_by_step[parsed[1]][parsed[2]]
-                    entry["inputs"] = hashes
-                    key = recipes.step_key(step, hashes, code_fingerprint, libraries, context_hashes)
-                    entry["key"] = key
-                    cacheable = ops.get(step["operation"]).cacheable
-                    unresolved = []
-                    for role in step.get("applies_to", []):
-                        if semantic_map is None:
-                            unresolved.append(f"役割 {role} を確かめる対応表（SemanticMap）がありません")
-                        else:
-                            present = semantic.roles_present(semantic_map)
-                            if role not in present["parts"] and role not in present["bones"]:
-                                raise ToolError(f"applies_to の役割 {role} が対応表にありません（未対応か rejected）")
-                    for text in step.get("preconditions", []):
-                        _precondition(text, step, step_inputs, semantic_map)
-                    # select: 入力メッシュの名前と頂点構成に結び付いた面領域だけを渡す。別の部品・古い対応・当たる面の無い役割は止める。
-                    selections = {name: semantic.select(semantic_map, role, Mesh.load(step_inputs[name]))
-                                  for name, role in sorted(step.get("select", {}).items())}
-                    chosen_notes = [{"kind": "selection", "input": name, "role": chosen["role"], "faces": len(chosen["faces"]),
-                                     "vertices": len(chosen["vertices"]), "topology_sha256": chosen["topology_sha256"],
-                                     "sources": chosen["sources"], "ignored_stale": chosen["ignored_stale"],
-                                     "ignored_other_part": chosen["ignored_other_part"]}
-                                    for name, chosen in selections.items()]
-                    # 使用する役割だけを候補扱いにする。無関係な未確認の対応は run の警告に留める。
-                    # 同じ役割が applies_to と role: の両方に出ても、未解決事項は一度だけ記録する。
-                    used_roles = set(step.get("applies_to", [])) | set(step.get("select", {}).values()) | {
-                        text.split(":", 1)[1] for text in step.get("preconditions", []) if text.startswith("role:")}
-                    if semantic_map is not None:
-                        for role in sorted(used_roles & semantic.unconfirmed_roles(semantic_map)):
-                            unresolved.append(f"役割 {role} の対応が未確認です（model3d semantic confirm で確認してください）")
-                    step_dir = run.dir / step["id"]
-                    step_dir.mkdir(parents=True, exist_ok=True)
-                    outputs = {name: step_dir / file for name, file in step.get("outputs", {}).items()}
-                    check_unchanged(step_inputs, hashes, pinned)
-                    previous = None if (force or not cacheable or unresolved) else reusable(out, index, key)
-                    if previous is not None:
-                        for name, item in previous["artifacts"].items():
-                            shutil.copyfile(safe_path(out, item["path"]), outputs[name])
-                        entry["observations"] = list(previous.get("observations", []))
-                        entry["reused_from"] = previous["run_id"]
-                        say(f"[model3d] {step['id']}: 同じ入力の成功した工程を再利用します（{previous['run_id']}）")
-                        run.log(f"{step['id']}: reused from {previous['run_id']}")
-                    else:
-                        say(f"[model3d] {step['id']}: {step['operation']}")
-                        run.log(f"{step['id']}: run {step['operation']}")
-                        context = Context(run.dir, step_dir, base, preset, semantic_map, tools, run.log, {"force": force},
-                                          step.get("space"), tuple(step.get("applies_to", [])), selections)
-                        result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
-                        check_unchanged(step_inputs, hashes, pinned)   # 実行中に変わった入力の結果も残さない
-                        entry["observations"] = chosen_notes + list(result.observations)
-                        unresolved.extend(result.unresolved)
-                        if result.review:
-                            entry["status"] = "needs_review"
-                    missing = [name for name, path in outputs.items() if not path.is_file()]
-                    if missing:
-                        raise ToolError(f"工程 {step['id']} が宣言した出力を作っていません: {', '.join(missing)}")
-                    entry["artifacts"] = {name: {"path": str(path.relative_to(run.dir).as_posix()), "sha256": sha256(path),
-                                                 "bytes": path.stat().st_size} for name, path in outputs.items()}
-                    artifacts_by_step[step["id"]] = outputs
-                    digests_by_step[step["id"]] = {name: item["sha256"] for name, item in entry["artifacts"].items()}
-                    entry["unresolved"] = unresolved
-                    if entry["status"] == "running":
-                        entry["status"] = "needs_review" if unresolved else "succeeded"
-                    if entry["status"] == "needs_review":
-                        run.record["candidates"].append(step["id"])
-                    elif entry["status"] == "succeeded" and cacheable:
-                        index["steps"][key] = {"run_id": run.run_id, "step": step["id"],
-                                               "artifacts": {name: {**item, "path": f"{run.run_id}/{item['path']}"}
-                                                             for name, item in entry["artifacts"].items()},
-                                               "observations": entry["observations"]}
-                    run.log(f"{step['id']}: {entry['status']} {'; '.join(unresolved)}")
+                    _run_step(session, step, entry)
                 except ToolError as error:
                     entry["status"], entry["error"], failed = "failed", str(error)[:3000], True
                     run.log(f"{step['id']}: failed: {error}")
@@ -346,26 +446,7 @@ def run_recipe(recipe_path, out=None, force=False, preset_path=None, tools=None,
                     entry["seconds"] = round(time.monotonic() - step_began, 3)
                     run.save()
         finally:
-            for entry in run.record["steps"]:   # KeyboardInterrupt などで途中で止まった工程を running のまま残さない
-                if entry["status"] == "running":
-                    entry["status"] = "failed"
-                    entry["error"] = entry["error"] or "interrupted: 工程の途中で止まりました"
-                    entry["finished_at"] = entry["finished_at"] or now()
-            statuses = [s["status"] for s in run.record["steps"]]
-            if "failed" in statuses:
-                run.record["status"] = "failed"
-                run.record["error"] = next(s["error"] for s in run.record["steps"] if s["status"] == "failed")
-            elif "needs_review" in statuses:
-                run.record["status"] = "needs_review"
-            elif all(s == "succeeded" for s in statuses):
-                run.record["status"] = "succeeded"
-            else:
-                run.record["status"] = "failed"
-                run.record["error"] = run.record["error"] or "interrupted"
-            run.record["finished_at"] = now()
-            contracts.validate("run", run.record, run.dir / "run_record.json")
-            run.save()
-            atomic_json(out / "index.json", index)
+            _finish_run(run, out, index)
     return summarize(run.dir, run.record, round(time.monotonic() - began, 3))
 
 
