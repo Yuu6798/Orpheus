@@ -14,7 +14,8 @@ settings.json（model.eye_keys が書く）:
   下りてきたまぶた（もとは板より lid_front より手前）を板より lid_margin 手前の球の面へ押し出す。瞳の頂点はキーで動かさない（瞳を奥へ逃がさない）。
 - 新しいキー（右目・左目の順に、瞳が縮む・横へ伸びる・つぶれる・見開き）: 瞳のキーは、瞳の頂点を瞳の中心のまわりに倍率で動かして、球（半径 +
   iris_lift）の面に乗せる。つぶれるキーの下限は −1（負の値でたてに伸びる）。見開きは、まぶたの頂点（lid_vertices）を上下へ。
-入力の .blend は変えない（別のファイルに書く）。同じ名前の形状キーがもうあれば止める。
+入力の .blend は変えない（別のファイルに書く）。同じ名前の形状キーがもうあれば止める。形状キーが絶対（Relative のチェックなし）なら、
+キーを変える前に止める（時間で形を選ぶので、値 0 で消せず、表情として入り切りできない。model.closed_eye_key と同じ）。
 """
 import argparse
 import json
@@ -41,6 +42,15 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
+def absolute_keys_problem(name, use_relative):
+    """まばたきと目のキーは、相対の形状キーの値で入り切りする。絶対の形状キー（Relative のチェックなし）は値でなく時間（eval_time）で
+    形を選ぶので、値 0 で消せず、表情として入り切りできない（model.closed_eye_key と同じ考え）。そのときの説明（相対なら None）。"""
+    if use_relative:
+        return None
+    return (f"{name} の形状キーは絶対（Relative のチェックなし）で、時間で形を選びます。まばたきと目のキーは値で入り切りするので、"
+            "相対の形状キーのメッシュにだけ使えます")
+
+
 def new_key_plan(names, cfg):
     """足すキーの並び [(名前の頭, 横の倍率, たての倍率, 下限)]（瞳が縮む・横へ伸びる・つぶれる。見開きは別）。"""
     return [(names["small"], cfg["iris_small"], cfg["iris_small"], 0.0), (names["stretch"], *cfg["iris_stretch"], 0.0),
@@ -65,6 +75,9 @@ def main(argv=None):
     validate(geometry, vertex_count=count)
     if mesh.shape_keys is None:
         raise SystemExit(f"{head.name} に形状キーがありません（まばたきのキーが要ります）")
+    problem = absolute_keys_problem(head.name, mesh.shape_keys.use_relative)   # 絶対の形状キーは値 0 で消せず、表情として入り切りできない
+    if problem:
+        raise SystemExit(problem)
     blocks = mesh.shape_keys.key_blocks
     wanted = [settings["blink"][side] for side in SIDES] + [settings["smile"][side] for side in SIDES if settings.get("smile")]
     absent = [name for name in wanted if name not in blocks]

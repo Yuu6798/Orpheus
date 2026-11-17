@@ -116,6 +116,8 @@ def test_new_keys_come_in_the_trial_order():
     plan = eye_keys.new_key_plan(KEY_NAMES, CFG)
     assert plan == [("iris_small_", 0.5, 0.5, 0.0), ("iris_wide_", 1.2, 0.9, 0.0), ("iris_squash_", 1.15, 0.7, -1.0)]
     assert eye_keys.SIDES == ("R", "L")                                        # 右目・左目の順に足す
+    assert eye_keys.absolute_keys_problem("Head", True) is None                 # 絶対の形状キーは、キーを変える前に止める（閉じ目のキーと同じ考え）
+    assert "絶対" in eye_keys.absolute_keys_problem("Head", False) and "まばたき" in eye_keys.absolute_keys_problem("Head", False)
 
 
 STAND_IN = r'''
