@@ -96,7 +96,6 @@ def main(argv=None):
         if modifier.type != "ARMATURE" and modifier.show_viewport:
             modifier.show_viewport = False
             muted.append(modifier.name)
-    world_armature = np.array(armature.matrix_world)
     rest = world_points(body)
     rings, out = [], {}
     for ring in settings["rings"]:
@@ -114,7 +113,9 @@ def main(argv=None):
     frames = list(range(int(first), int(last) + 1))
     for frame in frames:
         scene.frame_set(frame)
-        evaluated = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated = body.evaluated_get(depsgraph)
+        world_armature = np.array(armature.evaluated_get(depsgraph).matrix_world)   # アーマチュアや親が動いても、そのコマの向き
         mesh = evaluated.to_mesh()
         co = np.empty(len(mesh.vertices) * 3)
         mesh.vertices.foreach_get("co", co)
