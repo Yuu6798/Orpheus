@@ -33,7 +33,8 @@ except ImportError:   # Blender が台本として動かすとき
     from stage_render import sync_to_render
     from vrm_apply_motion import use_scene_of
 
-DEFAULTS = {"checks": [], "frames": None, "step": 1, "armature": None}
+# space: 比べる座標。local はメッシュの中の座標（物体の拡大を含まない。3 作目の制作と同じ）、world は世界の座標（拡大を含む実際の長さ）
+DEFAULTS = {"checks": [], "frames": None, "step": 1, "armature": None, "space": "local"}
 MOVED = 0.0005                                          # これより動いた頂点を「動いた」に数える（m。台本と同じ）
 
 
@@ -90,6 +91,8 @@ def main(argv=None):
             target = getattr(m, "target", None)
             if target is not None:
                 needed.add(target.name)
+    for name in sorted(needed - {c["object"].name for c in checks}):   # 相手の形も、描く形にそろえる（相手の Armature が描画だけで効く、など）
+        synced += sync_to_render(bpy.data.objects[name])
     for obj in bpy.data.objects:
         if obj.type == "MESH" and obj.name not in needed:
             obj.hide_viewport = True
@@ -100,7 +103,11 @@ def main(argv=None):
         co = np.empty(len(mesh.vertices) * 3)
         mesh.vertices.foreach_get("co", co)
         evaluated.to_mesh_clear()
-        return co.reshape(-1, 3)
+        co = co.reshape(-1, 3)
+        if s["space"] == "world":                       # 世界の座標（物体と親の拡大を含む。差の mm が実際の長さになる）
+            m = np.array(evaluated.matrix_world)
+            co = co @ m[:3, :3].T + m[:3, 3]
+        return co
 
     first, last = s["frames"] or (scene.frame_start, scene.frame_end)
     frames = list(range(int(first), int(last) + 1, int(s["step"])))
@@ -121,7 +128,7 @@ def main(argv=None):
         for c in checks:
             for m in c["modifiers"]:
                 m.show_viewport = m.show_render          # そろえた効き方に戻す
-    report = {"schema_version": "model3d-pushout-moves/0.1", "blender": bpy.app.version_string, "scene": scene.name, "frames": frames, "modifiers_synced": synced,
+    report = {"schema_version": "model3d-pushout-moves/0.1", "blender": bpy.app.version_string, "scene": scene.name, "frames": frames, "space": s["space"], "modifiers_synced": synced,
               "checks": result}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:

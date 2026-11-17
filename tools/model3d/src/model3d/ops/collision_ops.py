@@ -140,6 +140,7 @@ def moves_summary(raw):
                             f"いちばん大きいのはコマ {worst[0]} の {worst[2]} mm）")
     frames = raw["frames"]
     return {"check": "pushout_moves", "frames": [frames[0], frames[-1]] if frames else [], "frames_checked": len(frames),
+            "space": raw.get("space", "local"),
             "checks": {key: {**value, "frames_over_limit": len(value["frames_over_limit"]), "first_over": value["frames_over_limit"][:8]}
                        for key, value in raw["checks"].items()},
             "pass": not failures, "failures": failures}
@@ -154,7 +155,7 @@ def check_pushout_moves(inputs, parameters, outputs, context):
     from .check_ops import _finish
     from ..io import read_json
     require(inputs, ("blend",), "check.pushout_moves")
-    _refuse_unknown(parameters, COMMON | {"checks", "frames", "step", "strict", "report_only"}, "check.pushout_moves")
+    _refuse_unknown(parameters, COMMON | {"checks", "frames", "step", "space", "strict", "report_only"}, "check.pushout_moves")
     items = parameters.get("checks")
     if not isinstance(items, list) or not items:
         raise ToolError(f"checks は [{{\"mesh\", \"prefix\", \"limit_mm\"}}, …] にしてください: {items!r}")
@@ -175,7 +176,10 @@ def check_pushout_moves(inputs, parameters, outputs, context):
     step = parameters.get("step", 1)
     if isinstance(step, bool) or not isinstance(step, int) or step < 1:
         raise ToolError(f"step は 1 以上の整数にしてください: {step!r}")
-    settings = {"checks": checks, "frames": _frames(parameters), "step": step, "armature": parameters.get("armature")}
+    space = parameters.get("space", "local")
+    if space not in ("local", "world"):
+        raise ToolError(f"space は local（メッシュの中の座標。物体の拡大を含まない）か world（世界の座標）にしてください: {space!r}")
+    settings = {"checks": checks, "frames": _frames(parameters), "step": step, "space": space, "armature": parameters.get("armature")}
     raw_path = Path(context.step_dir) / "pushout_moves_raw.json"
     record = _run(MOVES_SCRIPT, inputs, parameters, outputs, context, settings, "check.pushout_moves", ["--report", str(raw_path)])
     raw = read_json(raw_path)

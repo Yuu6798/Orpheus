@@ -99,7 +99,7 @@ def test_cuff_and_moves_steps(tmp_path):
                              "parameters": {"blender": blender, "body": "Body", "arms": ARMS, **SIZES},
                              "outputs": {"blend": "cuff.blend", "report": "cuff.json"}},
                             {"id": "moves", "operation": "check.pushout_moves", "inputs": {"blend": "$steps.cuff.blend"},
-                             "parameters": {"blender": blender, "checks": [{"mesh": "Body", "prefix": "cuff_", "limit_mm": 45}]},
+                             "parameters": {"blender": blender, "checks": [{"mesh": "Body", "prefix": "cuff_", "limit_mm": 45}], "space": "world"},
                              "outputs": {"report": "moves.json"}}])
     cuff = result["steps"]["cuff"]
     assert cuff["status"] == "needs_review" and any("R" in u and "内側" in u for u in cuff["unresolved"])   # 筒の判定の外れは要確認
@@ -107,6 +107,7 @@ def test_cuff_and_moves_steps(tmp_path):
     assert {key: sent[key] for key in SIZES} == SIZES and sent["arms"][0]["palm_end"] == "middle_proximal.L" and "offset" not in sent   # 省いた数は台本の既定
     moves = json.loads(Path(result["steps"]["moves"]["artifacts"]["report"]).read_text(encoding="utf-8"))
     assert result["steps"]["moves"]["status"] == "succeeded" and moves["pass"] is True and moves["checks"]["Body:cuff_"]["max_move_mm"] == 3.2
+    assert json.loads(Path(moves["raw"]).read_text(encoding="utf-8"))["x_settings"]["space"] == "world"
 
 
 class Context:
@@ -141,6 +142,7 @@ def test_cuff_pushout_rejects_bad_settings(tmp_path, parameters, message):
     ({}, "checks"),
     ({"checks": [{"mesh": "Body", "prefix": "cuff_"}]}, "limit_mm"),
     ({"checks": [{"mesh": "Body", "prefix": "cuff_", "limit_mm": 0}]}, "limit_mm"),
+    ({"checks": [{"mesh": "Body", "prefix": "cuff_", "limit_mm": 45}], "space": "object"}, "space"),
     ({"checks": [{"mesh": "Body", "prefix": "cuff_", "limit_mm": 45}] * 2}, "重なって"),
     ({"checks": [{"mesh": "Body", "prefix": "cuff_out", "limit_mm": 45}, {"mesh": "Body", "prefix": "cuff_near", "limit_mm": 45}]},
      "1 つずつ"),                                                        # 同じメッシュを 2 回挙げると、外したときの動きが混ざる
