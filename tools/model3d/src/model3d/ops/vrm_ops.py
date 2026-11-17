@@ -313,9 +313,10 @@ def export(inputs, parameters, outputs, context):
 
 @register("check.vrm", inputs=("vrm",), outputs=("report",),
           summary="VRM 1.0 のファイルの中身を読む（Blender なし）: メタ・人型の骨の数と必須の骨・メッシュ・材質（MToon の数）・画像・"
-                  "揺れもの・当たり判定・表情の割り当て（メッシュごとの形の名前と、表情ごとの形と重み）。合否は、VRM 1.0 の拡張があるか・"
-                  "人型の必須の骨・メタの名前と作者とライセンスの URL・node と形の番号が範囲の中か。見た目は判定しない。不合格は needs_review"
-                  "（strict なら失敗、report_only なら測るだけ）")
+                  "揺れもの・当たり判定・表情の割り当て（メッシュごとの形の名前と、表情ごとの形と重み）。作りの一覧 structure（primitive ごとの"
+                  "頂点と材質・骨の拘束・人型でない関節・ねじれらしい骨・揺れものの鎖ごとの値・当たり判定・材質の色の掛け率と MToon の値・画像の"
+                  "大きさ・視線・メッシュごとの骨の重み）。合否は、VRM 1.0 の拡張があるか・人型の必須の骨・メタの名前と作者とライセンスの URL・"
+                  "たどった参照の番号が範囲の中か。見た目は判定しない。不合格は needs_review（strict なら失敗、report_only なら測るだけ）")
 def check_vrm(inputs, parameters, outputs, context):
     from .. import vrm
     from .check_ops import _finish
