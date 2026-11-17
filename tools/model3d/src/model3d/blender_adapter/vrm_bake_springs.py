@@ -22,22 +22,37 @@
   - `{"<揺れものの名前に含まれる文字>": {"<関節の設定の名前>": 値, …}}`（例 `{"sleeve": {"stiffness": 0.2, "gravity_power": 0.9}}`）
   - `"_capsule_radius": {"<骨の名前に含まれる文字>": 半径}`（今あるカプセルの当たり判定の太さ）
   - `"_colliders": [{"bone", "offset", "tail", "radius", "groups"}]`（カプセルの当たり判定を足す。位置は骨から見た座標）
+  - `"_release_walls": [{"springs", "group", "bones" か "frames", "on_deg", "off_deg", "radius_to", …}]`（姿勢に応じて、揺れものの
+    「壁」の球を小さくする。下の「壁をゆるめる」）
   鍵が `_` で始まるものは、揺れものの名前としては読まない。
+- 壁をゆるめる（_release_walls）: springs の文字を名前に含む揺れものが使う、名前に group を含む当たりの組の球（壁）を、姿勢に応じて
+  小さくする。bones の骨（付け根から先の向き）が、reference の骨（既定は VRM の人型の hips）から見て、静止の姿勢の向きから何度離れたかを
+  測り、全部が on_deg 以上になったら小さくし始め、どれかが off_deg 以下になったら戻し始める（間の角度では今の状態を続ける）。
+  bones の代わりに frames [最初, 最後] と書くと、コマの区間で決める。小さくするのは ease_in_s 秒（既定 0.2）、戻すのは ease_out_s 秒
+  （既定 0.3）かけて radius_to（m）まで（なだらかに）。guard_bone を書くと、小さくしている間だけ「見張りの当たり」を立てる: 同じ球を、
+  静止の姿勢の位置のまま guard_bone に付けたもので、ふだんは半径 guard_radius_from（既定 0.01 m。効かない）、小さくしている間は
+  元の半径 × guard_radius_scale（既定 1）。壁の代わりに、鎖が逆の側へ巻き込まれるのを止める。焼き終えたら、球は元の大きさに戻し、
+  見張りの当たりは外して保存する（当たりの数は元のまま）。VRM の当たりの大きさは姿勢で変えられないので、この手当ては VRM に入らない。
 - --no-spring に挙げた文字を名前に含む揺れものの骨は、動かさず初期の向きのままにする（布の計算など、別の方法で動かす部位）。
 
 **検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスでリポジトリの外の台本と同じキーになることを
-確かめた。切り替えのコマ（--cuts）と運ぶ区間（--carry）は、3 作目の VRM のダンスで、リポジトリの外の台本と同じキーになることを
-確かめた（docs/model3d.md）。
+確かめた。切り替えのコマ（--cuts）・運ぶ区間（--carry）・壁をゆるめる（_release_walls）は、3 作目の VRM のダンスで、リポジトリの外の
+台本と同じキーになることを確かめた（docs/model3d.md）。
 CI には Blender が無い。
 """
 import argparse
 import importlib
 import json
+import math
 import os
 import sys
 import time
 
 IDENTITY = (1.0, 0.0, 0.0, 0.0)
+RELEASE_KEYS = {"springs", "group", "bones", "frames", "reference", "on_deg", "off_deg", "radius_to", "ease_in_s", "ease_out_s",
+                "guard_bone", "guard_radius_from", "guard_radius_scale"}
+# 壁をゆるめるときの既定（3 作目の VRM のダンスで使った値。小さくする・戻す秒と、見張りの当たりのふだんの半径と倍率）
+RELEASE_DEFAULTS = {"ease_in_s": 0.2, "ease_out_s": 0.3, "guard_radius_from": 0.01, "guard_radius_scale": 1.0}
 
 
 def parse_args(argv):
@@ -127,6 +142,95 @@ def _vector(value):
     return isinstance(value, list) and len(value) == 3 and all(_number(v) for v in value)
 
 
+def _finite(value):
+    return _number(value) and math.isfinite(value)
+
+
+def _names(value):
+    return isinstance(value, list) and bool(value) and all(isinstance(name, str) and name for name in value)
+
+
+def check_release(spec, position):
+    """_release_walls の 1 つ（壁をゆるめる指定）を確かめる。おかしければ ValueError。"""
+    label = f"_release_walls[{position}]"
+    if not isinstance(spec, dict):
+        raise ValueError(f"{label} は辞書にしてください: {spec!r}")
+    unknown = sorted(set(spec) - RELEASE_KEYS)
+    if unknown:
+        raise ValueError(f"{label} の知らない鍵: {unknown}（使えるのは {sorted(RELEASE_KEYS)}）")
+    if not _names(spec.get("springs")):
+        raise ValueError(f"{label} の springs は、ゆるめる揺れものの名前に含まれる文字（空でない）の並びにしてください: {spec.get('springs')!r}")
+    if not isinstance(spec.get("group"), str) or not spec["group"]:
+        raise ValueError(f"{label} の group は、当たりの組の名前に含まれる文字（空でない）にしてください: {spec.get('group')!r}")
+    if ("bones" in spec) == ("frames" in spec):
+        raise ValueError(f"{label} には bones（見張る骨）か frames（コマの区間）のどちらか 1 つを書いてください")
+    if "bones" in spec:
+        if not _names(spec["bones"]):
+            raise ValueError(f"{label} の bones は、見張る骨の名前（空でない）の並びにしてください: {spec['bones']!r}")
+        on, off = spec.get("on_deg"), spec.get("off_deg")
+        if not (_finite(on) and _finite(off) and 0 <= off <= on <= 180):
+            raise ValueError(f"{label} の on_deg と off_deg は 0 ≤ off_deg ≤ on_deg ≤ 180 の角度にしてください: {on!r}, {off!r}")
+        if "reference" in spec and not (isinstance(spec["reference"], str) and spec["reference"]):
+            raise ValueError(f"{label} の reference は基準の骨の名前にしてください: {spec['reference']!r}")
+    else:
+        frames = spec["frames"]
+        if not (isinstance(frames, list) and len(frames) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in frames)
+                and frames[0] <= frames[1]):
+            raise ValueError(f"{label} の frames は [最初, 最後]（Blender のコマ番号。最初 ≤ 最後）にしてください: {frames!r}")
+        extra = sorted({"on_deg", "off_deg", "reference"} & set(spec))
+        if extra:
+            raise ValueError(f"{label} の {extra} は bones（見張る骨）と一緒のときだけ使えます")
+    if not (_finite(spec.get("radius_to")) and spec["radius_to"] > 0):
+        raise ValueError(f"{label} の radius_to は、小さくした球の半径（m。正の数）にしてください: {spec.get('radius_to')!r}")
+    for key in ("ease_in_s", "ease_out_s"):
+        if key in spec and not (_finite(spec[key]) and spec[key] >= 0):
+            raise ValueError(f"{label} の {key} は秒（0 以上）にしてください: {spec[key]!r}")
+    if "guard_bone" in spec and not (isinstance(spec["guard_bone"], str) and spec["guard_bone"]):
+        raise ValueError(f"{label} の guard_bone は見張りの当たりを付ける骨の名前にしてください: {spec['guard_bone']!r}")
+    for key in ("guard_radius_from", "guard_radius_scale"):
+        if key in spec:
+            if "guard_bone" not in spec:
+                raise ValueError(f"{label} の {key} は guard_bone（見張りの当たり）と一緒に使ってください")
+            if not (_finite(spec[key]) and spec[key] > 0):
+                raise ValueError(f"{label} の {key} は正の数にしてください: {spec[key]!r}")
+    return spec
+
+
+def release_switch(on, angle, on_deg, off_deg):
+    """壁をゆるめるか: 角度が on_deg 以上ならゆるめる、off_deg 以下なら戻す、間なら今のまま（行ったり来たりしないように）。"""
+    if angle >= on_deg:
+        return True
+    if angle <= off_deg:
+        return False
+    return on
+
+
+def release_amount(amount, target, dt, ease_in, ease_out):
+    """ゆるめ具合（0〜1）を target（1 か 0）へ dt 秒ぶん近づける（0 → 1 は ease_in 秒、1 → 0 は ease_out 秒で動き切る速さ）。
+    dt が None なら一度に合わせる（落ち着かせ直すとき）。試作の台本と同じ式。"""
+    if dt is None:
+        return target
+    ease = ease_in if target > amount else ease_out
+    step = dt / max(ease, 1e-6)
+    return amount + max(-step, min(step, target - amount))
+
+
+def smoothstep(amount):
+    """ゆるめ具合を、なだらかな割合にする（0 と 1 で傾きが 0）。"""
+    return amount * amount * (3.0 - 2.0 * amount)
+
+
+def released_spans(frames):
+    """ゆるめていたコマの並びを、続いた区間 [最初, 最後] の並びにする。"""
+    spans = []
+    for frame in frames:
+        if spans and frame - spans[-1][1] <= 1:
+            spans[-1][1] = frame
+        else:
+            spans.append([frame, frame])
+    return spans
+
+
 def check_overrides(overrides):
     """上書きの JSON の形を確かめる。おかしければ ValueError（Blender を起動する前に、工程からも呼ぶ）。"""
     if not isinstance(overrides, dict):
@@ -145,6 +249,11 @@ def check_overrides(overrides):
                         or not spec["groups"] or not all(isinstance(group, str) for group in spec["groups"]):
                     raise ValueError(f"_colliders の当たり判定は bone（骨の名前）・offset と tail（数 3 つ）・radius（正の数）・"
                                      f"groups（揺れものの当たりの組の名前の並び）にしてください: {spec!r}")
+        elif key == "_release_walls":
+            if not isinstance(values, list) or not values:
+                raise ValueError("_release_walls は、壁をゆるめる指定（1 つ以上）の並びにしてください")
+            for position, spec in enumerate(values):
+                check_release(spec, position)
         elif key.startswith("_"):
             continue                                            # 書き手のメモなど
         elif not isinstance(values, dict) or not all(isinstance(name, str) and (_number(value) or _vector(value))
@@ -310,6 +419,117 @@ def main(argv=None):
             group.add_collider().collider_uuid = collider.uuid
         overridden.setdefault("_colliders", []).append(f'{spec["bone"]} → {", ".join(spec["groups"])}')
 
+    # 壁をゆるめる（_release_walls）: 当たりの形は一覧の中の番号で持つ（見張りの当たりを足すと、前に取った参照が使えなくなるため）
+    colliders_at_start, groups_at_start = len(spring.colliders), len(spring.collider_groups)
+    releases, taken, guard_groups = [], set(), set()
+    for position, spec in enumerate(overrides.get("_release_walls", [])):
+        label = f"_release_walls[{position}]"
+        if not any(any(key in item.vrm_name for key in spec["springs"]) for item in spring.springs):
+            raise SystemExit(f"{label}: {spec['springs']} を名前に含む揺れものがありません（あるもの: {names}）")
+        group_names = {group.uuid: group.vrm_name for group in spring.collider_groups}
+        index_by_uuid = {collider.uuid: index for index, collider in enumerate(spring.colliders)}
+        group_by_uuid = {group.uuid: group for group in spring.collider_groups}
+        walls = []
+        for item in spring.springs:
+            if not any(key in item.vrm_name for key in spec["springs"]):
+                continue
+            for reference in item.collider_groups:
+                if reference.collider_group_uuid in guard_groups:   # 前の指定で足した見張りの当たりは、壁に数えない
+                    continue
+                if spec["group"] not in group_names.get(reference.collider_group_uuid, ""):
+                    continue
+                for member in group_by_uuid[reference.collider_group_uuid].colliders:
+                    index = index_by_uuid.get(member.collider_uuid)
+                    if index is not None and spring.colliders[index].shape_type == "Sphere" and all(index != w[0] for w in walls):
+                        walls.append((index, spring.colliders[index].shape.sphere.radius))
+        if not walls:
+            raise SystemExit(f"{label}: {spec['springs']} の揺れものが使う、名前に {spec['group']!r} を含む当たりの組に、球の当たりがありません")
+        shared = sorted(index for index, _ in walls if index in taken)
+        if shared:
+            raise SystemExit(f"{label}: ほかの指定と同じ球の当たり（番号 {shared}）をゆるめようとしています")
+        taken.update(index for index, _ in walls)
+        if "frames" in spec and not scene.frame_start <= spec["frames"][0] <= spec["frames"][1] <= scene.frame_end:
+            raise SystemExit(f"{label}: frames {spec['frames']} が、シーンのコマの範囲（{scene.frame_start}〜{scene.frame_end}）の中にありません")
+        watched, reference_bone = [], ""
+        if "bones" in spec:
+            reference_bone = spec.get("reference") or humanoid_bone(armature, "hips")
+            if not reference_bone:
+                raise SystemExit(f"{label}: 基準の骨が決まりません（VRM の人型の hips の割り当てがありません。reference で選んでください）")
+            missing = [name for name in [reference_bone, *spec["bones"]] if name not in armature.data.bones]
+            if missing:
+                raise SystemExit(f"{label}: 骨がありません: {missing}")
+            reference_rest = armature.data.bones[reference_bone].matrix_local.to_3x3().inverted()
+            for name in spec["bones"]:
+                bone = armature.data.bones[name]
+                watched.append((name, reference_rest @ (bone.tail_local - bone.head_local).normalized()))
+        settings = {**RELEASE_DEFAULTS, **{key: spec[key] for key in RELEASE_DEFAULTS if key in spec}}
+        # 見張りの当たり: ゆるめる球と同じ球を、静止の姿勢の位置のまま guard_bone に付けたもの。ゆるめている間だけ大きくする
+        guards, guard_group = [], ""
+        if spec.get("guard_bone"):
+            guard_bone = spec["guard_bone"]
+            if guard_bone not in armature.data.bones:
+                raise SystemExit(f"{label}: 見張りの当たりを付ける骨がありません: {guard_bone}")
+            places = []
+            for index, base in walls:
+                collider = spring.colliders[index]
+                rest_place = armature.data.bones[collider.node.bone_name].matrix_local @ Vector(collider.shape.sphere.offset)
+                places.append((tuple(armature.data.bones[guard_bone].matrix_local.inverted() @ rest_place), base))
+            bpy.ops.vrm.add_spring_bone1_collider_group(armature_object_name=armature.name)
+            group_index = len(spring.collider_groups) - 1
+            spring.collider_groups[group_index].vrm_name = f"model3d_release_guard_{position}"
+            guard_group = spring.collider_groups[group_index].uuid         # 外すときは名前でなく、作った組の識別子で探す
+            guard_groups.add(guard_group)
+            for place, base in places:
+                bpy.ops.vrm.add_spring_bone1_collider(armature_object_name=armature.name)
+                index = len(spring.colliders) - 1
+                spring.colliders[index].node.bone_name = guard_bone
+                spring.colliders[index].shape_type = "Sphere"
+                bpy.context.view_layer.update()
+                spring.colliders[index].shape.sphere.offset = place
+                spring.colliders[index].shape.sphere.radius = settings["guard_radius_from"]
+                bpy.ops.vrm.add_spring_bone1_collider_group_collider(armature_object_name=armature.name, collider_group_index=group_index)
+                spring.collider_groups[group_index].colliders[-1].collider_uuid = spring.colliders[index].uuid
+                guards.append((index, base * settings["guard_radius_scale"]))
+            for spring_index, item in enumerate(spring.springs):
+                if any(key in item.vrm_name for key in spec["springs"]):
+                    bpy.ops.vrm.add_spring_bone1_spring_collider_group(armature_object_name=armature.name, spring_index=spring_index)
+                    item.collider_groups[-1].collider_group_uuid = spring.collider_groups[group_index].uuid
+            bpy.context.view_layer.update()
+        releases.append({"spec": spec, "settings": settings, "walls": walls, "guards": guards, "guard_group": guard_group,
+                         "watched": watched, "reference": reference_bone, "on": False, "amount": 0.0, "frames": [], "largest": 0.0})
+        overridden.setdefault("_release_walls", []).append(
+            f"{spec['springs']}: 球 {len(walls)} 個（半径 {sorted({round(w[1], 3) for w in walls})} → {spec['radius_to']}）、見張りの当たり {len(guards)} 個")
+
+    def raised_angle(release):
+        """見張る骨が、基準の骨から見て静止の姿勢の向きから何度離れているか。全部の骨のうちいちばん小さい角度（＝全部がそれ以上）。"""
+        inverse = armature.pose.bones[release["reference"]].matrix.to_3x3().inverted()
+        angles = []
+        for name, rest_direction in release["watched"]:
+            bone = armature.pose.bones[name]
+            direction = (inverse @ (bone.tail - bone.head)).normalized()
+            angles.append(math.degrees(math.acos(max(-1.0, min(1.0, direction.dot(rest_direction))))))
+        return min(angles)
+
+    def update_releases(dt, frame):
+        """今の姿勢（かコマ）で壁をゆるめるかを決め、球の半径を少しずつ動かす。dt が None なら、その姿勢の値へ一度に合わせる。"""
+        for release in releases:
+            spec, settings = release["spec"], release["settings"]
+            if "frames" in spec:                           # コマの区間で決める
+                release["on"] = spec["frames"][0] <= frame <= spec["frames"][1]
+            else:                                          # 姿勢で決める
+                release["on"] = release_switch(release["on"], raised_angle(release), spec["on_deg"], spec["off_deg"])
+            release["amount"] = release_amount(release["amount"], 1.0 if release["on"] else 0.0, dt, settings["ease_in_s"],
+                                               settings["ease_out_s"])
+            smooth = smoothstep(release["amount"])
+            for index, base in release["walls"]:
+                spring.colliders[index].shape.sphere.radius = base + (spec["radius_to"] - base) * smooth
+            small = settings["guard_radius_from"]
+            for index, full in release["guards"]:
+                spring.colliders[index].shape.sphere.radius = small + (full - small) * smooth
+            if release["amount"] > 0.0 and (not release["frames"] or release["frames"][-1] != frame):
+                release["frames"].append(frame)
+            release["largest"] = max(release["largest"], release["amount"])
+
     joint_names, still_names = [], []
     skip_keys = keys_of(a.no_spring)
     for item in spring.springs:
@@ -355,6 +575,8 @@ def main(argv=None):
     spring.enable_animation = True
     bpy.context.view_layer.objects.active = armature
     scene.frame_set(first)
+    if releases:                                          # 最初のコマの姿勢で、壁の大きさを一度に合わせる
+        update_releases(None, first)
     bpy.ops.vrm.reset_spring_bone1_animation_state(armature_object_name=armature.name)
     started = time.time()
     # 刻みの間は画面の更新をしない（アドオンがコマ送りのときに進めるのと同じ。メッシュの計算を避けて速くする）
@@ -367,6 +589,8 @@ def main(argv=None):
         for bone in joints:                               # 前のコマまでに打ったキーの向きを捨てる
             bone.rotation_quaternion = IDENTITY
         bpy.context.view_layer.update()
+        if releases:                                      # そのコマの姿勢で、壁の大きさを一度に合わせる
+            update_releases(None, frame)
         bpy.ops.vrm.reset_spring_bone1_animation_state(armature_object_name=armature.name)
         for _ in range(int(round(cut_settle / step))):
             handler.update_pose_bone_rotations(bpy.context, step)
@@ -407,6 +631,8 @@ def main(argv=None):
                 carrier_before = carrier_now
             goal = target_steps(frame, base_frame, fps, step)
             while steps_done < goal:
+                if releases:                              # 刻みごとに、姿勢を見て壁の大きさを少しずつ動かす
+                    update_releases(step, frame)
                 handler.update_pose_bone_rotations(bpy.context, step)
                 steps_done += 1
                 total_steps += 1
@@ -414,6 +640,30 @@ def main(argv=None):
             if bone.name not in still_names:
                 bone.keyframe_insert("rotation_quaternion", frame=frame)
     spring.enable_animation = False                       # 以後は焼いたキーで動く
+    release_report = []
+    for release in releases:                              # 保存する .blend では、球を元の大きさに戻しておく
+        for index, base in release["walls"]:
+            spring.colliders[index].shape.sphere.radius = base
+        release_report.append({"springs": release["spec"]["springs"], "walls": len(release["walls"]), "guards": len(release["guards"]),
+                               "frames_released": len(release["frames"]), "spans": released_spans(release["frames"]),
+                               "largest_amount": round(release["largest"], 3)})
+    # 見張りの当たりは焼く間だけのもの。保存する前に外す（当たりの形と組の数を元に戻す）
+    for release in releases:
+        if not release["guard_group"]:
+            continue
+        group_index = next(index for index, group in enumerate(spring.collider_groups) if group.uuid == release["guard_group"])
+        group_uuid = release["guard_group"]
+        for spring_index, item in enumerate(spring.springs):
+            for index in reversed(range(len(item.collider_groups))):
+                if item.collider_groups[index].collider_group_uuid == group_uuid:
+                    bpy.ops.vrm.remove_spring_bone1_spring_collider_group(armature_object_name=armature.name, spring_index=spring_index,
+                                                                          collider_group_index=index)
+        bpy.ops.vrm.remove_spring_bone1_collider_group(armature_object_name=armature.name, collider_group_index=group_index)
+    for index in reversed(range(colliders_at_start, len(spring.colliders))):
+        bpy.ops.vrm.remove_spring_bone1_collider(armature_object_name=armature.name, collider_index=index)
+    if (len(spring.colliders), len(spring.collider_groups)) != (colliders_at_start, groups_at_start):
+        raise SystemExit(f"見張りの当たりを外したあとの当たりの数が元と違います: 当たり {len(spring.colliders)}（元 {colliders_at_start}）・"
+                         f"組 {len(spring.collider_groups)}（元 {groups_at_start}）")
     for name in still_names:                              # 動かさない部位は、骨を初期の向きのままにする
         armature.pose.bones[name].rotation_quaternion = IDENTITY
     for handlers, function in removed_handlers:           # 止めていたアドオンの計算を元に戻す
@@ -429,7 +679,8 @@ def main(argv=None):
               "removed_curves": removed_curves, "overridden": overridden, "cuts": cuts,
               "cut_settle_s": cut_settle if cuts else None,
               "carried_frames": [carried[0], carried[-1], len(carried)] if carried else [], "carry_bone": carry_bone or None,
-              "carry_skip": carry_skip, "bake_seconds": round(time.time() - started, 1)}
+              "carry_skip": carry_skip, "released_walls": release_report,
+              "colliders": [colliders_at_start, len(spring.colliders)], "bake_seconds": round(time.time() - started, 1)}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

@@ -148,7 +148,8 @@ def _cuts(parameters, inputs):
                   "切り替えのコマ（cuts か、joined＝motion.join_clips の report の cuts）では、揺れものを初期に戻し、そのコマの姿勢で"
                   "cut_settle_s 秒（既定は settle_s と同じ）落ち着かせ直す。carry の区間では、揺れものの節の位置を carry_bone（既定は人型の"
                   "hips）の動きで運び、急な動きの勢いを伝えない（carry_skip の揺れものは運ばない）。overrides（JSON）で硬さ・重力・当たり判定を"
-                  "この .blend の中だけ上書きし、no_spring に挙げた文字を名前に含む揺れものは動かさない。元のファイルは変えない")
+                  "この .blend の中だけ上書きし（_release_walls で、姿勢に応じて壁の球を小さくし、その間だけ見張りの当たりを立てる。VRM には"
+                  "入らない）、no_spring に挙げた文字を名前に含む揺れものは動かさない。元のファイルは変えない")
 def bake_springs(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher, vrm_bake_springs
     require(inputs, ("blend",), "vrm.bake_springs")
@@ -200,6 +201,9 @@ def bake_springs(inputs, parameters, outputs, context):
     if carry:
         observation["carried_frames"] = report.get("carried_frames")
         observation["carry_bone"] = report.get("carry_bone")
+    if report.get("released_walls"):
+        observation["released_walls"] = [{key: item.get(key) for key in ("springs", "walls", "guards", "frames_released", "spans")}
+                                         for item in report["released_walls"]]
     return StepResult(observations=[observation])
 
 
