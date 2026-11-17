@@ -24,14 +24,16 @@ def quad_grid(x0, x1, z0, z1, y, nx, nz):
     return co, np.array(tris)
 
 
-def synthetic_mouth():
+BOXES = [(0.02, 0.02, 0.45, 0.95), (0.55, 0.05, 0.95, 0.30), (0.55, 0.40, 0.95, 0.60), (0.55, 0.70, 0.95, 0.95)]   # u0, v0, u1, v1
+
+
+def synthetic_mouth(boxes=BOXES):
     """顔の面（y −0.06）・唇の裏の袋（y −0.05、顔の面と 1 本の辺でつながる＝肌）・歯（y −0.055）・舌（y −0.05〜−0.03）。
-    uv: 顔の面は絵の左半分、袋・歯・舌はそれぞれ右半分の別の四角に置く。"""
+    uv: 顔の面は絵の左半分、袋・歯・舌はそれぞれ右半分の別の四角（boxes）に置く。"""
     pieces = [quad_grid(-0.04, 0.04, 1.43, 1.48, -0.06, 8, 5), quad_grid(-0.02, 0.02, 1.446, 1.454, -0.05, 4, 1),
               quad_grid(-0.01, 0.01, 1.450, 1.454, -0.055, 2, 1)]
     tongue_co = np.array([[-0.008, -0.05, 1.447], [0.008, -0.05, 1.447], [0.008, -0.03, 1.447], [-0.008, -0.03, 1.447]])
     pieces.append((tongue_co, np.array([(0, 1, 2), (0, 2, 3)])))
-    boxes = [(0.02, 0.02, 0.45, 0.95), (0.55, 0.05, 0.95, 0.30), (0.55, 0.40, 0.95, 0.60), (0.55, 0.70, 0.95, 0.95)]   # u0, v0, u1, v1
     co, tris, uv, edges, start = [], [], [], set(), 0
     for (points, faces), (u0, v0, u1, v1) in zip(pieces, boxes):
         lo, hi = points.min(axis=0), points.max(axis=0)
@@ -90,6 +92,17 @@ def test_the_inside_of_the_mouth_is_painted_and_the_face_is_not():
     custom, _ = mouth.paint_inside(co, edges, tris, tri_loops, uv, image, {**SETTINGS, "inside_color": [10, 0, 0], "grow": 0})
     assert custom[pixel(pocket, 0.5, 0.5)].tolist() == [10, 0, 0]
     assert report["uv_outside_triangles"] == 0 and report["alpha_raised_pixels"] == 0
+
+
+def test_overlapping_paint_is_counted_once():
+    near = BOXES[:3] + [(0.55, 0.62, 0.95, 0.95)]                      # 舌の四角を歯の四角のすぐ上へ（ふくらませた所が重なる）
+    co, edges, tris, tri_loops, uv, boxes = synthetic_mouth(near)
+    image = np.full((SIZE, SIZE, 3), 200, dtype=np.uint8)
+    painted, report = mouth.paint_inside(co, edges, tris, tri_loops, uv, image, SETTINGS)
+    assert report["painted_pixels"] == int((painted != 200).any(axis=2).sum())          # 重なりは 1 回だけ
+    tongue = (painted == [168, 72, 74]).all(axis=2)
+    rows = np.where(tongue.any(axis=1))[0]
+    assert rows.max() > int((1 - boxes[3][1]) * SIZE)                    # 舌の色が四角の下の端より外（歯との間）まで広がっている
 
 
 def _tongue_uv_shifted():
@@ -180,6 +193,22 @@ def test_mouth_inside_needs_uv_and_triangle_corners(tmp_path):
     np.savez(tmp_path / "short_uv.npz", co=co, edges=edges, tris=tris, tri_loops=tri_loops, uv=uv[:5])
     with pytest.raises(ToolError, match="面の角"):
         run({"mesh": tmp_path / "short_uv.npz", "texture": tmp_path / "head.png"}, SETTINGS, outputs, Context())
+
+
+def test_mouth_inside_keeps_a_colour_key_transparency(tmp_path):
+    from model3d.ops import get
+
+    class Context:
+        tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
+
+    _write_inputs(tmp_path)
+    Image.new("RGB", (SIZE, SIZE), (200, 200, 200)).save(tmp_path / "keyed.png", transparency=(200, 200, 200))   # 透明色キー（tRNS）
+    outputs = {"texture": tmp_path / "m.png", "report": tmp_path / "r.json"}
+    get("texture.mouth_inside").function({"mesh": tmp_path / "head_mesh.npz", "texture": tmp_path / "keyed.png"}, SETTINGS, outputs, Context())
+    painted = np.asarray(Image.open(outputs["texture"]))
+    changed = (painted[..., :3] != 200).any(axis=2)
+    assert painted.shape == (SIZE, SIZE, 4) and changed.any()
+    assert (painted[~changed, 3] == 0).all() and (painted[changed, 3] == 255).all()       # 透けは残し、塗った画素だけ不透明に
 
 
 def test_mouth_inside_refuses_16_bit_textures_and_flags_uv_outside(tmp_path):

@@ -532,7 +532,7 @@ def mouth_inside(inputs, parameters, outputs, context):
         with Image.open(inputs["texture"]) as im:
             if im.mode.startswith("I") or im.mode == "F":    # 16 ビットの灰色・整数・浮動小数の絵は、8 ビットの色に変えると値が切られる
                 raise ToolError(f"色の絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は、色に変えると 255 で切られて白くなる）")
-            keep = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+            keep = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info   # 透明色キー（RGB・灰色・パレットの tRNS）も透け
             image = np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
     except OSError as error:
         raise ToolError(f"色の絵を読めません: {inputs['texture']}（{error}）") from error

@@ -98,17 +98,17 @@ def paint_inside(co, edges, tris, tri_loops, uv, image, settings):
     paint_tongue = dilate(tongue_mask, settings["grow"]) & ~other
     out = image.copy()
     out[paint, :3] = settings["inside_color"]
-    out[paint_tongue, :3] = settings["tongue_color"]
+    out[paint_tongue, :3] = settings["tongue_color"]     # ふくらませた所が重なれば舌の色（重なりは 1 回だけ数える）
+    painted = paint | paint_tongue
     raised = 0
     if out.shape[2] == 4:                                # 透けのある絵は、塗る画素を不透明にする
-        painted = paint | paint_tongue
         raised = int((painted & (out[..., 3] < 255)).sum())
         out[painted, 3] = 255
     corners = uv[tri_loops[pocket | inner | tongue]]     # 塗る三角形の角の uv
     outside = int(((corners < 0) | (corners > 1)).any(axis=(1, 2)).sum())
     report = {"pocket_triangles": int(pocket.sum()), "part_triangles": int(inner.sum()), "tongue_triangles": int(tongue.sum()),
               "parts": [int((head.island_of == k).sum()) for k in parts], "tongue_parts": [int((head.island_of == k).sum()) for k in tongue_parts],
-              "painted_pixels": int(paint.sum() + paint_tongue.sum()), "pixels_shared_with_visible_faces_left_untouched": overlap,
+              "painted_pixels": int(painted.sum()), "pixels_shared_with_visible_faces_left_untouched": overlap,
               "alpha_raised_pixels": raised, "uv_outside_triangles": outside,
               "inside_color": list(settings["inside_color"]), "tongue_color": list(settings["tongue_color"])}
     return out, report
