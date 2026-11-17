@@ -39,7 +39,8 @@ def lift_curve(anchors, smooth):
     grid = np.arange(anchors[0]["vy"] - 120.0, anchors[-1]["vy"] + 200.0, 1.0)
     lift = np.interp(grid, [item["vy"] for item in anchors], [item["up"] for item in anchors])
     sigma = smooth
-    kernel = np.exp(-0.5 * (np.arange(-4 * sigma, 4 * sigma + 1) / sigma) ** 2)
+    radius = int(np.ceil(4 * sigma))                     # 整数の半径から左右対称に（長さはいつも奇数。σ が小数でも格子と同じ長さ）
+    kernel = np.exp(-0.5 * (np.arange(-radius, radius + 1) / sigma) ** 2)
     kernel /= kernel.sum()
     lift = np.convolve(np.pad(lift, (len(kernel) // 2, len(kernel) // 2), mode="edge"), kernel, mode="valid")
     if np.any(np.diff(grid - lift) <= 0):

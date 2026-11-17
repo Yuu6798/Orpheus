@@ -14,15 +14,14 @@ VIEW = {"from": "-Y", "center": [0.0, 1.5], "span": 0.32, "size": [1024, 1024]} 
 LIFT = [{"vy": 572, "up": 0}, {"vy": 643.6, "up": 31.8}, {"vy": 722.8, "up": 33.6}, {"vy": 823.6, "up": 45.8}]
 
 
-
 def test_narrow_pulls_toward_the_view_center():
-    from model3d.blender_adapter import face_shape as fs
     settings = {"view": {"from": "-Y", "center": [0.3, 1.5], "span": 0.32, "size": [1024, 1024]}, "smooth": 4.0, "narrow": 0.2,
                 "lift": [{"vy": 500.0, "up": 0.0}, {"vy": 700.0, "up": 20.0}], "depth": {"front": -0.1, "back": 0.0}}
     world = np.array([[0.25, -0.2, 1.42], [0.35, -0.2, 1.42], [0.3, -0.2, 1.42]])   # 顔の中心（x 0.3）の左右と中心、あごの高さ
     moved = fs.shaped(world, settings)
     assert moved[0, 0] > 0.25 and moved[1, 0] < 0.35                                  # 左右とも中心へ寄る
     assert moved[0, 0] - 0.3 == pytest.approx(-(moved[1, 0] - 0.3)) and moved[2, 0] == pytest.approx(0.3)
+
 
 def test_lift_curve_is_smooth_and_keeps_the_order():
     grid, lift = fs.lift_curve(LIFT, 6)
@@ -31,6 +30,18 @@ def test_lift_curve_is_smooth_and_keeps_the_order():
     assert np.interp(723, grid, lift) == pytest.approx(33.6, abs=0.5)       # 角を丸めても、表の値の近く
     with pytest.raises(ValueError, match="入れ替わる"):
         fs.lift_curve([{"vy": 500, "up": 0}, {"vy": 510, "up": 40}], 1)     # 10 画素の間で 40 画素上げると、上下が入れ替わる
+
+
+def test_fractional_smooth_keeps_the_grid_length():
+    for smooth in (6.1, 2.5, 0.3):
+        grid, lift = fs.lift_curve(LIFT, smooth)
+        assert grid.shape == lift.shape                                     # 窓の長さはいつも奇数（格子と同じ長さ）
+    grid, lift = fs.lift_curve(LIFT, 6)                                     # σ が整数なら、窓は今までと同じ（−4σ〜4σ）
+    anchors = sorted(LIFT, key=lambda item: item["vy"])
+    raw = np.interp(grid, [a["vy"] for a in anchors], [a["up"] for a in anchors])
+    kernel = np.exp(-0.5 * (np.arange(-24.0, 25.0) / 6.0) ** 2)
+    kernel /= kernel.sum()
+    assert (lift == np.convolve(np.pad(raw, (24, 24), mode="edge"), kernel, mode="valid")).all()
 
 
 def test_lower_face_moves_up_only_in_front():
