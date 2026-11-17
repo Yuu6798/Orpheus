@@ -69,6 +69,22 @@ def vertex_colors(texture, uv, loop_vertex, count):
     return color / np.maximum(hits, 1)[:, None]
 
 
+def slot_loops(polygons, slots, loop_count):
+    """角ごとの、その角の面が slots の材質を使うか (loop_count,)。頂点の色は、選んだ絵を使う面の角だけで求める（ほかの絵の uv を
+    選んだ絵で引くと、材質の境目の頂点の色が混ざる）。polygons は material_index・loop_start・loop_total を持つ面の並び。"""
+    used = np.zeros(loop_count, dtype=bool)
+    for polygon in polygons:
+        if polygon.material_index in slots:
+            used[polygon.loop_start:polygon.loop_start + polygon.loop_total] = True
+    return used
+
+
+def world_normals(normals, world):
+    """頂点の法線 (N, 3) を世界の向きの単位ベクトルへ（行列の線形の部分の逆行列の転置で移す。一様でない倍率でも向きが正しい）。"""
+    moved = normals @ np.linalg.inv(world[:3, :3])
+    return moved / (np.linalg.norm(moved, axis=1, keepdims=True) + 1e-12)
+
+
 def skin_colored(colors, skin):
     """頂点の色が肌色か (count,)。skin は {"hue_deg": [下, 上], "saturation": [下, 上], "value_min": 下}。HSV は colorsys（台本と同じ）。"""
     hsv = np.array([colorsys.rgb_to_hsv(*color) for color in colors])
@@ -210,7 +226,10 @@ def main(argv=None):
     uv = uv.reshape(-1, 2)
     loop_vertex = np.empty(len(mesh.loops), dtype=np.int64)
     mesh.loops.foreach_get("vertex_index", loop_vertex)
-    color = vertex_colors(texture, uv, loop_vertex, count)
+    used = slot_loops(mesh.polygons, slots, len(mesh.loops))  # 選んだ絵を使う面の角だけ
+    color = vertex_colors(texture, uv[used], loop_vertex[used], count)
+    uses_image = np.zeros(count, dtype=bool)            # 選んだ絵を使う面の頂点
+    uses_image[loop_vertex[used]] = True
     edges = mesh_edges(mesh)
     roots = islands(count, edges)
     report = {"schema_version": f"model3d-{a.mode}-skin/0.1", "blender": bpy.app.version_string, "body": body.name, "image": image.name,
@@ -218,12 +237,7 @@ def main(argv=None):
     if a.mode == "smooth":
         normals = np.empty(count * 3)
         mesh.vertices.foreach_get("normal", normals)
-        normals = normals.reshape(-1, 3) @ world[:3, :3].T
-        normals /= np.linalg.norm(normals, axis=1, keepdims=True) + 1e-12
-        uses_image = np.zeros(count, dtype=bool)
-        for polygon in mesh.polygons:
-            if polygon.material_index in slots:
-                uses_image[list(polygon.vertices)] = True
+        normals = world_normals(normals.reshape(-1, 3), world)
         skin = skin_colored(color, settings["skin"]) & uses_image
         seed_z = settings["seed_z"]
         seed = (skin & (positions[:, 2] >= seed_z[0]) & (positions[:, 2] <= seed_z[1])
@@ -266,7 +280,7 @@ def main(argv=None):
         is_hand = np.array([name.startswith(tuple(settings["island_groups"])) for name in top])
         arm_roots = [root for root in np.unique(roots[is_hand]) if (is_hand & (roots == root)).sum() >= settings["island_min"]]
         in_island = np.isin(roots, arm_roots)
-        region = in_island & is_arm
+        region = in_island & is_arm & uses_image          # その絵を使う面の頂点だけ（ほかの絵の頂点は塗れず、色も引けない）
         island_edges = edges[in_island[edges[:, 0]] & in_island[edges[:, 1]]]
         clean = skin_colored(color, settings["skin"])
         dirty = region & ~clean

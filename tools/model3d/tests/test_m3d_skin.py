@@ -18,6 +18,22 @@ def test_sample_reads_texel_centres_bilinearly():
     assert sr.sample(texture, uv)[:, 0] == pytest.approx([0.0, 0.999, 0.5], abs=1e-3)   # 端は 1.001 画素手前で切る（台本と同じ）
 
 
+def test_only_corners_of_faces_with_the_image_count():
+    from types import SimpleNamespace as NS
+    polygons = [NS(material_index=0, loop_start=0, loop_total=3), NS(material_index=1, loop_start=3, loop_total=4),
+                NS(material_index=1, loop_start=7, loop_total=3)]
+    assert list(sr.slot_loops(polygons, {1}, 10)) == [False] * 3 + [True] * 7
+    assert not sr.slot_loops(polygons, set(), 10).any()
+
+
+def test_normals_use_the_inverse_transpose():
+    world = np.diag([2.0, 1.0, 1.0, 1.0])                       # x だけ 2 倍
+    normal = sr.world_normals(np.array([[1.0, 1.0, 0.0]]) / np.sqrt(2), world)[0]
+    assert normal == pytest.approx([1 / np.sqrt(5), 2 / np.sqrt(5), 0.0])    # 面は x に伸びるので、法線は y へ寝る
+    turned = np.array([[1.45, 0, 0, 0], [0, 0, -1.45, 0], [0, 1.45, 0, 0], [0, 0, 0, 1.0]])   # 一様な倍率と回転なら向きを回すだけ
+    assert sr.world_normals(np.array([[0.0, 1.0, 0.0]]), turned)[0] == pytest.approx([0.0, 0.0, 1.0])
+
+
 def test_vertex_colors_average_the_corners():
     texture = np.zeros((2, 2, 4), dtype=np.float32)
     texture[0, 1, :3] = 1.0
