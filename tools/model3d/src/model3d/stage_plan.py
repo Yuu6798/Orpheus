@@ -70,6 +70,12 @@ def ease(u, kind="smooth"):
     return u * u * (3 - 2 * u) if kind == "smooth" else u
 
 
+def smoothstep(u):
+    """0〜1 に切ってから、なめらかに 0 → 1（3u² − 2u³）。motion_edit・orbit_plan・title も同じ名前で読む。"""
+    u = min(1.0, max(0.0, u))
+    return u * u * (3 - 2 * u)
+
+
 def gauss(values, sigma, radius=None):
     """(n, k) の列を、列ごとに σ のガウス（±radius コマ、省くと ±round(2σ)。端は端の値で延ばす）でならす（試作と同じ）。"""
     values = np.asarray(values, float)

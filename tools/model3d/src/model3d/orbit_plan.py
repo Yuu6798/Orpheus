@@ -28,7 +28,7 @@ import numpy as np
 
 from .blender_adapter.point_track import PathError, Samples
 from .io import ToolError
-from .stage_plan import Camera, Clock, ease as plan_ease, find, inside, spans
+from .stage_plan import Camera, Clock, _ranges, ease as plan_ease, find, inside, smoothstep, spans  # noqa: F401（smoothstep は以前の名前）
 
 EASE = {
     "smooth": lambda u: plan_ease(u, "smooth"),
@@ -48,20 +48,16 @@ DEFAULTS = {
 SECTIONS = ("smooth", "up", "handheld", "kick", "camera")
 
 
-def merged(plan):
-    out = {**DEFAULTS, **{k: v for k, v in plan.items() if k not in SECTIONS}}
-    for key in SECTIONS:
-        out[key] = {**DEFAULTS[key], **plan.get(key, {})}
+def merged(plan, defaults=DEFAULTS, sections=SECTIONS):
+    """表に既定（defaults）を足したもの。sections の節は、節の中の名前ごとに既定と混ぜる。plan.shots も自分の既定で使う。"""
+    out = {**defaults, **{k: v for k, v in plan.items() if k not in sections}}
+    for key in sections:
+        out[key] = {**defaults[key], **plan.get(key, {})}
     return out
 
 
 def lerp(a, b, w):
     return a + (b - a) * w
-
-
-def smoothstep(v):
-    v = min(1.0, max(0.0, v))
-    return v * v * (3 - 2 * v)
 
 
 def rotation(axis, degrees):
@@ -96,59 +92,98 @@ def handheld(t, amplitude, phases, kicks, hand, kick):
     return values
 
 
-class Orbit:
-    def __init__(self, plan):
-        p = merged(plan)
+def key_u(key, k, count):
+    """区間の中のキー k（count 個のうち）の割合 u。書いていなければ、最初のキーは 0、最後のキーは 1。plan.orbit と plan.shots が使う。"""
+    if "u" in key:
+        return float(key["u"])
+    if k == 0:
+        return 0.0
+    if k == count - 1:
+        return 1.0
+    raise ToolError("区間の中のキー（最初と最後のほか）には u（区間の中の割合 0〜1）が要ります")
+
+
+def check_keys(n, keys, end):
+    """区間 n（終わり end 秒）のキーの並びを確かめる: 2 つ以上なら until が要り、u は 0〜1 の昇順。"""
+    if len(keys) > 1 and math.isinf(end):
+        raise ToolError(f"shots[{n}] はキーが 2 つ以上なので until が要ります（区間の中の割合でキーを混ぜるため）")
+    us = [key_u(key, k, len(keys)) for k, key in enumerate(keys)]
+    if any(b < a for a, b in zip(us, us[1:])) or us[0] < 0 or us[-1] > 1:
+        raise ToolError(f"shots[{n}] のキーの u は 0〜1 の昇順にしてください: {us}")
+
+
+def blend_keys(keys, u):
+    """区間の中の割合 u での前後のキー a・b と、混ぜる割合 w（キー a の ease。試作と同じ選び方）。キーは 2 つ以上。"""
+    us = [key_u(key, k, len(keys)) for k, key in enumerate(keys)]
+    i = 0
+    while i < len(keys) - 2 and u > us[i + 1]:
+        i += 1
+    a, b = keys[i], keys[i + 1]
+    return a, b, EASE[a.get("ease", "smooth")]((u - us[i]) / max(1e-9, us[i + 1] - us[i]))
+
+
+def dance_holds(clock, dance):
+    """踊りの時刻の止め [(頭, 終わり, 止める踊りの時刻)]（dance.holds。until を省くと、その先ずっと）。"""
+    holds = []
+    for n, hold in enumerate(dance.get("holds", [])):
+        start = clock(hold["from"], f"dance.holds[{n}].from")
+        end = clock(hold["until"], f"dance.holds[{n}].until") if "until" in hold else math.inf
+        if end <= start:
+            raise ToolError(f"dance.holds[{n}] の until（{end:g} 秒）が from（{start:g} 秒）より後ではありません")
+        holds.append((start, end, float(hold["at"])))
+    return holds
+
+
+def held_time(holds, t):
+    """時刻 t の踊りの時刻と、止めたか。"""
+    for start, end, at in holds:
+        if inside(t, start, end):                    # 境目は plan.stage と同じく、EPS 秒前のコマから止める側
+            return at, True
+    return t, False
+
+
+class Keyed:
+    """plan.orbit と plan.shots に共通の読み方: コマの時刻、踊りの時刻と止め、手持ちの揺れの打点と位相、区間の中のキーの割合。"""
+
+    _u = staticmethod(key_u)
+
+    def _read_timing(self, p):
+        """表（既定を足したもの）と、コマの fps・数・時刻のずらし・時刻の読み方。"""
         self.p = p
         self.fps = float(p["fps"])
         self.frames = int(p["frames"])
         self.offset = float(p["time_offset"])
         self.clock = Clock(p.get("marks"), p.get("grid") or {"k0_time": 0.0, "period": 1.0})
+
+    def _read_dance(self, p):
+        """踊りの時刻（動きのコマへの直し方と止め）と、手持ちの揺れの打点と位相。"""
+        dance = p["dance"]
+        self.frame0, self.dance_fps = float(dance.get("frame0", 1.0)), float(dance["fps"])
+        self.holds = dance_holds(self.clock, dance)
+        self.kicks = [(self.clock(k["at"], f"kicks[{n}].at"), float(k["deg"])) for n, k in enumerate(p.get("kicks", []))]
+        self.phases = np.random.default_rng(int(p["handheld"]["seed"])).uniform(0, 2 * np.pi, (3, 3))
+
+    def time(self, T):
+        return self.offset + (T - 1) / self.fps
+
+    def dance_time(self, t):
+        return held_time(self.holds, t)
+
+
+class Orbit(Keyed):
+    def __init__(self, plan):
+        self._read_timing(merged(plan))
+        p = self.p
         beat_push = any(effect.get("kind") == "beat_push" for effect in p.get("effects", []))
         if p.get("grid") is None and (_uses_beats(plan) or beat_push):   # 光のキーの無い plan.orbit には、ほかに拍の出どころが無い
             raise ToolError("段取り表に拍 {\"beat\": k} か beat_push（拍ごとの寄り）がありますが、grid（拍の格子）がありません")
         self.shots = p["shots"]
         self.spans = spans(self.shots, self.clock, "shots", start=self.offset)   # 最初の区間の頭は T = 1 の時刻（u をそこから数える）
         for n, (shot, (start, end)) in enumerate(zip(self.shots, self.spans)):
-            keys = shot["keys"]
-            if len(keys) > 1 and math.isinf(end):
-                raise ToolError(f"shots[{n}] はキーが 2 つ以上なので until が要ります（区間の中の割合でキーを混ぜるため）")
-            us = [self._u(key, k, len(keys)) for k, key in enumerate(keys)]
-            if any(b < a for a, b in zip(us, us[1:])) or us[0] < 0 or us[-1] > 1:
-                raise ToolError(f"shots[{n}] のキーの u は 0〜1 の昇順にしてください: {us}")
-        dance = p["dance"]
-        self.frame0, self.dance_fps = float(dance.get("frame0", 1.0)), float(dance["fps"])
-        self.holds = []
-        for n, hold in enumerate(dance.get("holds", [])):
-            start = self.clock(hold["from"], f"dance.holds[{n}].from")
-            end = self.clock(hold["until"], f"dance.holds[{n}].until") if "until" in hold else math.inf
-            if end <= start:
-                raise ToolError(f"dance.holds[{n}] の until（{end:g} 秒）が from（{start:g} 秒）より後ではありません")
-            self.holds.append((start, end, float(hold["at"])))
-        self.kicks = [(self.clock(k["at"], f"kicks[{n}].at"), float(k["deg"])) for n, k in enumerate(p.get("kicks", []))]
-        phases = np.random.default_rng(int(p["handheld"]["seed"])).uniform(0, 2 * np.pi, (3, 3))
-        self.phases = phases
+            check_keys(n, shot["keys"], end)
+        self._read_dance(p)
         self.effects = Camera({"camera": {"effects": p.get("effects", [])}}, self.clock) if p.get("effects") else None
         self.names = sorted({p["centre"]} | {key["aim"] for shot in self.shots for key in shot["keys"]})
-
-    @staticmethod
-    def _u(key, k, count):
-        if "u" in key:
-            return float(key["u"])
-        if k == 0:
-            return 0.0
-        if k == count - 1:
-            return 1.0
-        raise ToolError("区間の中のキー（最初と最後のほか）には u（区間の中の割合 0〜1）が要ります")
-
-    def time(self, T):
-        return self.offset + (T - 1) / self.fps
-
-    def dance_time(self, t):
-        for start, end, at in self.holds:
-            if inside(t, start, end):                    # 境目は plan.stage と同じく、EPS 秒前のコマから止める側
-                return at, True
-        return t, False
 
     def motion_frame(self, dance_t):
         f = self.frame0 + dance_t * self.dance_fps
@@ -161,13 +196,7 @@ class Orbit:
         keys = shot["keys"]
         if len(keys) == 1:
             return keys[0], keys[0], 0.0
-        u = min(max((t - start) / (end - start), 0.0), 1.0)
-        us = [self._u(key, k, len(keys)) for k, key in enumerate(keys)]
-        i = 0
-        while i < len(keys) - 2 and u > us[i + 1]:
-            i += 1
-        a, b = keys[i], keys[i + 1]
-        return a, b, EASE[a.get("ease", "smooth")]((u - us[i]) / max(1e-9, us[i + 1] - us[i]))
+        return blend_keys(keys, min(max((t - start) / (end - start), 0.0), 1.0))
 
     def jitter(self, t, amplitude):
         """手持ちの揺れ（yaw・pitch・roll の度。handheld）。"""
@@ -267,14 +296,7 @@ def build(plan, path):
     cameras = {"schema_version": "model3d-cameras/0.1", "unit": "m", "resolution": [int(width), int(height)], "fps": orbit.fps,
                "sensor_height_mm": float(p["camera"]["sensor_height"]), "frames": entries}
     track = {"schema_version": "model3d-stage-track/0.1", "fps": orbit.fps, "frames": rows}
-    shots = []
-    for n, (start, end) in enumerate(orbit.spans):
-        Ts = [T for T, k in zip(range(1, orbit.frames + 1), hits) if k == n]
-        item = {"index": n, "from": start, "until": None if math.isinf(end) else end, "T": [Ts[0], Ts[-1]] if Ts else None,
-                "frames": len(Ts)}
-        if orbit.shots[n].get("name"):
-            item["name"] = orbit.shots[n]["name"]
-        shots.append(item)
+    shots = _ranges(orbit.spans, hits, [shot.get("name") for shot in orbit.shots], range(1, orbit.frames + 1))   # plan.stage と同じ報告
     report = {"schema_version": "model3d-orbit-report/0.1", "frames": orbit.frames, "fps": orbit.fps,
               "seconds": [orbit.time(1), orbit.time(orbit.frames)], "points": orbit.names, "centre": p["centre"],
               "samples": {"count": samples.count, "per_second": samples.rate, "dance_seconds": list(samples.span),
