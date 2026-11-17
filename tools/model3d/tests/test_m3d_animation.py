@@ -652,6 +652,23 @@ def test_fault_amounts():
         fault_inject.resolve_bones([{"role": "left_toes"}], {}, {"hips"})
 
 
+def test_fault_pins_keep_the_clean_motion_outside():
+    """区間の外は、元のキーの間を全部のコマで留める（間引いたキーの間の形を変えない）。元のキーが無ければ前後 1 コマ。シーンの外と、
+    同じ骨のほかの破綻の区間の中は留めない。"""
+    sparse = list(range(1, 355, 30))                                            # 1, 31, 61, 91, 121, …
+    assert fault_inject.pin_range(100, 110, sparse, 1, 354) == list(range(91, 100)) + list(range(111, 122))
+    assert fault_inject.pin_range(100, 110, [], 1, 354) == [99, 111]
+    assert fault_inject.pin_range(100, 110, list(range(1, 355)), 1, 354) == [99, 111]   # どのコマにもキー: 前後 1 コマ
+    assert fault_inject.pin_range(1, 3, list(range(1, 21)), 1, 20) == [4]
+    faults = [{"frames": [1, 3], "kind": "local"}, {"frames": [5, 6], "kind": "shift"}, {"frames": [7, 9], "kind": "world"},
+              {"frames": [20, 20], "kind": "local"}]
+    keys = {("hips", "rotation_quaternion"): list(range(1, 21)), ("hips", "location"): [1, 10]}
+    assert fault_inject.fault_pins(faults, ["hips", "hips", "hips", "head"], keys, 1, 20) == [
+        (0, "rotation_quaternion", 4), (1, "rotation_quaternion", 4), (1, "location", 4), (1, "location", 10),
+        (2, "rotation_quaternion", 10), (3, "rotation_quaternion", 19)]
+    assert fault_inject.keyed_props({"kind": "shift"}) == ("rotation_quaternion", "location")
+
+
 # ---------------------------------------------------------------- 測る所（Blender の中の台本の小さな関数）
 def test_sampler_helpers():
     names = {0: "hips", 1: "skirt_01", 2: "head"}
