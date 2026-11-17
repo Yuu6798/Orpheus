@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-light-plan/0.1",
+  "title": "model3d light plan",
+  "description": "plan.lights の光の段取り表。コマ T（1 から。時刻 t = (T - 1) / fps 秒）ごとに、values の既定の値を求め、t を含む区間（segments。頭は前の区間の until、最後の区間だけ until を省ける）の let（区間の中の名前）と set で上書きし、閃光（flashes。強い方を残す）を重ねる。値は数・3 つの並び（色や位置。要素は数か式）・式（文字列。色の名前も式）。式で使えるのは t・low・mid・high・hit・colors と let の名前と、関数 beat・ramp・ease・mix・max・min・exp、+ - * /、if の条件の中の比べる式だけ（docs/model3d.md の「光の台本」）。fps・grid・frames は、光のキー（keys）を渡せばそれを使う（書くなら同じ値）。",
+  "type": "object",
+  "required": ["schema_version", "values"],
+  "properties": {
+    "schema_version": {"const": "model3d-light-plan/0.1"},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "frames": {"description": "トラックのコマの数（省くと光のキーの frames）", "type": "integer", "minimum": 1},
+    "grid": {
+      "description": "拍の格子（秒）。拍 k の時刻は k0_time + period × k",
+      "type": "object",
+      "required": ["period", "k0_time"],
+      "properties": {"period": {"type": "number", "exclusiveMinimum": 0}, "k0_time": {"type": "number"}},
+      "additionalProperties": false
+    },
+    "hit": {
+      "description": "hit = exp(−((t − k0_time) mod period) / tau)。直前の拍で 1、すぐ下がる",
+      "type": "object",
+      "properties": {"tau": {"type": "number", "exclusiveMinimum": 0}},
+      "additionalProperties": false
+    },
+    "marks": {"description": "時刻の名前（until と flashes の at で使える）", "type": "object", "additionalProperties": {"$ref": "#/$defs/mark"}},
+    "colors": {"description": "式で使える名前つきの 3 つの並び（色や位置）", "type": "object", "additionalProperties": {"$ref": "#/$defs/vec3"}},
+    "values": {"description": "トラックの値の名前と既定の値（毎コマ、ここから始める）", "type": "object", "minProperties": 1,
+               "additionalProperties": {"$ref": "#/$defs/value"}},
+    "segments": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/segment"}},
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "mark": {"oneOf": [{"type": "number"}, {"$ref": "#/$defs/beat"}]},
+    "beat": {"type": "object", "required": ["beat"], "properties": {"beat": {"type": "number"}}, "additionalProperties": false},
+    "time": {"oneOf": [{"type": "number"}, {"type": "string", "minLength": 1}, {"$ref": "#/$defs/beat"}]},
+    "scalar": {"oneOf": [{"type": "number"}, {"type": "string", "minLength": 1}]},
+    "value": {"oneOf": [{"type": "number"}, {"type": "string", "minLength": 1},
+                        {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/scalar"}}]},
+    "segment": {
+      "type": "object",
+      "properties": {
+        "until": {"$ref": "#/$defs/time"},
+        "let": {"description": "区間の中の名前（書いた順に求める。後の let・set・flashes で使える）", "type": "object",
+                "additionalProperties": {"$ref": "#/$defs/value"}},
+        "set": {"description": "values の値を上書きする", "type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "flashes": {"type": "array", "items": {"$ref": "#/$defs/flash"}},
+        "notes": {"type": "string"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "flash": {
+      "description": "0 ≤ t − at < length の間（境目は区間と同じく 1e-6 秒前のコマから）、strength × exp(−max(t − at, 0) / decay)。今の flash より強ければ flash と flash_color にする（色を省くと values の flash_color の既定）",
+      "type": "object",
+      "required": ["at", "strength"],
+      "properties": {
+        "at": {"$ref": "#/$defs/time"},
+        "strength": {"$ref": "#/$defs/scalar"},
+        "color": {"$ref": "#/$defs/value"},
+        "decay": {"description": "減り方の秒（0 より大きい。式なら、求めた値をコマごとに確かめる）", "oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "string", "minLength": 1}]},
+        "length": {"$ref": "#/$defs/scalar"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
