@@ -239,3 +239,49 @@ def test_jpeg_and_png_sizes_are_read_from_their_headers():
     assert vrm._image_format(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16) == ("png", None)   # IHDR が無い
     assert vrm._image_format(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == ("webp", None)
     assert vrm._image_format(b"GIF89a") == (None, None)
+
+
+def _paths(node, prefix=()):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield prefix + (key,)
+            yield from _paths(value, prefix + (key,))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield prefix + (index,)
+            yield from _paths(value, prefix + (index,))
+
+
+def test_the_listing_does_not_stop_on_values_of_the_wrong_kind():
+    import copy
+    document, blob = _document()
+    data = bytes(blob.data)
+    for path in list(_paths(document)):                    # どの値を並び・辞書・文字・null にしても、止まらずに一覧を返す
+        for bad in ([0], {"a": 1}, "x", None):
+            broken = copy.deepcopy(document)
+            target = broken
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = bad
+            failures = []
+            assert isinstance(vrm.structure(broken, data, failures)["weights"], list), (path, bad)
+
+
+def test_bad_spring_nodes_fail_the_check_without_stopping_it():
+    document, blob = _document()
+    document["extensions"]["VRMC_springBone"]["springs"][0]["joints"][0]["node"] = [17]
+    report = vrm.inspect(_glb(document, bytes(blob.data)))
+    assert report["pass"] is False and any("関節の node が範囲の外" in failure for failure in report["failures"])
+    assert report["structure"]["skeleton"]["spring_joint_nodes"] == 1 and report["structure"]["springs"][0]["first"] is None
+
+
+def test_a_second_joint_set_is_noted_even_when_the_weights_cannot_be_read():
+    document, blob = _document()
+    document["accessors"][3]["sparse"] = {"count": 1}
+    document["meshes"][0]["primitives"][0]["attributes"]["JOINTS_1"] = 2
+    weights = vrm.inspect(_glb(document, bytes(blob.data)))["structure"]["weights"][0]
+    assert weights["second_joint_set"] is True and weights["unread"] and weights["vertices"] == 0
+    document, blob = _document()
+    document["accessors"][2]["componentType"] = [5121]                # 表を引けない値でも止まらずに読まない
+    weights = vrm.inspect(_glb(document, bytes(blob.data)))["structure"]["weights"][0]
+    assert "componentType" in weights["unread"][0]

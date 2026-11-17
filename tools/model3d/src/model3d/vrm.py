@@ -231,9 +231,9 @@ def _skeleton(document, failures):
     vrm = _dict(_dict(document.get("extensions")).get("VRMC_vrm"))
     bones = _dict(_dict(vrm.get("humanoid")).get("humanBones"))
     human = {name: _dict(bone).get("node") for name, bone in bones.items() if _node(_dict(bone).get("node"), len(nodes))}
-    spring_nodes = {_dict(joint).get("node") for spring in _list(_springs(document).get("springs"))
-                    for joint in _list(_dict(spring).get("joints"))}
-    spring_nodes = {index for index in spring_nodes if _node(index, len(nodes))}
+    # 範囲の外の番号・数でない値（並びや辞書）は inspect が不合格にしているので、集合に入れる前に除く
+    spring_nodes = {index for spring in _list(_springs(document).get("springs")) for joint in _list(_dict(spring).get("joints"))
+                    for index in [_dict(joint).get("node")] if _node(index, len(nodes))}
     positions = _world_positions(nodes, sorted(set(human.values())), failures)
     human_nodes = set(human.values())
     return {"skin_joints": len(joints),
@@ -370,8 +370,10 @@ def _image_list(document, blob, failures):
     """画像ごとの名前・mimeType・形式・[幅, 高さ]・バイト数。bufferView の番号が範囲の外なら failures に足す。読めない画像
     （GLB の外のバッファやファイル・BIN チャンクに収まらない）は unread に理由を書く。"""
     views = _items(document, "bufferViews")
+    images = _items(document, "images")
+    tidy = {"images": images, "bufferViews": views}             # 辞書でない要素を空の辞書にした写し（image_bytes が止まらないように）
     out = []
-    for i, image in enumerate(_items(document, "images")):
+    for i, image in enumerate(images):
         entry = {"name": image.get("name"), "mime_type": image.get("mimeType"), "format": None, "size": None, "bytes": None}
         view = image.get("bufferView")
         if view is not None and not _node(view, len(views)):
@@ -380,7 +382,7 @@ def _image_list(document, blob, failures):
             entry["unread"] = f"bufferView {view} は GLB の外のバッファです"
         else:
             try:
-                data, _ = image_bytes(document, blob, i)
+                data, _ = image_bytes(tidy, blob, i)
             except ToolError as error:
                 entry["unread"] = str(error)
             else:
@@ -400,7 +402,9 @@ def _accessor(document, blob, index, where, failures):
         failures.append(f"{where} の accessor が範囲の外です: {index!r}")
         return None, "accessor が範囲の外"
     accessor = accessors[index]
-    kind, width, count = COMPONENTS.get(accessor.get("componentType")), WIDTHS.get(accessor.get("type")), accessor.get("count")
+    component, shape, count = accessor.get("componentType"), accessor.get("type"), accessor.get("count")
+    kind = COMPONENTS.get(component) if isinstance(component, int) and not isinstance(component, bool) else None
+    width = WIDTHS.get(shape) if isinstance(shape, str) else None              # 並びや辞書の値で表を引かない
     if kind is None or width is None or not _count(count):
         return None, f"accessor {index} の componentType・type・count を読めません"
     if "sparse" in accessor:
@@ -447,6 +451,7 @@ def _weight_list(document, blob, failures):
         counts, vertices, most, second, unread, outside = Counter(), 0, 0, False, [], set()
         for p, primitive in enumerate(_list(mesh.get("primitives"))):
             attributes = _dict(_dict(primitive).get("attributes"))
+            second = second or "JOINTS_1" in attributes            # 重みを読めない primitive でも、属性があることは数える
             if "JOINTS_0" not in attributes:
                 continue
             label = f"{where}の primitive {p}"
@@ -459,7 +464,6 @@ def _weight_list(document, blob, failures):
             if bones.shape != weights.shape or bones.dtype.kind != "u":
                 unread.append(f"primitive {p}: JOINTS_0（{bones.dtype}・{bones.shape}）と WEIGHTS_0（{weights.shape}）の形が合いません")
                 continue
-            second = second or "JOINTS_1" in attributes
             vertices += len(bones)
             used = weights.astype(np.float64) > WEIGHT_USED
             if len(bones):
