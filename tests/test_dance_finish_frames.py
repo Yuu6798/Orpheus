@@ -111,6 +111,49 @@ def test_the_light_track_must_cover_the_frames(tmp_path):
         finish_frames.load_track(tmp_path / "other.json", [1])
 
 
+def _write_bgra(path, bgra):
+    ok, data = cv2.imencode(".png", np.ascontiguousarray(bgra))
+    path.write_bytes(data.tobytes())
+    return path
+
+
+def test_transparent_frames_are_refused_and_opaque_alpha_is_dropped(tmp_path):
+    """透けた画素のあるコマは止める（そのまま読むとアルファが黙って消え、透けた所が不透明になるため）。全部不透明なアルファは
+    除いて読み、cv2 の IMREAD_COLOR で読んだのと同じ値。灰色・16 ビットのコマも今までと同じ読み方。"""
+    from mv_pipeline.dance.passes_scene import read_image
+    rgb = np.random.default_rng(0).integers(0, 256, (H, W, 3), dtype=np.uint8)
+    _write(tmp_path / "rgb.png", rgb)
+    bgra = np.dstack([rgb[..., ::-1], np.full((H, W), 255, np.uint8)])
+    opaque = _write_bgra(tmp_path / "opaque.png", bgra)
+    plain = finish_frames.read_frame(tmp_path / "rgb.png", 1)
+    assert np.array_equal(plain, read_image(tmp_path / "rgb.png")) and np.array_equal(plain, rgb.astype(np.float32) / 255)
+    assert np.array_equal(finish_frames.read_frame(opaque, 1), plain) and np.array_equal(read_image(opaque), plain)
+    bgra[0, 0, 3] = 254                                                            # 1 画素だけ、少し透ける
+    with pytest.raises(PipelineError, match="T 7 に透けた画素"):
+        finish_frames.read_frame(_write_bgra(tmp_path / "clear.png", bgra), 7)
+    grey16 = (np.arange(H * W, dtype=np.uint16).reshape(H, W) * 37)
+    deep = _write_bgra(tmp_path / "grey16.png", grey16)
+    assert np.array_equal(finish_frames.read_frame(deep, 1), read_image(deep))
+
+
+def test_the_run_stops_on_a_transparent_frame(tmp_path):
+    path = _frames(tmp_path, count=2)
+    frame = _write_bgra(tmp_path / "frames" / "f0002.png", np.zeros((H, W, 4), np.uint8))   # 透けた背景（render.stage など）
+    record = json.loads(path.read_text(encoding="utf-8"))
+    data = frame.read_bytes()
+    record["frames"][1].update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(PipelineError, match="T 2 に透けた画素"):
+        finish_frames.render_run(_spec(tmp_path), out=tmp_path / "runs", quiet=True)
+    _write_bgra(tmp_path / "frames" / "f0001.png", np.zeros((H, W, 4), np.uint8))           # 最初のコマなら run を作る前に止める
+    record["frames"][0].update(sha256=hashlib.sha256((tmp_path / "frames" / "f0001.png").read_bytes()).hexdigest(),
+                               bytes=(tmp_path / "frames" / "f0001.png").stat().st_size)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(PipelineError, match="T 1 に透けた画素"):
+        finish_frames.render_run(_spec(tmp_path), out=tmp_path / "runs2", quiet=True)
+    assert not (tmp_path / "runs2").exists()
+
+
 def test_the_run_writes_the_finished_video_and_frames(tmp_path):
     _frames(tmp_path, count=4)
     _track(tmp_path, {1: {}, 2: {"flash": 0.8}, 3: {}, 4: {"fade": 0.25}})

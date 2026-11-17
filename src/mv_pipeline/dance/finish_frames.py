@@ -131,6 +131,27 @@ def finish_one(image, values, T, fps, look=None):
     return finish_frame(finish_values(values), plan, T, image, look)
 
 
+def read_frame(path, T):
+    """完成コマを RGB の 0〜1 の float32 で読む。透けた画素（アルファが最大より小さい）のあるコマは止める。そのまま読むとアルファが
+    黙って消え、透けた所が不透明な色になって、技術検査も通ってしまうため（render.title と同じ。render.stage の透けた背景など）。
+    アルファがあっても全部不透明なら、アルファを除いて読む（cv2 の IMREAD_COLOR で読んだのと同じ値）。"""
+    import cv2
+
+    from .passes_scene import read_image
+    image = cv2.imdecode(np.frombuffer(Path(path).read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise PipelineError(f"画像を読めません: {path}")
+    if image.ndim == 3 and image.shape[2] in (2, 4):
+        alpha = image[..., -1]
+        opaque = np.iinfo(alpha.dtype).max if np.issubdtype(alpha.dtype, np.integer) else 1.0
+        if alpha.min() < opaque:
+            raise PipelineError(f"コマ T {T} に透けた画素があります: {path}。仕上げは透けを残せない（RGB の動画にする）ので、"
+                                "先に土台へ重ねてから（mv overlay など）掛けてください")
+    if image.dtype == np.uint8 and image.ndim == 3 and image.shape[2] in (3, 4):
+        return image[..., 2::-1].astype(np.float32) / 255          # BGR(A) → RGB（不透明なアルファは除く）
+    return read_image(path)                                          # 灰色・16 ビットは、今までと同じ読み方（IMREAD_COLOR）
+
+
 def default_out(spec):
     return spec.base_dir / "dance_runs"
 
@@ -147,7 +168,6 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     from ..fx import runs as fxruns
     from . import VARIANT, fingerprint
     from .passes import audio_plan
-    from .passes_scene import read_image
     from .runs import _meter
 
     began = time.monotonic()
@@ -156,6 +176,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
     data = spec.data
     frames_path = spec.resolve(data["frames"])
     fps, size, files = load_frames(frames_path)
+    read_frame(files[0][1], files[0][0])                 # 透けたコマ（render.stage の透けた背景など）は、run を作る前に止める
     Ts = [T for T, _ in files]
     track, notes = None, list(spec.warnings)
     if data["lights"] is not None:
@@ -202,7 +223,7 @@ def render_run(spec_path, out=None, force=False, progress=None, quiet=False):
         def frames():
             from ..fx import compare
             for i, (T, file) in enumerate(files):
-                image = read_image(file)
+                image = read_frame(file, T)
                 if image.shape[:2] != (height, width):
                     raise PipelineError(f"コマ T {T} の大きさ（{image.shape[1]}×{image.shape[0]}）が一覧（{width}×{height}）と違います")
                 finished = finish_one(image, track[T] if track else None, T, fps, look)
