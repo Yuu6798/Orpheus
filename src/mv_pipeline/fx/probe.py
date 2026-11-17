@@ -12,7 +12,10 @@ CI の runner や Windows の PATH には ffprobe が無いことが多く、ffm
 import math
 import re
 import subprocess
+import tempfile
 from pathlib import Path
+
+import numpy as np
 
 from .. import media
 from ..io import PipelineError
@@ -100,6 +103,40 @@ def decode(path, stream):
         frames, seconds, ok = 0, 0.0, False
     return {"ok": ok, "frames": frames, "seconds": seconds,
             "error": None if ok else (error[-400:] or f"ffmpeg が終了コード {result.returncode} で失敗しました")}
+
+
+class RawFrames:
+    """動画を ffmpeg で復号し、rawvideo を 1 コマずつ uint8 の shape（高さ, 幅, チャンネル）で読む。fx の compare（グリッド）と
+    overlay（土台とレイヤー）の読み手の共通の部分。options は -i の後ろで -vf の前の引数、vf と pix_fmt は復号した絵の直し方と形、
+    lead は読めなかったときの文言の頭。"""
+
+    def __init__(self, path, shape, options, vf, pix_fmt, lead=""):
+        self.path, self.shape, self.lead = Path(path), shape, lead
+        self.bytes_per_frame = shape[0] * shape[1] * shape[2]
+        self.errors = tempfile.TemporaryFile()
+        self.proc = subprocess.Popen([media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-an", *options,
+                                      "-vf", vf, "-pix_fmt", pix_fmt, "-f", "rawvideo", "pipe:1"],
+                                     stdout=subprocess.PIPE, stderr=self.errors)
+
+    def read(self):
+        data = self.proc.stdout.read(self.bytes_per_frame)
+        while data is not None and len(data) < self.bytes_per_frame:
+            more = self.proc.stdout.read(self.bytes_per_frame - len(data))
+            if not more:
+                break
+            data += more
+        if data is None or len(data) != self.bytes_per_frame:
+            self.errors.seek(0)
+            detail = self.errors.read()[-400:].decode("utf-8", "replace")
+            raise PipelineError(f"{self.lead}{self.path.name} を復号できませんでした: {detail or '途中で終わりました'}")
+        return np.frombuffer(data, dtype=np.uint8).reshape(self.shape)
+
+    def close(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.stdout.close()
+        self.proc.wait()
+        self.errors.close()
 
 
 def check_video(path, *, width=None, height=None, fps=None, frames=None, audio=None, audio_s=None, bt709=False,

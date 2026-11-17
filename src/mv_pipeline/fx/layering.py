@@ -80,6 +80,11 @@ def frame_number(path):
     return int(digits[-1])
 
 
+def natural_key(path):
+    """frame2 < frame10 になる並び（数字の桁をそろえていない連番でも順序を間違えない）。"""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", Path(path).name)]
+
+
 def has_alpha(image):
     return "A" in image.getbands() or (image.mode == "P" and "transparency" in image.info)
 

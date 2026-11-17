@@ -27,6 +27,8 @@ cv2 を使う（fx extra）。このパッケージを import しても cv2 は�
 import hashlib
 from pathlib import Path
 
+from ..fx import tree_digest
+
 SCHEMA_VERSION = "inspect/0.1"
 REPORT_SCHEMA = "inspect-report/0.1"
 PLAN_SCHEMA = "inspect-fix-plan/0.1"
@@ -39,10 +41,4 @@ _PACKAGE = Path(__file__).resolve().parent
 
 def fingerprint():
     """inspection パッケージの .py と .json の（相対パス, sha256）から作る 16 進 64 桁。"""
-    digest = hashlib.sha256()
-    files = sorted(p for p in _PACKAGE.rglob("*") if p.is_file()
-                   and p.suffix in {".py", ".json"} and "__pycache__" not in p.parts)
-    for path in files:
-        digest.update(path.relative_to(_PACKAGE).as_posix().encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()
+    return tree_digest(hashlib.sha256(), _PACKAGE).hexdigest()

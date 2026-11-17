@@ -21,16 +21,13 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from .sequence import ease  # noqa: F401（accent が読む。sequence と同じもの。smoothstep とは別物）
+
 _cache = {}
 TEX_LIMIT = 160            # 作り置くむらの枚数の上限（超えたら作り直す）
 
 
 # ---- 小道具 -------------------------------------------------------------------------------
-
-def ease(x):
-    x = min(max(x, 0.0), 1.0)
-    return x * x * (3 - 2 * x)
-
 
 def lerp_keys(keys, t):
     """keys = [[t, v], ...]（v は数か数の並び）を t で直線補間する。範囲の外は端の値。"""

@@ -15,14 +15,13 @@ refine 回、点数の高い検出（上位 REFINE_SHARE）から型紙を作り
 """
 import json
 import math
-import os
 from pathlib import Path
 
 import cv2
 import jsonschema
 import numpy as np
 
-from ..io import JPEG_MAX_SIDE, PipelineError, atomic_image, atomic_json, read_json, safe_path, sha256
+from ..io import JPEG_MAX_SIDE, PipelineError, atomic_image, atomic_json, read_json, safe_path, same_file, sha256
 from . import VERSION, fingerprint
 
 SCHEMA_VERSION = "fx-points/0.1"
@@ -302,8 +301,7 @@ def preview(rgb, plan, points, seeds):
 def output_targets(out_dir, plan_path, image_path):
     """書き出し先（points.json・points_preview.jpg・template.png）。入力（計画・画像）と同じファイルなら、何も書く前に止める。
     画像の書き出しの一時ファイル（io.atomic_image の <名前>.tmp）も同じに扱う。"""
-    def key(path):
-        return os.path.normcase(str(Path(path).resolve()))
+    key = same_file
 
     inputs = {key(plan_path): "計画", key(image_path): "画像"}
     targets = {name: Path(out_dir) / name for name in (POINTS_NAME, PREVIEW_NAME, TEMPLATE_NAME)}

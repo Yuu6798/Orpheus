@@ -25,9 +25,6 @@ fx の共通の書き出し（render.write_video。BT.709・tv・yuv420p の式�
 書き出しは fx の render（cv2 を import する）にあるので fx extra が要る。style と resize も cv2 を使う。
 """
 import json
-import re
-import subprocess
-import tempfile
 import time
 from pathlib import Path
 
@@ -35,11 +32,10 @@ import jsonschema
 import numpy as np
 from PIL import Image
 
-from .. import media
 from ..io import PipelineError, atomic_json, sha256
 from . import fingerprint, probe, runs
 from .layering import (LAYERS_SCHEMA_PATH, LAYERS_VERSION, PLAIN, STYLE_DEFAULTS, apply_layer, entry_options,  # noqa: F401
-                       validate_entries)
+                       natural_key, validate_entries)
 from .layering import check_fit as _check_fit, fit as _fit, frame_number as _frame_number, has_alpha as _has_alpha  # noqa: F401
 from .layering import normalize_style as _normalize_style, opacity as _opacity, read_rgba as _rgba  # noqa: F401
 
@@ -54,11 +50,6 @@ DEFAULT_CRF = 18
 
 def _is_image(path):
     return Path(path).suffix.lower() in IMAGE_SUFFIXES
-
-
-def natural_key(path):
-    """frame2 < frame10 になる並び（数字の桁をそろえていない連番でも順序を間違えない）。"""
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", Path(path).name)]
 
 
 def _image_size(path):
@@ -237,7 +228,7 @@ def resolve(base, layers, fps, frames=None):
 
 # ---- 読み出し ---------------------------------------------------------------------
 
-class _VideoReader:
+class _VideoReader(probe.RawFrames):
     """動画を rgb24（土台）か rgba（レイヤー）で 1 コマずつ読む。寸法は変えない。
 
     コマは復号順にそのまま（-fps_mode passthrough。probe.decode の数え方と同じ）。タグが bt709 の動画は行列を指定して読む
@@ -246,33 +237,9 @@ class _VideoReader:
     def __init__(self, path, size, pix_fmt, matrix=None, start=0):
         width, height = size
         channels = 4 if pix_fmt == "rgba" else 3
-        self.path, self.bytes_per_frame, self.shape = Path(path), width * height * channels, (height, width, channels)
-        self.errors = tempfile.TemporaryFile()
         scale = ((f"trim=start_frame={int(start)}," if start else "")      # first_frame: 復号順の start コマ目から
                  + "scale=iw:ih:flags=bicubic+accurate_rnd+full_chroma_int" + (":in_color_matrix=bt709" if matrix == "bt709" else ""))
-        self.proc = subprocess.Popen([media.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-i", str(path), "-an",
-                                      "-fps_mode", "passthrough", "-vf", scale, "-pix_fmt", pix_fmt, "-f", "rawvideo", "pipe:1"],
-                                     stdout=subprocess.PIPE, stderr=self.errors)
-
-    def read(self):
-        data = self.proc.stdout.read(self.bytes_per_frame)
-        while data is not None and len(data) < self.bytes_per_frame:
-            more = self.proc.stdout.read(self.bytes_per_frame - len(data))
-            if not more:
-                break
-            data += more
-        if data is None or len(data) != self.bytes_per_frame:
-            self.errors.seek(0)
-            detail = self.errors.read()[-400:].decode("utf-8", "replace")
-            raise PipelineError(f"{self.path.name} を復号できませんでした: {detail or '途中で終わりました'}")
-        return np.frombuffer(data, dtype=np.uint8).reshape(self.shape)
-
-    def close(self):
-        if self.proc.poll() is None:
-            self.proc.kill()
-        self.proc.stdout.close()
-        self.proc.wait()
-        self.errors.close()
+        super().__init__(path, (height, width, channels), ["-fps_mode", "passthrough"], scale, pix_fmt)
 
 
 def _base_frames(base, n_frames):

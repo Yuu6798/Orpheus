@@ -59,6 +59,16 @@ def without_look(sp):
                    warnings=tuple(w for w in sp.warnings if not w.startswith(LOOK_WARNING_PREFIX)))
 
 
+def scaled_size(spec, scale=1.0):
+    """出力寸法 × scale を偶数に丸めた (W, H)。scale=1.0 なら spec の output どおり。fx の render と dance の compose が使う
+    （どちらの spec も data["output"] に width・height を持つ）。"""
+    out = spec.data["output"]
+    if not 0 < scale <= 4:
+        raise PipelineError(f"scale は 0 より大きく 4 以下にしてください: {scale}")
+    even = lambda v: max(16, 2 * int(round(v * scale / 2)))  # noqa: E731
+    return even(out["width"]), even(out["height"])
+
+
 def canonical_json(data):
     """キャッシュ key 用の正規形（鍵順固定・空白なし・非 ASCII そのまま）。"""
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)

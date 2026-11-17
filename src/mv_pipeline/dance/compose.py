@@ -19,6 +19,7 @@ from PIL import Image
 from ..fx import look as fxlook
 from ..fx import timeline
 from ..fx.color import color_to_linear, from_srgb_float, to_linear, to_srgb8, to_srgb_float
+from ..fx.spec import scaled_size   # fx の render と同じもの（runs もここから読む）
 from ..io import PipelineError, sha256
 from . import SCHEMA_V01
 from . import beats as dancebeats
@@ -69,14 +70,6 @@ class Context:
     def close(self):
         self.clips.close()
         self.stage.close()
-
-
-def scaled_size(spec, scale=1.0):
-    out = spec.data["output"]
-    if not 0 < scale <= 4:
-        raise PipelineError(f"scale は 0 より大きく 4 以下にしてください: {scale}")
-    even = lambda v: max(16, 2 * int(round(v * scale / 2)))  # noqa: E731
-    return even(out["width"]), even(out["height"])
 
 
 def _cover(image, size):

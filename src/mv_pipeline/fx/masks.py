@@ -21,7 +21,7 @@ import jsonschema
 import numpy as np
 from PIL import Image
 
-from ..io import PipelineError, atomic_json, read_json, safe_path, sha256
+from ..io import PipelineError, atomic_json, read_json, safe_path, same_file, sha256
 from ..runner import now
 from . import VERSION, fingerprint
 
@@ -314,10 +314,7 @@ def output_targets(plan, out_dir, plan_path, base_dir):
     """マスクごとの書き出し先（解決した絶対パス）。何も書く前に、次を止める（綴りが違っても同じファイルなら同じ）:
     確認用の絵か記録の名前のマスク（確認用の絵は preview を切っていても名前を空けておく）、ほかのマスクと同じ書き出し先、
     入力（計画・基準画像・image の画像）と同じファイルに書く出力（マスク・確認用の絵・記録。入力を壊さない）。"""
-    import os
-
-    def key(path):
-        return os.path.normcase(str(Path(path).resolve()))
+    key = same_file
 
     inputs = {key(plan_path): "計画", key(safe_path(base_dir, plan["base"])): "基準画像"}
     for mask in plan["masks"]:

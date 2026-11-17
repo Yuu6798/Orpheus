@@ -39,9 +39,7 @@ def normalize(items):
     return out
 
 
-def _natural(path):
-    import re
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", Path(path).name)]
+_natural = layering.natural_key   # 以前の名前（連番の並び。overlay と同じもの）
 
 
 def _frames_of(folder, entry, total):

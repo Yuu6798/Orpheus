@@ -20,6 +20,7 @@ from PIL import Image
 from .. import media
 from ..fx import probe
 from ..io import PipelineError
+from .cues import smoothstep   # cues と同じもの（compose もここから読む）
 
 KNOWN_MATRICES = ("bt709", "smpte170m", "bt470bg")   # 正しく読める行列。bt709 以外の 2 つは BT.601 と同じ行列
 
@@ -166,11 +167,6 @@ class Still:
 
     def close(self):
         pass
-
-
-def smoothstep(u):
-    u = min(1.0, max(0.0, u))
-    return u * u * (3.0 - 2.0 * u)
 
 
 def round_frame(value, rounding):

@@ -63,6 +63,8 @@ PULSE_DECAY = 9.0       # 拍の脈の減り方（1/秒。実制作の 2 つの�
 
 
 def ease(x):
+    """つなぎの割合（0〜1 に切ってから 3x² − 2x³）。fire（accent）も同じものを読む。dance.cues.smoothstep とは別物（nan は nan のまま、
+    整数の 0・1 は整数のまま返す）。"""
     x = min(max(x, 0.0), 1.0)
     return x * x * (3 - 2 * x)
 
