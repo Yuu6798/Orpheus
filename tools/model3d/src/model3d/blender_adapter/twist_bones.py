@@ -14,6 +14,7 @@
   2. メッシュ（meshes。省くとこのアーマチュアで動く全部のメッシュ）の bone の頂点グループの重みを、骨に沿った位置 t（0 = 付け根、1 = 先。初期姿勢）で
      分ける: 元の骨に t、足した骨に 1 − t。腕輪のように bone だけにほぼ付いた小さな島（rigid_max_verts 頂点以下で、bone が
      いちばん重い頂点が rigid_share を超える島）は、島の t の平均で分ける（島の中でねじれて模様が歪まないように）。
+     メッシュのデータをほかの物体と分け合う（リンク複製）物体は、先にその物体だけのデータにする（重みはデータに付くので）。
 骨の拘束は、アプリによって効かない（VRM に書き出すと腕が崩れうる）。ねじれを分ける骨は動画の中だけにする。
 
 報告は model3d-twist-bones/0.1。**検証**: 本物の Blender 5.2.4 で、2 作目の VRM のダンスで、リポジトリの外の台本と同じ骨と重みになる
@@ -67,6 +68,19 @@ def split_shares(along, roots, touched, dominant, max_verts, share):
             out[members] = float(along[members].mean())
             rigid += 1
     return out, rigid
+
+
+def separate_shared(objects, meshes):
+    """meshes のうち、メッシュのデータをほかの物体と分け合う（リンク複製）物体を、その物体だけのデータにする。重みはメッシュのデータに
+    付くので、分け合ったままだと、同じ重みを 2 回分けたり、選んでいない複製の重みまで変わったりする（prepare_push の make_groups と
+    同じ）。戻り: {分けた物体の名前: 分け合っていた物体の名前}（選んだ複製どうしなら、片方を分ければもう片方は元のデータのまま）。"""
+    separated = {}
+    for obj in meshes:
+        sharing = sorted(other.name for other in objects if other.data == obj.data and other.name != obj.name)
+        if sharing:
+            obj.data = obj.data.copy()
+            separated[obj.name] = sharing
+    return separated
 
 
 def group_state(mesh, group_index, bone_groups=None):
@@ -142,7 +156,8 @@ def main(argv=None):
         track.track_axis = "TRACK_Y"
     bpy.ops.object.mode_set(mode="OBJECT")
 
-    # 2. 重みを振り分ける
+    # 2. 重みを振り分ける（リンク複製は先にその物体だけのデータにする）
+    separated = separate_shared(bpy.data.objects, meshes)
     weights_report = {}
     deform = deform_names(armature)                     # 足した骨も変形に使う（いちばん重い骨の判定は、変形に使う骨のグループの中で）
     for obj in meshes:
@@ -171,7 +186,7 @@ def main(argv=None):
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     report = {"schema_version": "model3d-twist-bones/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "armature": armature.name, "bones": [{"name": e["name"], "copy_of": e["bone"], "aims_at": e["aim"]} for e in settings["bones"]],
-              "weights": weights_report, "meshes": [obj.name for obj in meshes], "settings": settings}
+              "weights": weights_report, "meshes": [obj.name for obj in meshes], "separated_from": separated, "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

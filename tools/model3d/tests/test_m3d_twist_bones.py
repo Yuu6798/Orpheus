@@ -32,6 +32,26 @@ def test_small_islands_on_the_bone_take_one_share():
     assert rigid == 0                                                      # 大きすぎる島は分けない
 
 
+def test_linked_duplicates_get_their_own_mesh_before_weights_change():
+    from types import SimpleNamespace as NS
+
+    class Mesh:
+        def copy(self):
+            return Mesh()
+
+    shared, other_shared, alone = Mesh(), Mesh(), Mesh()
+    a, b = NS(name="A", data=shared), NS(name="B", data=shared)               # 選んだ複製どうし
+    c, d = NS(name="C", data=other_shared), NS(name="D", data=other_shared)   # D だけ選ぶ（C は別のキャラ）
+    e = NS(name="E", data=alone)
+    rig = NS(name="Rig", data=None)
+    separated = tb.separate_shared([a, b, c, d, e, rig], [a, b, d, e])
+    assert separated == {"A": ["B"], "D": ["C"]}
+    assert a.data is not shared and b.data is shared                         # 片方を分ければ、もう片方は元のまま（1 回ずつ分ける）
+    assert d.data is not other_shared and c.data is other_shared             # 選んでいない複製のデータは変えない
+    assert e.data is alone
+    assert tb.separate_shared([a, b, c, d, e, rig], [a, b, d, e]) == {}      # もう分け合っていない
+
+
 def test_dominant_bone_is_chosen_among_deform_groups():
     from types import SimpleNamespace as NS
     vertices = [NS(index=0, groups=[NS(group=1, weight=1.0), NS(group=0, weight=0.8)]), NS(index=1, groups=[NS(group=0, weight=0.5)])]
