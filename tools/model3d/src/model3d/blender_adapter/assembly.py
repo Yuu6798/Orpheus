@@ -4,7 +4,8 @@
     blender --background --factory-startup model.blend --python assembly.py -- --settings settings.json --report raw.json [--views DIR]
 
 測るのはメッシュの基本の形を物体の置き場所で世界の座標にしたもの（形状キー・モディファイアは使わない。絵は評価した形で描く）。
-settings: body・head・hair（物体の名前の並び。名前の物体とその子孫の、描く物のメッシュを、シーンの並び順に集める）、pivot（頭と髪を
+settings: body・head・hair（物体の名前の並び。名前の物体とその子孫の、描かれるメッシュ（物体とコレクションの描かない設定と、
+ビューレイヤーの除外を見る。ground_feet.rendered）を、シーンの並び順に集める）、pivot（頭と髪を
 大きくする中心。省くと頭のメッシュの箱の中心）、reference・anchor・place（assembly_measure.proposal）、bust（胸から上の絵の幅と、
 頭の真ん中から下げる量。m）。動かすのは、頭と髪の名前の物体のうち、祖先が名前に入っていない物（子は親について動く）。
 --views があれば、今の配置（now_*）と動かした後（after_*）を、Workbench で正射影で描く（色の絵そのままと粘土）。
@@ -20,10 +21,14 @@ import sys
 try:   # パッケージとして読むとき（テスト）
     from . import assembly_measure
     from .candidate_mesh import world_mesh
+    from .face_sheet import DISPLAY_FIXED, IMAGE_FIXED, RENDER_FIXED, VIEW_FIXED, setting_changes
+    from .ground_feet import rendered
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import assembly_measure
     from candidate_mesh import world_mesh
+    from face_sheet import DISPLAY_FIXED, IMAGE_FIXED, RENDER_FIXED, VIEW_FIXED, setting_changes
+    from ground_feet import rendered
 
 CLAY = (0.78, 0.78, 0.8)
 BACKGROUND = (0.55, 0.55, 0.58)
@@ -38,11 +43,11 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
-def collect(scene, names):
-    """names の物体と、その子孫のメッシュ（描く物だけ。シーンの並び順）。"""
+def collect(scene, names, shown):
+    """names の物体と、その子孫のメッシュのうち、shown（描かれるか）が真の物（シーンの並び順）。"""
     named, found = set(names), []
     for ob in scene.objects:
-        if ob.type != "MESH" or ob.hide_render:
+        if ob.type != "MESH" or not shown(ob):
             continue
         parent = ob
         while parent is not None and parent.name not in named:
@@ -98,23 +103,36 @@ def base_colour_active(bpy):
 
 
 def setup_render(bpy, scene):
+    """Workbench の描き方にし、.blend から引き継ぐと出てくる絵をすり替えうる描く設定（シーケンサー・コンポジター・描く範囲の切り取り・
+    画素の縦横比・多視点・透ける背景・ぶれ・色の補正・表示の装置・出力の形式）を render.face_sheet と同じ値にする。マーカーに結んだ
+    カメラも外す。カメラと、.blend と違っていた設定（render_changes）を返す。"""
     scene.render.engine = "BLENDER_WORKBENCH"
     shading = scene.display.shading
     shading.show_shadows = False
     shading.show_backface_culling = False
-    scene.render.film_transparent = False
+    groups = (("display", scene.display_settings, DISPLAY_FIXED), ("render", scene.render, RENDER_FIXED),
+              ("image", scene.render.image_settings, IMAGE_FIXED))
+    changes = {key: setting_changes({name: getattr(target, name) for name in fixed}, fixed) for key, target, fixed in groups}
+    for key, target, _ in groups:
+        for name, (_, value) in changes[key].items():
+            setattr(target, name, value)
     if scene.world is None:
         scene.world = bpy.data.worlds.new("model3d_assembly_world")
     scene.world.use_nodes = False
     scene.world.color = BACKGROUND
-    scene.view_settings.view_transform = "Standard"
-    scene.render.image_settings.file_format = "PNG"
+    scene.view_settings.view_transform = "Standard"      # 表示の装置を決めてから（選べる変換は装置ごと）
+    changes["view"] = setting_changes({name: getattr(scene.view_settings, name) for name in VIEW_FIXED}, VIEW_FIXED)
+    for name, (_, value) in changes["view"].items():
+        setattr(scene.view_settings, name, value)
+    changes["marker_cameras"] = [marker.name for marker in scene.timeline_markers if marker.camera is not None]
+    for marker in scene.timeline_markers:                # マーカーに結んだカメラは、描くときにカメラを差し替える
+        marker.camera = None
     camera_data = bpy.data.cameras.new("model3d_assembly_camera")
     camera_data.type = "ORTHO"
     camera = bpy.data.objects.new("model3d_assembly_camera", camera_data)
     scene.collection.objects.link(camera)
     scene.camera = camera
-    return camera
+    return camera, changes
 
 
 def render(bpy, scene, camera, folder, name, direction, centre, ortho, res, mode):
@@ -154,7 +172,7 @@ def main(argv=None):
     missing = sorted({name for key in GROUPS for name in settings[key] if scene.objects.get(name) is None})
     if missing:
         raise SystemExit(f"シーンに無い物体: {missing}")
-    groups = {key: collect(scene, settings[key]) for key in GROUPS}
+    groups = {key: collect(scene, settings[key], lambda ob: rendered(ob, scene.view_layers)) for key in GROUPS}
     for key, found in groups.items():
         if not any(len(ob.data.vertices) for ob in found):
             raise SystemExit(f"{key} の名前の物体とその子孫に、描くメッシュがありません: {settings[key]}")
@@ -194,7 +212,7 @@ def main(argv=None):
     if folder:
         os.makedirs(folder, exist_ok=True)
         base_colour_active(bpy)
-        camera = setup_render(bpy, scene)
+        camera, report["render_changes"] = setup_render(bpy, scene)
         report["views"] = {name: render(bpy, scene, camera, folder, name, *rest)
                            for name, *rest in assembly_measure.view_plan(now, "now", bust_size, bust_drop)}
     # メモリの中で頭と髪を動かす（保存しない）

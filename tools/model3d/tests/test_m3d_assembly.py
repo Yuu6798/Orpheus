@@ -147,20 +147,24 @@ class _Scene:
         self.objects = objects
 
 
+def SHOWN(ob):
+    return not ob.hide_render
+
+
 def test_objects_are_collected_by_name_and_only_the_top_named_ones_move():
     body_root, head_root = _Ob("body", "EMPTY"), _Ob("head", "EMPTY")
     obs = [body_root, _Ob("Body", parent=body_root), _Ob("Skirt", parent=body_root), _Ob("Hidden", parent=body_root, hidden=True),
            head_root, _Ob("Face", parent=head_root), _Ob("Hair"), _Ob("Tassel", parent=None)]
     scene = _Scene(obs)
-    assert [o.name for o in assembly.collect(scene, ["body"])] == ["Body", "Skirt"]          # 描く物のメッシュだけ、シーンの並び順
-    assert [o.name for o in assembly.collect(scene, ["head", "Face"])] == ["Face"]
+    assert [o.name for o in assembly.collect(scene, ["body"], SHOWN)] == ["Body", "Skirt"]          # 描く物のメッシュだけ、シーンの並び順
+    assert [o.name for o in assembly.collect(scene, ["head", "Face"], SHOWN)] == ["Face"]
     assert [o.name for o in assembly.movers(scene, ["head", "Face", "Hair"])] == ["head", "Hair"]   # 子は親について動く
-    groups = {"body": assembly.collect(scene, ["body"]), "head": assembly.collect(scene, ["head"]), "hair": assembly.collect(scene, ["Hair"])}
+    groups = {"body": assembly.collect(scene, ["body"], SHOWN), "head": assembly.collect(scene, ["head"], SHOWN), "hair": assembly.collect(scene, ["Hair"], SHOWN)}
     assert assembly.check_groups(groups, assembly.movers(scene, ["head", "Hair"])) is None
-    groups["hair"] = assembly.collect(scene, ["Skirt"])
+    groups["hair"] = assembly.collect(scene, ["Skirt"], SHOWN)
     assert "子孫にも" in assembly.check_groups(groups, assembly.movers(scene, ["head"]))
     body_root.parent = head_root                                                            # 体が頭の子なら、頭と一緒に動いてしまう
-    groups["hair"] = assembly.collect(scene, ["Hair"])
+    groups["hair"] = assembly.collect(scene, ["Hair"], SHOWN)
     assert "動かす物体 head" in assembly.check_groups(groups, assembly.movers(scene, ["head", "Hair"]))
 
 
