@@ -441,14 +441,15 @@ def three_view(inputs, parameters, outputs, context):
     return _finish(report, outputs, parameters, "三面図の高さ")
 
 
-FACE_LENGTH_PARAMETERS = {"eye_y", "chin_y", "d", "k", "start"}
+FACE_LENGTH_PARAMETERS = {"eye_y", "chin_y", "d", "k", "start", "above_band"}
 
 
 @register("texture.face_length", inputs=("image",), outputs=("image", "report"),
           summary="頭の絵（透けつきの PNG）の、目の少し下（目の中心の行 eye_y から start × d 下。既定 0.10）からあごの先の行 chin_y までの帯を、"
                   "描き直さずに縦に k 倍にする（行の付け替えだけ。帯の両端では変えず真ん中ほど強く、帯より上は動かさず、下は長さの差だけずらす）。"
                   "絵の幅いっぱいに同じ付け替えをするので髪の筋が横にずれない。Lanczos4 で引き、透けを掛けてから付け替えて戻す。d は目の間隔（画素）。"
-                  "k に既定は無い。numpy と Pillow だけで、同じ入力なら再利用する")
+                  "帯より上の見える画素は変えない。透けが 0 の画素に残っていた色は、既定（above_band: resample。台本と同じ）では 0 になり、"
+                  "above_band: copy で帯より上の行を元の絵から写すと元のまま。k に既定は無い。numpy と Pillow だけで、同じ入力なら再利用する")
 def face_length(inputs, parameters, outputs, context):
     import numpy as np
     from PIL import Image
@@ -473,10 +474,14 @@ def face_length(inputs, parameters, outputs, context):
         raise ToolError("texture.face_length には透けのある絵（RGBA の PNG）を渡してください")
     if chin_y >= rgb.shape[0]:
         raise ToolError(f"chin_y（{chin_y}）が絵の高さ（{rgb.shape[0]}）の外です")
-    out, info = checkpoint.shorten_face(np.dstack([rgb, alpha]), eye_y, chin_y, d, k, start)
+    above_band = parameters.get("above_band", "resample")
+    if above_band not in checkpoint.ABOVE_BAND:
+        raise ToolError(f"above_band は resample（既定。台本と同じ）か copy（帯より上の行を元の絵から写す）にしてください: {above_band!r}")
+    out, info = checkpoint.shorten_face(np.dstack([rgb, alpha]), eye_y, chin_y, d, k, start, above_band)
     Image.fromarray(out).save(outputs["image"], format="PNG")
     report = {"schema_version": "model3d-face-length/0.1", "image": str(inputs["image"]), "eye_y": eye_y, "d": d, **info,
               "size": [int(out.shape[1]), int(out.shape[0])]}
     if "report" in outputs:
         atomic_json(outputs["report"], report)
-    return StepResult(observations=[{"kind": "face_length", **{key: report[key] for key in ("band_y", "k", "shift_px", "chin_y_after")}}])
+    return StepResult(observations=[{"kind": "face_length", **{key: report[key] for key in ("band_y", "k", "shift_px", "chin_y_after",
+                                                                                         "above_band")}}])

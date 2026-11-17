@@ -641,11 +641,16 @@ def remap_rows(image, source_rows):
     return out
 
 
-def shorten_face(rgba, eye_y, chin_y, d, k, start=0.10):
+ABOVE_BAND = ("resample", "copy")    # 帯より上の行: resample（既定。台本と同じく、ほかの行と同じ付け替えを通す）か copy（元の絵から写す）
+
+
+def shorten_face(rgba, eye_y, chin_y, d, k, start=0.10, above_band="resample"):
     """透けつきの 8 ビットの (H, W, 4) の絵の、目の少し下（目の中心の行から start × d）からあごの先の行までの帯を、縦に k 倍にする
     （1 より小さいと詰める。帯の両端では変えず、真ん中ほど強く。行の対応は 元の行 = y0 + L × (t − (1 − k) sin(2πt) / 2π)、
     t = (出力の行 − y0) / (k L)）。帯より上は動かさず、帯より下は帯の長さの差だけずらす。絵の幅いっぱいに同じ付け替えをするので、
-    髪の筋が横にずれない。透けの縁がにじまないよう、色に透けを掛けてから付け替え、あとで戻す。"""
+    髪の筋が横にずれない。透けの縁がにじまないよう、色に透けを掛けてから付け替え、あとで戻す（透けが 0 の画素に残っていた色は 0 になる）。
+    above_band: resample（既定。台本と同じ）は帯より上の行も同じ付け替えを通す（見える画素は変わらず、透けが 0 の画素の色は 0 になる）。
+    copy は帯より上の行を元の絵からそのまま写す（透けが 0 の画素の色も元のまま）。"""
     import math
     h = rgba.shape[0]
     y0 = eye_y + start * d
@@ -662,4 +667,9 @@ def shorten_face(rgba, eye_y, chin_y, d, k, start=0.10):
     alpha = np.clip(warped[:, :, 3:4], 0, 1)
     colour = np.where(alpha > 1e-4, warped[:, :, :3] / np.maximum(alpha, 1e-4), 0)
     out = np.round(np.concatenate([np.clip(colour, 0, 1), alpha], axis=2) * 255).astype(np.uint8)
-    return out, {"band_y": [y0, chin_y], "k": k, "start": start, "shift_px": shift, "chin_y_after": y0 + Lk}
+    if above_band == "copy":
+        top = min(h, int(math.floor(y0)) + 1)                  # 元の行 = 出力の行 の所（帯より上）
+        out[:top] = rgba[:top]
+    elif above_band != "resample":
+        raise ToolError(f"above_band は {' か '.join(ABOVE_BAND)} にしてください: {above_band!r}")
+    return out, {"band_y": [y0, chin_y], "k": k, "start": start, "shift_px": shift, "chin_y_after": y0 + Lk, "above_band": above_band}

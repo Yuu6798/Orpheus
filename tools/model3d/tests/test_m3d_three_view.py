@@ -141,6 +141,20 @@ def test_shorten_face_keeps_the_top_and_moves_the_chin_up():
     assert (out[:, 30:40, 3] == 0).all()                                          # 透けは透けのまま
 
 
+def test_hidden_colours_above_the_band_are_cleared_by_default_and_kept_by_copy():
+    """透けが 0 なのに色の残っている画素: 既定（台本と同じ）では 0 になる。above_band: copy では帯より上の行が元とバイトまで同じ。"""
+    rgba = _head()
+    rgba[:, 30:40, :3] = 9                                                        # 透けが 0 の所に、見えない色
+    default, info = checkpoint.shorten_face(rgba, eye_y=40, chin_y=80, d=20, k=0.9, start=0.1)
+    assert info["above_band"] == "resample" and (default[:43, 30:40, :3] == 0).all()
+    assert (default[:43, :30] == rgba[:43, :30]).all()                            # 見える画素は変わらない
+    copy, info = checkpoint.shorten_face(rgba, eye_y=40, chin_y=80, d=20, k=0.9, start=0.1, above_band="copy")
+    assert info["above_band"] == "copy" and (copy[:43] == rgba[:43]).all()
+    assert (copy[43:] == default[43:]).all()                                      # 帯から下はどちらも同じ
+    with pytest.raises(ToolError, match="above_band"):
+        checkpoint.shorten_face(rgba, eye_y=40, chin_y=80, d=20, k=0.9, above_band="keep")
+
+
 def test_face_length_operation_writes_a_png(tmp_path):
     from model3d.ops import get
     source = _save(tmp_path, "head.png", _head())
@@ -155,6 +169,7 @@ def test_face_length_operation_writes_a_png(tmp_path):
     ({"chin_y": 80, "d": 20, "k": 0.9}, None, "eye_y"),
     ({"eye_y": 40, "chin_y": 80, "d": 20}, None, " k "),
     ({"eye_y": 40, "chin_y": 80, "d": 20, "k": 2.0}, None, "k は"),
+    ({"eye_y": 40, "chin_y": 80, "d": 20, "k": 0.9, "above_band": "keep"}, None, "above_band"),
     ({"eye_y": 40, "chin_y": 80, "d": 0, "k": 0.9}, None, "d は"),
     ({"eye_y": 40, "chin_y": 41, "d": 20, "k": 0.9}, None, "chin_y"),
     ({"eye_y": 40, "chin_y": 500, "d": 20, "k": 0.9}, None, "絵の高さ"),
