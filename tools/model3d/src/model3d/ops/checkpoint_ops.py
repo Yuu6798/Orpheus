@@ -5,6 +5,7 @@
 - vrm.color_factor: VRM の材質（MToon）の色の掛け率を 1 に戻し、影の色も同じ割合で戻す。
 - model.neck_junction: 首と頭のつなぎ目を直す（首の上の端を頭の骨へ付け替え、頭の中へ伸びる栓を足す）。
 - check.illustration: 立ち絵か T ポーズの体の絵の、人物の比率を測る（numpy と Pillow。model3d/checkpoint.py）。
+- check.body_image・check.face_image: 体の絵と顔の絵を、元絵と同じ物差しで比べる（numpy と Pillow）。
 """
 import math
 from pathlib import Path
@@ -263,3 +264,106 @@ def illustration(inputs, parameters, outputs, context):
         checkpoint.draw_view(rgb, mask, report, outputs["view"], green_background=used == "alpha")
     report.update({"pass": None, "reason": "測っただけ（合否は出さない。report_only で測るだけにできる）", "failures": []})
     return _finish(report, outputs, parameters, "絵の比率")
+
+
+BODY_IMAGE_PARAMETERS = {"mask", "background", "alpha_min", "min_run", "strict", "report_only"}
+
+
+def _read_person(path, masking):
+    """絵を読み、人物の画素を決める: (RGB, 人物の画素, 使った決め方)。"""
+    from .. import checkpoint
+    rgb, alpha = checkpoint.read_image(path)
+    mask, used = checkpoint.person_mask(rgb, alpha, **masking)
+    return rgb, mask, used
+
+
+@register("check.body_image", inputs=("reference", "body"), outputs=("report", "overlay"),
+          summary="体の絵（T ポーズでも）を元絵（立ち絵）と、同じ物差しで比べる（numpy と Pillow）: どちらも、足の裏からウエストまでの高さ U に"
+                  "対する、ウエスト・太もも（0.65 U）・ひざ・ふくらはぎ・足首の幅と、裾・ひざ・ふくらはぎ・足首の高さ。表に、体の絵 ÷ 元絵。"
+                  "腕の形に左右されない。overlay は足の裏とウエストを合わせて輪郭を重ねた絵。正面の絵どうしなので厚みは比べない。数を出すだけで"
+                  "合否は出さない（report_only で要確認にしない）。同じ入力なら再利用する")
+def body_image(inputs, parameters, outputs, context):
+    from .. import checkpoint
+    from .check_ops import _finish
+    require(inputs, ("reference", "body"), "check.body_image")
+    _refuse_unknown(parameters, BODY_IMAGE_PARAMETERS, "check.body_image")
+    masking = _masking(parameters)
+    min_run = parameters.get("min_run", 6)
+    if isinstance(min_run, bool) or not isinstance(min_run, int) or min_run < 1:
+        raise ToolError(f"min_run は 1 以上の整数にしてください: {min_run!r}")
+    ref_rgb, ref_mask, ref_used = _read_person(inputs["reference"], masking)
+    body_rgb, body_mask, body_used = _read_person(inputs["body"], masking)
+    reference, body = checkpoint.measure_legs(ref_mask, min_run), checkpoint.measure_legs(body_mask, min_run)
+    report = {"schema_version": "model3d-body-image/0.1", "check": "body_image", "reference": str(inputs["reference"]),
+              "body": str(inputs["body"]), "mask": {"reference": ref_used, "body": body_used},
+              "unit": "U = 足の裏からウエスト（中心をまたぐ区間がいちばん狭い行）までの高さ",
+              "scale_body_to_reference": reference["U_px"] / body["U_px"], "reference_measure": reference, "body_measure": body,
+              "table": checkpoint.compare_legs(reference, body)}
+    if "overlay" in outputs:
+        checkpoint.body_overlay(ref_rgb, ref_mask, body_rgb, body_mask, reference, body, outputs["overlay"])
+    report.update({"pass": None, "reason": "測っただけ（合否は出さない。report_only で測るだけにできる）", "failures": []})
+    return _finish(report, outputs, parameters, "体の絵と元絵の比べ")
+
+
+FACE_IMAGE_PARAMETERS = {"mask", "background", "alpha_min", "iris", "reference_eyes", "head_eyes", "kernel", "size", "strict", "report_only"}
+
+
+def _eyes(value, key):
+    if value is None:
+        return None
+    if (not isinstance(value, list) or len(value) != 4
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in value)):
+        raise ToolError(f"{key} は両目の位置 [左の x, 左の y, 右の x, 右の y]（画素）にしてください: {value!r}")
+    if not value[0] < value[2]:
+        raise ToolError(f"{key} は絵の左の目（x が小さいほう）を先に書いてください（同じ位置か左右が逆です）: {value!r}")
+    return [[float(value[0]), float(value[1])], [float(value[2]), float(value[3])]]
+
+
+@register("check.face_image", inputs=("reference", "head"), outputs=("report", "sheet", "zoom"),
+          summary="頭の絵（正面）の顔を元絵の顔と、両目の位置で合わせて並べる（numpy と Pillow）。両目は、瞳の色の決まり iris に入る画素の"
+                  "かたまりの組で見つける（見つからなければ reference_eyes・head_eyes で手で渡す）。目の間隔 d を size 画素・傾きを 0 にそろえた"
+                  "顔のまわりに、目の高さから下へ 0.5 d ごとの目盛りを引き、[元絵 | 頭の絵 | 半分ずつ重ねた絵]（sheet）と、目からあごまでを"
+                  "拡大して 0.1 d ごとの目盛りの絵（zoom）にする。鼻・口・あごの位置は絵で読む。報告は両目の位置・間隔・傾き。数を出すだけで"
+                  "合否は出さない（report_only で要確認にしない）。同じ入力なら再利用する")
+def face_image(inputs, parameters, outputs, context):
+    import numpy as np
+    from .. import checkpoint
+    from .check_ops import _finish
+    require(inputs, ("reference", "head"), "check.face_image")
+    _refuse_unknown(parameters, FACE_IMAGE_PARAMETERS, "check.face_image")
+    masking = _masking(parameters)
+    manual = {"reference": _eyes(parameters.get("reference_eyes"), "reference_eyes"), "head": _eyes(parameters.get("head_eyes"), "head_eyes")}
+    iris = checkpoint.check_rule(parameters["iris"], "iris") if "iris" in parameters else None
+    if iris is None and None in manual.values():
+        raise ToolError("check.face_image には瞳の色の決まり iris か、両方の絵の両目の位置（reference_eyes・head_eyes）が要ります")
+    kernel = parameters.get("kernel", 3)
+    if isinstance(kernel, bool) or not isinstance(kernel, int) or not 1 <= kernel <= 15:
+        raise ToolError(f"kernel は 1〜15 の整数にしてください: {kernel!r}")
+    size = parameters.get("size", 150)
+    if isinstance(size, bool) or not isinstance(size, int) or not 20 <= size <= 1000:
+        raise ToolError(f"size（出力での目の間隔）は 20〜1000 の整数（画素）にしてください: {size!r}")
+    report = {"schema_version": "model3d-face-image/0.1", "check": "face_image", "size": size, "iris": iris}
+    crops = {}
+    for side in ("reference", "head"):
+        rgb, mask, used = _read_person(inputs[side], masking)
+        white = checkpoint.whitened(rgb, mask)
+        eyes, how = manual[side], "manual"
+        if eyes is None:
+            eyes, how = checkpoint.find_eyes(white, iris, kernel), "iris"
+            if eyes is None:
+                raise ToolError(f"{side} の絵に瞳が 2 つ見つかりません（iris の色の決まりを確かめるか、{side}_eyes で手で渡してください）")
+        crop, d, tilt = checkpoint.face_crop(white, eyes, size)
+        crops[side] = crop
+        report[side] = {"image": str(inputs[side]), "mask": used, "eyes": eyes, "eyes_from": how, "d_px": d, "tilt_deg": tilt}
+    if "sheet" in outputs:
+        from PIL import Image
+        blend = ((crops["reference"].astype(np.uint16) + crops["head"]) / 2 + 0.5).astype(np.uint8)
+        sheet = checkpoint.side_by_side([checkpoint.face_guides(crops[k], size) for k in ("reference", "head")]
+                                        + [checkpoint.face_guides(blend, size)])
+        checkpoint.save_picture(Image.fromarray(sheet), outputs["sheet"])
+    if "zoom" in outputs:
+        from PIL import Image
+        zoom = checkpoint.side_by_side([checkpoint.face_zoom(crops[k], size) for k in ("reference", "head")])
+        checkpoint.save_picture(Image.fromarray(zoom), outputs["zoom"])
+    report.update({"pass": None, "reason": "測っただけ（合否は出さない。report_only で測るだけにできる）", "failures": []})
+    return _finish(report, outputs, parameters, "顔の絵と元絵の比べ")
