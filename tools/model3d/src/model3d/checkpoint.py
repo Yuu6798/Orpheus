@@ -452,13 +452,14 @@ def face_crop(rgb, eyes, size):
 
 def face_guides(crop, size):
     """目の高さ（橙）から下へ 0.5 size ごとの線と目盛り、目の真ん中から左右へ 0.5 size の縦の線。"""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
     image = Image.fromarray(crop)
     draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=max(12, size // 9))
     for k in range(7):
         y = int(2.2 * size + k * 0.5 * size)
         draw.line([(0, y), (image.width, y)], fill=(255, 160, 0) if k == 0 else (200, 200, 200), width=1)
-        draw.text((4, y - 12), "%.1fd" % (k * 0.5), fill=(120, 120, 120))
+        draw.text((4, y - 2 - max(12, size // 9)), "%.1fd" % (k * 0.5), fill=(120, 120, 120), font=font)
     for dx in (-0.5, 0.5):
         x = int(image.width / 2 + dx * size)
         draw.line([(x, 0), (x, image.height)], fill=(220, 220, 220), width=1)
@@ -467,8 +468,9 @@ def face_guides(crop, size):
 
 def face_zoom(crop, size):
     """目の 0.5 size 上から 1.4 size 下までを 2 倍にし、0.1 size ごとの目盛りを引いた絵（口とあごの位置を読むため）。"""
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageFont
     eye_y, cx = int(2.2 * size), crop.shape[1] // 2
+    font = ImageFont.load_default(size=max(12, size // 8))
     part = Image.fromarray(crop[eye_y - int(0.5 * size):eye_y + int(1.4 * size), cx - int(1.2 * size):cx + int(1.2 * size)])
     part = part.resize((part.width * 2, part.height * 2), Image.Resampling.BICUBIC)
     draw = ImageDraw.Draw(part)
@@ -477,7 +479,7 @@ def face_zoom(crop, size):
         major = k % 5 == 0
         draw.line([(0, y), (part.width, y)], fill=(255, 160, 0) if k == 0 else ((150, 150, 150) if major else (225, 225, 225)), width=1)
         if major:
-            draw.text((4, y - 12), "%.1fd" % (k * 0.1), fill=(90, 90, 90))
+            draw.text((4, y - 2 - max(12, size // 8)), "%.1fd" % (k * 0.1), fill=(90, 90, 90), font=font)
     for k in range(-12, 13, 2):
         x = int(part.width / 2 + k * 0.1 * size * 2)
         draw.line([(x, 0), (x, part.height)], fill=(225, 225, 225) if k % 10 else (150, 150, 150), width=1)
@@ -485,11 +487,189 @@ def face_zoom(crop, size):
 
 
 def side_by_side(images, gap=8):
-    """高さをそろえて横に並べる（間は白）。"""
-    height = min(image.shape[0] for image in images)
+    """横に並べる（間は白）。高さは、いちばん高い絵にそろえて下を白で埋める（低い絵に合わせて切ると、高い絵の下が消える）。"""
+    height = max(image.shape[0] for image in images)
     parts = []
     for k, image in enumerate(images):
         if k:
             parts.append(np.full((height, gap, 3), 255, np.uint8))
-        parts.append(image[:height, :, :3])
+        rgb = image[:, :, :3]
+        if rgb.shape[0] < height:
+            rgb = np.concatenate([rgb, np.full((height - rgb.shape[0], rgb.shape[1], 3), 255, np.uint8)])
+        parts.append(rgb)
     return np.concatenate(parts, axis=1)
+
+
+# ---------- 三面図 ----------
+
+MARK_COLOURS = ((255, 0, 0), (0, 160, 0), (160, 0, 160), (0, 0, 255), (255, 140, 0), (0, 160, 160))
+WIDEST_COLOUR = (0, 120, 255)
+
+
+def view_rows(rgb, mask, marks):
+    """三面図の 1 枚の、人物のいちばん上と下の行・全高・体の中央（下 1/4 の人物の画素の横の中央値）・横にいちばん広い行（正面と後ろ
+    では腕の高さ）と、印の行（marks。色の決まり rule に入る人物の画素が、体の中央の帯（±strip × 全高）に least 個以上ある行のうち、
+    全高に対する割合 range の中で、pick が top ならいちばん上・bottom ならいちばん下の行）。割合は全高（いちばん上から足の裏）に対する値。"""
+    present = _present(mask)
+    top, sole = int(present[0]), int(present[-1])
+    height = sole - top
+    if height <= 0:
+        raise ToolError("人物の高さが 0 です")
+    lower = np.where(mask[int(top + 0.75 * height):sole])[1]
+    if not len(lower):
+        raise ToolError("人物の下 1/4 に画素がありません（体の中央を決められない）")
+    cx = int(np.median(lower))
+    extent = np.array([np.ptp(np.where(mask[y])[0]) if mask[y].any() else 0 for y in range(mask.shape[0])])
+    widest = int(np.argmax(extent))
+    out = {"top_y": top, "sole_y": sole, "height_px": height, "centre_x": cx, "widest_y": widest,
+           "widest_frac": (widest - top) / height, "marks": {}}
+    for mark in marks:
+        hit = color_rule(rgb, mark["rule"]) & mask
+        half = int(mark["strip"] * height)
+        strip = hit[:, max(0, cx - half):cx + half].sum(axis=1)
+        rows = [y for y in range(int(top + mark["range"][0] * height), int(top + mark["range"][1] * height))
+                if 0 <= y < mask.shape[0] and strip[y] >= mark["least"]]
+        y = (min(rows) if mark["pick"] == "top" else max(rows)) if rows else None
+        out["marks"][mark["name"]] = {"y": y, "frac": None if y is None else (y - top) / height}
+    return out
+
+
+def head_blobs(rgb, mask, rule, rows, kernel=2, above=0.2, count=3):
+    """頭のあたり（いちばん上から全高の above まで）の、色の決まり rule に入る人物の画素のかたまり（kernel × kernel で開く）の、
+    大きい順の count 個の [面積, [重心 x, 重心 y]]（重心は 0.1 画素に丸める）。瞳の行を読む手がかり。"""
+    limit = rows["top_y"] + above * (rows["sole_y"] - rows["top_y"])
+    blobs = [(area, np.round(np.array([x, y]), 1).tolist()) for area, x, y in components(open_mask(color_rule(rgb, rule) & mask, kernel))
+             if y < limit]
+    return [[area, centre] for area, centre in sorted(blobs, reverse=True)[:count]]
+
+
+def three_view_sheet(views, path):
+    """三面図を、全高を最初の絵（正面）にそろえ、足の裏を合わせて横に並べ、最初の絵の行（いちばん広い行と印）に線を引いた絵。
+    views は [(人物の外を白にした RGB, view_rows の結果)]。"""
+    from PIL import Image
+    front = views[0][1]
+    height = views[0][0].shape[0]
+    half = max(1, int(0.286 * front["height_px"]))
+    panels = []
+    for rgb, rows in views:
+        s = front["height_px"] / rows["height_px"]
+        offset = (0.0, front["sole_y"] - s * rows["sole_y"])
+        image = _affine(Image.fromarray(rgb), (max(1, int(rgb.shape[1] * s)), height), s, offset, Image.Resampling.BILINEAR,
+                        (255, 255, 255))
+        x0 = max(0, int(s * rows["centre_x"]) - half)
+        panel = np.full((height, 2 * half, 3), 255, np.uint8)
+        part = np.asarray(image)[:, x0:x0 + 2 * half]
+        panel[:, :part.shape[1]] = part
+        panels.append(panel)
+    sheet = np.concatenate(panels, axis=1)
+    lines = [(front["widest_y"], WIDEST_COLOUR)] + [(mark["y"], MARK_COLOURS[k % len(MARK_COLOURS)])
+                                                    for k, mark in enumerate(front["marks"].values())]
+    for y, colour in lines:
+        if y is not None and 0 <= y < height:
+            sheet[y] = colour
+    save_picture(Image.fromarray(sheet), path)
+
+
+def heads_sheet(views, names, path, zoom=3):
+    """三面図の頭のあたり（いちばん上の 5 画素上から全高の 0.286 倍、体の中央から左右に全高の 0.165 倍）を zoom 倍にして、10 画素ごとの線と
+    50 画素ごとの行番号を引いて並べた絵（髪のてっぺん・目・あごの行を目で読むため）。"""
+    from PIL import Image, ImageDraw, ImageFont
+    font = ImageFont.load_default(size=8 * zoom)
+    panels = []
+    for (rgb, rows), name in zip(views, names):
+        height, half = int(0.286 * rows["height_px"]), int(0.165 * rows["height_px"])
+        y0, x0 = max(0, rows["top_y"] - 5), max(0, rows["centre_x"] - half)
+        part = Image.fromarray(rgb[y0:rows["top_y"] + height, x0:x0 + 2 * half])
+        part = part.resize((part.width * zoom, part.height * zoom), Image.Resampling.BICUBIC)
+        draw = ImageDraw.Draw(part)
+        for y in range((y0 // 10 + 1) * 10, rows["top_y"] + height, 10):
+            yy = (y - y0) * zoom
+            major = y % 50 == 0
+            draw.line([(0, yy), (part.width, yy)], fill=(255, 140, 0) if major else (225, 225, 225), width=1)
+            if major:
+                draw.text((4, yy - 2 - 8 * zoom), str(y), fill=(255, 90, 0), font=font)
+        draw.text((part.width - 30 * zoom, 4), name, fill=(255, 0, 0), font=font)
+        panels.append(np.asarray(part))
+    save_picture(Image.fromarray(side_by_side(panels, gap=0)), path)
+
+
+# ---------- 頭の絵の目から下を詰める ----------
+
+TAB = 32        # OpenCV の INTER_TAB_SIZE（小数の位置を 1/32 に丸める）
+
+
+def lanczos_table():
+    """OpenCV の interpolateLanczos4 と同じ重みの表（(32, 8) の float32。i/32 の位置の 8 つの重み）。"""
+    import math
+    s45 = 0.70710678118654752440084436210485
+    cs = ((1, 0), (-s45, -s45), (0, 1), (s45, -s45), (-1, 0), (s45, s45), (0, -1), (-s45, s45))
+    table = np.zeros((TAB, 8), dtype=np.float32)
+    for i in range(TAB):
+        x = float(np.float32(i) * np.float32(1.0 / TAB))
+        if x < float(np.finfo(np.float32).eps):
+            table[i, 3] = 1.0
+            continue
+        y0 = -(x + 3) * math.pi * 0.25
+        s0, c0 = math.sin(y0), math.cos(y0)
+        coeffs = np.zeros(8, dtype=np.float32)
+        total = np.float32(0)
+        for k in range(8):
+            y = -(x + 3 - k) * math.pi * 0.25
+            coeffs[k] = np.float32((cs[k][0] * s0 + cs[k][1] * c0) / (y * y))
+            total = np.float32(total + coeffs[k])
+        table[i] = coeffs * np.float32(np.float32(1.0) / total)
+    return table
+
+
+def remap_rows(image, source_rows):
+    """出力の行 y に、元の行 source_rows[y]（小数）を Lanczos4 で引く（列はそのまま）。image は (H, W, C) の float32。OpenCV の remap
+    （INTER_LANCZOS4・BORDER_CONSTANT の 0）と同じく、位置を 1/32 に丸め、元の絵の外の行は足さず、8 行の重みを上から順に float32 で足す。"""
+    height = image.shape[0]
+    table = lanczos_table()
+    fixed = np.rint(source_rows.astype(np.float32) * np.float32(TAB)).astype(np.int64)
+    out = np.zeros((len(source_rows),) + image.shape[1:], dtype=np.float32)
+    for y, value in enumerate(fixed):
+        base, frac = int(value >> 5) - 3, int(value & (TAB - 1))
+        if base >= height or base + 8 <= 0:
+            continue
+        acc = np.zeros(image.shape[1:], dtype=np.float32)
+        for r in range(8):
+            row = base + r
+            if 0 <= row < height:
+                acc = acc + image[row] * table[frac, r]
+        out[y] = acc
+    return out
+
+
+ABOVE_BAND = ("resample", "copy")    # 帯より上の行: resample（既定。台本と同じく、ほかの行と同じ付け替えを通す）か copy（元の絵から写す）
+
+
+def shorten_face(rgba, eye_y, chin_y, d, k, start=0.10, above_band="resample"):
+    """透けつきの 8 ビットの (H, W, 4) の絵の、目の少し下（目の中心の行から start × d）からあごの先の行までの帯を、縦に k 倍にする
+    （1 より小さいと詰める。帯の両端では変えず、真ん中ほど強く。行の対応は 元の行 = y0 + L × (t − (1 − k) sin(2πt) / 2π)、
+    t = (出力の行 − y0) / (k L)）。帯より上は動かさず、帯より下は帯の長さの差だけずらす。絵の幅いっぱいに同じ付け替えをするので、
+    髪の筋が横にずれない。透けの縁がにじまないよう、色に透けを掛けてから付け替え、あとで戻す（透けが 0 の画素に残っていた色は 0 になる）。
+    above_band: resample（既定。台本と同じ）は帯より上の行も同じ付け替えを通す（見える画素は変わらず、透けが 0 の画素の色は 0 になる）。
+    copy は帯より上の行を元の絵からそのまま写す（透けが 0 の画素の色も元のまま）。"""
+    import math
+    h = rgba.shape[0]
+    y0 = eye_y + start * d
+    L = chin_y - y0
+    Lk = k * L
+    shift = L - Lk
+    rows = np.arange(h, dtype=np.float64)
+    t = np.clip((rows - y0) / Lk, 0.0, 1.0)
+    E = t - (1.0 - k) * np.sin(2 * math.pi * t) / (2 * math.pi)
+    source = np.where(rows <= y0, rows, np.where(rows <= y0 + Lk, y0 + L * E, rows + shift))
+    data = rgba.astype(np.float32) / 255.0
+    data[:, :, :3] *= data[:, :, 3:4]
+    warped = remap_rows(data, source)
+    alpha = np.clip(warped[:, :, 3:4], 0, 1)
+    colour = np.where(alpha > 1e-4, warped[:, :, :3] / np.maximum(alpha, 1e-4), 0)
+    out = np.round(np.concatenate([np.clip(colour, 0, 1), alpha], axis=2) * 255).astype(np.uint8)
+    if above_band == "copy":
+        top = min(h, int(math.floor(y0)) + 1)                  # 元の行 = 出力の行 の所（帯より上）
+        out[:top] = rgba[:top]
+    elif above_band != "resample":
+        raise ToolError(f"above_band は {' か '.join(ABOVE_BAND)} にしてください: {above_band!r}")
+    return out, {"band_y": [y0, chin_y], "k": k, "start": start, "shift_px": shift, "chin_y_after": y0 + Lk, "above_band": above_band}
