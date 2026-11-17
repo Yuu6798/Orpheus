@@ -19,7 +19,9 @@
     pair_from ならそのメッシュの頂点だけ、pair_to ならすぐ外の面がそのメッシュの頂点だけ。
   - patches が only なら、当て布の頂点だけを調べる（すぐ外の元の面＝当て布が隠している面より外へ出ていないか）。
   - without を渡すと、その名前で始まる布のモディファイアを止めて測る（押し出しの補正を外した形と比べるため）。
-  - body を渡すと、初期姿勢での層ごとの体までの距離（10%・50%・90% 点）も報告する（押し出す距離を決める材料）。
+  - body を渡すと、初期姿勢での層ごとの体までの距離（10%・50%・90% 点）も報告する（押し出す距離を決める材料）。層を数えなかった頂点
+    （patches が ignore なら当て布、only なら元の布）は、rest_unlayered が layer0（既定。台本と同じ）なら層 0 に入れて数え、separate なら
+    層には入れずに unlayered に別に出す（押し出す距離を決めるには separate が正しい）。数と扱いは報告の layers_rest_unlayered。
   布と体のほかのメッシュは評価しない（台本と同じ）。
 
 報告（raw）は model3d-cloth-layers/0.1: 調べた頂点の数、すぐ外の層までの距離、コマごとの入れ替わった頂点の数といちばん大きい量（mm）。
@@ -44,9 +46,28 @@ except ImportError:   # Blender が台本として動かすとき
     from vrm_apply_motion import use_scene_of
 
 DEFAULTS = {"objects": [], "armature": None, "axis_bone": None, "tol": 0.0005, "without": "", "max_gap": 0.015, "only_innermost": False,
-            "pair_from": "", "pair_to": "", "patch_group": "lining_patch", "patches": "ignore", "body": None, "frames": None}
+            "pair_from": "", "pair_to": "", "patch_group": "lining_patch", "patches": "ignore", "body": None, "frames": None,
+            "rest_unlayered": "layer0"}
 # すぐ外の層と組にする距離（m。台本と同じ 3 cm）。max_gap がこれより大きければ max_gap まで組にする（組にしない頂点は調べられない）
 PAIR_REACH = 0.03
+
+
+def rest_layers(layer, dist, classified, mode="layer0"):
+    """初期姿勢の層ごとの、体までの距離（10%・50%・90% 点。mm）と頂点の数。layer は層の番号（数えなかった頂点は 0 のまま）、dist は体までの
+    距離（m）、classified は層を数えた頂点。mode が layer0（既定。台本と同じ）なら、数えなかった頂点（patches が ignore なら当て布、only なら
+    元の布）も層 0 に入れて数える。separate なら数えた頂点だけを層に入れ、数えなかった頂点は "unlayered" に別に出す。"""
+    layer, dist = np.asarray(layer), np.asarray(dist, dtype=np.float64)
+    classified = np.asarray(classified, dtype=bool)
+    use = classified if mode == "separate" else np.ones(len(layer), dtype=bool)
+    lay, d = layer[use], dist[use]
+
+    def stats(values):
+        return [round(float(v) * 1000, 1) for v in np.percentile(values, [10, 50, 90])]
+
+    out = {str(k): {"verts": int((lay == k).sum()), "body_distance_mm_p10_p50_p90": stats(d[lay == k])} for k in sorted(set(lay.tolist()))}
+    if mode == "separate" and (~classified).any():
+        out["unlayered"] = {"verts": int((~classified).sum()), "body_distance_mm_p10_p50_p90": stats(dist[~classified])}
+    return out
 
 
 def parse_args(argv):
@@ -155,6 +176,7 @@ def main(argv=None):
         out = {}
         for name, (co, tris) in data.items():
             layer = np.zeros(len(co), dtype=int)
+            classified = np.zeros(len(co), dtype=bool)   # 層を数えた頂点（数えなかった頂点の layer は 0 のまま）
             pair = [None] * len(co)
             for i, p in enumerate(co):
                 if (i in patches[name]) != (s["patches"] == "only"):
@@ -182,6 +204,7 @@ def main(argv=None):
                         merged += 1
                     last = t
                 layer[i] = merged
+                classified[i] = True
                 if outside and outside[0][0] - reach < max(PAIR_REACH, s["max_gap"]):
                     gap = outside[0][0] - reach
                     t, index, loc, normal = outside[0]
@@ -197,7 +220,7 @@ def main(argv=None):
                         n = np.cross(v0, v1)
                         sign = 1.0 if float(n @ np.array(d)) >= 0 else -1.0
                         pair[i] = (oname, int(k), (1.0 - w1 - w2, w1, w2), sign, float(gap))
-            out[name] = {"layer": layer, "pair": pair}
+            out[name] = {"layer": layer, "pair": pair, "classified": classified}
         armature.data.pose_position = saved_pose
         for m in saved_mods:
             m.show_viewport = True
@@ -219,10 +242,7 @@ def main(argv=None):
         for c in cloths:
             co, _ = world_mesh(c)
             dist = np.array([btree.find_nearest(Vector(p))[3] for p in co])
-            lay = layers[c.name]["layer"]
-            rest_stats[c.name] = {str(k): {"verts": int((lay == k).sum()),
-                                           "body_distance_mm_p10_p50_p90": [round(float(v) * 1000, 1) for v in np.percentile(dist[lay == k], [10, 50, 90])]}
-                                  for k in sorted(set(lay.tolist()))}
+            rest_stats[c.name] = rest_layers(layers[c.name]["layer"], dist, layers[c.name]["classified"], s["rest_unlayered"])
         for m in off:
             m.show_viewport = True
         armature.data.pose_position = saved
@@ -273,6 +293,8 @@ def main(argv=None):
               "objects": [c.name for c in cloths], "without": s["without"], "patches": s["patches"], "modifiers_synced": synced,
               "rest_caches_off": sorted(caches_off),
               "patch_verts": {name: len(v) for name, v in patches.items()}, "layers_rest": rest_stats,
+              "layers_rest_unlayered": None if body is None else {"mode": s["rest_unlayered"],
+                                                                  "verts": {c.name: int((~layers[c.name]["classified"]).sum()) for c in cloths}},
               "pairs_checked": {name: len(v) for name, v in checked.items()},
               "checked_gap_mm_p10_p50_p90": {name: [round(float(x) * 1000, 1) for x in np.percentile(v or [0.0], [10, 50, 90])] for name, v in near.items()},
               "innermost_gap_mm_p10_p50_p90": {name: [round(float(x) * 1000, 1) for x in np.percentile(v or [0.0], [10, 50, 90])]

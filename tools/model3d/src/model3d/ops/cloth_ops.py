@@ -552,7 +552,7 @@ def layers_summary(raw, min_verts=3, max_frames=None):
               "rest_caches_off": raw.get("rest_caches_off", []), "modifiers_synced": raw.get("modifiers_synced", []),
               "patch_verts": raw.get("patch_verts"), "frames_checked": len(rows), "frames_swapped": len(bad),
               "max_swapped_verts": max((row["total"][0] for row in rows), default=0), "max_poke_mm": max((row["total"][1] for row in rows), default=0.0),
-              "layers_rest": raw.get("layers_rest"), "pairs_checked": raw.get("pairs_checked"),
+              "layers_rest": raw.get("layers_rest"), "layers_rest_unlayered": raw.get("layers_rest_unlayered"), "pairs_checked": raw.get("pairs_checked"),
               "checked_gap_mm_p10_p50_p90": raw.get("checked_gap_mm_p10_p50_p90"), "innermost_gap_mm_p10_p50_p90": raw.get("innermost_gap_mm_p10_p50_p90"),
               "runs": [{"frames": [a, b], "max_verts": n, "max_poke_mm": d} for a, b, n, d in runs],
               "thresholds": {} if max_frames is None else {"max_frames": max_frames}}
@@ -576,8 +576,8 @@ def check_cloth_layers(inputs, parameters, outputs, context):
     from .motion_ops import _blender, _timeout
     require(inputs, ("blend",), "check.cloth_layers")
     allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "objects", "axis_bone", "tol", "without", "max_gap",
-               "only_innermost", "pair_from", "pair_to", "patch_group", "patches", "body", "frames", "min_verts", "max_frames", "strict",
-               "report_only"}
+               "only_innermost", "pair_from", "pair_to", "patch_group", "patches", "rest_unlayered", "body", "frames", "min_verts", "max_frames",
+               "strict", "report_only"}
     unknown = set(parameters) - allowed
     if unknown:
         raise ToolError(f"check.cloth_layers の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
@@ -597,6 +597,11 @@ def check_cloth_layers(inputs, parameters, outputs, context):
     if patches not in ("ignore", "only"):
         raise ToolError(f"patches は ignore か only にしてください: {patches!r}")
     settings["patches"] = patches
+    if "rest_unlayered" in parameters:                   # 体までの距離で、層を数えなかった頂点を層 0 に入れるか（既定。台本と同じ）、別に出すか
+        if parameters["rest_unlayered"] not in ("layer0", "separate"):
+            raise ToolError(f"rest_unlayered は layer0（層を数えなかった頂点を層 0 に入れる。既定）か separate（別に出す）にしてください: "
+                            f"{parameters['rest_unlayered']!r}")
+        settings["rest_unlayered"] = parameters["rest_unlayered"]
     span = parameters.get("frames")
     if span is not None:
         if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)

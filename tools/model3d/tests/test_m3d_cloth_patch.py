@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from m3d_helpers import stand_in_executable
+from model3d.blender_adapter import cloth_layer_check as cpl
 from model3d.blender_adapter import cloth_patch as cp
 from model3d.io import ToolError, atomic_json
 from model3d.ops.cloth_ops import layers_summary
@@ -55,6 +56,18 @@ def test_layers_summary_counts_swapped_frames():
     assert report["rest_caches_off"] == [] and report["modifiers_synced"] == []
     cached = layers_summary({**raw, "rest_caches_off": ["Skirt:baked_motion"]})   # 初期姿勢の間だけ外したファイル読みの変形は、報告に残す
     assert cached["rest_caches_off"] == ["Skirt:baked_motion"]
+
+
+def test_rest_layers_handle_vertices_without_a_layer():
+    layer = np.array([0, 1, 1, 0, 0, 0])                                     # 4・5 番は層を数えていない（0 のまま。当て布など）
+    dist = np.array([0.010, 0.020, 0.030, 0.040, 0.002, 0.004])
+    classified = np.array([True, True, True, True, False, False])
+    script = cpl.rest_layers(layer, dist, classified)                        # 既定（台本と同じ）: 数えなかった頂点も層 0 に入る
+    assert script["0"]["verts"] == 4 and script["1"]["verts"] == 2 and "unlayered" not in script
+    separate = cpl.rest_layers(layer, dist, classified, "separate")
+    assert separate["0"]["verts"] == 2 and separate["unlayered"]["verts"] == 2 and separate["1"] == script["1"]
+    assert separate["unlayered"]["body_distance_mm_p10_p50_p90"][1] == 3.0  # 数えなかった頂点だけの距離（2 mm と 4 mm の中ほど）
+    assert "unlayered" not in cpl.rest_layers(layer, dist, np.ones(6, dtype=bool), "separate")
 
 
 STAND_IN = r'''
@@ -112,6 +125,7 @@ class Context:
     ("cloth.patch_lining", {"object": "Skirt", "lining_color": RED}, "axis_bone"),
     ("cloth.patch_lining", {"object": "Skirt", "axis_bone": "hips", "lining_color": RED, "colour": "red"}, "知らない"),
     ("check.cloth_layers", {"objects": ["Skirt"], "axis_bone": "hips", "patches": "all"}, "patches"),
+    ("check.cloth_layers", {"objects": ["Skirt"], "axis_bone": "hips", "rest_unlayered": "drop"}, "rest_unlayered"),
     ("check.cloth_layers", {"objects": ["Skirt"], "axis_bone": "hips", "pair_from": "Panels"}, "pair_from"),
     ("check.cloth_layers", {"objects": [], "axis_bone": "hips"}, "objects"),
 ])
