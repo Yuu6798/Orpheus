@@ -330,7 +330,7 @@ PASS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "pass_re
 PASS_PARAMETERS = {"blender", "addons", "blender_extensions", "resolution", "passes", "format", "quality", "antialiasing", "camera",
                    "dancer", "disc", "head", "room", "shade", "mirror", "phantoms", "fx", "pool", "bone_prefix", "armature", "fps",
                    "passes_dir", "only", "timeout", "expressions"}
-EXPRESSION_KEYS = {"objects", "images", "times", "shape_keys"}
+EXPRESSION_KEYS = {"objects", "images", "times", "shape_keys", "values"}
 PASS_CAMERA_KEYS = {"sensor_height", "lens", "clip"}
 DANCER_KEYS = {"bones", "sigma"}
 DISC_KEYS = {"radius", "vertices", "height"}
@@ -344,6 +344,25 @@ POOL_KEYS = {"centre", "radii", "segments", "falloff", "floor", "floor_falloff",
 ANTIALIASING = ("OFF", "FXAA", "5", "8", "11", "16", "32")
 
 
+def _expression_values(values):
+    """expressions.values（{形状キー: [[秒, 値], …]}。秒は小さい順で重ならない）を確かめる。"""
+    if not isinstance(values, dict):
+        raise ToolError(f"expressions.values は {{形状キー: [[秒, 値], …]}} にしてください: {values!r}")
+    checked = {}
+    for key, points in values.items():
+        if not isinstance(key, str) or not key:
+            raise ToolError(f"expressions.values の形状キーの名前は空でない文字列にしてください: {key!r}")
+        if (not isinstance(points, list) or not points
+                or not all(isinstance(p, list) and len(p) == 2 and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+                                                                       for v in p) for p in points)):
+            raise ToolError(f"expressions.values.{key} は [[秒, 値], …]（有限の数）にしてください")
+        seconds = [float(p[0]) for p in points]
+        if any(b <= a for a, b in zip(seconds, seconds[1:])):
+            raise ToolError(f"expressions.values.{key} の秒は小さい順にし、重ねないでください")
+        checked[key] = [[float(t), float(v)] for t, v in points]
+    return checked
+
+
 def _expression_settings(value, recipe_dir):
     """render.passes の expressions を確かめ、絵のパスを絶対パスにする（recipe からの相対パスも可）。"""
     if not isinstance(value, dict):
@@ -352,6 +371,11 @@ def _expression_settings(value, recipe_dir):
     if unknown:
         raise ToolError(f"expressions の知らない鍵: {sorted(unknown)}（使えるのは {sorted(EXPRESSION_KEYS)}）")
     objects = _names(value.get("objects"), "expressions.objects")
+    values = _expression_values(value["values"]) if "values" in value else {}
+    if values and "times" not in value:                 # 形状キーの値の時刻のキーだけ（名前の表は無い）
+        if value.get("images") or value.get("shape_keys"):
+            raise ToolError("expressions の images・shape_keys は、times（[[秒, 表情], …]）といっしょに使ってください")
+        return {"objects": objects, "images": {}, "times": [], "shape_keys": {}, "values": values}
     images = value.get("images", {})
     if not isinstance(images, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in images.items()):
         raise ToolError(f"expressions.images は {{表情: 絵のパス}} にしてください: {images!r}")
@@ -376,9 +400,13 @@ def _expression_settings(value, recipe_dir):
     unused = sorted((set(resolved) | set(shape_keys)) - named)
     if unused:
         raise ToolError(f"expressions の images・shape_keys に、times に出てこない表情があります: {unused}")
-    if not resolved and not shape_keys:
-        raise ToolError("expressions には images（表情の絵）か shape_keys（表情の形状キー）が要ります")
-    return {"objects": objects, "images": resolved, "times": [[float(t), name] for t, name in times], "shape_keys": dict(shape_keys)}
+    if not resolved and not shape_keys and not values:
+        raise ToolError("expressions には images（表情の絵）か shape_keys（表情の形状キー）か values（形状キーの値の時刻のキー）が要ります")
+    both = sorted(set(shape_keys.values()) & set(values))
+    if both:
+        raise ToolError(f"expressions の shape_keys と values に同じ形状キーがあります（どちらで決めるか曖昧になる）: {both}")
+    return {"objects": objects, "images": resolved, "times": [[float(t), name] for t, name in times], "shape_keys": dict(shape_keys),
+            "values": values}
 
 
 def _pass_settings(parameters, recipe_dir=None):
@@ -774,7 +802,8 @@ def render_passes(inputs, parameters, outputs, context):
     if merged.get("expressions"):                       # 表情の絵の素性（隠れた入力なので、sha256 を残す）
         observation["expressions"] = {"images": {name: {"path": path, "sha256": sha256(path)}
                                                  for name, path in merged["expressions"]["images"].items()},
-                                      "counts": (report.get("expressions") or {}).get("counts")}
+                                      "counts": (report.get("expressions") or {}).get("counts"),
+                                      "values": sorted(merged["expressions"].get("values") or {})}
     return StepResult(observations=[observation])
 
 
