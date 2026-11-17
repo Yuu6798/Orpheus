@@ -8,7 +8,8 @@
 
 測り方:
   - 初期姿勢（押し出しの補正 Shrinkwrap は止めて）で、縦の軸の骨（axis_bone）の軸から各頂点へ水平に線を引き、その線が頂点より内側で布を横切る回数を
-    「層の番号」とする（いちばん内が 0）。各頂点について、すぐ外側の層を線が横切る点（面と、面の中の位置）と、そこまでの距離を覚えておく。
+    「層の番号」とする（いちばん内が 0）。各頂点について、すぐ外側の層を線が横切る点（面と、面の中の位置）と、そこまでの距離を覚えておく
+    （PAIR_REACH = 3 cm まで。max_gap がそれより大きければ max_gap まで）。
     当て布（patch_group の頂点）の面は層として数えない。
   - 初期姿勢はアーマチュアを REST にして評価する。ファイルから動きを読む変形（MESH_CACHE・MESH_SEQUENCE_CACHE。cloth.smooth が置き換えた変形など）と
     焼いた物理の計算（CLOTH・SOFT_BODY。cloth.skirt_proxy の筒など）は、REST にしても開いたコマの形を返すので、初期姿勢の間だけ外す（布と体と、
@@ -44,6 +45,8 @@ except ImportError:   # Blender が台本として動かすとき
 
 DEFAULTS = {"objects": [], "armature": None, "axis_bone": None, "tol": 0.0005, "without": "", "max_gap": 0.015, "only_innermost": False,
             "pair_from": "", "pair_to": "", "patch_group": "lining_patch", "patches": "ignore", "body": None, "frames": None}
+# すぐ外の層と組にする距離（m。台本と同じ 3 cm）。max_gap がこれより大きければ max_gap まで組にする（組にしない頂点は調べられない）
+PAIR_REACH = 0.03
 
 
 def parse_args(argv):
@@ -179,7 +182,7 @@ def main(argv=None):
                         merged += 1
                     last = t
                 layer[i] = merged
-                if outside and outside[0][0] - reach < 0.03:
+                if outside and outside[0][0] - reach < max(PAIR_REACH, s["max_gap"]):
                     gap = outside[0][0] - reach
                     t, index, loc, normal = outside[0]
                     oname, k = owner[index]

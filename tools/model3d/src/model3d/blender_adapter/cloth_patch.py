@@ -58,6 +58,17 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
+def is_similarity(m, tol=1e-6):
+    """3×3 の行列 m が、回転（と鏡）とそろった拡大だけか（列の長さが同じで、互いに直角）。そうなら面の向き（法線）をその行列で
+    移しても、逆転置で移したのと同じ向きになる（台本と同じ計算のままにして、3 作目の照合のバイトを保つ）。"""
+    m = np.asarray(m, dtype=np.float64)
+    lengths = np.linalg.norm(m, axis=0)
+    if lengths.max() <= 0 or lengths.max() - lengths.min() > tol * lengths.max():
+        return False
+    gram = (m.T @ m) / lengths.max() ** 2
+    return bool(np.all(np.abs(gram - np.diag(np.diag(gram))) <= tol))
+
+
 def is_lining(colours, rule):
     """色 (..., 3)（0〜1）が裏地の色か: 成分 channel が min 以上で、ほかの 2 つの成分がその ratio 倍以下（台本の赤の決め方を、成分と値で選べる形にした）。"""
     k = CHANNELS[rule["channel"]]
@@ -146,7 +157,12 @@ def main(argv=None):
             other_faces += [tuple(base + i for i in poly.vertices) for poly in o.data.polygons]
     others = BVHTree.FromPolygons(other_points, other_faces) if other_faces else None
     rng = np.random.default_rng(SEED)
-    normal_matrix = mw.to_3x3()
+    if abs(mw.to_3x3().determinant()) < 1e-12:
+        raise SystemExit(f"{cloth.name} の物体の変換に、拡大が 0 の軸があります")
+    # 面の向き（法線）を世界へ移す行列: 軸ごとに違う拡大やずれがあれば逆転置（面に直角のまま）。回転とそろった拡大だけなら、
+    # 向きは同じなのでその行列のまま（台本と同じ計算）
+    similar = is_similarity(np.array(mw.to_3x3()))
+    normal_matrix = mw.to_3x3() if similar else mw.to_3x3().inverted().transposed()
     chosen, clean = [], []
     counts = {"innermost": 0, "outward_dark": 0, "inward_dark": 0, "other_material": 0}
     image_slots = {i for i, slot in enumerate(cloth.material_slots)       # 読む絵を使う材質（ほかの材質の面は、色を読まない）
@@ -216,6 +232,8 @@ def main(argv=None):
     direction = {}
     for f, inward in chosen:
         n = normal_matrix @ f.normal
+        if not similar:                                  # 逆転置は面の向きで長さが変わるので、長さ 1 にして面を同じ重みで混ぜる
+            n.normalize()                                # （そろった拡大では長さが全部同じなので、台本と同じ計算のまま）
         n = n if inward else -n                          # 内側を向く向き
         for v in f.verts:
             direction[v] = direction.get(v, Vector((0.0, 0.0, 0.0))) + n

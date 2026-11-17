@@ -22,6 +22,19 @@ def test_lining_colour_rule_matches_the_script():
     assert list(blue) == [True, False]                                         # ほかの色の裏地も選べる
 
 
+def test_similarity_transforms_keep_the_script_normals():
+    turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    assert cp.is_similarity(np.eye(3) * 1.45) and cp.is_similarity(turn * 1.45)            # 回転とそろった拡大（台本と同じ計算）
+    assert cp.is_similarity(np.diag([-2.0, 2.0, 2.0]))                                    # 鏡も向きは逆転置と同じ
+    assert not cp.is_similarity(np.diag([1.0, 1.25, 1.0]))                               # 軸ごとに違う拡大は逆転置
+    assert not cp.is_similarity(np.array([[1.0, 0.3, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]))   # ずれ
+    stretched = np.diag([1.0, 2.0, 1.0])
+    normal = np.array([1.0, 1.0, 0.0]) / np.sqrt(2)                                     # 面 x + y = 0 の法線
+    world = np.linalg.inv(stretched).T @ normal                                          # 逆転置で移した向きは、移した面に直角
+    edge = stretched @ np.array([1.0, -1.0, 0.0])
+    assert abs(world @ edge) < 1e-12 and abs((stretched @ normal) @ edge) > 0.5          # そのまま掛けると直角でなくなる
+
+
 def test_layers_summary_counts_swapped_frames():
     raw = {"objects": ["Skirt"], "patches": "ignore", "rows": [{"frame": f, "total": t} for f, t in ((1, [0, 0.0]), (2, [3, 1.2]), (3, [9, 4.0]),
                                                                                                     (4, [1, 0.6]), (5, [5, 2.0]))]}
