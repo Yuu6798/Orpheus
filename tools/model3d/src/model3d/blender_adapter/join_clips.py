@@ -13,6 +13,9 @@
   腰の位置をずらす（本ごとに、踊り手を画面の中央へ置き直すのと同じ）。
 - 最初の区間の本の .blend の動きに、組んだ値を全部のコマのキー（補間は直線）として打ち直し、シーンのコマの範囲を 1〜最後、fps を
   出力の fps にして、別名で保存する（元のファイルは変えない。ほかの本のアクションは持ち込まない）。
+  - 読んだ値には F カーブの修飾子（ノイズなど）が掛かっているので、打ち直した F カーブの修飾子は外す（二重に掛けない）。
+  - 打ち直した動きを、アーマチュアが再生する動きにし（付いていなければ付け、層つきなら最初のスロットに）、NLA の層は外す
+    （vrm.apply_motion と同じ。残すと組んだ動きに混ざる）。
   - motion.retarget の model3d_points_frames（各コマが 1 本の points の何コマ目か）は、組んだ動きには合わないので外す。
   - シーンの model3d_join_clip・model3d_join_frame に、コマごとの本の番号（報告の clips の順）と、その本の元のコマを残す。
 - 本ごとに骨へ載せてから組むので、切り替えをまたいで動きがならされることはない（点をつないでから載せると、腕のならしなどが
@@ -160,6 +163,31 @@ def key_range(curves):
     return int(round(min(frames))), int(round(max(frames)))
 
 
+def strip_modifiers(curves):
+    """打ち直す F カーブの修飾子（ノイズなど）を外す。読んだ値には、もう掛かっているので、残すと二重に掛かる。→ 外した数"""
+    removed = 0
+    for curve in curves:
+        for modifier in list(curve.modifiers):
+            curve.modifiers.remove(modifier)
+            removed += 1
+    return removed
+
+
+def bind_action(armature, action):
+    """action を armature が再生する動きにし（付いていなければ付け、層つきのアクションなら最初のスロットに）、NLA の層を外す
+    （vrm.apply_motion と同じ。残すと組んだ動きに混ざる）。→ (付け替えたか, 外した層の数)"""
+    animation = armature.animation_data_create()
+    bound = animation.action is None or animation.action != action
+    if bound:
+        animation.action = action
+        if getattr(action, "slots", None) and len(action.slots):
+            animation.action_slot = action.slots[0]
+    tracks = list(animation.nla_tracks)
+    for track in tracks:
+        animation.nla_tracks.remove(track)
+    return bound, len(tracks)
+
+
 def _read_clip(bpy, path, armature_name, hips):
     """本の .blend を開き、動きの F カーブの値（キーの範囲の全部のコマ）と、腰の位置の F カーブ、fps を読む。"""
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(path))
@@ -261,6 +289,7 @@ def main(argv=None):
                 column[frame_index] += offsets[name]["delta_local"][key[1]]
         columns[key] = column
     frames = np.arange(1, total + 1, dtype=float)
+    modifiers_removed = strip_modifiers(curves)
     for curve in curves:
         points = curve.keyframe_points
         points.clear()
@@ -272,6 +301,7 @@ def main(argv=None):
         for point in points:
             point.interpolation = "LINEAR"
         curve.update()
+    action_bound, nla_tracks_removed = bind_action(armature, action)
 
     scene.frame_start, scene.frame_end = 1, total
     try:
@@ -295,7 +325,8 @@ def main(argv=None):
                          "empty_curves": clips[name]["empty_curves"]} for name in order],
               "segments": segment_report, "cuts": cut_frames(segments), "align": align, "hips": hips,
               "offsets": {name: {k: v for k, v in item.items() if k != "keys"} for name, item in offsets.items()},
-              "points_frames_removed": removed_points_frames}
+              "points_frames_removed": removed_points_frames, "action_bound": action_bound,
+              "nla_tracks_removed": nla_tracks_removed, "modifiers_removed": modifiers_removed}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

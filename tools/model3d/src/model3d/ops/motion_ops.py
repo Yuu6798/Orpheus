@@ -307,7 +307,8 @@ def join_clips(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "frames": report.get("frames"), "fps": report.get("fps"),
                    "clips": [clip.get("name") for clip in report.get("clips") or []], "cuts": report.get("cuts"),
                    "held": [[item.get("held_start"), item.get("held_end")] for item in report.get("segments") or []],
-                   "points_frames_removed": report.get("points_frames_removed")}
+                   "points_frames_removed": report.get("points_frames_removed"), "action_bound": report.get("action_bound"),
+                   "nla_tracks_removed": report.get("nla_tracks_removed"), "modifiers_removed": report.get("modifiers_removed")}
     return StepResult(observations=[observation])
 
 

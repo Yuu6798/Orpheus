@@ -77,6 +77,42 @@ def test_key_range_skips_curves_without_keys():
         join_clips.key_range([curve(), curve()])
 
 
+class _Removable(list):
+    """remove を持つ並び（Blender の modifiers・nla_tracks の代わり）。"""
+
+
+def test_rewritten_curves_lose_their_modifiers():
+    from types import SimpleNamespace as N
+    noisy = N(modifiers=_Removable(["NOISE", "GENERATOR"]))
+    plain = N(modifiers=_Removable())
+    assert join_clips.strip_modifiers([noisy, plain]) == 2                  # 読んだ値には掛かっているので、二重に掛けない
+    assert noisy.modifiers == [] and join_clips.strip_modifiers([noisy, plain]) == 0
+
+
+def test_bind_action_makes_the_armature_play_the_rewritten_action():
+    from types import SimpleNamespace as N
+
+    class Animation:
+        def __init__(self, action, tracks=()):
+            self.action, self.action_slot, self.nla_tracks = action, None, _Removable(tracks)
+
+    joined, other = N(name="joined", slots=["OBJECT"]), N(name="other", slots=[])
+    # 付いていない動き（F カーブのいちばん多いアクションでない動き）が付いていれば、付け替えて最初のスロットに。NLA の層は外す
+    animation = Animation(other, tracks=["walk", "idle"])
+    armature = N(animation_data_create=lambda: animation)
+    assert join_clips.bind_action(armature, joined) == (True, 2)
+    assert animation.action is joined and animation.action_slot == "OBJECT" and animation.nla_tracks == []
+    # もう付いていれば、そのまま（スロットにも触らない）
+    animation = Animation(joined)
+    animation.action_slot = "KEEP"
+    assert join_clips.bind_action(N(animation_data_create=lambda: animation), joined) == (False, 0)
+    assert animation.action_slot == "KEEP"
+    # 動きの無いアーマチュア・スロットの無い古い形式のアクション
+    animation = Animation(None)
+    assert join_clips.bind_action(N(animation_data_create=lambda: animation), other) == (True, 0)
+    assert animation.action is other and animation.action_slot is None
+
+
 def test_bone_channel_reads_escaped_bone_names():
     assert join_clips.bone_channel('pose.bones["mixamorig:Hips"].location') == ("mixamorig:Hips", ".location")
     assert join_clips.bone_channel('pose.bones["a\\"]b\\\\c"].rotation_quaternion') == ('a"]b\\c', ".rotation_quaternion")
@@ -99,7 +135,8 @@ json.dump({"schema_version": "model3d-motion-join/0.1", "frames": [1, 72], "fps"
            "clips": [{"name": "walk"}, {"name": "spin"}],
            "segments": [{"clip": "walk", "held_start": 12, "held_end": 0}, {"clip": "spin", "held_start": 0, "held_end": 12},
                         {"clip": "walk", "held_start": 0, "held_end": 0}],
-           "points_frames_removed": True, "argv": sys.argv[1:], "settings": settings}, open(value("--report"), "w"))
+           "points_frames_removed": True, "action_bound": False, "nla_tracks_removed": 0, "modifiers_removed": 3,
+           "argv": sys.argv[1:], "settings": settings}, open(value("--report"), "w"))
 '''
 
 
@@ -132,6 +169,7 @@ def test_join_clips_passes_the_clips_and_the_segments_to_blender(tmp_path):
     observation = step["observations"][0]
     assert observation["kind"] == "join_clips" and observation["cuts"] == [31, 61] and observation["clips"] == ["walk", "spin"]
     assert observation["held"] == [[12, 0], [0, 12], [0, 0]] and observation["points_frames_removed"] is True
+    assert observation["action_bound"] is False and observation["nla_tracks_removed"] == 0 and observation["modifiers_removed"] == 3
     assert executor.run_recipe(recipe, tmp_path / "runs")["steps"]["join"]["reused_from"] is None     # 毎回実行する
     # fps と armature を渡すと、そのまま設定に入る
     recipe = _recipe(tmp_path, {"blender": blender, "segments": _segments(), "fps": 24, "armature": "Rig"})
