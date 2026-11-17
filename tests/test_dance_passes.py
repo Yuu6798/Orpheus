@@ -152,6 +152,28 @@ def test_the_run_writes_the_video_and_frames(tmp_path):
     assert "hold" in (tmp_path / "runs" / "acceptance.jsonl").read_text(encoding="utf-8")
 
 
+def test_the_passes_command_hands_its_options_to_the_run(tmp_path, capsys):
+    """mv dance passes: --out・--force・--quiet が render_run に渡り、結果は stdout の JSON、進み具合は stderr に出る。"""
+    from mv_pipeline import cli
+    _passes(tmp_path, frames=2)
+    spec, out = _spec(tmp_path), tmp_path / "runs"
+    assert cli.main(["dance", "passes", str(spec), "--out", str(out), "--quiet"]) == 0
+    printed = capsys.readouterr()
+    result = json.loads(printed.out)
+    assert result["status"] == "succeeded" and result["technical_pass"] is True and not result["reused"]
+    assert Path(result["run_dir"]).parent == out.resolve() and "コマ 経過" not in printed.err          # --quiet: 進み具合の行を出さない
+    assert cli.main(["dance", "passes", str(spec), "--out", str(out)]) == 0
+    printed = capsys.readouterr()
+    again = json.loads(printed.out)
+    assert again["reused"] and again["run_id"] == result["run_id"] and "再利用" in printed.err
+    assert cli.main(["dance", "passes", str(spec), "--out", str(out), "--force"]) == 0                 # --force: 同じ入力でも描き直す
+    printed = capsys.readouterr()
+    assert not json.loads(printed.out)["reused"] and "コマ 経過" in printed.err
+    assert cli.main(["dance", "passes", str(tmp_path / "missing.json"), "--quiet"]) == 1
+    printed = capsys.readouterr()
+    assert printed.out == "" and printed.err.startswith("Error:")
+
+
 def test_every_pass_must_have_the_listed_size(tmp_path):
     _passes(tmp_path)
     plan = passes.load_passes(tmp_path / "passes.json")

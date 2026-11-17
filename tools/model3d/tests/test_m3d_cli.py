@@ -132,3 +132,93 @@ def test_manifest_and_semantic_commands(tmp_path):
     code, result, err = run_cli("semantic", "confirm", tmp_path / "map.json", "--kind", "parts", "--key", "garment_sash_front",
                                 "--state", "confirmed", "--by", "tester")
     assert code == 0 and contracts.load("semantic-map", tmp_path / "map.json")["parts"]["garment_sash_front"]["state"] == "confirmed"
+
+
+def test_check_penetration_command_matches_the_check(tmp_path):
+    """check penetration: 2 つのメッシュを読んで checks.penetration を呼び、合否を終了コードにする。"""
+    from m3d_helpers import box
+    from model3d import checks
+    from model3d.mesh import Mesh
+    box(1.0).save(tmp_path / "collider.json")
+    box(0.5).save(tmp_path / "inside.json")                       # 頂点 8 つとも衝突相手の中
+    box(0.5, center=(3.0, 0.0, 0.0)).save(tmp_path / "outside.json")
+    for name, code_expected, inside in (("inside", 1, 8), ("outside", 0, 0)):
+        code, report, err = run_cli("check", "penetration", tmp_path / f"{name}.json", tmp_path / "collider.json")
+        assert code == code_expected and report["inside"] == inside, err
+        assert report == checks.penetration(Mesh.load(tmp_path / f"{name}.json"), Mesh.load(tmp_path / "collider.json"))
+    closed = box(1.0)
+    Mesh(closed.vertices, closed.faces[:-1], None, "open", closed.units, closed.axes, {}).save(tmp_path / "open.json")
+    code, _, err = run_cli("check", "penetration", tmp_path / "inside.json", tmp_path / "open.json")
+    assert code == 1 and err.startswith("Error:") and "閉じていません" in err
+
+
+def test_rea_report_and_summary_commands_write_the_evidence(tmp_path):
+    """rea report / rea summary: REA の出力を読んで evidence を書き、数を返す（rea pyc は test_m3d_generate）。"""
+    from model3d.rea_bridge import evidence
+    summary = {"schema": "rea-real-3d-tools-experiment/0.1", "jscad": {"source_commit": "f" * 40, "final_all_pass": True},
+               "rea": {"jscad": {"files": 4, "nodes": 5, "relations": 4, "unknowns": 1, "coverage": "unknown",
+                                 "queries": [{"target": "extrudeLinear", "status": "found"}, {"target": "x", "status": "no-match"}]}},
+               "limits": ["Only the named features were reconstructed."]}
+    report = {"tool": "jscad", "repository": "jscad/OpenJSCAD.org", "commit": "f" * 40,
+              "files": [{"path": "a.js", "sha256": "1" * 64, "bytes": 10, "coverage": {"status": "complete"}, "limitations": []}],
+              "graph": {"id": "g", "nodes": 3, "relations": 2, "unknowns": 1, "coverage": {"status": "unknown"}},
+              "queries": [{"target": "extrudeLinear", "file": "q.json", "status": "found", "coverage": {"status": "partial"}}],
+              "limitations": ["static only", "no runtime"]}
+    atomic_json(tmp_path / "summary.json", summary)
+    atomic_json(tmp_path / "report.json", report)
+    code, result, err = run_cli("rea", "summary", tmp_path / "summary.json", tmp_path / "from_summary.json")
+    assert code == 0, err
+    assert read_json(tmp_path / "from_summary.json") == evidence.from_summary(tmp_path / "summary.json")
+    assert result == {"out": str((tmp_path / "from_summary.json").resolve()), "evidence": 4, "limitations": 1}
+    code, result, err = run_cli("rea", "report", tmp_path / "report.json", tmp_path / "from_report.json")
+    assert code == 0, err
+    assert read_json(tmp_path / "from_report.json") == evidence.from_analysis_report(tmp_path / "report.json")
+    assert result == {"out": str((tmp_path / "from_report.json").resolve()), "evidence": 3, "limitations": 2}
+    code, _, err = run_cli("rea", "summary", tmp_path / "report.json", tmp_path / "x.json")
+    assert code == 1 and err.startswith("Error:") and "schema" in err and not (tmp_path / "x.json").exists()
+
+
+# 代役の Blender: observe.py の引数（-- の後ろ）を本物と同じ parse_args で読み、骨の無い物体を並べた観測を --out に書く。
+# 物体の名前に broken があれば、形の違う JSON を書く
+OBSERVE_STAND_IN = r'''
+import hashlib, json, sys
+from pathlib import Path
+if "--version" in sys.argv:
+    print("Blender 5.2.4 LTS")
+    sys.exit(0)
+from model3d.blender_adapter import observe
+args = observe.parse_args(sys.argv[sys.argv.index("--") + 1:])
+blend = next(a for a in sys.argv if a.endswith(".blend"))
+names = args.objects or ["Cube"]
+objects = [{"name": name, "type": "MESH", "dimensions": [0.4, 0.2, 1.6], "modifiers": [],
+            "matrix_world": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], "vertices": 8, "faces": 6,
+            "vertex_groups": {}, "shape_keys": []} for name in names]
+data = observe.build_observation("Scene", objects, blend, hashlib.sha256(Path(blend).read_bytes()).hexdigest(), units=args.units,
+                                 blender_version="5.2.4")
+Path(args.out).write_text(json.dumps({"broken": True} if "broken" in names else data), encoding="utf-8")
+'''
+
+
+def test_blender_observe_command_runs_the_observe_script_and_validates_the_observation(tmp_path):
+    """blender observe: 観測の台本と .blend と引数（--out・--units・--objects）を Blender に渡し、書かれた観測を契約で確かめる。
+    本物の Blender は使わない（CI に無い）。"""
+    from m3d_helpers import stand_in_executable
+    from model3d.blender_adapter import launcher
+    blender = stand_in_executable(tmp_path, "blender", OBSERVE_STAND_IN)
+    (tmp_path / "scene.blend").write_bytes(b"BLENDER-stand-in")
+    out = tmp_path / "obs" / "observation.json"
+    out.parent.mkdir()
+    code, result, err = run_cli("blender", "observe", "--blender", blender, "--blend", tmp_path / "scene.blend", "--out", out,
+                                "--objects", "Body", "Hair", "--units", "cm")
+    assert code == 0, err
+    data = contracts.load("observation", out)
+    assert data["coverage"]["objects"] == ["Body", "Hair"]
+    assert {f["id"]: f["value"] for f in data["facts"]}["object:Body:dimensions"] == [40.0, 20.0, 160.0]   # cm で書いた
+    assert result["out"] == str(out.resolve()) and result["exit_code"] == 0 and result["blender_version"] == "5.2.4"
+    argv = result["argv"]
+    assert argv[argv.index("--python") + 1] == str(launcher.OBSERVE_SCRIPT) and str((tmp_path / "scene.blend").resolve()) in argv
+    assert argv[argv.index("--") + 1:] == ["--out", str(out.resolve()), "--units", "cm", "--objects", "Body", "Hair"]
+    assert out.with_suffix(".log").is_file()                                   # ログは観測の隣
+    code, _, err = run_cli("blender", "observe", "--blender", blender, "--blend", tmp_path / "scene.blend", "--out", out,
+                           "--objects", "broken")
+    assert code == 1 and err.startswith("Error:")                              # 形の違う観測は契約で止める
