@@ -9,7 +9,8 @@
 - 時刻: beats（[最初の拍, 最後の拍]。拍 k の時刻は grid の k0_time + period × k）か times（秒の並び）。
 - 動きのコマ: f = dance.frame0 + round(dance.fps × 時刻)（姿勢は整数のコマ。round は Python の丸め（ちょうど半分は偶数へ））。
 - 狙う点: 骨の通り道の点 aim（points か bones。既定 hips）の、そのコマの値（ならさない。通り道にそのコマがあればその値、無ければ
-  前後の標本の間）。高さは max(aim_floor, 点の z) + dz（しゃがんでも狙いが下がりすぎない。aim_floor が null なら点の z + dz）。
+  前後の標本のコマで直線に補間。標本のコマの間隔はそろっていなくてよく、標本 1 つでもよい。通り道の外は、いちばん近い端の標本の値）。
+  高さは max(aim_floor, 点の z) + dz（しゃがんでも狙いが下がりすぎない。aim_floor が null なら点の z + dz）。
 - カメラ: 位置 = 狙う点 + dist × (sin az cos el, −cos az cos el, sin el)（az は列の方位。0 で正面（−Y 側）、正で +X 側。el は正で上）。
   狙う点を向き、傾けない（右 = 前 × (0, 0, 1)、上 = 右 × 前）。レンズ lens（mm。camera.sensor_height の縦の受光）、主点は画面の中央。
 """
@@ -17,7 +18,6 @@ import math
 
 import numpy as np
 
-from .blender_adapter.point_track import PathError, Samples
 from .io import ToolError
 
 DEFAULTS = {"angles": [-90.0, -55.0, -25.0, 0.0, 25.0, 55.0, 90.0], "el": -4.0, "dist": 3.1, "lens": 35.0, "aim": "hips",
@@ -49,22 +49,40 @@ def look_at(position, aim):
 
 
 class Reader:
-    """通り道の点を、動きのコマ f で読む（通り道にそのコマがあればその値そのもの、無ければ前後の標本の間の直線補間）。"""
+    """通り道の点を、動きのコマ f で読む: (点, 通り道の外か)。通り道にそのコマがあればその値そのもの、無ければ前後の標本のコマで
+    直線に補間する。標本のコマの間隔はそろっていなくてよく（任意のトラックで motion.bone_path を測った通り道）、標本 1 つでもよい。
+    通り道の外は、いちばん近い端の標本の値（外として数える）。"""
 
-    def __init__(self, path, name, frame0, fps):
-        try:
-            self.samples = Samples(path, {name: 0.0}, frame0, fps)
-        except PathError as error:
-            raise ToolError(str(error)) from error
-        self.name, self.frame0, self.fps = name, frame0, fps
-        self.index = {float(f): k for k, f in enumerate(path["frames"])}
+    def __init__(self, path, name):
+        columns = {**path.get("bones", {}), **path.get("points", {})}
+        if name not in columns:
+            raise ToolError(f"骨の通り道に点がありません: {name}（あるのは {sorted(columns)}。motion.bone_path の points か bones で"
+                            "測ってください）")
+        frames = np.asarray([float(f) for f in path["frames"]], float)
+        values = np.asarray(columns[name], float)
+        if len(frames) == 0:
+            raise ToolError("骨の通り道に標本がありません")
+        if values.shape != (len(frames), 3):
+            raise ToolError(f"骨の通り道の {name} の数（{len(values)}）が frames（{len(frames)}）と違います")
+        order = np.argsort(frames, kind="stable")
+        frames, values = frames[order], values[order]
+        if len(frames) > 1 and float(np.diff(frames).min()) <= 0:
+            raise ToolError("骨の通り道の frames に同じコマが重なっています")
+        self.frames, self.values = frames, values
+        self.index = {float(f): k for k, f in enumerate(frames)}
 
     def at(self, f):
-        k = self.index.get(float(f))
+        f = float(f)
+        k = self.index.get(f)
         if k is not None:
-            return np.array(self.samples.columns[self.name][k], float), False
-        dance_t = (f - self.frame0) / self.fps
-        return self.samples.at(self.name, dance_t), self.samples.outside(dance_t)
+            return self.values[k].copy(), False
+        if f < self.frames[0]:
+            return self.values[0].copy(), True
+        if f > self.frames[-1]:
+            return self.values[-1].copy(), True
+        j = int(np.searchsorted(self.frames, f))                      # frames[j − 1] < f < frames[j]
+        w = (f - self.frames[j - 1]) / (self.frames[j] - self.frames[j - 1])
+        return self.values[j - 1] * (1 - w) + self.values[j] * w, False
 
 
 def build(settings, path):
@@ -74,7 +92,7 @@ def build(settings, path):
     width, height = (int(v) for v in camera["resolution"])
     sensor, lens = float(camera["sensor_height"]), float(settings["lens"])
     focal = height * lens / sensor
-    reader = Reader(path, settings["aim"], float(dance["frame0"]), float(dance["fps"]))
+    reader = Reader(path, settings["aim"])
     el = math.radians(float(settings["el"]))
     entries, rows, layout, outside = [], [], [], 0
     for r, (beat, t) in enumerate(times_of(settings)):

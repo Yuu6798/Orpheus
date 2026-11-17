@@ -1,5 +1,5 @@
 """plan.scout（向きの下見）: 行（拍か時刻）× 列（方位）のコマの並び、動きのコマ、狙う点（高さの下限と上乗せ）、球の座標のカメラと向き、
-通り道の読み方、悪いパラメーター、工程の受け渡しと render.passes へそのまま渡せること。値は作り物（どの曲とも関係ない）。
+通り道の読み方（標本のコマの間隔がそろっていない通り道・標本 1 つの通り道も）、悪いパラメーター、工程の受け渡しと render.passes へそのまま渡せること。値は作り物（どの曲とも関係ない）。
 リポジトリ外の 3 作目の VRM のダンスの下見の台本との照合は docs/model3d.md。"""
 import math
 
@@ -61,13 +61,35 @@ def test_the_aim_does_not_sink_below_the_floor_value():
 
 def test_the_point_of_a_frame_is_the_sample_itself_or_between_samples():
     path = _path()
-    reader = scout_plan.Reader(path, "hips", 1.0, 30.0)
+    reader = scout_plan.Reader(path, "hips")
     exact, outside = reader.at(31)
     assert exact.tolist() == path["points"]["hips"][30] and not outside        # そのコマの標本そのもの
     half = {**path, "frames": [1.0 + 2 * k for k in range(60)], "points": {"hips": path["points"]["hips"][:60]}}
-    between, _ = scout_plan.Reader(half, "hips", 1.0, 30.0).at(4)
+    between, _ = scout_plan.Reader(half, "hips").at(4)
     assert between[0] == pytest.approx((path["points"]["hips"][1][0] + path["points"]["hips"][2][0]) / 2)
-    assert scout_plan.Reader(path, "hips", 1.0, 30.0).at(500)[1]                  # 通り道の外
+    last, outside = scout_plan.Reader(path, "hips").at(500)                       # 通り道の外: いちばん近い端の標本
+    assert outside and last.tolist() == path["points"]["hips"][-1]
+
+
+def test_paths_with_uneven_or_single_samples_are_read():
+    # 任意のトラックで motion.bone_path を測った通り道は、標本のコマの間隔がそろっていない（例 1・16・32）。標本 1 つでもよい
+    sparse = {"schema_version": "model3d-bone-path/0.1", "unit": "m", "frames": [1.0, 16.0, 32.0], "bones": {},
+              "points": {"hips": [[0.0, 0.0, 1.0], [1.5, 0.0, 1.0], [3.1, 0.0, 1.2]]}}
+    reader = scout_plan.Reader(sparse, "hips")
+    assert reader.at(16)[0].tolist() == [1.5, 0.0, 1.0] and not reader.at(16)[1]       # そのコマの標本そのもの
+    middle, outside = reader.at(24)                                                    # 16 と 32 の真ん中
+    assert middle.tolist() == pytest.approx([2.3, 0.0, 1.1]) and not outside
+    assert reader.at(40)[0].tolist() == [3.1, 0.0, 1.2] and reader.at(40)[1]          # 外は端の標本
+    cameras, track, report = _build({"times": [0.0, 0.5, 1.0]}, sparse)               # f = 1・16・31
+    assert [r["f"] for r in track[::7]] == [1, 16, 31] and report["outside"] == 0
+    assert cameras[7]["dancer"] == [1.5, 0.0, 1.0]
+    single = {**sparse, "frames": [16.0], "points": {"hips": [[1.5, 0.0, 1.0]]}}
+    cameras, _, report = _build({"times": [0.5]}, single)
+    assert cameras[0]["dancer"] == [1.5, 0.0, 1.0] and report["outside"] == 0
+    with pytest.raises(ToolError, match="重なって"):
+        scout_plan.Reader({**sparse, "frames": [1.0, 16.0, 16.0]}, "hips")
+    with pytest.raises(ToolError, match="点がありません"):
+        scout_plan.Reader(sparse, "chest")
 
 
 @pytest.mark.parametrize("parameters, message", [
