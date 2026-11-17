@@ -15,14 +15,14 @@ SAMPLE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "anima
 
 def _parameters():
     from ..animation_check import DEFAULTS
-    return {"armature", "frames", "skip_bones", "foot_lowest", "report_only", "blender", "addons", "blender_extensions", "timeout",
-            *DEFAULTS}
+    return {"armature", "frames", "skip_bones", "foot_lowest", "cloth", "report_only", "blender", "addons", "blender_extensions",
+            "timeout", *DEFAULTS}
 
 
 @register("check.animation", inputs=("blend",), outputs=("report",), cacheable=False,
           summary="動きを付けた .blend（VRM の人型の骨）を全コマ調べて、破綻の候補を出来事（信号・場所・最初と最後のコマと秒・いちばん大きい"
-                  "コマと値と位置）にまとめる。静的: 腕が胴・頭・脚に入る、腕どうし・脚どうしの重なり、足が床より下、手首の曲げとねじれ・首・"
-                  "ひざの逆曲がり。動的: 向きの飛び、位置の飛び、震え、着いた足の滑り、全身の切り替え。体の形はそのモデルの初期姿勢の"
+                  "コマと値と位置）にまとめる。静的: 腕が胴・頭・脚に入る、腕どうし・脚どうしの重なり、体が布（揺れものの骨で動くメッシュ）を"
+                  "突き抜ける、足が床より下、手首の曲げとねじれ・首・ひざの逆曲がり。動的: 向きの飛び、位置の飛び、震え、着いた足の滑り、全身の切り替え。体の形はそのモデルの初期姿勢の"
                   "メッシュから作る。直さない・採点しない（出来事はどれも status: review。出来事があれば needs_review、report_only なら"
                   "測るだけ）。しきい値の既定は仮の値。Blender（VRM Add-on）が要り、再利用しない（毎回実行）")
 def check_animation(inputs, parameters, outputs, context):
@@ -55,15 +55,17 @@ def check_animation(inputs, parameters, outputs, context):
     foot_lowest = parameters.get("foot_lowest", "world")
     if foot_lowest not in animation_check.FOOT_LOWEST:
         raise ToolError(f"foot_lowest は {' か '.join(animation_check.FOOT_LOWEST)} にしてください: {foot_lowest!r}")
-    if parameters.get("report_only") is not None and not isinstance(parameters["report_only"], bool):
-        raise ToolError(f"report_only は true か false にしてください: {parameters['report_only']!r}")
+    for key in ("report_only", "cloth"):
+        if parameters.get(key) is not None and not isinstance(parameters[key], bool):
+            raise ToolError(f"{key} は true か false にしてください: {parameters[key]!r}")
     if parameters.get("timeout") is not None:
         number(parameters, "timeout", minimum=0, exclusive=True)
     blender = _blender(parameters, context, "check.animation")
     addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
     step_dir = Path(context.step_dir)
     settings_path, sample_path, meta_path = step_dir / "animation_settings.json", step_dir / "sample.npz", step_dir / "sample.json"
-    atomic_json(settings_path, {"armature": armature, "frames": span})
+    atomic_json(settings_path, {"armature": armature, "frames": span, "cloth": parameters.get("cloth", True),
+                                "cloth_near_m": cfg["cloth_near_m"], "cloth_depth_min_m": cfg["cloth_depth_min_m"]})
     record = launcher.run_blender(blender, SAMPLE_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
                                                                   "--out", str(sample_path), "--meta", str(meta_path)],
                                   log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
