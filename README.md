@@ -155,6 +155,7 @@ pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 |---|---|
 | [runbook.md](docs/runbook.md) | MV 制作の実行手順（入力 → 歌詞時刻 → 演出 → 描画 → 検証） |
 | [workflow.md](docs/workflow.md) | 用途別の制作計画と完了確認 |
+| [after-production.md](docs/after-production.md) | 作品が終わったあとの知見の持ち帰り（洗い出し → 判断 → 引き継ぎ書と制作後記 → 凍結 → 小さな PR）と、知見の置き場 |
 | [adapters.md](docs/adapters.md) | 歌詞同期・音源分離アダプターの共通形式と接続例 |
 | [remotion-props.md](docs/remotion-props.md) | Remotion を透過レイヤーの部品として使うための、コマ番号だけの props の書き出し |
 | [sheet.md](docs/sheet.md) | 時刻や出来事のコマを 1 枚に並べる閲覧用のシート |
