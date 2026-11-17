@@ -112,7 +112,7 @@
       "type": "number"
     },
     "smooth": {
-      "description": "点の通り道のならし（ガウスの σ を秒で。±ceil(reach × σ) の標本）",
+      "description": "点の通り道のならし（ガウスの σ を秒で。±ceil(reach × σ) の標本）。per_shot なら区間のコマの並びだけでならす（σ は sigma_s × fps コマ、端は端の値で延ばす）。focus_sigma_s はピントの点のならし（省くと sigma_s）",
       "type": "object",
       "properties": {
         "sigma_s": {
@@ -122,6 +122,13 @@
         "reach": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "per_shot": {
+          "type": "boolean"
+        },
+        "focus_sigma_s": {
+          "type": "number",
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -141,7 +148,7 @@
       "additionalProperties": false
     },
     "handheld": {
-      "description": "手持ちの揺れの形（区間の handheld が振れ幅の度）: Σ weights[m] × sin(2π hz[m] t + 乱数の位相)",
+      "description": "手持ちの揺れの形（区間の handheld が振れ幅の度）: Σ weights[m] × sin(2π hz[m] t + 乱数の位相)。form: rotate（既定。向きを回す）か orbit（方位・仰角・傾きを決まった正弦の和で揺らす。区間の seed。仰角 el のキーの区間で）",
       "type": "object",
       "properties": {
         "seed": {
@@ -153,6 +160,12 @@
         },
         "weights": {
           "$ref": "#/$defs/triple"
+        },
+        "form": {
+          "enum": [
+            "rotate",
+            "orbit"
+          ]
         }
       },
       "additionalProperties": false
@@ -295,9 +308,7 @@
       "required": [
         "az",
         "dist",
-        "height",
-        "aim",
-        "fov"
+        "aim"
       ],
       "properties": {
         "u": {
@@ -311,7 +322,7 @@
           "type": "number"
         },
         "dist": {
-          "description": "中心からの水平の距離（m）",
+          "description": "中心からの水平の距離（m）。el のキーでは、狙う点からのまっすぐの距離",
           "type": "number",
           "minimum": 0
         },
@@ -335,6 +346,12 @@
             }
           ]
         },
+        "el": {
+          "description": "仰角（度。正でカメラが上）。狙う点のまわりの球の座標で置く（位置 = 狙う点 + dist × (sin θ cos el, −cos θ cos el, sin el)）",
+          "type": "number",
+          "exclusiveMinimum": -90,
+          "exclusiveMaximum": 90
+        },
         "aim": {
           "description": "狙う点の名前（骨の通り道の points か bones）",
           "type": "string",
@@ -344,28 +361,91 @@
           "description": "狙う点の高さの上乗せ（m）",
           "type": "number"
         },
+        "offset": {
+          "description": "狙う点を世界の座標でずらす [x, y, z]（m。dz の代わり）",
+          "$ref": "#/$defs/triple"
+        },
+        "follow": {
+          "description": "狙う点 = 区間のコマの生の点の平均 × (1 − follow) + その時刻の点 × follow（省くと、その時刻の点）",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "focus": {
+          "description": "ピントの点の名前（骨の通り道の points か bones。絞りのある区間で。省くと狙う点）",
+          "type": "string",
+          "minLength": 1
+        },
         "fov": {
           "description": "縦の画角（度）",
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 180
         },
+        "lens": {
+          "description": "レンズ（mm。camera.sensor_height の縦の受光で。fov の代わり）",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "roll": {
           "description": "傾き（度）",
           "type": "number"
         },
         "ease": {
-          "description": "次のキーへのつなぎ方",
+          "description": "次のキーへのつなぎ方（in・out は 3 乗、in2・out2 は 2 乗）",
           "enum": [
             "smooth",
             "linear",
             "out",
             "in",
-            "whip"
+            "whip",
+            "in2",
+            "out2"
           ]
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "高さは height（床からの m か狙う点からの高さ）か el（狙う点のまわりの仰角）のどちらか 1 つ",
+          "oneOf": [
+            {
+              "required": [
+                "height"
+              ]
+            },
+            {
+              "required": [
+                "el"
+              ]
+            }
+          ]
+        },
+        {
+          "description": "画角は fov（縦の画角）か lens（mm）のどちらか 1 つ",
+          "oneOf": [
+            {
+              "required": [
+                "fov"
+              ]
+            },
+            {
+              "required": [
+                "lens"
+              ]
+            }
+          ]
+        },
+        {
+          "description": "狙う点のずらしは dz か offset のどちらか",
+          "not": {
+            "required": [
+              "dz",
+              "offset"
+            ]
+          }
+        }
+      ]
     },
     "shot": {
       "type": "object",
@@ -394,6 +474,16 @@
         "effects": {
           "description": "false の区間では effects を入れない",
           "type": "boolean"
+        },
+        "fstop": {
+          "description": "絞り（f 値）。書いた区間のコマの cameras に fstop と focus_m（ピントまでの距離 m）を書く",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "seed": {
+          "description": "揺れの形 orbit の区間の種（省くと区間の番号。0 から）",
+          "type": "integer",
+          "minimum": 0
         }
       },
       "patternProperties": {
