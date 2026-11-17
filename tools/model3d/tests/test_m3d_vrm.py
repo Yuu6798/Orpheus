@@ -376,13 +376,16 @@ def _glb(document, blob=b""):
 def _vrm_document(**changes):
     from model3d import vrm
     bones = {name: {"node": index} for index, name in enumerate(vrm.REQUIRED_HUMAN_BONES)}
-    document = {"asset": {"version": "2.0", "generator": "test"}, "nodes": [{} for _ in range(20)],
-                "meshes": [{"name": "Body"}], "materials": [{"extensions": {"VRMC_materials_mtoon": {}}}, {}],
+    nodes = [{} for _ in range(20)]
+    nodes[1] = {"mesh": 0}
+    document = {"asset": {"version": "2.0", "generator": "test"}, "nodes": nodes,
+                "meshes": [{"name": "Body", "primitives": [{"targets": [{}, {}]}], "extras": {"targetNames": ["smile", "blink"]}}],
+                "materials": [{"extensions": {"VRMC_materials_mtoon": {}}}, {}],
                 "bufferViews": [{"buffer": 0, "byteLength": 8}], "images": [{"name": "skin", "mimeType": "image/jpeg", "bufferView": 0}],
                 "extensions": {"VRMC_vrm": {"specVersion": "1.0", "humanoid": {"humanBones": bones},
                                             "meta": {"name": "テスト", "authors": ["誰か"], "licenseUrl": "https://vrm.dev/licenses/1.0/",
                                                      "avatarPermission": "onlyAuthor", "thumbnailImage": 0},
-                                            "expressions": {"preset": {"happy": {"morphTargetBinds": [{"node": 1, "index": 0}]},
+                                            "expressions": {"preset": {"happy": {"morphTargetBinds": [{"node": 1, "index": 0, "weight": 0.5}]},
                                                                        "blink": {}}}},
                                "VRMC_springBone": {"specVersion": "1.0", "colliders": [{"node": 16}], "colliderGroups": [{"colliders": [0]}],
                                                    "springs": [{"name": "hair", "joints": [{"node": 17}, {"node": 18}]}]}}}
@@ -401,6 +404,32 @@ def test_check_vrm_reports_the_contents_of_a_vrm():
     assert report["images"] == [{"name": "skin", "mime_type": "image/jpeg", "bytes": 8}]
     assert report["springs"] == ["hair"] and report["spring_joints"] == 2 and report["colliders"] == 1
     assert report["expressions_bound"] == ["happy"] and report["bin_bytes"] == 8
+    assert report["morph_targets"] == [{"mesh": 0, "name": "Body", "targets": 2, "names": ["smile", "blink"]}]
+    assert report["expressions"] == {"preset": {"happy": [{"node": 1, "mesh": "Body", "index": 0, "target": "smile", "weight": 0.5}],
+                                                "blink": []}, "custom": {}}
+
+
+def test_check_vrm_reads_the_shape_binds_and_fails_on_bad_shape_numbers():
+    from model3d import vrm
+    document = _vrm_document()
+    document["meshes"].append({"name": "Face", "primitives": [{"targets": [{}]}, {"targets": [{}]}]})   # 形の名前が無いメッシュ
+    document["meshes"].append({"name": "Plain", "primitives": [{}]})                                     # 形の無いメッシュ
+    document["nodes"][2], document["nodes"][3] = {"mesh": 1}, {"mesh": 2}
+    document["extensions"]["VRMC_vrm"]["expressions"] = {
+        "preset": {"blink": {"morphTargetBinds": [{"node": 1, "index": 1, "weight": 1.0}, {"node": 2, "index": 0, "weight": 1.0}]}},
+        "custom": {"wink": {"morphTargetBinds": [{"node": 1, "index": 2}]}, "nose": {"morphTargetBinds": [{"node": 4, "index": 0}]},
+                   "flat": {"morphTargetBinds": [{"node": 3, "index": 0}]}, "odd": {"morphTargetBinds": [{"node": 1, "index": True}]}}}
+    report = vrm.inspect(_glb(document))
+    assert report["morph_targets"] == [{"mesh": 0, "name": "Body", "targets": 2, "names": ["smile", "blink"]},
+                                       {"mesh": 1, "name": "Face", "targets": 1, "names": None}]
+    assert report["expressions"]["preset"]["blink"] == [{"node": 1, "mesh": "Body", "index": 1, "target": "blink", "weight": 1.0},
+                                                        {"node": 2, "mesh": "Face", "index": 0, "target": None, "weight": 1.0}]
+    text = " / ".join(report["failures"])
+    assert report["pass"] is False and len(report["failures"]) == 4
+    assert "表情 wink の形の割り当ての index 2 が node 1 のメッシュの形の数（2）の外です" in text
+    assert "表情 nose の形の割り当ての node 4 にメッシュがありません" in text
+    assert "表情 flat の形の割り当ての index 0 が node 3 のメッシュの形の数（0）の外です" in text
+    assert "表情 odd の形の割り当ての index True" in text                     # 真偽値は番号にしない
 
 
 def test_check_vrm_fails_on_what_vrm_1_requires():

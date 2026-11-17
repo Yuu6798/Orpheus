@@ -21,6 +21,46 @@ def _node(index, nodes):
     return isinstance(index, int) and not isinstance(index, bool) and 0 <= index < nodes
 
 
+def morph_targets(document):
+    """メッシュごとの形（モーフ）の数と名前: [{"mesh": 番号, "name", "targets", "names"}]。形の無いメッシュは載せない。名前は glTF の
+    mesh.extras.targetNames（VRM Add-on と Blender の glTF の書き出しが書く。無ければ None）。数は primitives の targets のいちばん多いもの
+    （glTF では、どの primitive も同じ数）。"""
+    out = []
+    for index, mesh in enumerate(document.get("meshes") or []):
+        mesh = mesh if isinstance(mesh, dict) else {}
+        count = max([len(p.get("targets") or []) for p in mesh.get("primitives") or [] if isinstance(p, dict)], default=0)
+        if not count:
+            continue
+        names = (mesh.get("extras") or {}).get("targetNames") if isinstance(mesh.get("extras"), dict) else None
+        if not (isinstance(names, list) and all(isinstance(name, str) for name in names)):
+            names = None
+        out.append({"mesh": index, "name": mesh.get("name"), "targets": count, "names": names})
+    return out
+
+
+def morph_bind(bind, document, morphs):
+    """表情の形の割り当て 1 つの中身 {"node", "mesh", "index", "target", "weight"} と、問題の説明（無ければ None）。mesh はメッシュの名前、
+    target は形の名前（名前が無ければ None）。"""
+    bind = bind if isinstance(bind, dict) else {}
+    nodes = document.get("nodes") or []
+    node, index = bind.get("node"), bind.get("index")
+    entry = {"node": node, "mesh": None, "index": index, "target": None, "weight": bind.get("weight")}
+    if not _node(node, len(nodes)):
+        return entry, None                               # node の範囲の外は、呼ぶ側が node の問題としてまとめて書く
+    mesh_index = (nodes[node] or {}).get("mesh") if isinstance(nodes[node], dict) else None
+    meshes = document.get("meshes") or []
+    if not _node(mesh_index, len(meshes)):
+        return entry, f"node {node} にメッシュがありません"
+    entry["mesh"] = (meshes[mesh_index] or {}).get("name") if isinstance(meshes[mesh_index], dict) else None
+    found = next((m for m in morphs if m["mesh"] == mesh_index), None)
+    count = found["targets"] if found else 0
+    if not _node(index, count):
+        return entry, f"index {index!r} が node {node} のメッシュの形の数（{count}）の外です"
+    if found["names"] is not None and index < len(found["names"]):
+        entry["target"] = found["names"][index]
+    return entry, None
+
+
 def inspect(data, where="VRM"):
     """VRM のバイト列の中身の報告（model3d-vrm-check/0.1）。GLB として読めなければ ToolError。"""
     document, blob = read_glb(data, where)
@@ -34,7 +74,8 @@ def inspect(data, where="VRM"):
               "materials": len(document.get("materials") or []),
               "mtoon_materials": sum(1 for material in document.get("materials") or []
                                      if "VRMC_materials_mtoon" in (material.get("extensions") or {})),
-              "images": [], "springs": [], "spring_joints": 0, "colliders": 0, "collider_groups": 0, "expressions_bound": []}
+              "images": [], "springs": [], "spring_joints": 0, "colliders": 0, "collider_groups": 0, "expressions_bound": [],
+              "morph_targets": morph_targets(document), "expressions": {"preset": {}, "custom": {}}}
     views = document.get("bufferViews") or []
     for image in document.get("images") or []:
         view = image.get("bufferView")
@@ -77,6 +118,13 @@ def inspect(data, where="VRM"):
                 expression = expression or {}
                 if any(expression.get(kind) for kind in ("morphTargetBinds", "materialColorBinds", "textureTransformBinds")):
                     report["expressions_bound"].append(name)
+                binds = []
+                for bind in expression.get("morphTargetBinds") or []:
+                    entry, problem = morph_bind(bind, document, report["morph_targets"])
+                    binds.append(entry)
+                    if problem:
+                        failures.append(f"表情 {name} の形の割り当ての {problem}")
+                report["expressions"][group][name] = binds
                 bad = [bind.get("node") for bind in expression.get("morphTargetBinds") or [] if not _node((bind or {}).get("node"), nodes)]
                 bad += [bind.get("material") for kind in ("materialColorBinds", "textureTransformBinds")
                         for bind in expression.get(kind) or [] if not _node((bind or {}).get("material"), materials)]
