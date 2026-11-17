@@ -874,6 +874,10 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
         skipped.append({"check": "cloth", "reason": "cloth: false（体が布を突き抜けるは見ない）"})
     elif sample.meta.get("cloth_watched") == 0:
         skipped.append({"check": "cloth", "reason": "初期姿勢で布の近くにある体の頂点がありません（体が布を突き抜けるは見ない）"})
+    unwatched = sample.meta.get("cloth_unwatched") or {}
+    if measured and unwatched:                                            # 頂点を足し引きする変形のコマ
+        skipped.append({"check": "cloth", "reason": "体のメッシュの頂点の数が変わるコマ（頂点を足し引きする変形）は、体が布を突き抜けるを見ない",
+                        "objects": sorted(unwatched), "frames": _frame_spans(sorted({f for frames in unwatched.values() for f in frames}))})
     return {"schema_version": SCHEMA, "frames": [sample.frames[0], sample.frames[-1]] if sample.frames else [], "fps": sample.fps,
             "overall": "review" if events else ("clean_with_skips" if skipped else "clean"),
             "thresholds": cfg, "skip_bones": list(skip_bones), "foot_lowest": foot_lowest,

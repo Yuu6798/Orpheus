@@ -299,6 +299,7 @@ def main(argv=None):
     bone_index = {name: i for i, name in enumerate(bones)}
     cloth_index = {obj.name: i for i, obj in enumerate(cloth_objects)}
     cloth_rows = []                                                      # (コマの番号, 骨, 布, 数, 深さ, 位置 3, 外向き 3)
+    cloth_unwatched = {}                                                 # 体のメッシュ → 頂点の数が変わって見なかったコマ
 
     def pose_segment(name):
         bone = armature.pose.bones[name]
@@ -341,13 +342,17 @@ def main(argv=None):
                 evaluated = obj.evaluated_get(depsgraph)
                 base = len(cv)
                 matrix = evaluated.matrix_world
-                cv += [matrix @ vertex.co for vertex in evaluated.data.vertices]
-                cf += [[base + i for i in polygon.vertices] for polygon in obj.data.polygons]
-                face_object += [obj.name] * len(obj.data.polygons)
+                cloth_mesh = evaluated.data                               # 面も変形のあとのメッシュから（頂点を足し引きする変形でも合う）
+                cv += [matrix @ vertex.co for vertex in cloth_mesh.vertices]
+                cf += [[base + i for i in polygon.vertices] for polygon in cloth_mesh.polygons]
+                face_object += [obj.name] * len(cloth_mesh.polygons)
             tree = BVHTree.FromPolygons(cv, cf)
             found = {}
             for obj, picked, names in watch:
                 evaluated = obj.evaluated_get(depsgraph)
+                if len(evaluated.data.vertices) != len(obj.data.vertices):   # 頂点を足し引きする変形のコマは、番号が合わないので見ない
+                    cloth_unwatched.setdefault(obj.name, []).append(frame)
+                    continue
                 co = np.empty(len(evaluated.data.vertices) * 3)
                 evaluated.data.vertices.foreach_get("co", co)
                 co = co.reshape(-1, 3)[picked]
@@ -370,7 +375,7 @@ def main(argv=None):
             "fps": scene.render.fps / scene.render.fps_base, "frames": frames, "humanoid": humanoid, "bones": bones,
             "parents": parents, "groups": groups, "deform": deform, "body": body_meta,
             "cloth_objects": [obj.name for obj in cloth_objects], "cloth_measured": look_at_cloth,
-            "cloth_watched": int(sum(len(picked) for _, picked, _ in watch)), "cloth_tucked": tucked,
+            "cloth_watched": int(sum(len(picked) for _, picked, _ in watch)), "cloth_tucked": tucked, "cloth_unwatched": cloth_unwatched,
             "hair_objects": [m["object"].name for m in meshes if m["kind"] == "hair"],
             "foot_objects": {side: [obj.name for obj, _ in feet[side]] for side in feet}}
     with open(a.meta, "w", encoding="utf-8") as stream:

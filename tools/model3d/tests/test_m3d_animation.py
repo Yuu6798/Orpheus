@@ -544,6 +544,10 @@ def test_cloth_skips_are_reported():
     sample.meta = {"cloth_measured": True, "cloth_watched": 120, "cloth_tucked": 3}
     report = ac.check(sample, ac.settings({}))
     assert report["skipped"] == [] and report["overall"] == "clean" and report["cloth"]["watched_vertices"] == 120
+    sample.meta = {"cloth_measured": True, "cloth_watched": 120, "cloth_tucked": 3, "cloth_unwatched": {"Body": [2, 3, 5]}}
+    report = ac.check(sample, ac.settings({}))                               # 頂点の数が変わるコマは見ない（番号が合わない）
+    assert report["skipped"] == [{"check": "cloth", "reason": report["skipped"][0]["reason"], "objects": ["Body"], "frames": [[2, 3], [5, 5]]}]
+    assert "頂点の数が変わるコマ" in report["skipped"][0]["reason"] and report["overall"] == "clean_with_skips"
 
 
 # ---------------------------------------------------------------- 測る所（Blender の中の台本の小さな関数）
