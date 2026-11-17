@@ -21,6 +21,7 @@ faults（並び。上から順に入れる）。破綻ごとに:
 - 区間の外の留めは、破綻を入れる前に打つ（親の破綻の区間の外で子の破綻を計算するとき、親が元の姿勢になっている）。
 - world の軸と shift の向きは世界の座標。そのコマのアーマチュアの物体の向きでアーマチュアの中へ直し（物体が動いていても）、shift は親の
   今の姿勢を通して骨の位置へ直す（アーマチュアが回っていない・親の無い骨では、試作と同じ式）。
+- 同じコマで先に入れた破綻（local など）は姿勢の行列に入れてから、world を入れる（先の破綻を入れた素材に world を入れたのと同じ）。
 リポジトリ外の試作（試験の素材を作る台本）と同じ手順と計算（mathutils）。入力の .blend は変えない。報告は、入れた破綻の数とキーを打ったコマ。
 """
 import argparse
@@ -171,6 +172,7 @@ def main(argv=None):
         if fault["kind"] == "local":
             pose_bone.rotation_quaternion = pose_bone.rotation_quaternion @ Quaternion(Vector(fault["axis"]), math.radians(fault["degrees"] * k))
         elif fault["kind"] == "world":
+            bpy.context.view_layer.update()                                  # 同じコマで先に入れた破綻（local など）を、姿勢の行列に入れてから読む
             head = pose_bone.matrix.translation.copy()
             axis = (world_turn @ axes[fault["axis"]]) if turned else fault["axis"]   # 世界の軸をアーマチュアの中へ（回っていなければ試作と同じ）
             pose_bone.matrix = (Matrix.Translation(head) @ Matrix.Rotation(math.radians(fault["degrees"] * k), 4, axis)
