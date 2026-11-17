@@ -54,6 +54,14 @@ def to_world(local, matrix, unit=1.0):
     return world * unit if unit != 1.0 else world
 
 
+def write_npz(path, arrays):
+    """配列の束を、path の名前のまま npz（圧縮）で書く。np.savez_compressed にパスを渡すと、名前が小文字の .npz で終わらないとき .npz を
+    足す（head.NPZ → head.NPZ.npz）ので、開いたファイルに書く（中身は同じ）。"""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "wb") as stream:
+        np.savez_compressed(stream, **arrays)
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -92,8 +100,7 @@ def main(argv=None):
         layer.data.foreach_get("uv", uv)
         arrays["uv"] = uv.reshape(-1, 2)
     arrays["normals"] = normals.reshape(-1, 3) @ matrix[:3, :3].T
-    os.makedirs(os.path.dirname(os.path.abspath(a.out_mesh)), exist_ok=True)
-    np.savez_compressed(a.out_mesh, **arrays)
+    write_npz(a.out_mesh, arrays)
     report = {"schema_version": "model3d-export-mesh/0.1", "blender": bpy.app.version_string, "object": obj.name, "vertices": count,
               "edges": int(len(mesh.edges)), "triangles": int(len(mesh.loop_triangles)), "loops": int(len(mesh.loops)),
               "uv_layer": layer.name if layer is not None else None, "shape_keys": mesh.shape_keys is not None,
@@ -112,6 +119,8 @@ def main(argv=None):
             name = choose_image(images, settings.get("image"))
         except ValueError as error:
             raise SystemExit(str(error)) from error
+        if tuple(bpy.data.images[name].size) == (0, 0):   # 外のファイルが無く、詰め込まれてもいない絵は画素が無い
+            raise SystemExit(f"色の絵 {name} の画素を読めません（ファイルが無いか、.blend に詰め込まれていません）")
         copy = bpy.data.images[name].copy()              # 元の絵の設定を変えずに書く（台本と同じ）
         copy.filepath_raw = os.path.abspath(a.out_texture)
         copy.file_format = "PNG"

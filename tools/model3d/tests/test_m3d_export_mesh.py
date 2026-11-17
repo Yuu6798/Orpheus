@@ -33,6 +33,16 @@ def test_to_world_applies_the_matrix_and_the_scene_unit():
     assert (mesh_export.to_world(local, matrix, 0.01) == world * 0.01).all()   # 1 単位 = 1 cm のシーン（m に直す）
 
 
+def test_write_npz_keeps_the_declared_name(tmp_path):
+    arrays = {"co": np.zeros((2, 3)), "edges": np.array([[0, 1]])}
+    for number, name in enumerate(("head.npz", "head.NPZ", "head.Npz")):              # 名前ごとに別のフォルダ（大文字と小文字を区別しない OS もある）
+        folder = tmp_path / f"run{number}"
+        mesh_export.write_npz(folder / name, arrays)
+        assert [p.name for p in folder.iterdir()] == [name]                           # 大文字の拡張子でも .npz を足さない
+        with np.load(folder / name, allow_pickle=False) as data:
+            assert data.files == ["co", "edges"] and data["edges"].tolist() == [[0, 1]]
+
+
 STAND_IN = r'''
 import json, os, sys
 import numpy as np
