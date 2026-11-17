@@ -43,6 +43,13 @@ def test_key_changes_make_the_requested_values_take_effect():
     assert render_side.key_changes([["n", {}]], {"x": (False, 0.0, 1.0)}) == ([], {})
 
 
+def test_render_settings_that_could_replace_the_picture_are_fixed():
+    current = {**render_side.RENDER_FIXED, "use_sequencer": True, "pixel_aspect_x": 2.0}
+    assert render_side.setting_changes(current, render_side.RENDER_FIXED) == {"use_sequencer": [True, False], "pixel_aspect_x": [2.0, 1.0]}
+    assert render_side.setting_changes(dict(render_side.VIEW_FIXED), render_side.VIEW_FIXED) == {}   # 同じなら変えない
+    assert {"use_sequencer", "use_compositing", "use_border", "film_transparent"} <= set(render_side.RENDER_FIXED)
+
+
 def test_view_lengths_in_metres_become_blender_units():
     view = {"name": "q30", "azimuth": 30, "elevation": 0, "scale": 0.17, "centre": [0.0, -0.05, 1.49]}
     assert render_side.view_in_units(view) == ([0.0, -0.05, 1.49], 1.0, 0.17)           # 1 Blender 単位 = 1 m なら値はそのまま

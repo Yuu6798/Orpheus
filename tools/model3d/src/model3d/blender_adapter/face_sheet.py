@@ -13,6 +13,8 @@
   centre（狙う点 m。省くと object の箱の中心）。カメラは狙う点から 1 m、見える奥行きはカメラの既定の範囲を m とみなす。長さはシーンの
   scale_length（1 Blender 単位が何 m か）で Blender 単位に直す（1 なら値はそのまま）。
 - EEVEE（taa の標本 samples）、色の変換は Standard、背景は background の色（世界を足す）。灯りは足さない。hide の物体は描かない。
+- .blend から引き継ぐと出てくる絵をすり替えうる描く設定は、この場で決まった値にする（RENDER_FIXED・VIEW_FIXED: シーケンサー・コンポジター・
+  描く範囲の切り取り・画素の縦横比・多視点・透ける背景・ぶれ・色の補正）。マーカーに結んだカメラも外す。.blend と違っていたものは報告の render_changes。
 - 描く大きさは size × int(size × 0.9) 画素。画像に日時・ファイル名などの控え（メタデータ）を書かない（同じ入力なら同じバイト列）。
 - 報告の長さ（箱の中心）は m。
 リポジトリ外の 3 作目の VRM のダンスの台本と同じ描き方。**検証**: 本物の Blender 5.2.4 で、その台本の絵と比べた（docs/model3d.md）。
@@ -40,6 +42,21 @@ def camera_offset(azimuth_deg, elevation_deg):
 
 
 DISTANCE_M = 1.0                                         # 狙う点からカメラまで（m）
+RENDER_FIXED = {                                         # scene.render: .blend のままだと出てくる絵をすり替えうる設定と、描くときの値
+    "use_sequencer": False,                              # シーケンサーに素材があると、その出力になる
+    "use_compositing": False,                            # コンポジターの結果になる
+    "use_border": False,                                 # 描く範囲の切り取り
+    "pixel_aspect_x": 1.0, "pixel_aspect_y": 1.0,        # 画素の縦横比（ゆがむ）
+    "use_multiview": False,                              # 視点ごとに別の絵
+    "film_transparent": False,                           # 背景が透けて background の色が出ない
+    "use_motion_blur": False,                            # ぶれ
+}
+VIEW_FIXED = {"look": "None", "exposure": 0.0, "gamma": 1.0, "use_curve_mapping": False}   # scene.view_settings: 色の補正
+
+
+def setting_changes(current, fixed):
+    """current（設定の名前 → 今の値）のうち、fixed（描くときの値）と違うもの {名前: [今の値, 描くときの値]}。"""
+    return {name: [current[name], value] for name, value in fixed.items() if current[name] != value}
 
 
 def view_in_units(view, unit=1.0):
@@ -152,6 +169,15 @@ def main(argv=None):
     scene.render.engine = "BLENDER_EEVEE"
     scene.eevee.taa_render_samples = settings["samples"]
     scene.view_settings.view_transform = "Standard"
+    render_changes = {"render": setting_changes({name: getattr(scene.render, name) for name in RENDER_FIXED}, RENDER_FIXED),
+                      "view": setting_changes({name: getattr(scene.view_settings, name) for name in VIEW_FIXED}, VIEW_FIXED),
+                      "marker_cameras": [marker.name for marker in scene.timeline_markers if marker.camera is not None]}
+    for name, (_, value) in render_changes["render"].items():
+        setattr(scene.render, name, value)
+    for name, (_, value) in render_changes["view"].items():
+        setattr(scene.view_settings, name, value)
+    for marker in scene.timeline_markers:                # マーカーに結んだカメラは、描くときにカメラを差し替える
+        marker.camera = None
     size = settings["size"]
     scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = size, int(size * 0.9), 100
     scene.render.image_settings.file_format = "PNG"
@@ -190,7 +216,7 @@ def main(argv=None):
             images.append({"label": label, "view": view["name"], "file": name})
     report = {"schema_version": "model3d-face-sheet/0.1", "blender": bpy.app.version_string, "object": head.name, "images": images,
               "box_centre": [float(v) * unit for v in box_centre], "scale_length": unit, "resolution": [size, int(size * 0.9)],
-              "key_changes": changes, "settings": settings}
+              "key_changes": changes, "render_changes": render_changes, "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
