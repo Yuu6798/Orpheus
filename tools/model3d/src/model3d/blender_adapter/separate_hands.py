@@ -95,6 +95,28 @@ def unit(v):
     return v / max(float(np.linalg.norm(v)), 1e-9)
 
 
+def action_curves(action):
+    """動き（action）の F カーブ（Blender 5 の層つきの動きでも、前の形でも）。"""
+    found = []
+    for layer in getattr(action, "layers", []):
+        for strip in layer.strips:
+            for bag in getattr(strip, "channelbags", []):
+                found.extend(bag.fcurves)
+    if not found and hasattr(action, "fcurves"):
+        found = list(action.fcurves)
+    return found
+
+
+def unkeyed_frames(curves, data_path, frames):
+    """data_path の四元数の 4 つの成分のどれかに、キーの無いコマ（小さい順）。"""
+    missing = set()
+    for index in range(4):
+        curve = next((c for c in curves if c.data_path == data_path and c.array_index == index), None)
+        keyed = set() if curve is None else {int(round(point.co[0])) for point in curve.keyframe_points}
+        missing |= set(frames) - keyed
+    return sorted(missing)
+
+
 def closest(p1, q1, p2, q2):
     """線分 p1-q1 と p2-q2 の、いちばん近い 2 点（全コマをまとめて計算する。台本と同じ式）。"""
     d1, d2, r = q1 - p1, q2 - p2, p1 - p2
@@ -516,6 +538,14 @@ def main(argv=None):
         if pose[names.upper(side)].rotation_mode != "QUATERNION":
             raise SystemExit(f"{names.upper(side)} の回転が四元数ではありません（{pose[names.upper(side)].rotation_mode}）")
     frames = list(range(scene.frame_start, scene.frame_end + 1))
+    action = armature.animation_data.action if armature.animation_data else None
+    curves = action_curves(action) if action is not None else []
+    for side in names.sides:                            # 直した回転は、キーのあるコマだけに書く（キーの間を補う動きだと前後のコマへ広がる）
+        bone = names.upper(side)
+        missing = unkeyed_frames(curves, 'pose.bones["%s"].rotation_quaternion' % bone, frames)
+        if missing:
+            raise SystemExit(f"{bone} の回転（四元数）に、キーの無いコマがあります（{len(missing)} コマ。最初は {missing[0]}）。"
+                             "キーの間を補う動きのままだと、直した回転が前後のコマや切り替えの向こうへ広がるので、先にコマごとのキーに焼いてください")
     fps = scene.render.fps / scene.render.fps_base
     deform = {bone.name for bone in armature.data.bones if bone.use_deform}
     profile = {side: forearm_profile(body, armature, names, side, s, s["aliases"], deform) for side in names.sides}

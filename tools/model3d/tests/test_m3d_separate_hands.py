@@ -3,6 +3,7 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 import numpy as np
 import pytest
@@ -149,6 +150,18 @@ def test_body_loss_compares_each_hand_point():
     pos = plan.add_forearm(arms())
     per_point = plan.body_clearance(pos, per_point=True)
     assert per_point.shape[0] == 20 and np.array_equal(per_point.min(axis=1), plan.body_clearance(pos))
+
+
+def test_upper_arm_rotations_must_be_keyed_on_every_frame():
+    path = 'pose.bones["upper_arm.L"].rotation_quaternion'
+    def curve(index, keys):
+        return NS(data_path=path, array_index=index, keyframe_points=[NS(co=(float(f), 0.0)) for f in keys])
+    every = [curve(i, range(1, 11)) for i in range(4)]
+    assert sh.unkeyed_frames(every, path, list(range(1, 11))) == []
+    sparse = every[:3] + [curve(3, [1, 5, 10])]                                     # 1 つの成分だけキーがまばら
+    assert sh.unkeyed_frames(sparse, path, list(range(1, 11))) == [2, 3, 4, 6, 7, 8, 9]
+    assert sh.unkeyed_frames([], path, [1, 2]) == [1, 2]                              # 動きが無い
+    assert sh.action_curves(NS(layers=[NS(strips=[NS(channelbags=[NS(fcurves=every)])])])) == every
 
 
 def test_detour_runs_are_split_at_cuts():

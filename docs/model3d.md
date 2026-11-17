@@ -2667,7 +2667,7 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 ### 腕どうしを離す（`motion.separate_hands`）
 
 左右の腕・手・指が互いを通り抜けているコマで、上腕を肩のまわりに少し回して離す（肘から先の曲げと手の形は変えない。`motion.push_hands` と同じ考え方）。
-- 入力 `blend`（踊りの .blend。腕の骨の回転は四元数）、任意で `joined`（`motion.join_clips` の report。切り替えのコマ `cuts` を読む）。元のファイルは変えない。
+- 入力 `blend`（踊りの .blend。腕の骨の回転は四元数で、上腕の回転は全コマにキーがあること。キーの間を補う動きのままだと、直した回転が前後のコマや切り替えの向こうへ広がるので止める）、任意で `joined`（`motion.join_clips` の report。切り替えのコマ `cuts` を読む）。元のファイルは変えない。
 - `bones`（必須）: 骨の名前の型。`sides`（2 つの側の名前。`{side}` に入る）、`upper`・`forearm`・`hand`（`{side}` 入り）、`finger`（`{side}`・`{finger}`・`{part}` 入り）、
   `fingers`（既定 thumb・index・middle・ring・little）、`parts`（既定 proximal・intermediate・distal）、`torso`（胴の骨の並び。あるものだけ）、`head`。
   例: `{"sides": ["L", "R"], "upper": "upper_arm.{side}", "forearm": "lower_arm.{side}", "hand": "hand.{side}", "finger": "{finger}_{part}.{side}"}`。
