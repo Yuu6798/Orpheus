@@ -432,7 +432,7 @@ def _accessor(document, blob, index, where, failures):
 
 def _weight_list(document, blob, failures):
     """skin のある node ごとの、骨の重み（JOINTS_0・WEIGHTS_0）: 頂点の数・使う骨の数・1 頂点に付く骨のいちばん多い数・JOINTS_1 があるか・
-    骨ごとの頂点の数（重みが WEIGHT_USED を超える (頂点, 枠) を数える）。"""
+    骨ごとの頂点の数（重みが WEIGHT_USED を超える (頂点, 枠) を、骨の node の番号ごとに数える。名前は添えるだけ）。"""
     import numpy as np
     nodes, meshes, skins = _items(document, "nodes"), _items(document, "meshes"), _items(document, "skins")
     out = []
@@ -472,13 +472,13 @@ def _weight_list(document, blob, failures):
                         continue
                     if not _node(joints[joint], len(nodes)):       # skin の joints の範囲の外（_skeleton が不合格にしている）
                         continue
-                    name = nodes[joints[joint]].get("name")
-                    counts[name if name is not None else f"node {joints[joint]}"] += many
+                    counts[joints[joint]] += many                  # node の番号で数える（名前は重なりうる。名前は添えるだけ）
         if outside:
             failures.append(f"{where}の JOINTS_0 の番号が skin の joints の外です: {sorted(outside)}")
-        entry = {"node": node.get("name"), "mesh": mesh.get("name"), "skin": node["skin"], "vertices": vertices,
+        entry = {"node_index": n, "node": node.get("name"), "mesh": mesh.get("name"), "skin": node["skin"], "vertices": vertices,
                  "bones_used": len(counts), "most_bones_on_one_vertex": most, "second_joint_set": second,
-                 "verts_per_bone": dict(sorted(counts.items(), key=lambda item: (-item[1], str(item[0]))))}
+                 "verts_per_bone": [{"node": index, "name": nodes[index].get("name"), "vertices": count}
+                                    for index, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]}
         if unread:
             entry["unread"] = unread
         out.append(entry)

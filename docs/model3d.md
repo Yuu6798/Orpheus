@@ -986,7 +986,8 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
       MToon でない材質は `mtoon` が null。
     - `images`（形式・[幅, 高さ]・バイト数。大きさは PNG の IHDR と JPEG の SOF から）、`look_at`（視線）、`first_person`。
     - `weights`: skin のある node ごとの、頂点の数・使う骨の数・1 頂点に付く骨のいちばん多い数・JOINTS_1 があるか・骨ごとの頂点の数
-      （重みが 1e-4 を超える (頂点, 枠) を数える）。VRM は 1 頂点に骨 4 本まで（JOINTS_0）なので、重みを書き換えたモデルは書き出した VRM で数え直す。
+      （重みが 1e-4 を超える (頂点, 枠) を、骨の node の番号ごとに数える。名前は重なりうるので添えるだけ）。VRM は 1 頂点に骨 4 本まで（JOINTS_0）
+      なので、重みを書き換えたモデルは書き出した VRM で数え直す。
     - 値はファイルにあるまま（無い値は null。決まりの既定の値は入れない。`alphaMode`・`doubleSided` だけ glTF の既定 OPAQUE・false）。
     - たどった参照の番号（skin の joints・primitive の材質と accessor・骨の拘束の source・材質のテクスチャとその画像・画像と accessor の
       bufferView・JOINTS_0 の番号・node の children）が範囲の外なら不合格。node の親子の循環も不合格。sparse の accessor・GLB の外の

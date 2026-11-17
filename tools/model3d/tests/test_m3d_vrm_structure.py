@@ -127,9 +127,19 @@ def test_structure_lists_the_bones_springs_materials_images_and_weights():
     assert s["look_at"]["type"] == "bone" and s["look_at"]["rangeMapVerticalUp"] is None
     assert s["first_person"] == [{"node": "Body", "type": "auto"}]
     # 重みは (頂点, 枠) ごとに 1e-4 を超えるものを数える: hips 3（v0・v1・v2 の 3 つ目の枠）、spine 2、head 2
-    assert s["weights"] == [{"node": "Body", "mesh": "BodyMesh", "skin": 0, "vertices": 4, "bones_used": 3,
+    assert s["weights"] == [{"node_index": 3, "node": "Body", "mesh": "BodyMesh", "skin": 0, "vertices": 4, "bones_used": 3,
                              "most_bones_on_one_vertex": 3, "second_joint_set": False,
-                             "verts_per_bone": {"hips": 3, "head": 2, "spine": 2}}]
+                             "verts_per_bone": [{"node": 1, "name": "hips", "vertices": 3}, {"node": 2, "name": "spine", "vertices": 2},
+                                                {"node": 4, "name": "head", "vertices": 2}]}]
+
+
+def test_weights_count_bones_by_node_not_by_name():
+    document, blob = _document()
+    document["nodes"][4]["name"] = "hips"                  # 別の骨に同じ名前（名前は node を決めない）
+    weights = vrm.inspect(_glb(document, bytes(blob.data)))["structure"]["weights"][0]
+    assert weights["bones_used"] == 3
+    assert weights["verts_per_bone"] == [{"node": 1, "name": "hips", "vertices": 3}, {"node": 2, "name": "spine", "vertices": 2},
+                                         {"node": 4, "name": "hips", "vertices": 2}]
 
 
 def test_bone_positions_follow_rotation_scale_and_matrix_of_the_parents():
@@ -169,7 +179,8 @@ def test_weights_read_float_weights_and_note_a_second_joint_set():
     attributes.update(WEIGHTS_0=4, JOINTS_1=2)
     weights = vrm.inspect(_glb(document, bytes(blob.data)))["structure"]["weights"][0]
     # v1 の 1 つ目の枠（5e-5）は数えない
-    assert weights["verts_per_bone"] == {"hips": 2, "spine": 2, "head": 2} and weights["most_bones_on_one_vertex"] == 3
+    assert [(b["name"], b["vertices"]) for b in weights["verts_per_bone"]] == [("hips", 2), ("spine", 2), ("head", 2)]
+    assert weights["most_bones_on_one_vertex"] == 3
     assert weights["second_joint_set"] is True
 
 
