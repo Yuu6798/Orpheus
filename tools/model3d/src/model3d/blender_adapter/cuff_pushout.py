@@ -180,6 +180,7 @@ def main(argv=None):
         if volume < 0:                                   # 面が外を向いているか（体積が正か）。逆なら全部裏返す
             bmesh.ops.reverse_faces(bm, faces=bm.faces[:])
             volume = bm.calc_volume(signed=True)
+        volume *= abs(aw.to_3x3().determinant())        # アーマチュアの空間の体積を世界の m³ に
         bm.to_mesh(mesh)
         bm.free()
         proxy.parent = armature
@@ -192,14 +193,14 @@ def main(argv=None):
     def far_test(proxy):
         """筒から 5〜30 cm 離れた点が「内側」と判定されないか（Shrinkwrap の Outside と同じ見方: いちばん近い面の裏側か）。"""
         mesh = proxy.data
-        points = [v.co.copy() for v in mesh.vertices]
+        points = [aw @ v.co for v in mesh.vertices]       # 世界の座標で確かめる（5〜30 cm は世界の長さ）
         tree = BVHTree.FromPolygons(points, [tuple(p.vertices) for p in mesh.polygons])
         rng = np.random.default_rng(FAR_SEED)
         wrong = total = 0
         for v in mesh.vertices:
             for _ in range(FAR_SAMPLES):
                 d = unit(rng.normal(size=3))
-                p = v.co + Vector(d * rng.uniform(0.05, 0.30))
+                p = points[v.index] + Vector(d * rng.uniform(0.05, 0.30))
                 location, normal, _, distance = tree.find_nearest(p)
                 if distance < 0.045:                     # 別の所の面に近い点は、内側かもしれないので数えない
                     continue

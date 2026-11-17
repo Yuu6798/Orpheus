@@ -189,7 +189,7 @@ def star_tube(bpy, bmesh, scene, armature, name, rings, flatten_start, flatten_e
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     if bm.calc_volume(signed=True) < 0:
         bmesh.ops.reverse_faces(bm, faces=bm.faces[:])
-    volume = bm.calc_volume(signed=True)
+    volume = bm.calc_volume(signed=True) * abs(armature.matrix_world.to_3x3().determinant())   # アーマチュアの空間の体積を世界の m³ に
     bm.to_mesh(mesh)
     bm.free()
     proxy.parent = armature
