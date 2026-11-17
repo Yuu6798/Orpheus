@@ -11,8 +11,8 @@ from model3d.io import ToolError, atomic_json
 
 
 def test_restored_sets_the_base_to_one_and_lifts_the_shade_by_the_same_ratio():
-    base, shade = color_factor.restored([0.8, 0.8, 0.8, 1.0], [0.512, 0.512, 0.512])
-    assert base == [1.0, 1.0, 1.0, 1.0] and shade == pytest.approx([0.64, 0.64, 0.64])
+    base, shade = color_factor.restored([0.75, 0.75, 0.75, 1.0], [0.45, 0.45, 0.45])
+    assert base == [1.0, 1.0, 1.0, 1.0] and shade == pytest.approx([0.6, 0.6, 0.6])
     base, shade = color_factor.restored([0.5, 0.25, 1.0, 0.7], [0.6, 0.1, 0.3])
     assert base == [1.0, 1.0, 1.0, 0.7]                               # 透け（A）は変えない
     assert shade == pytest.approx([1.0, 0.4, 0.3])                    # 1 を超えない（0.6 ÷ 0.5 = 1.2）、掛け率 1 の色は同じ
@@ -34,8 +34,8 @@ def value(flag):
     return args[args.index(flag) + 1]
 settings = json.load(open(value("--settings"), encoding="utf-8"))
 open(value("--out-blend"), "wb").write(b"restored")
-before = {"Lower": {"base": [0.8, 0.8, 0.8, 1.0], "shade": [0.512, 0.512, 0.512]}, "Upper": {"base": [1, 1, 1, 1], "shade": [0.64] * 3}}
-after = {"Lower": {"base": [1.0, 1.0, 1.0, 1.0], "shade": [0.64, 0.64, 0.64]}, "Upper": before["Upper"]}
+before = {"Lower": {"base": [0.75, 0.75, 0.75, 1.0], "shade": [0.45, 0.45, 0.45]}, "Upper": {"base": [1, 1, 1, 1], "shade": [0.6] * 3}}
+after = {"Lower": {"base": [1.0, 1.0, 1.0, 1.0], "shade": [0.6, 0.6, 0.6]}, "Upper": before["Upper"]}
 json.dump({"schema_version": "model3d-color-factor/0.1", "materials": settings["materials"], "changed": ["Lower"], "before": before,
            "after": after, "argv": sys.argv[1:]}, open(value("--report"), "w", encoding="utf-8"))
 '''
@@ -66,7 +66,7 @@ def test_color_factor_passes_the_materials_and_enables_the_vrm_addon(tmp_path):
     assert settings == {"materials": ["Lower", "Upper"]}
     observation = step["observations"][0]
     assert observation["kind"] == "color_factor" and observation["changed"] == ["Lower"]
-    assert observation["materials"]["Lower"]["after"]["shade"] == [0.64, 0.64, 0.64]
+    assert observation["materials"]["Lower"]["after"]["shade"] == [0.6, 0.6, 0.6]
     assert observation["materials"]["Upper"]["before"] == observation["materials"]["Upper"]["after"]
     assert observation["addons"][0]["version"] == "4.10.5"
     assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["steps"]["factor"]["reused_from"] is None   # 毎回実行する
