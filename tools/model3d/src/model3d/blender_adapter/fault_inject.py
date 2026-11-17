@@ -18,8 +18,9 @@ faults（並び。上から順に入れる）。破綻ごとに:
   無ければ前後 1 コマ。同じ値にキーを打つほかの破綻の区間の中のコマには打たない。
 - world は骨の行列を入れるので、位置と大きさに小さなずれが出る。キーを打たない位置と大きさは、終わりに元の値へ戻す（キーが無いと全部の
   コマに効くため。試作はずれを残していた）。
-- world の軸と shift の向きは世界の座標。アーマチュアの物体が回っていれば、その向きをアーマチュアの中へ直し、shift は親の今の姿勢を通して
-  骨の位置へ直す（アーマチュアが回っていない・親の無い骨では、試作と同じ式）。
+- 区間の外の留めは、破綻を入れる前に打つ（親の破綻の区間の外で子の破綻を計算するとき、親が元の姿勢になっている）。
+- world の軸と shift の向きは世界の座標。そのコマのアーマチュアの物体の向きでアーマチュアの中へ直し（物体が動いていても）、shift は親の
+  今の姿勢を通して骨の位置へ直す（アーマチュアが回っていない・親の無い骨では、試作と同じ式）。
 リポジトリ外の試作（試験の素材を作る台本）と同じ手順と計算（mathutils）。入力の .blend は変えない。報告は、入れた破綻の数とキーを打ったコマ。
 """
 import argparse
@@ -158,15 +159,15 @@ def main(argv=None):
         if pose[name].rotation_mode != "QUATERNION":
             raise SystemExit(f"骨 {name} の回りの持ち方が {pose[name].rotation_mode} です（QUATERNION の骨だけに入れられます）")
     rest3 = {name: armature.data.bones[name].matrix_local.to_3x3() for name in set(names)}
-    world3 = armature.matrix_world.to_3x3()
-    turned = any(world3[i][j] != (1.0 if i == j else 0.0) for i in range(3) for j in range(3))   # アーマチュアが回っている
-    world_turn = armature.matrix_world.to_quaternion().inverted()
-    world_to_armature = world3.inverted() if turned else None
     axes = {"X": Vector((1.0, 0.0, 0.0)), "Y": Vector((0.0, 1.0, 0.0)), "Z": Vector((0.0, 0.0, 1.0))}
 
-    def apply(fault, name, f):
+    def apply(fault, name, f, frame_world):
+        """frame_world はそのコマのアーマチュアの置き場所（アーマチュアの物体が動いていても、そのコマの向きで直す）。"""
         k = amount(fault, f)
         pose_bone = pose[name]
+        world3 = frame_world.to_3x3()
+        turned = any(world3[i][j] != (1.0 if i == j else 0.0) for i in range(3) for j in range(3))   # アーマチュアが回っている
+        world_turn = frame_world.to_quaternion().inverted()
         if fault["kind"] == "local":
             pose_bone.rotation_quaternion = pose_bone.rotation_quaternion @ Quaternion(Vector(fault["axis"]), math.radians(fault["degrees"] * k))
         elif fault["kind"] == "world":
@@ -178,7 +179,7 @@ def main(argv=None):
         else:
             delta = Vector([v * k for v in fault["delta"]])
             if turned:
-                delta = world_to_armature @ delta                            # 世界の向き → アーマチュアの中
+                delta = world3.inverted() @ delta                            # 世界の向き → アーマチュアの中
             parent = armature.data.bones[name].parent
             if parent is None:
                 pose_bone.location = pose_bone.location + rest3[name].inverted() @ delta          # 親の無い骨（試作と同じ式）
@@ -204,30 +205,37 @@ def main(argv=None):
             for name, frames in wanted.items():
                 if f in frames:
                     clean[(name, f)] = (pose[name].rotation_quaternion.copy(), pose[name].location.copy(), pose[name].scale.copy())
-        for f in range(scene.frame_start, scene.frame_end + 1):
-            active = [(fault, name) for fault, name in zip(faults, names) if fault["frames"][0] <= f <= fault["frames"][1]]
-            if not active:
-                continue
-            scene.frame_set(f)
-            for name in {name for _, name in active}:                    # 元の値から始める（前のコマで打ったキーが混ざらない）
-                pose[name].rotation_quaternion, pose[name].location, pose[name].scale = clean[(name, f)]
-            bpy.context.view_layer.update()
-            for fault, name in active:
-                apply(fault, name, f)
-                pose[name].keyframe_insert("rotation_quaternion", frame=f)
-                if fault["kind"] == "shift":
-                    pose[name].keyframe_insert("location", frame=f)
-                keyed.setdefault(fault["name"], []).append(f)
-        for k, prop, f in pins:                                          # 区間の外へ破綻が伸びないように、元の値で留める
+        # キーの無い位置と大きさは、どのコマでも同じ元の値（world で行列を入れると小さなずれが出るので、コマごとと終わりに戻す）
+        static = {name: clean[(name, f)][1:] for name, f in first_frames(wanted).items()}
+
+        def restore_static():
+            for name, (location, scale) in static.items():
+                pose[name].location, pose[name].scale = location, scale
+
+        # 区間の外は、破綻を入れる前に元の値で留める（親の区間の外で子の破綻を計算するとき、親が元の姿勢になっている）
+        for k, prop, f in pins:
             fault, name = faults[k], names[k]
             pose[name].rotation_quaternion, pose[name].location, pose[name].scale = clean[(name, f)]
             pose[name].keyframe_insert(prop, frame=f)
             if f not in boundary.setdefault(fault["name"], []):
                 boundary[fault["name"]].append(f)
-        # キーを打たない位置と大きさ（world で行列を入れると、小さなずれが出る）は、元の値に戻す。キーが無いので全部のコマに効くため
-        for name, f in first_frames(wanted).items():
-            _, location, scale = clean[(name, f)]
-            pose[name].location, pose[name].scale = location, scale
+        for f in range(scene.frame_start, scene.frame_end + 1):
+            active = [(fault, name) for fault, name in zip(faults, names) if fault["frames"][0] <= f <= fault["frames"][1]]
+            if not active:
+                continue
+            restore_static()
+            scene.frame_set(f)
+            for name in {name for _, name in active}:                    # 元の値から始める（前のコマで打ったキーが混ざらない）
+                pose[name].rotation_quaternion, pose[name].location, pose[name].scale = clean[(name, f)]
+            bpy.context.view_layer.update()
+            frame_world = armature.matrix_world.copy()                   # このコマのアーマチュアの置き場所
+            for fault, name in active:
+                apply(fault, name, f, frame_world)
+                pose[name].keyframe_insert("rotation_quaternion", frame=f)
+                if fault["kind"] == "shift":
+                    pose[name].keyframe_insert("location", frame=f)
+                keyed.setdefault(fault["name"], []).append(f)
+        restore_static()
     finally:
         for obj in hidden:
             obj.hide_viewport = False
