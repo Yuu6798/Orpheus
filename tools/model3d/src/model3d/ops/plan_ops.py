@@ -1,6 +1,7 @@
 """段取り: 曲の音から光のキーを作り（plan.light_keys）、段取り表と光のキーと骨の通り道から、render.stage が描くトラックを
 作る（plan.stage）。動きと違う fps で描くコマの並び（小数のコマ）も作る（plan.retime）。踊り手を中心にした極座標のカメラの
-キーから、render.passes が描くコマごとのカメラを作る（plan.orbit）。どれも計算だけ（Blender は使わない）。"""
+キーから、render.passes が描くコマごとのカメラを作る（plan.orbit）。拍ごとの姿勢を数方向から見る下見のカメラも作る（plan.scout）。
+どれも計算だけ（Blender は使わない）。"""
 from ..io import ToolError, atomic_json
 from . import StepResult, number, register, require
 
@@ -159,4 +160,102 @@ def retime(inputs, parameters, outputs, context):
     last = track["frames"][-1]["f"]
     observation = {"kind": "retime", "frames": frames, "fps": fps, "motion_fps": motion_fps, "f": [track["frames"][0]["f"], last],
                    "fractional": sum(1 for fr in track["frames"] if isinstance(fr["f"], float))}
+    return StepResult(observations=[observation])
+
+
+SCOUT_PARAMETERS = {"beats", "grid", "times", "angles", "el", "dist", "lens", "aim", "aim_floor", "dz", "dance", "camera"}
+
+
+def _scout_settings(parameters):
+    """plan.scout のパラメーターを確かめ、既定を足す（scout_plan.DEFAULTS）。"""
+    from ..scout_plan import DEFAULTS
+
+    def real(value, where, minimum=None, exclusive=False):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+            raise ToolError(f"plan.scout の {where} は数にしてください: {value!r}")
+        if minimum is not None and ((value <= minimum) if exclusive else (value < minimum)):
+            raise ToolError(f"plan.scout の {where} は {minimum} {'より大きく' if exclusive else '以上に'}してください: {value!r}")
+        return float(value)
+
+    unknown = set(parameters) - SCOUT_PARAMETERS
+    if unknown:
+        raise ToolError(f"plan.scout の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(SCOUT_PARAMETERS)}）")
+    s = {key: value for key, value in DEFAULTS.items() if key not in ("dance", "camera")}
+    if ("beats" in parameters) == ("times" in parameters):
+        raise ToolError("plan.scout には beats（[最初の拍, 最後の拍]。grid が要る）か times（秒の並び）のどちらか 1 つが要ります")
+    if "beats" in parameters:
+        beats = parameters["beats"]
+        if (not isinstance(beats, list) or len(beats) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in beats)
+                or beats[0] > beats[1]):
+            raise ToolError(f"plan.scout の beats は [最初の拍, 最後の拍]（整数、最初 ≤ 最後）にしてください: {beats!r}")
+        grid = parameters.get("grid")
+        if not isinstance(grid, dict) or set(grid) != {"period", "k0_time"}:
+            raise ToolError(f"plan.scout の beats には grid（{{\"period\": 1 拍の秒, \"k0_time\": 拍 0 の秒}}）が要ります: {grid!r}")
+        s["beats"] = beats
+        s["grid"] = {"period": real(grid["period"], "grid.period", 0, True), "k0_time": real(grid["k0_time"], "grid.k0_time")}
+    else:
+        times = parameters["times"]
+        if not isinstance(times, list) or not times:
+            raise ToolError(f"plan.scout の times は秒の並び（1 つ以上）にしてください: {times!r}")
+        s["times"] = [real(v, f"times[{n}]") for n, v in enumerate(times)]
+        if "grid" in parameters:
+            raise ToolError("plan.scout の grid は beats といっしょに使ってください")
+    if "angles" in parameters:
+        angles = parameters["angles"]
+        if not isinstance(angles, list) or not angles:
+            raise ToolError(f"plan.scout の angles は方位（度）の並び（1 つ以上）にしてください: {angles!r}")
+        s["angles"] = [real(v, f"angles[{n}]") for n, v in enumerate(angles)]
+    if "el" in parameters:
+        s["el"] = real(parameters["el"], "el")
+        if not -90 < s["el"] < 90:
+            raise ToolError(f"plan.scout の el（仰角）は −90 より大きく 90 より小さくしてください: {s['el']!r}")
+    for key in ("dist", "lens"):
+        if key in parameters:
+            s[key] = real(parameters[key], key, 0, True)
+    if "dz" in parameters:
+        s["dz"] = real(parameters["dz"], "dz")
+    if "aim_floor" in parameters:
+        s["aim_floor"] = None if parameters["aim_floor"] is None else real(parameters["aim_floor"], "aim_floor")
+    if "aim" in parameters:
+        if not isinstance(parameters["aim"], str) or not parameters["aim"]:
+            raise ToolError(f"plan.scout の aim は点の名前（骨の通り道の points か bones）にしてください: {parameters['aim']!r}")
+        s["aim"] = parameters["aim"]
+    dance = parameters.get("dance", {})
+    if not isinstance(dance, dict) or set(dance) - {"frame0", "fps"}:
+        raise ToolError(f"plan.scout の dance は {{\"frame0\": 踊りの時刻 0 秒の動きのコマ, \"fps\": 動きの fps}} にしてください: {dance!r}")
+    s["dance"] = {"frame0": real(dance.get("frame0", DEFAULTS["dance"]["frame0"]), "dance.frame0"),
+                  "fps": real(dance.get("fps", DEFAULTS["dance"]["fps"]), "dance.fps", 0, True)}
+    camera = parameters.get("camera", {})
+    if not isinstance(camera, dict) or set(camera) - {"resolution", "sensor_height"}:
+        raise ToolError(f"plan.scout の camera は {{\"resolution\": [幅, 高さ], \"sensor_height\": mm}} にしてください: {camera!r}")
+    resolution = camera.get("resolution", DEFAULTS["camera"]["resolution"])
+    if (not isinstance(resolution, list) or len(resolution) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in resolution)):
+        raise ToolError(f"plan.scout の camera.resolution は [幅, 高さ]（1 以上の整数）にしてください: {resolution!r}")
+    s["camera"] = {"resolution": resolution,
+                   "sensor_height": real(camera.get("sensor_height", DEFAULTS["camera"]["sensor_height"]), "camera.sensor_height", 0, True)}
+    return s
+
+
+@register("plan.scout", inputs=("bones",), outputs=("cameras", "track", "report"),
+          summary="向きの下見: 拍ごと（beats と grid）か時刻ごと（times）の姿勢を、踊り手のまわりのいくつかの方位（angles。既定は −90〜90° の 7 つ）"
+                  "から見るコマごとのカメラ（cameras。model3d-cameras/0.1）とコマの並び（track。T と動きのコマ f）を作る。狙う点は骨の通り道"
+                  "（bones）の点 aim（既定 hips。高さは max(aim_floor, z) + dz）、カメラは狙う点のまわりの仰角 el・距離 dist・レンズ lens。"
+                  "コマ T = 1 + 行 × 列の数 + 列。render.passes でそのまま描き、mv sheet で拍（行）× 方位（列）に並べる。report は行と列の表。"
+                  "計算だけ")
+def scout(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..scout_plan import build
+    require(inputs, ("bones",), "plan.scout")
+    missing = [name for name in ("cameras", "track") if name not in outputs]
+    if missing:
+        raise ToolError(f"plan.scout には outputs の {', '.join(missing)} が要ります")
+    settings = _scout_settings(parameters)
+    cameras, track, report = build(settings, contracts.load("bone-path", inputs["bones"]))
+    atomic_json(outputs["cameras"], contracts.validate("cameras", cameras))
+    atomic_json(outputs["track"], contracts.validate("stage-track", track))
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    observation = {"kind": "scout_plan", "frames": report["frames"], "rows": len(report["rows"]), "columns": report["columns"],
+                   "f": [report["rows"][0]["f"], report["rows"][-1]["f"]], "outside_samples": report["outside"]}
     return StepResult(observations=[observation])
