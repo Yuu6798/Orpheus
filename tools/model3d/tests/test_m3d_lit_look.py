@@ -68,6 +68,47 @@ def test_the_default_meshes_are_the_rendered_deformed_meshes():
         lit_look.default_meshes(M(data=M(objects=[Thing("Body")]), context=bpy.context))
 
 
+class FakeSlot:
+    """Blender の材質の枠のまね: link が DATA ならメッシュの材質の並び（分け合う物体からも見える）、OBJECT なら物体の側に入れる。"""
+
+    def __init__(self, ob, index):
+        self.ob, self.index, self.link, self._own = ob, index, "DATA", None
+
+    @property
+    def material(self):
+        return self.ob.data.materials[self.index] if self.link == "DATA" else self._own
+
+    @material.setter
+    def material(self, value):
+        if self.link == "DATA":
+            self.ob.data.materials[self.index] = value
+        else:
+            self._own = value
+
+
+def _object(name, mesh):
+    ob = M(name=name, data=mesh)
+    ob.material_slots = [FakeSlot(ob, i) for i in range(len(mesh.materials))]
+    return ob
+
+
+def test_objects_that_share_a_mesh_are_swapped_from_the_materials_before_the_swap():
+    body, cloth = M(name="body"), M(name="cloth")
+    shared, alone = M(materials=[body, None]), M(materials=[cloth])
+    a, b, c, d = _object("A", shared), _object("B", shared), _object("C", alone), _object("D", alone)
+    made = {}
+
+    def lit_for(m):                                       # 元の材質だけを知っている（替えた後の材質を渡すと KeyError）
+        return made.setdefault(m.name, {"body": M(name="body.lit"), "cloth": M(name="cloth.lit")}[m.name])
+
+    slots, moved = lit_look.swap_slots([a, b, c, d], ["A", "B", "C"], lit_for)
+    assert [(s["object"], s["slot"], s["source"], s["material"]) for s in slots] == [
+        ("A", 0, "body", "body.lit"), ("B", 0, "body", "body.lit"), ("C", 0, "cloth", "cloth.lit")]   # 空の枠は飛ばす
+    assert a.material_slots[0].material is b.material_slots[0].material is made["body"]   # どちらも選んだので、メッシュの側で替える
+    assert moved == ["C/0"] and c.material_slots[0].link == "OBJECT" and c.material_slots[0].material is made["cloth"]
+    assert d.material_slots[0].material is cloth                                          # 塗らない D は元の材質のまま
+
+
 def test_parse_args():
     args = lit_look.parse_args(["--blend", "i.blend", "--out-blend", "o.blend", "--report", "r.json", "--settings", "s.json"])
     assert args.out_blend == "o.blend"

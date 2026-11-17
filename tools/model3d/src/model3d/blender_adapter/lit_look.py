@@ -189,6 +189,30 @@ def lit_material(bpy, material, source, soft, s):
     return skin
 
 
+def swap_slots(objects, meshes, lit_for):
+    """meshes の物体の材質の枠を、lit_for(元の材質) が返す塗りの材質に替える。objects は全部の物体（bpy.data.objects）。
+    替える前の枠ごとの材質を先に控えてから替える（選んだ 2 つの物体がメッシュを分け合うと、1 つ目で替えた材質が 2 つ目の枠にも
+    見えるため）。塗らない物体とメッシュのデータを分け合う枠は、物体の側の枠に入れる（分け合う物体の材質を替えないため）。
+    戻り: (替えた枠の並び, 物体の側の枠にした枠の「物体/番号」)。空の枠は飛ばす。"""
+    by_name, group = {o.name: o for o in objects}, set(meshes)
+    original = {(name, index): slot.material for name in meshes for index, slot in enumerate(by_name[name].material_slots)}
+    slots, moved = [], []
+    for name in meshes:
+        ob = by_name[name]
+        for index, slot in enumerate(ob.material_slots):
+            m = original[(name, index)]
+            if m is None:
+                continue
+            lit = lit_for(m)
+            sharing = {o.name for o in objects if o.data == ob.data} - group
+            if slot.link == "DATA" and sharing:
+                slot.link = "OBJECT"
+                moved.append(f"{ob.name}/{index}")
+            slot.material = lit
+            slots.append({"object": ob.name, "slot": index, "source": m.name, "material": lit.name})
+    return slots, moved
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -207,7 +231,6 @@ def main(argv=None):
         o = bpy.data.objects.get(name)
         if o is None or o.type != "MESH":
             raise SystemExit(f"メッシュがありません: {name}")
-    group = set(meshes)
     bare = [name for name in meshes if not any(s.material for s in bpy.data.objects[name].material_slots)]
     if bare and settings["meshes"] is not None:          # 名指ししたメッシュに材質が無ければ、塗れないので止める
         raise SystemExit(f"meshes の {bare} に材質がありません（塗りを替えられません）")
@@ -226,21 +249,14 @@ def main(argv=None):
     unknown = sorted(set(settings["soft"]) - set(sources))
     if unknown:
         raise SystemExit(f"soft の材質が、塗りを替えるメッシュにありません: {unknown}（あるのは {sorted(sources)}）")
-    made, slots, moved = {}, [], []
-    for name in meshes:
-        ob = bpy.data.objects[name]
-        for index, slot in enumerate(ob.material_slots):
-            m = slot.material
-            if m is None:
-                continue
-            if m.name not in made:
-                made[m.name] = lit_material(bpy, m, sources[m.name], m.name in settings["soft"], settings)
-            sharing = {o.name for o in bpy.data.objects if o.data == ob.data} - group
-            if slot.link == "DATA" and sharing:          # 塗らない物体とメッシュを分け合う枠は、物体の側に入れる
-                slot.link = "OBJECT"
-                moved.append(f"{ob.name}/{index}")
-            slot.material = made[m.name]
-            slots.append({"object": ob.name, "slot": index, "source": m.name, "material": made[m.name].name})
+    made = {}
+
+    def lit_for(m):
+        if m.name not in made:
+            made[m.name] = lit_material(bpy, m, sources[m.name], m.name in settings["soft"], settings)
+        return made[m.name]
+
+    slots, moved = swap_slots(list(bpy.data.objects), meshes, lit_for)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend))
     materials = []
     for source, skin in made.items():
