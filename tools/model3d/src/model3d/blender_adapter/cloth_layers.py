@@ -146,6 +146,8 @@ def widen_lining(cloth, gaps, inner, axis_xy, lining_gap):
 
 def star_tube(bpy, bmesh, scene, armature, name, rings, flatten_start, flatten_end, sectors=SECTORS):
     """輪の並び（中心・軸・横・上・sectors 方向の太さ・骨）から、両端を丸めた閉じた筒を作る（骨で動く・描かない）。戻り: (物体, 体積)。"""
+    if armature.matrix_world.to_3x3().determinant() <= 0:   # 鏡（拡大に負の値）だと、面の向きが世界で逆になり、内外の見方が外れる
+        raise SystemExit(f"{armature.name} が鏡になっています（拡大に負の値）。筒の面の向きが逆になるので止めます")
     inv = armature.matrix_world.inverted()                # 筒はアーマチュアの子なので、頂点はアーマチュアの空間で作る（原点になくても合う）
     from mathutils import Vector
     mesh = bpy.data.meshes.new(name)

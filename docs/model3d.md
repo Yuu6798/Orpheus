@@ -3318,7 +3318,8 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 - 腕ごとに、肘 → 手首 → `palm_end` の付け根を通る 1 本の閉じた筒を作る（名前は `proxy`、既定 `ArmProxy.{arm}`）。前腕を 5 つに区切った 6 つの輪のうち、
   肘から `sleeve_until` までは芯の太さ `core_radius`、手首側は体の前腕がいちばん重い頂点から測った太さ（輪の ±0.12 の帯の 90% 点。
   5 頂点に満たなければ肘の側の隣の輪と同じ）、手のひらは `palm_radius`。両端は半球のように丸める（輪を 60°・30° で縮めて先に点を置く）。輪は `segments`（既定 20）角。
-  骨に付けて動かす（アーマチュアの子にし、頂点はアーマチュアの空間で作る。Armature）。描かない（`hide_render`）。
+  骨に付けて動かす（アーマチュアの子にし、頂点はアーマチュアの空間で作る。Armature）。描かない（`hide_render`）。鏡になったアーマチュア
+  （拡大に負の値）は、筒の面の向きが逆になるので止める（`cloth.pushout` の筒も同じ）。
 - 体の袖（前腕がいちばん重く、肘から `sleeve_until` までの頂点）に頂点グループ `group`・`near_group`（既定 `cuff_{arm}`・`cuff_near_{arm}`）を付け、
   相手の腕の筒を相手にした Shrinkwrap（Outside、`offset` 既定 2 mm。名前 `modifier`）と、その前に頂点ウェイトの近接（名前 `near_modifier`。相手の筒から
   `gate_near` 以内は重み 1、`gate_far` より遠くは 0）を付ける。判定が外れても、遠くの頂点は動かない。

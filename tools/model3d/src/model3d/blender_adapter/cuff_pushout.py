@@ -137,6 +137,8 @@ def main(argv=None):
     armature.data.pose_position = "REST"
     bpy.context.view_layer.update()
     aw = armature.matrix_world
+    if aw.to_3x3().determinant() <= 0:                   # 鏡（拡大に負の値）だと、面の向きが世界で逆になり、内外の見方が外れる
+        raise SystemExit(f"{armature.name} が鏡になっています（拡大に負の値）。筒の面の向きが逆になるので止めます")
     inv = aw.inverted()                                  # 筒はアーマチュアの子なので、頂点はアーマチュアの空間で作る（原点になくても合う）
     deform = {bone.name for bone in armature.data.bones if bone.use_deform}
     names = {group.index: group.name for group in body.vertex_groups if group.name in deform}
