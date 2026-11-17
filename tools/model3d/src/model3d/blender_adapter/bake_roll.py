@@ -12,7 +12,8 @@ VRM を動かすアプリとは手首のまわりの形が少し変わる。
 
 やり方（bones の roll の骨ごと。骨の順に）:
   1. シーンの全コマで、写す骨（拘束の subtarget）の回転（初期姿勢からの、骨自身の回転 matrix_basis の四元数）の、骨の軸 Y のまわりのねじれ
-     2·atan2(y, w) を出し、−π〜π に戻して、拘束の影響（influence）を掛ける（VRM の roll の重み）。
+     2·atan2(y, w) を出し、−π〜π に戻して、そのコマの拘束の影響（influence。VRM の roll の重み。動きやドライバーがあれば
+     コマごとに値が変わる）を掛ける。
   2. 比べる用に、止める前の拘束が出していた角度（親から見た骨の回転の Y のまわりのねじれ）をコマごとに測る。
   3. 拘束を止め、骨の回転を「軸 Y のまわりにその角度」にして、コマごとにキーを打つ（前のコマの四元数と向きをそろえる）。骨自身の回転は使わない。
   「向くだけの骨」（Damped Track）は、VRM の aim と同じ決め方（いちばん小さい回転で向く）なので、そのまま。
@@ -50,6 +51,12 @@ def parse_args(argv):
 def wrapped(angles):
     """角度（ラジアン）の並びを −π〜π に戻す（台本と同じ式）。"""
     return (np.asarray(angles, dtype=np.float64) + np.pi) % (2 * np.pi) - np.pi
+
+
+def baked(angles, influences):
+    """焼く角度: −π〜π に戻した角度（ラジアン）に、同じコマの拘束の影響（influence）を掛ける。影響に動きやドライバーがあっても、
+    コマごとの値を掛ける（1 なら角度は変わらない）。"""
+    return wrapped(angles) * np.asarray(influences, dtype=np.float64)
 
 
 def roll_problem(constraint):
@@ -116,11 +123,15 @@ def main(argv=None):
         obj.hide_viewport = True                        # 骨だけ評価すれば足りる（台本と同じ）
     frames = list(range(scene.frame_start, scene.frame_end + 1))
     angles = {pose_bone.name: [] for pose_bone, _ in plans}
+    influences = {pose_bone.name: [] for pose_bone, _ in plans}   # 影響はコマごとに読む（動きやドライバーで変わりうる）
+    depsgraph = bpy.context.evaluated_depsgraph_get()
     for frame in frames:
         scene.frame_set(frame)
+        evaluated = armature.evaluated_get(depsgraph)            # ドライバーの値は評価した写しにある
         for pose_bone, constraint in plans:
             q = armature.pose.bones[constraint.subtarget].matrix_basis.to_quaternion()
             angles[pose_bone.name].append(2 * math.atan2(q.y, q.w))
+            influences[pose_bone.name].append(float(evaluated.pose.bones[pose_bone.name].constraints[constraint.name].influence))
     report = {}
     for pose_bone, constraint in plans:
         pose_bone.rotation_mode = "QUATERNION"
@@ -131,7 +142,7 @@ def main(argv=None):
             now = (rest.inverted() @ (pose_bone.parent.matrix.inverted() @ pose_bone.matrix)).to_quaternion()
             before.append(2 * math.atan2(now.y, now.w))
         constraint.mute = True
-        values = wrapped(angles[pose_bone.name]) * constraint.influence
+        values = baked(angles[pose_bone.name], influences[pose_bone.name])
         previous = None
         for frame, angle in zip(frames, values):
             q = Quaternion((0.0, 1.0, 0.0), float(angle))
@@ -140,7 +151,8 @@ def main(argv=None):
             previous = q.copy()
             pose_bone.rotation_quaternion = q
             pose_bone.keyframe_insert("rotation_quaternion", frame=frame)
-        report[pose_bone.name] = {"from": constraint.subtarget, "constraint": constraint.name, "influence": round(float(constraint.influence), 6),
+        report[pose_bone.name] = {"from": constraint.subtarget, "constraint": constraint.name,
+                                  "influence": [round(min(influences[pose_bone.name]), 6), round(max(influences[pose_bone.name]), 6)],
                                   "frames": len(frames), "largest_twist_deg": round(float(np.degrees(np.abs(values)).max()), 1),
                                   "constraint_was_off_by_deg": off_by_deg(before, values)}
     for obj, state in hidden:

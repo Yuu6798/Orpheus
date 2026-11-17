@@ -20,6 +20,13 @@ def test_angles_wrap_like_the_script():
     assert np.all(np.abs(br.wrapped(angles)) <= math.pi)
 
 
+def test_influence_is_applied_frame_by_frame():
+    angles = [0.5, 1.0, 4.0]
+    assert br.baked(angles, [1.0, 1.0, 1.0]).tobytes() == br.wrapped(angles).tobytes()   # 影響が 1 なら、焼く角度は戻しただけと同じ
+    values = br.baked(angles, [0.0, 0.5, 1.0])                                           # 影響が動けば、そのコマの値を掛ける
+    assert list(values[:2]) == [0.0, 0.5] and values[2] == pytest.approx(4.0 - 2 * math.pi)
+
+
 def test_only_the_roll_form_of_copy_rotation_is_baked():
     good = NS(use_x=False, use_y=True, use_z=False, mix_mode="ADD", target_space="LOCAL", owner_space="LOCAL", subtarget="hand.L")
     assert br.roll_problem(good) == ""
