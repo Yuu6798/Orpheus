@@ -65,7 +65,7 @@ def color_factor(inputs, parameters, outputs, context):
 
 
 NECK_JUNCTION_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "neck_junction.py"
-NECK_JUNCTION_PARAMETERS = {"body", "neck_bone", "head_bone", "armature", "remove_groups", "radius", "ramp_from_z", "head_weight_top",
+NECK_JUNCTION_PARAMETERS = {"body", "neck_bone", "head_bone", "armature", "remove_groups", "radius", "ramp_from_z", "head_weight_top", "head_weight",
                             "plug_from_below_top", "plug_height", "plug_rings", "plug_segments", "plug_inset", "plug_top_scale",
                             "uv_band", "recolour_below", "slab", "cap", "blender", "addons", "blender_extensions", "timeout"}
 
@@ -112,6 +112,11 @@ def neck_junction_settings(parameters):
         settings[key] = _real(parameters, key, 0.0, exclusive=True, required=True)
     settings["plug_from_below_top"] = _real(parameters, "plug_from_below_top", 0.0, required=True)
     settings["head_weight_top"] = _real(parameters, "head_weight_top", 0.0, exclusive=True, maximum=1.0, required=True)
+    if "head_weight" in parameters:
+        if parameters["head_weight"] not in ("add", "set"):
+            raise ToolError(f"head_weight は add（もとの重みを縮めて頭に足す。既定）か set（頭の重みをその値にする）にしてください: "
+                            f"{parameters['head_weight']!r}")
+        settings["head_weight"] = parameters["head_weight"]
     for key, minimum, exclusive in (("plug_inset", 0.0, True), ("plug_top_scale", 0.0, False), ("uv_band", 0.0, True),
                                     ("recolour_below", 0.0, False), ("slab", 0.0, True), ("cap", 0.0, False)):
         value = _real(parameters, key, minimum, exclusive)
@@ -150,7 +155,8 @@ def neck_junction(inputs, parameters, outputs, context):
     observation = {"kind": "neck_junction", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "addons": record.get("addons"),
                    **{key: report.get(key) for key in ("body", "region_verts", "z_top", "removed_weight_verts", "remove_groups_missing",
-                                                        "ramped_verts", "neck_top_faces_recoloured")},
+                                                        "head_weight", "ramped_verts", "ramped_with_head_weight", "neck_top_faces_recoloured",
+                                                        "neck_top_faces_material_changed")},
                    "plug": {key: (report.get("plug") or {}).get(key) for key in ("verts", "faces", "radius_cm", "material")}}
     missing = report.get("remove_groups_missing") or []
     if missing:              # 打ち間違いで黙って何もしないことにならないよう、体に無い頂点グループは要確認にする

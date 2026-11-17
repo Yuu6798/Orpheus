@@ -25,6 +25,34 @@ def test_head_weight_rises_smoothly_from_the_ramp_start_to_the_top():
     assert low < 0.01 and high > 0.99                                          # 端で傾きが 0
 
 
+def test_the_head_weight_is_set_to_the_ramp_and_the_rest_is_shared():
+    NECK, HEAD, SPINE = 1, 2, 3
+    weights = neck_junction.set_head_weight({NECK: 0.7, SPINE: 0.3}, HEAD, NECK, 0.4)
+    assert list(weights) == [NECK, SPINE, HEAD] and weights[HEAD] == 0.4
+    assert weights[NECK] == 0.7 * (1 - 0.4) and weights[SPINE] == 0.3 * (1 - 0.4)       # 頭の重みが無ければ台本と同じ計算
+    weights = neck_junction.set_head_weight({NECK: 0.5, HEAD: 0.5}, HEAD, NECK, 0.8)     # もとから頭の重みがあっても、頭は s
+    assert weights == {NECK: pytest.approx(0.2), HEAD: 0.8}
+    assert neck_junction.set_head_weight({HEAD: 1.0}, HEAD, NECK, 0.8) == {NECK: pytest.approx(0.2), HEAD: 0.8}
+    weights = neck_junction.set_head_weight({HEAD: 0.2, NECK: 0.6, SPINE: 0.2}, HEAD, NECK, 0.5)
+    assert sum(weights.values()) == pytest.approx(1.0) and weights[NECK] == pytest.approx(0.375) and weights[SPINE] == pytest.approx(0.125)
+
+
+class _Face:
+    def __init__(self, material_index):
+        self.material_index = material_index
+
+
+class _Loop:
+    def __init__(self, material_index):
+        self.face = _Face(material_index)
+
+
+def test_the_colour_is_read_from_a_corner_of_the_sampled_material():
+    loops = [_Loop(2), _Loop(0), _Loop(0)]
+    assert neck_junction.loop_of(loops, 0) is loops[1] and neck_junction.loop_of(loops, 2) is loops[0]
+    assert neck_junction.loop_of(loops, 5) is None
+
+
 def test_plug_radius_follows_the_ring_fills_missing_directions_and_smooths():
     angles = np.linspace(-math.pi, math.pi, 200, endpoint=False) + 0.01
     circle = np.stack([0.5 + 0.03 * np.cos(angles), -0.2 + 0.03 * np.sin(angles)], axis=1)
@@ -43,6 +71,7 @@ def test_plug_radius_follows_the_ring_fills_missing_directions_and_smooths():
 def test_defaults_are_the_fine_values_only():
     settings = neck_junction.merged(GOOD)
     assert settings["remove_groups"] == [] and settings["plug_segments"] == 28 and settings["slab"] == 0.007
+    assert settings["head_weight"] == "add" and neck_junction.HEAD_WEIGHT == ("add", "set")       # 既定は台本と同じ付け方
     assert all(key in GOOD for key in neck_junction.REQUIRED)
 
 
@@ -69,7 +98,7 @@ def test_neck_junction_passes_the_settings_to_blender(tmp_path):
     blender = stand_in_executable(tmp_path, "blender", STAND_IN)
     (tmp_path / "avatar.blend").write_bytes(b"vrm character")
     step = {"id": "neck", "operation": "model.neck_junction", "inputs": {"blend": "$inputs.avatar"},
-            "parameters": {"blender": str(blender), **GOOD, "remove_groups": ["eye.L", "eye.R"], "plug_segments": 24},
+            "parameters": {"blender": str(blender), **GOOD, "remove_groups": ["eye.L", "eye.R"], "plug_segments": 24, "head_weight": "set"},
             "outputs": {"blend": "neck.blend", "report": "neck.json"}}
     atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "neck",
                                            "inputs": {"avatar": {"path": "avatar.blend"}}, "steps": [step]})
@@ -79,7 +108,7 @@ def test_neck_junction_passes_the_settings_to_blender(tmp_path):
     report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
     argv = report["argv"]
     assert Path(argv[argv.index("--python") + 1]).name == "neck_junction.py" and "--python-expr" not in argv   # アドオンは挙げたときだけ
-    assert report["settings"] == {**GOOD, "remove_groups": ["eye.L", "eye.R"], "plug_segments": 24}
+    assert report["settings"] == {**GOOD, "remove_groups": ["eye.L", "eye.R"], "plug_segments": 24, "head_weight": "set"}
     observation = step["observations"][0]
     assert observation["kind"] == "neck_junction" and observation["region_verts"] == 50 and observation["plug"]["verts"] == 145
     assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["steps"]["neck"]["reused_from"] is None   # 毎回実行する
@@ -110,6 +139,7 @@ def test_neck_junction_asks_for_a_review_when_a_group_to_remove_is_not_on_the_bo
     ({"ramp_from_z": float("nan")}, "ramp_from_z"),
     ({"head_weight_top": 1.5}, "head_weight_top"),
     ({"head_weight_top": 0}, "head_weight_top"),
+    ({"head_weight": "replace"}, "head_weight"),
     ({"plug_height": -0.01}, "plug_height"),
     ({"plug_from_below_top": None}, "plug_from_below_top"),
     ({"plug_segments": 2}, "plug_segments"),

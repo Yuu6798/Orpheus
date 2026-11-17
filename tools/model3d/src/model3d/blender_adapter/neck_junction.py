@@ -7,15 +7,18 @@
 
 1. remove_groups（目の骨など）の重みを、体のメッシュの全部の頂点から外し、残りの骨で割り直す（残りが無ければ首の骨に 1）。
 2. 首の上の端を、頭の骨へなだらかに付け替える。首の骨の付け根から頭の骨の付け根へ引いた軸から radius の内で、高さ ramp_from_z より上、
-   首・頭・remove_groups の重みの和が 0.5 を超える頂点（首の上の端）の、ramp_from_z から首のいちばん上 z_top までで、頭の重みを
-   0 → head_weight_top になめらか（smoothstep）に増やす（ほかの重みは同じ割合で減らす）。
+   首・頭・remove_groups の重みの和が 0.5 を超える頂点（首の上の端）の、ramp_from_z から首のいちばん上 z_top までで、0 →
+   head_weight_top になめらか（smoothstep）に変わる値 s で、頭の重みを増やす。head_weight（既定 add）: add は、もとの重みを全部
+   (1 − s) 倍して頭に s を足す（台本と同じ。もとから頭の重み h がある頂点は h(1 − s) + s）。set は頭の重みを s にし、ほかの骨の
+   重みを合わせて 1 − s になるよう同じ割合で縮める（頭の骨だけだった頂点は、残りを首の骨に）。頭の重みが無い頂点では同じ。
 3. 首の中から頭の中へ伸びる栓（ふた付きの筒）を足す。z_top より plug_from_below_top 下の高さの、首の上の端の頂点（±slab）の輪郭を
    plug_segments の向きに分けて半径を取り（無い向きは補い、[0.1, 0.2, 0.4, 0.2, 0.1] でならして plug_inset を掛ける）、上へ plug_height
    だけ、上ほど plug_top_scale へすぼめながら plug_rings 段の輪を積み、上をふさぐ（いちばん上の点は cap 上）。下の輪は首の上の端と同じ
    重み、上へ向けて頭の骨だけにする。面は外向き。
 4. 栓と首の上の端（栓の下の高さより recolour_below 下から上で、頂点が全部首の上の端の面）の uv を 1 点にまとめ、首の肌の 1 色にする。
-   色は、栓の下の高さから uv_band 下までの首の上の端の頂点の色（その面の材質のいちばん大きい色の絵の 5×5 画素の平均）の中央値に
-   いちばん近い頂点の uv。
+   色は、栓の下の高さから uv_band 下までの首の上の端の頂点の色（最初の頂点の面の材質のいちばん大きい色の絵の 5×5 画素の平均。
+   頂点ごとに、その材質の面の角の uv で読む）の中央値にいちばん近い頂点の uv。1 色にする面の材質も、その材質にそろえる
+   （首の上の端が別の色の絵の材質にまたがっても、同じ色になるように）。
 首のまわりの形は入り組んでいる（画像から作ったメッシュ。縁の輪がきれいに取れない）ので、つながりには頼らず、位置だけで決める。
 元のファイルは変えない。1 Blender 単位 = 1 m のシーンだけ。形状キーのある体・ほかの物体とメッシュを分け合う体は止める。
 **検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、リポジトリ外の 3 作目の VRM のダンスの台本と同じ .blend になることを確かめた
@@ -29,8 +32,9 @@ import sys
 
 import numpy as np
 
-DEFAULTS = {"armature": None, "remove_groups": [], "plug_rings": 6, "plug_segments": 28, "plug_inset": 0.985, "plug_top_scale": 0.5,
-            "uv_band": 0.008, "recolour_below": 0.006, "slab": 0.007, "cap": 0.004}
+DEFAULTS = {"armature": None, "remove_groups": [], "head_weight": "add", "plug_rings": 6, "plug_segments": 28, "plug_inset": 0.985,
+            "plug_top_scale": 0.5, "uv_band": 0.008, "recolour_below": 0.006, "slab": 0.007, "cap": 0.004}
+HEAD_WEIGHT = ("add", "set")     # 頭の重みの付け方（add: 台本と同じ足し方、set: 頭の重みを s にする）
 REQUIRED = ("body", "neck_bone", "head_bone", "radius", "ramp_from_z", "head_weight_top", "plug_from_below_top", "plug_height")
 SMOOTH = (0.1, 0.2, 0.4, 0.2, 0.1)     # 栓の半径をならす重み（向きの輪の上で）
 
@@ -52,6 +56,30 @@ def ramp(z, ramp_from_z, z_top, head_weight_top):
     """首の上の端の高さ z での頭の重み（ramp_from_z で 0、z_top で head_weight_top。なめらかな段）。"""
     t = min(max((z - ramp_from_z) / (z_top - ramp_from_z), 0.0), 1.0)
     return t * t * (3 - 2 * t) * head_weight_top
+
+
+def set_head_weight(weights, head, neck, s):
+    """head_weight: set の重み: 頂点の重み（グループの番号 → 重み）の、頭の骨の重みを s にした重み。ほかの骨の重みは、合わせて
+    1 − s になるよう同じ割合で縮める（もとの頭の重みを h として ×(1 − s) ÷ (1 − h)。h が 0 なら add と同じ ×(1 − s)）。頭の骨
+    だけだった頂点は、残りを首の骨に。並びは、もとのグループの順のあとに頭（もとから頭があれば、その位置のまま書き換わる）。"""
+    rest = 1.0 - weights.get(head, 0.0)
+    out = {}
+    if rest > 1e-9:
+        for g, w in weights.items():
+            if g != head:
+                out[g] = w * (1 - s) / rest
+    else:
+        out[neck] = 1.0 - s
+    out[head] = s
+    return out
+
+
+def loop_of(loops, material):
+    """頂点の角（loop）のうち、面の材質の番号が material の最初の角（無ければ None）。"""
+    for loop in loops:
+        if loop.face.material_index == material:
+            return loop
+    return None
 
 
 def plug_radius(points, centre, segments, inset):
@@ -169,17 +197,27 @@ def main(argv=None):
     report["remove_groups_missing"] = missing
 
     # 2. 首の上の端を頭の骨へ付け替える
-    ramped = 0
+    ramped = preweighted = 0
     for i in np.where(region)[0]:
         d = bm.verts[int(i)][deform]
         s = head_weight(world[i, 2])
         if s <= 0:
             continue
-        for g in list(d.keys()):
-            d[g] = d[g] * (1 - s)
-        d[gi_head] = d.get(gi_head, 0.0) + s
+        preweighted += d.get(gi_head, 0.0) > 0
+        if settings["head_weight"] == "set":
+            weights = set_head_weight(dict(d.items()), gi_head, gi_neck, s)
+            for g in [g for g in d.keys() if g not in weights]:
+                del d[g]
+            for g, w in weights.items():
+                d[g] = w
+        else:                                   # add（台本と同じ）: もとの重みを全部 (1 − s) 倍して、頭に s を足す
+            for g in list(d.keys()):
+                d[g] = d[g] * (1 - s)
+            d[gi_head] = d.get(gi_head, 0.0) + s
         ramped += 1
+    report["head_weight"] = settings["head_weight"]
     report["ramped_verts"] = ramped
+    report["ramped_with_head_weight"] = int(preweighted)
 
     # 3. 栓の輪の大きさ
     z_p = z_top - settings["plug_from_below_top"]
@@ -218,7 +256,8 @@ def main(argv=None):
         y = min(max(int(uv.y % 1.0 * ih), 0), ih - 1)
         return pixels[max(y - 2, 0):y + 3, max(x - 2, 0):x + 3, :3].reshape(-1, 3).mean(axis=0)
 
-    cands = [(bm.verts[i].link_loops[0][uv_layer].uv.copy(), colour_at(bm.verts[i].link_loops[0][uv_layer].uv)) for i in band]
+    loops = [loop for loop in (loop_of(bm.verts[i].link_loops, src_mat) for i in band) if loop is not None]
+    cands = [(loop[uv_layer].uv.copy(), colour_at(loop[uv_layer].uv)) for loop in loops]
     cols = np.array([c for _, c in cands])
     median = np.median(cols, axis=0)
     pick = int(np.argmin(np.linalg.norm(cols - median, axis=1)))
@@ -226,15 +265,19 @@ def main(argv=None):
     report["plug_colour"] = {"candidates": len(cands), "median": [float(v) for v in median], "picked": [float(v) for v in cols[pick]],
                              "image": image.name}
 
-    # 首の上の端（栓の下の高さより recolour_below 下から上）の面を、同じ 1 点の色にする
-    recoloured = 0
+    # 首の上の端（栓の下の高さより recolour_below 下から上）の面を、同じ材質の同じ 1 点の色にする
+    recoloured = rematerialled = 0
     region_set = set(int(i) for i in np.where(region)[0])
     for f in bm.faces:
         if all(v.index in region_set and world[v.index, 2] > z_p - settings["recolour_below"] for v in f.verts):
             for loop in f.loops:
                 loop[uv_layer].uv = src_uv
+            if f.material_index != src_mat:
+                f.material_index = src_mat
+                rematerialled += 1
             recoloured += 1
     report["neck_top_faces_recoloured"] = recoloured
+    report["neck_top_faces_material_changed"] = rematerialled
 
     # 5. 栓を足す
     rings = []
