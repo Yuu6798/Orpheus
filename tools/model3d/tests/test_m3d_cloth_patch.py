@@ -22,6 +22,16 @@ def test_lining_colour_rule_matches_the_script():
     assert list(blue) == [True, False]                                         # ほかの色の裏地も選べる
 
 
+def test_lining_point_checks_the_centre_colour():
+    red, black = np.array([0.4, 0.01, 0.01]), np.array([0.02, 0.02, 0.02])
+    samples = np.array([[0.30, 0.30], [0.52, 0.50], [0.70, 0.70]])                # 面の中で裏地の色と確かめた点
+    uv, source = cp.lining_point([0.5, 0.5], samples, lambda p: red, RED)
+    assert source == "centre" and list(uv) == [0.5, 0.5]                        # 真ん中が裏地の色ならそのまま（台本と同じ）
+    dot = lambda p: black if np.allclose(p, [0.5, 0.5]) else red                # 真ん中だけ小さく暗い
+    uv, source = cp.lining_point([0.5, 0.5], samples, dot, RED)
+    assert source == "sample" and list(uv) == [0.52, 0.50]                      # 確かめた点のうち真ん中にいちばん近い点
+
+
 def test_similarity_transforms_keep_the_script_normals():
     turn = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
     assert cp.is_similarity(np.eye(3) * 1.45) and cp.is_similarity(turn * 1.45)            # 回転とそろった拡大（台本と同じ計算）

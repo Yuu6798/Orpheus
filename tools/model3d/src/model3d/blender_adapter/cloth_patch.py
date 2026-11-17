@@ -13,7 +13,8 @@
     view_spread 倍）から見て、ほかの布の面に隠れずに見える面を「内側から見える面」とする。布より下から見上げる位置は入れない（布のふちの、外からも
     見える面まで選んでしまうため）。
   - その面の色の絵を何点か（samples。決まった乱数）読み、裏地の色（lining_color: 1 つの色の成分 channel が min 以上で、ほかの成分がその ratio 倍以下）
-    でない点が min_dark 以上ある面を選ぶ。裏地の色だけの内向きの面のうち、いちばん広い面の uv を「裏地の色の 1 点」にする。
+    でない点が min_dark 以上ある面を選ぶ。裏地の色だけの内向きの面のうち、いちばん広い面の uv の真ん中を「裏地の色の 1 点」にする
+    （真ん中の色も確かめ、裏地の色でなければ、その面で裏地の色と確かめた点のうち真ん中にいちばん近い点。報告の lining_uv_from）。
   - 選んだ面の頂点を写し、内側（面の向きを内向きにそろえた法線の向き）へ offset だけ寄せて、新しい面を張る。骨の重みは元の頂点と同じ（一緒に動く）。
     向きは内向き。uv は全部「裏地の色の 1 点」（色の絵は書き換えない。材質も同じ）。
   - 張る前に、当て布の面の上の点から外（水平〜斜め上、左右に 50° まで）へ線を飛ばし、cover_reach 以内で元の布の面にも cover_objects（体など。
@@ -75,6 +76,17 @@ def is_lining(colours, rule):
     main = colours[..., k]
     others = [colours[..., j] for j in range(3) if j != k]
     return (main >= rule["min"]) & (others[0] <= rule["ratio"] * main) & (others[1] <= rule["ratio"] * main)
+
+
+def lining_point(centre, samples, colour_of, rule):
+    """当て布の uv にする「裏地の色の 1 点」: 面の uv の真ん中（centre）の色も確かめ、裏地の色ならそこ（台本と同じ）。でなければ
+    （面の中の小さな暗い所に当たったなど）、その面で裏地の色と確かめた点（samples）のうち、真ん中にいちばん近い点。
+    colour_of は uv → 色。戻り: (uv, "centre" か "sample")。"""
+    centre = np.asarray(centre, dtype=np.float64)
+    if bool(is_lining(np.asarray(colour_of(centre)), rule)):
+        return centre, "centre"
+    samples = np.asarray(samples, dtype=np.float64)
+    return samples[int(np.argmin(np.linalg.norm(samples - centre, axis=1)))], "sample"
 
 
 def main(argv=None):
@@ -221,11 +233,12 @@ def main(argv=None):
         if dark >= s["min_dark"]:
             chosen.append((f, inward))
             counts["inward_dark" if inward else "outward_dark"] += 1
-        elif inward and dark == 0.0:
-            clean.append((f.calc_area(), uvs.mean(axis=0)))
+        elif inward and dark == 0.0:                     # 読んだ点が全部裏地の色（点は、裏地の色と確かめた点として残す）
+            clean.append((f.calc_area(), uvs.mean(axis=0), np.concatenate(points)))
     if not clean:
         raise SystemExit("内側から見える面に、裏地の色だけの内向きの面がありません（lining_color を確かめてください）")
-    lining_uv = max(clean, key=lambda r: r[0])[1]
+    _, centre, samples = max(clean, key=lambda r: r[0])
+    lining_uv, lining_uv_from = lining_point(centre, samples, texel, s["lining_color"])
     lining_colour = [round(float(v), 3) for v in texel(np.array(lining_uv))]
 
     to_local = mw.inverted().to_3x3()
@@ -302,7 +315,8 @@ def main(argv=None):
               "image": image.name, "faces_seen_first_from_inside": counts["innermost"], "faces_other_material": counts["other_material"], "patched_back_of_outer_cloth": counts["outward_dark"],
               "patched_dark_lining": counts["inward_dark"], "dropped_because_seen_from_outside": dropped, "faces_added": made,
               "verts_added": len(new_vert), "verts_faces_before": list(before), "verts_faces_after": [len(mesh.vertices), len(mesh.polygons)],
-              "lining_uv": [round(float(v), 4) for v in lining_uv], "lining_colour": lining_colour, "settings": s}
+              "lining_uv": [round(float(v), 4) for v in lining_uv], "lining_uv_from": lining_uv_from, "lining_colour": lining_colour,
+              "settings": s}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
