@@ -5,6 +5,7 @@
 - check.body_size: 体の太さを測る（腕・脚の直径、胴の幅と厚み）。測るだけ。
 - model.twist_bones: ねじれを分ける補助の骨（ねじらない骨）を足し、重みを付け根から先へ振り分ける。
 - check.twist: 骨の軸のまわりのねじれの角をコマごとに測る。
+- model.recolor_part・model.recolor: 色の絵を、部品の uv の範囲だけ・色相の範囲だけ塗り替える。model.remove_parts: 部品を外す。
 """
 import math
 from pathlib import Path
@@ -391,3 +392,120 @@ def check_twist(inputs, parameters, outputs, context):
     report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "armature": raw.get("armature"),
                    "raw": str(raw_path)})
     return _finish(report, outputs, parameters, "ねじれの検査")
+
+
+RECOLOR_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "recolor_texture.py"
+
+
+def _run_recolor(mode, inputs, parameters, outputs, context, settings, operation, texture=None):
+    """recolor_texture.py を mode で動かし、報告を読む。"""
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / f"{mode}_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--mode", mode, "--blend", inputs["blend"], "--settings", str(settings_path), "--out-blend", outputs["blend"],
+            "--report", outputs["report"]]
+    if texture is not None:
+        args += ["--texture", texture]
+    record = launcher.run_blender(blender, RECOLOR_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    return record, read_json(outputs["report"])
+
+
+def _outputs(outputs, names, operation):
+    missing = [name for name in names if name not in outputs]
+    if missing:
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+
+
+@register("model.remove_parts", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="部品（物体）を外す（Blender の中で）: objects に挙げた物体を消し、使う物の無くなったメッシュも消す。骨と揺れものの設定は"
+                  "残す（メッシュが無いだけで、動きには影響しない）。シーンに無い名前は要確認。元のファイルは変えない")
+def remove_parts(inputs, parameters, outputs, context):
+    require(inputs, ("blend",), "model.remove_parts")
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"objects"}, "model.remove_parts")
+    settings = {"objects": _names(parameters.get("objects"), "objects")}
+    _outputs(outputs, ("blend", "report"), "model.remove_parts")
+    record, report = _run_recolor("remove", inputs, parameters, outputs, context, settings, "model.remove_parts")
+    observation = {"kind": "remove_parts", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "removed": report.get("removed"), "missing": report.get("missing")}
+    unresolved = [f"外す物体がありません: {name}" for name in report.get("missing") or []]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+def _gain(value):
+    if (not isinstance(value, list) or len(value) != 3
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in value)):
+        raise ToolError(f"gain は赤・緑・青に掛ける倍率（0 以上の有限の数 3 つ）にしてください: {value!r}")
+    return value
+
+
+@register("model.recolor_part", inputs=("blend",), outputs=("blend", "texture", "report"), cacheable=False,
+          summary="1 つの部品（object）のメッシュが使う uv の範囲（三角形と、その外の margin 画素）だけ、色の絵に色ごとの倍率 gain を"
+                  "掛ける（Blender の中で）。dark_below を渡すと、明るさ（RGB の最大）がそれより暗い画素だけ（+feather でなめらかに 0 へ。"
+                  "明るい縁取りの模様などは変えない）。ほかの部品と分け合う色の絵でも、その部品の所だけが変わる。塗り替えた絵は texture の"
+                  "PNG に書き、.blend に詰め込んで付け替える。元のファイルは変えない")
+def recolor_part(inputs, parameters, outputs, context):
+    require(inputs, ("blend",), "model.recolor_part")
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"object", "image", "gain", "dark_below", "feather", "margin"}, "model.recolor_part")
+    settings = {"object": _name(parameters.get("object"), "object"), "image": None, "gain": _gain(parameters.get("gain")),
+                "dark_below": None, "feather": 0.1, "margin": 3.0}
+    if parameters.get("image") is not None:
+        settings["image"] = _name(parameters["image"], "image")
+    if parameters.get("dark_below") is not None:
+        settings["dark_below"] = _real(parameters["dark_below"], "dark_below", 0.0, maximum=1.0)
+    if "feather" in parameters:
+        settings["feather"] = _real(parameters["feather"], "feather", 0.0, exclusive=True)
+    if "margin" in parameters:
+        settings["margin"] = _real(parameters["margin"], "margin", 0.0)
+    _outputs(outputs, ("blend", "texture", "report"), "model.recolor_part")
+    if Path(outputs["texture"]).suffix.lower() != ".png":
+        raise ToolError(f"outputs の texture は .png にしてください: {Path(outputs['texture']).name}")
+    record, report = _run_recolor("part", inputs, parameters, outputs, context, settings, "model.recolor_part", str(outputs["texture"]))
+    observation = {"kind": "recolor_part", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("object", "image", "texels_in_part", "texels_changed")}}
+    unresolved = [] if report.get("texels_in_part") else [f"{report.get('object')} の、絵 {report.get('image')} を使う面の uv の範囲に画素がありません"]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+RULE_KEYS = {"image", "hue_range_deg", "soft", "min_saturation", "hue_shift", "sat_scale", "value_gamma", "value_scale"}
+
+
+@register("model.recolor", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="色の絵の、色相の範囲だけを補正する（Blender の中で）: rules の 1 つごとに、名前に image を含む絵の、色相 hue_range_deg"
+                  "（度。縁は soft 度でなめらかに）で彩度が min_saturation を超える画素の、色相（hue_shift）・彩度（sat_scale）・明るさ"
+                  "（value_gamma・value_scale）を変える。範囲の外は変えない。補正した絵を <元の名前>_recolor として詰め込み、付け替える。"
+                  "元のファイルは変えない")
+def recolor(inputs, parameters, outputs, context):
+    require(inputs, ("blend",), "model.recolor")
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"rules"}, "model.recolor")
+    rules = parameters.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise ToolError(f"rules は [{{\"image\": 名前の一部, \"hue_range_deg\": [下, 上], …}}, …] にしてください: {rules!r}")
+    checked = []
+    for k, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            raise ToolError(f"rules[{k}] は {{\"image\": …, \"hue_range_deg\": …}} にしてください: {rule!r}")
+        _refuse_unknown({key for key in rule if not key.startswith("_")}, RULE_KEYS, f"rules[{k}]")
+        hue_range = rule.get("hue_range_deg")
+        if (not isinstance(hue_range, list) or len(hue_range) != 2
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in hue_range)
+                or not hue_range[0] < hue_range[1] or hue_range[1] - hue_range[0] > 360):
+            raise ToolError(f"rules[{k}].hue_range_deg は [下, 上]（度。下 < 上、幅 360 以下。0 より下も書ける）にしてください: {hue_range!r}")
+        entry = {"image": _name(rule.get("image"), f"rules[{k}].image"), "hue_range_deg": hue_range}
+        for key, minimum, exclusive in (("soft", 0.0, True), ("min_saturation", 0.0, False), ("sat_scale", 0.0, False),
+                                        ("value_gamma", 0.0, True), ("value_scale", 0.0, False)):
+            if key in rule:
+                entry[key] = _real(rule[key], f"rules[{k}].{key}", minimum, exclusive=exclusive)
+        if "hue_shift" in rule:
+            entry["hue_shift"] = _real(rule["hue_shift"], f"rules[{k}].hue_shift")
+        checked.append(entry)
+    _outputs(outputs, ("blend", "report"), "model.recolor")
+    record, report = _run_recolor("recolor", inputs, parameters, outputs, context, {"rules": checked}, "model.recolor")
+    observation = {"kind": "recolor", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "rules": report.get("rules")}
+    return StepResult(observations=[observation])
