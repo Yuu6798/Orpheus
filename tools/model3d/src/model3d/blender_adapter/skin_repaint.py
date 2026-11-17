@@ -79,6 +79,11 @@ def slot_loops(polygons, slots, loop_count):
     return used
 
 
+def edges_within(edges, keep):
+    """両端とも keep の頂点の辺だけ（埋める・ならす相手を、色を引けた頂点に限る）。"""
+    return edges[keep[edges[:, 0]] & keep[edges[:, 1]]]
+
+
 def world_normals(normals, world):
     """頂点の法線 (N, 3) を世界の向きの単位ベクトルへ（行列の線形の部分の逆行列の転置で移す。一様でない倍率でも向きが正しい）。"""
     moved = normals @ np.linalg.inv(world[:3, :3])
@@ -281,7 +286,7 @@ def main(argv=None):
         arm_roots = [root for root in np.unique(roots[is_hand]) if (is_hand & (roots == root)).sum() >= settings["island_min"]]
         in_island = np.isin(roots, arm_roots)
         region = in_island & is_arm & uses_image          # その絵を使う面の頂点だけ（ほかの絵の頂点は塗れず、色も引けない）
-        island_edges = edges[in_island[edges[:, 0]] & in_island[edges[:, 1]]]
+        island_edges = edges_within(edges, in_island & uses_image)   # その絵を使わない頂点（色が 0 のまま）を混ぜない
         clean = skin_colored(color, settings["skin"])
         dirty = region & ~clean
         filled = color.copy()

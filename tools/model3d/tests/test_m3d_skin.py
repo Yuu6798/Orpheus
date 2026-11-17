@@ -26,6 +26,15 @@ def test_only_corners_of_faces_with_the_image_count():
     assert not sr.slot_loops(polygons, set(), 10).any()
 
 
+def test_diffusion_edges_skip_vertices_without_the_image():
+    edges = np.array([[0, 1], [1, 2], [2, 3], [3, 0]])
+    keep = np.array([True, True, True, False])                 # 頂点 3 はほかの絵の面だけ（色を引けない）
+    assert sr.edges_within(edges, keep).tolist() == [[0, 1], [1, 2]]
+    colors = np.array([[0.9, 0.7, 0.6], [0.9, 0.7, 0.6], [0.9, 0.7, 0.6], [0.0, 0.0, 0.0]])
+    mean, has = sr.neighbour_mean(colors, sr.edges_within(edges, keep), 4)
+    assert mean[0] == pytest.approx([0.9, 0.7, 0.6]) and not has[3]   # 黒い頂点は平均に入らない
+
+
 def test_normals_use_the_inverse_transpose():
     world = np.diag([2.0, 1.0, 1.0, 1.0])                       # x だけ 2 倍
     normal = sr.world_normals(np.array([[1.0, 1.0, 0.0]]) / np.sqrt(2), world)[0]
