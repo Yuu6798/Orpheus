@@ -59,6 +59,21 @@ def test_part_mask_uses_only_the_materials_with_the_image():
     assert rt.slots_using(materials, object()) == set()
 
 
+def test_images_come_from_the_materials_the_object_draws():
+    from types import SimpleNamespace as NS
+
+    def material(image):
+        return NS(node_tree=NS(nodes=[NS(type="TEX_IMAGE", image=image)]))
+
+    under, override = NS(name="skirt_texture"), NS(name="skirt_texture_toon")
+    obj = NS(name="Skirt", material_slots=[NS(material=material(override)), NS(material=None)], data=NS(materials=[material(under), None]))
+    assert rt.effective_materials(obj)[0].node_tree.nodes[0].image is override and rt.effective_materials(obj)[1] is None
+    assert rt.image_of(obj, None) is override                         # 物体の側の上書きの絵（下のメッシュの絵ではない）
+    assert rt.image_of(obj, "toon") is override
+    with pytest.raises(SystemExit):
+        rt.image_of(NS(name="Skirt", material_slots=[NS(material=material(under))], data=NS(materials=[])), "toon")
+
+
 def test_rules_on_the_same_image_build_on_each_other():
     rng = np.random.default_rng(3)
     images = {"hair": rng.random((50, 4)), "skin": rng.random((50, 4))}

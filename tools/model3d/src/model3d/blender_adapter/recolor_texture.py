@@ -136,6 +136,12 @@ def gain_pixels(texture, mask, gain, dark_below, feather):
 
 # ---- Blender の部分 -----------------------------------------------------------------------------------
 
+def effective_materials(obj):
+    """物体が実際に描く材質の並び（枠ごとの slot.material。枠が物体の側に結び付いた上書きなら物体の材質、メッシュの側ならメッシュの材質）。
+    三角形の material_index はこの並びの番号。obj.data.materials は、上書きのある枠でも下のメッシュの材質を返すので使わない。"""
+    return [slot.material for slot in obj.material_slots]
+
+
 def slots_using(materials, image):
     """材質の並びのうち、画像ノードで image を使う材質の番号（部品の uv の範囲は、その材質の面だけで作る。ほかの絵の uv を塗らない）。"""
     return {index for index, material in enumerate(materials)
@@ -146,7 +152,7 @@ def slots_using(materials, image):
 def image_of(obj, key):
     """物体の材質の画像ノードのうち、名前に key を含む画像（最後に見つかったもの。台本と同じ）。key が None なら、使う画像が 1 つのときだけ。"""
     found = []
-    for material in obj.data.materials:
+    for material in effective_materials(obj):
         if material is None or material.node_tree is None:
             continue
         for node in material.node_tree.nodes:
@@ -218,7 +224,7 @@ def main(argv=None):
         uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
         mesh.uv_layers.active.data.foreach_get("uv", uv)
         uv = uv.reshape(-1, 2) * np.array([width, height], dtype=np.float32)
-        slots = slots_using(mesh.materials, image)      # 選んだ絵を使う材質の面だけ
+        slots = slots_using(effective_materials(obj), image)   # 選んだ絵を使う材質の面だけ（物体が実際に描く材質で）
         triangles = np.array([uv[list(triangle.loops)] for triangle in mesh.loop_triangles if triangle.material_index in slots])
         mask = uv_mask(triangles, width, height, settings.get("margin", 3.0))
         gain = np.array(settings["gain"], dtype=np.float32)
