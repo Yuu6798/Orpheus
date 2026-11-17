@@ -6,6 +6,7 @@
 - model.neck_junction: 首と頭のつなぎ目を直す（首の上の端を頭の骨へ付け替え、頭の中へ伸びる栓を足す）。
 - check.illustration: 立ち絵か T ポーズの体の絵の、人物の比率を測る（numpy と Pillow。model3d/checkpoint.py）。
 - check.body_image・check.face_image: 体の絵と顔の絵を、元絵と同じ物差しで比べる（numpy と Pillow）。
+- check.three_view: 三面図の同じ部位の高さがそろっているかを測る。texture.face_length: 頭の絵の目から下を縦に詰める（numpy と Pillow）。
 """
 import math
 from pathlib import Path
@@ -367,3 +368,115 @@ def face_image(inputs, parameters, outputs, context):
         checkpoint.save_picture(Image.fromarray(zoom), outputs["zoom"])
     report.update({"pass": None, "reason": "測っただけ（合否は出さない。report_only で測るだけにできる）", "failures": []})
     return _finish(report, outputs, parameters, "顔の絵と元絵の比べ")
+
+
+THREE_VIEW_PARAMETERS = {"mask", "background", "alpha_min", "marks", "iris", "kernel", "strict", "report_only"}
+VIEWS = ("front", "side", "back")
+
+
+def _marks(value):
+    """marks（[{"name", "rule", "range": [下, 上], "pick": top・bottom, "least", "strip"}, …]）を確かめ、既定を入れる。"""
+    from .. import checkpoint
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ToolError(f"marks は印の並びにしてください: {value!r}")
+    out, names = [], set()
+    for k, mark in enumerate(value):
+        if not isinstance(mark, dict) or set(mark) - {"name", "rule", "range", "pick", "least", "strip"}:
+            raise ToolError(f"marks[{k}] は {{\"name\", \"rule\", \"range\", \"pick\"（と least・strip）}} にしてください: {mark!r}")
+        name = mark.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            raise ToolError(f"marks[{k}].name は空でない・重ならない名前にしてください: {name!r}")
+        names.add(name)
+        span = mark.get("range")
+        if (not isinstance(span, list) or len(span) != 2
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in span)
+                or not 0 <= span[0] < span[1] <= 1):
+            raise ToolError(f"marks[{k}].range は全高に対する割合 [下, 上]（0〜1、下 < 上。0 = いちばん上）にしてください: {span!r}")
+        if mark.get("pick") not in ("top", "bottom"):
+            raise ToolError(f"marks[{k}].pick は top（いちばん上の行）か bottom（いちばん下の行）にしてください: {mark.get('pick')!r}")
+        least, strip = mark.get("least", 4), mark.get("strip", 0.07)
+        if isinstance(least, bool) or not isinstance(least, int) or least < 1:
+            raise ToolError(f"marks[{k}].least は 1 以上の整数にしてください: {least!r}")
+        if isinstance(strip, bool) or not isinstance(strip, (int, float)) or not 0 < strip <= 0.5:
+            raise ToolError(f"marks[{k}].strip は 0 より大きく 0.5 以下（全高に対する割合）にしてください: {strip!r}")
+        out.append({"name": name, "rule": checkpoint.check_rule(mark.get("rule"), f"marks[{k}].rule"), "range": span,
+                    "pick": mark["pick"], "least": least, "strip": strip})
+    return out
+
+
+@register("check.three_view", inputs=VIEWS, outputs=("report", "sheet", "heads"),
+          summary="三面図（正面・横・後ろ）で、同じ部位の高さがそろっているかを測る（numpy と Pillow）。絵ごとに人物のいちばん上と下の行・"
+                  "全高・横にいちばん広い行と、印の行（marks。色の決まりに入る画素が体の中央の帯にある行のうち、全高に対する割合の範囲で"
+                  "いちばん上か下）を、全高に対する割合で。iris（瞳の色の決まり）を渡すと、頭のあたりのかたまりも。sheet は全高と足の裏を"
+                  "そろえて並べ正面の行に線を引いた絵、heads は頭のあたりを拡大して目盛りを引いた絵（頭の大きさを目で読む）。合否は出さない"
+                  "（report_only で要確認にしない）。同じ入力なら再利用する")
+def three_view(inputs, parameters, outputs, context):
+    from .. import checkpoint
+    from .check_ops import _finish
+    require(inputs, VIEWS, "check.three_view")
+    _refuse_unknown(parameters, THREE_VIEW_PARAMETERS, "check.three_view")
+    masking = _masking(parameters)
+    marks = _marks(parameters.get("marks"))
+    iris = checkpoint.check_rule(parameters["iris"], "iris") if "iris" in parameters else None
+    kernel = parameters.get("kernel", 2)
+    if isinstance(kernel, bool) or not isinstance(kernel, int) or not 1 <= kernel <= 15:
+        raise ToolError(f"kernel は 1〜15 の整数にしてください: {kernel!r}")
+    report = {"schema_version": "model3d-three-view/0.1", "check": "three_view", "marks": marks, "iris": iris, "views": {}}
+    drawn = []
+    for view in VIEWS:
+        rgb, mask, used = _read_person(inputs[view], masking)
+        rows = checkpoint.view_rows(rgb, mask, marks)
+        rows.update(image=str(inputs[view]), mask=used)
+        if iris is not None:
+            rows["head_blobs"] = checkpoint.head_blobs(rgb, mask, iris, rows, kernel)
+        report["views"][view] = rows
+        drawn.append((checkpoint.whitened(rgb, mask), rows))
+    if "sheet" in outputs:
+        checkpoint.three_view_sheet(drawn, outputs["sheet"])
+    if "heads" in outputs:
+        checkpoint.heads_sheet(drawn, VIEWS, outputs["heads"])
+    report.update({"pass": None, "reason": "測っただけ（合否は出さない。report_only で測るだけにできる）", "failures": []})
+    return _finish(report, outputs, parameters, "三面図の高さ")
+
+
+FACE_LENGTH_PARAMETERS = {"eye_y", "chin_y", "d", "k", "start"}
+
+
+@register("texture.face_length", inputs=("image",), outputs=("image", "report"),
+          summary="頭の絵（透けつきの PNG）の、目の少し下（目の中心の行 eye_y から start × d 下。既定 0.10）からあごの先の行 chin_y までの帯を、"
+                  "描き直さずに縦に k 倍にする（行の付け替えだけ。帯の両端では変えず真ん中ほど強く、帯より上は動かさず、下は長さの差だけずらす）。"
+                  "絵の幅いっぱいに同じ付け替えをするので髪の筋が横にずれない。Lanczos4 で引き、透けを掛けてから付け替えて戻す。d は目の間隔（画素）。"
+                  "k に既定は無い。numpy と Pillow だけで、同じ入力なら再利用する")
+def face_length(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+
+    from .. import checkpoint
+    require(inputs, ("image",), "texture.face_length")
+    _refuse_unknown(parameters, FACE_LENGTH_PARAMETERS, "texture.face_length")
+    _outputs(outputs, ("image",), "texture.face_length")
+    if Path(outputs["image"]).suffix.lower() != ".png":
+        raise ToolError(f"texture.face_length の出力 image は .png にしてください（透けを残す）: {outputs['image']}")
+    eye_y, chin_y = _real(parameters, "eye_y", 0.0, required=True), _real(parameters, "chin_y", 0.0, required=True)
+    d = _real(parameters, "d", 0.0, exclusive=True, required=True)
+    k = _real(parameters, "k", 0.0, exclusive=True, required=True)
+    if k >= 2:
+        raise ToolError(f"k は 0 より大きく 2 より小さくしてください（1 より小さいと詰め、大きいと伸ばす）: {k!r}")
+    start = _real(parameters, "start", 0.0)
+    start = 0.10 if start is None else start
+    if chin_y <= eye_y + start * d:
+        raise ToolError(f"chin_y（{chin_y}）は、帯の上の端（eye_y + start × d = {eye_y + start * d}）より下の行にしてください")
+    rgb, alpha = checkpoint.read_image(inputs["image"])
+    if alpha is None:
+        raise ToolError("texture.face_length には透けのある絵（RGBA の PNG）を渡してください")
+    if chin_y >= rgb.shape[0]:
+        raise ToolError(f"chin_y（{chin_y}）が絵の高さ（{rgb.shape[0]}）の外です")
+    out, info = checkpoint.shorten_face(np.dstack([rgb, alpha]), eye_y, chin_y, d, k, start)
+    Image.fromarray(out).save(outputs["image"], format="PNG")
+    report = {"schema_version": "model3d-face-length/0.1", "image": str(inputs["image"]), "eye_y": eye_y, "d": d, **info,
+              "size": [int(out.shape[1]), int(out.shape[0])]}
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "face_length", **{key: report[key] for key in ("band_y", "k", "shift_px", "chin_y_after")}}])
