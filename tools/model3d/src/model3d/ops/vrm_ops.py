@@ -141,6 +141,59 @@ def bake_springs(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
+EXPRESSIONS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_expressions.py"
+EXPRESSIONS_PARAMETERS = {"blender", "addons", "blender_extensions", "object", "binds", "armature", "timeout"}
+
+
+def expression_binds(binds):
+    """vrm.expressions の binds（{VRM の表情の名前: {形状キー: 重み}}）を確かめる。名前は VRM 1.0 の決まった表情だけ、重みは 0〜1。"""
+    import math
+    from ..blender_adapter.vrm_expressions import PRESETS
+    if not isinstance(binds, dict) or not binds:
+        raise ToolError(f"binds は {{VRM の表情の名前: {{形状キー: 重み}}}} にしてください: {binds!r}")
+    checked = {}
+    for name, values in binds.items():
+        if name not in PRESETS:
+            raise ToolError(f"binds の表情 {name!r} は VRM 1.0 の決まった表情ではありません（使えるのは {sorted(PRESETS)}）")
+        if not isinstance(values, dict):
+            raise ToolError(f"binds.{name} は {{形状キー: 重み}}（空の {{}} は割り当てを外す）にしてください: {values!r}")
+        for key, weight in values.items():
+            if not isinstance(key, str) or not key:
+                raise ToolError(f"binds.{name} の形状キーの名前は空でない文字列にしてください: {key!r}")
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or not 0 <= weight <= 1:
+                raise ToolError(f"binds.{name}.{key} の重みは 0〜1 の数にしてください: {weight!r}")
+        checked[name] = {key: float(weight) for key, weight in values.items()}
+    return checked
+
+
+@register("vrm.expressions", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="VRM の表情（VRM 1.0 の決まった表情。happy・blink・blinkLeft など）に、物体（object）の形状キーを割り当てる（Blender の中で"
+                  " VRM Add-on で）: binds の表情ごとに今の割り当てを外し、{形状キー: 重み} を挙げた順に割り当てる（空の {} は外すだけ）。"
+                  "挙げない表情は変えない。元のファイルは変えない")
+def expressions(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import atomic_json
+    require(inputs, ("blend",), "vrm.expressions")
+    armature = _check(parameters, EXPRESSIONS_PARAMETERS, outputs, ("blend", "report"), "vrm.expressions")
+    obj = parameters.get("object")
+    if not isinstance(obj, str) or not obj:
+        raise ToolError(f"object は形状キーを持つメッシュの名前（空でない文字列）にしてください: {obj!r}")
+    settings = {"object": obj, "binds": expression_binds(parameters.get("binds")), "armature": armature}
+    blender = _blender(parameters, context, "vrm.expressions")
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    atomic_json(step_dir / "vrm_expressions_settings.json", settings)
+    record = launcher.run_blender(blender, EXPRESSIONS_SCRIPT, None, ["--blend", inputs["blend"], "--settings",
+                                                                      step_dir / "vrm_expressions_settings.json", "--out-blend",
+                                                                      outputs["blend"], "--report", outputs["report"]],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "vrm_expressions", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "addons": record.get("addons"), "object": report.get("object"),
+                   "changed": report.get("changed"), "bound": report.get("bound"), "name_only": report.get("name_only")}
+    return StepResult(observations=[observation])
+
+
 EXPORT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_export.py"
 EXPORT_PARAMETERS = {"blender", "addons", "blender_extensions", "jpeg_quality", "armature", "strict", "timeout"}
 
