@@ -15,6 +15,8 @@
 - 光（lights）: 光の物体の名前 → {energy: 光のトラックの値の名前, base: W, color: 値の名前}。強さは base × 値（シーンの単位で直す）。
 - 光を受ける塗り（look.lit）のまわりの明るさ（ambient: 光のトラックの値の名前）: 印のある材質ごとに、値 × model3d_lit_ambient_scale。
 - 表情（expressions）: objects の物体の形状キーを、values（{形状キー: [[秒, 値], …]}）を直線でつないだ値にする（render.passes と同じ）。
+  入れる値が効くように、この場で（保存しない）ミュートを外し、範囲を広げ、ピン（形状キーを 1 つだけ見せる設定）を切り、形状キーの
+  アニメーションとドライバーを外す（render.face_sheet と同じ手当て。報告の key_changes）。絶対の形状キーと基準のキーは止める。
 - 空（world: [R, G, B] 線形。省くと .blend の空）、にじみ（bloom: Glare の Bloom を合成で。省くと切る）。
 - フック（--hooks）: 舞台を作る build(ctx) をカメラを置く前に 1 回、コマごとに動かす frame(ctx) を描く直前に呼ぶ（どちらも任意）。
   ctx: bpy・scene・unit（scale_length）・settings・track（光の値 {T: {名前: 値}}）・cameras（{T: カメラのコマ}）・state（フックが
@@ -268,16 +270,39 @@ def main(argv=None):
             raise SystemExit(f"lights の光の物体がありません: {name}")
         lights[name] = ob
     expressions = settings["expressions"]
-    shape_targets = []
+    fps = record.get("fps") or sc.render.fps / sc.render.fps_base
+    shape_targets, key_report = [], {}
     if expressions:
+        # 入れる値が描くときに効くように、この場で（保存しない）形状キーを整える（render.face_sheet と同じ手当て）
+        combos = [(T, pass_render.expression_values(expressions["values"], (T - 1) / fps)) for T, _ in plan]
         for name in expressions["objects"]:
             ob = bpy.data.objects.get(name)
             if ob is None or ob.data is None or getattr(ob.data, "shape_keys", None) is None:
                 raise SystemExit(f"expressions の物体に形状キーがありません: {name}")
-            absent = sorted(set(expressions["values"]) - set(ob.data.shape_keys.key_blocks.keys()))
+            keys = ob.data.shape_keys
+            problem = face_sheet.absolute_keys_problem(name, keys.use_relative)
+            if problem:                                  # 絶対の形状キーは時間で形を選ぶので、値を入れても効かない
+                raise SystemExit(problem)
+            absent = sorted(set(expressions["values"]) - set(keys.key_blocks.keys()))
             if absent:
                 raise SystemExit(f"{name} に無い形状キー: {absent}")
-            shape_targets.append(ob.data.shape_keys.key_blocks)
+            if keys.reference_key.name in expressions["values"]:
+                raise SystemExit(f"expressions の values に {name} の基準のキー {keys.reference_key.name} は入れられません（値を入れても形が変わらない）")
+            states = {k.name: (k.mute, k.slider_min, k.slider_max) for k in keys.key_blocks if k.name in expressions["values"]}
+            unmute, widen = face_sheet.key_changes(combos, states)
+            for key in unmute:                           # ミュートしたキーは、値を入れても形が変わらない
+                keys.key_blocks[key].mute = False
+            for key, (low, high) in widen.items():       # 範囲の外の値は、Blender が範囲の端へ切る
+                keys.key_blocks[key].slider_min, keys.key_blocks[key].slider_max = low, high
+            change = {"unmuted": unmute, "widened": {k: [lo, hi] for k, (lo, hi) in widen.items()}, "pin_off": bool(ob.show_only_shape_key),
+                      "animation_cleared": None}
+            ob.show_only_shape_key = False               # 形状キーを 1 つだけ見せる設定（ピン）は、値を見ない
+            if keys.animation_data is not None:          # アクション・ドライバー・NLA は、描くときに入れた値を上書きする
+                change["animation_cleared"] = {"action": keys.animation_data.action.name if keys.animation_data.action else None,
+                                               "drivers": len(keys.animation_data.drivers), "nla_tracks": len(keys.animation_data.nla_tracks)}
+                keys.animation_data_clear()
+            key_report[name] = change
+            shape_targets.append(keys.key_blocks)
 
     # ---- カメラ: 全部のコマのキー（動きのぶれにカメラの動きも入る）。カットの最後のキーは止める ----
     sensor = float(record.get("sensor_height_mm") or settings["camera"]["sensor_height"])
@@ -339,7 +364,6 @@ def main(argv=None):
         sc.render.use_compositing = False
 
     os.makedirs(a.frames_dir, exist_ok=True)
-    fps = record.get("fps") or sc.render.fps / sc.render.fps_base
     off = set(blur["off"])
     rendered, blurred, dof_frames = [], [], []
     began = time.time()
@@ -388,7 +412,7 @@ def main(argv=None):
                               "off": sorted(T for T in off if T in {p for p, _ in plan})},
               "lights": sorted(settings["lights"]), "lit_materials": len(lit),
               "hooks": {"path": os.path.abspath(a.hooks), "sha256": hooks_sha} if a.hooks else None,
-              "render_changes": render_changes, "seconds": round(seconds, 1),
+              "render_changes": render_changes, "key_changes": key_report, "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
