@@ -60,7 +60,7 @@
         "at": {"$ref": "#/$defs/time"},
         "strength": {"$ref": "#/$defs/scalar"},
         "color": {"$ref": "#/$defs/value"},
-        "decay": {"$ref": "#/$defs/scalar"},
+        "decay": {"description": "減り方の秒（0 より大きい。式なら、求めた値をコマごとに確かめる）", "oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "string", "minLength": 1}]},
         "length": {"$ref": "#/$defs/scalar"}
       },
       "additionalProperties": false
