@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dance-finish/0.1",
+  "title": "mv dance finish spec",
+  "description": "描き終えたコマ（完成コマの一覧）に、光のトラックの閃光・暗転と look を掛けて 1 本の動画にする（mv dance finish。docs/dance.md）。パスは spec のあるフォルダからの相対パス。",
+  "type": "object",
+  "required": ["schema_version", "frames"],
+  "properties": {
+    "schema_version": {"const": "dance-finish/0.1"},
+    "frames": {"description": "完成コマの一覧（model3d-frames/0.1。model3d の render.stage などの出力）", "type": "string", "minLength": 1},
+    "lights": {"description": "光のトラック（model3d-light-track/0.1。model3d の plan.lights の出力）。コマごとの flash・flash_color・fade を掛ける。省くと閃光も暗転も無し", "type": "string", "minLength": 1},
+    "audio": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "offset_s": {"description": "T = 1 が音の何秒目か", "type": "number", "minimum": 0}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "crf": {"type": "integer", "minimum": 0, "maximum": 51},
+        "frames": {"description": "仕上げたコマを PNG でも書く（run の frames/f<T>.png）", "type": "boolean"}
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    },
+    "look": {},
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {}
+}
