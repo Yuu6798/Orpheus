@@ -468,7 +468,8 @@ def recolor_part(inputs, parameters, outputs, context):
     observation = {"kind": "recolor_part", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"],
                    **{key: report.get(key) for key in ("object", "image", "texels_in_part", "texels_changed")}}
-    return StepResult(observations=[observation])
+    unresolved = [] if report.get("texels_in_part") else [f"{report.get('object')} の、絵 {report.get('image')} を使う面の uv の範囲に画素がありません"]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
 
 
 RULE_KEYS = {"image", "hue_range_deg", "soft", "min_saturation", "hue_shift", "sat_scale", "value_gamma", "value_scale"}

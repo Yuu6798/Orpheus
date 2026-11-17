@@ -33,6 +33,32 @@ def test_recolor_changes_only_the_hue_range():
     assert weight[0] == pytest.approx(1.0)
 
 
+def test_wide_hue_ranges_keep_every_hue_inside():
+    def pixel(hue):                                            # 彩度 1・明るさ 1 の色相 hue の画素
+        return np.concatenate([rt.to_rgb(np.array([hue], float), np.array([1.0]), np.array([1.0]))[0], [1.0]])
+
+    hues = [0.0, 90.0, 180.0, 240.0, 300.0, 359.0]
+    pixels = np.array([pixel(h) for h in hues])
+    _, weight = rt.recolor_pixels(pixels, {"hue_range_deg": [0, 360], "soft": 6})
+    assert weight == pytest.approx([1.0] * len(hues))           # 一周の範囲は全部の色相
+    _, weight = rt.recolor_pixels(np.array([pixel(h) for h in (190.0, 203.0, 250.0, 357.0)]), {"hue_range_deg": [0, 200], "soft": 6})
+    assert weight == pytest.approx([1.0, 0.5, 0.0, 0.5])       # 範囲の中・上の縁の外 3°・離れた所・下の縁の外 3°
+    _, weight = rt.recolor_pixels(np.array([pixel(h) for h in (180.0, 270.0)]), {"hue_range_deg": [0, 179], "soft": 6})
+    assert weight == pytest.approx([5 / 6, 0.0])                # 上の縁の外 1°（下端からは 180° 離れている）
+
+
+def test_part_mask_uses_only_the_materials_with_the_image():
+    from types import SimpleNamespace as NS
+    image, other = object(), object()
+
+    def material(*images):
+        return NS(node_tree=NS(nodes=[NS(type="TEX_IMAGE", image=i) for i in images] + [NS(type="BSDF_PRINCIPLED", image=None)]))
+
+    materials = [material(other), material(image), None, NS(node_tree=None), material(other, image)]
+    assert rt.slots_using(materials, image) == {1, 4}
+    assert rt.slots_using(materials, object()) == set()
+
+
 def test_rules_on_the_same_image_build_on_each_other():
     rng = np.random.default_rng(3)
     images = {"hair": rng.random((50, 4)), "skin": rng.random((50, 4))}
@@ -95,7 +121,8 @@ if mode == "remove":
                   missing=[n for n in settings["objects"] if n == "Ghost"])
 elif mode == "part":
     open(value("--texture"), "wb").write(b"png")
-    report.update(object=settings["object"], image="lower", texels_in_part=10, texels_changed=4)
+    bare = settings["object"] == "Bare"                  # その絵を使う面の無い部品
+    report.update(object=settings["object"], image="lower", texels_in_part=0 if bare else 10, texels_changed=0 if bare else 4)
 else:
     report.update(rules=[{"image": r["image"], "pixels_changed_share": 0.1} for r in settings["rules"]])
 json.dump(report, open(value("--report"), "w", encoding="utf-8"))
@@ -135,6 +162,14 @@ def test_missing_part_needs_review(tmp_path):
                                     "parameters": {"blender": blender, "objects": ["SleeveL", "Ghost"]},
                                     "outputs": {"blend": "a.blend", "report": "a.json"}}])
     assert result["status"] == "needs_review" and any("Ghost" in u for u in result["steps"]["remove"]["unresolved"])
+
+
+def test_part_without_texels_needs_review(tmp_path):
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    result = run_recipe(tmp_path, [{"id": "part", "operation": "model.recolor_part", "inputs": {"blend": "$inputs.model"},
+                                    "parameters": {"blender": blender, "object": "Bare", "gain": [0.9, 1.0, 1.0]},
+                                    "outputs": {"blend": "b.blend", "texture": "bare.png", "report": "b.json"}}])
+    assert result["status"] == "needs_review" and any("uv の範囲" in u for u in result["steps"]["part"]["unresolved"])
 
 
 class Context:

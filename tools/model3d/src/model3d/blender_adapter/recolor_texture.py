@@ -8,7 +8,7 @@
   で彩度が min_saturation（から 0.1 の幅でなめらかに）を超える画素の、色相・彩度・明るさを補正する（hue_shift・sat_scale・value_gamma・
   value_scale）。範囲の外（髪の絵の中の金の飾りなど）は変えない。補正した絵を <元の名前>_recolor として詰め込み、元の絵を使っていた所を
   付け替える。同じ絵を指す規則は、前の規則の結果に順に重ねる（絵は塗り替える前に規則ごとに決める）。
-- part（部品の uv の範囲だけの色替え）: 物体 object のメッシュが使う uv の範囲（三角形と、その外の margin 画素）の、明るさ（RGB の最大）が
+- part（部品の uv の範囲だけの色替え）: 物体 object のメッシュの、その絵を使う材質の面の uv の範囲（三角形と、その外の margin 画素）の、明るさ（RGB の最大）が
   dark_below より暗い画素に、色ごとの倍率 gain を掛ける（dark_below から +feather でなめらかに 0 へ。dark_below を省くと範囲の全部）。
   ほかの部品と分け合う色の絵でも、その部品の所だけが変わる。塗り替えた絵を --texture の PNG に書いて詰め込み、付け替える。
 - remove（部品を外す）: 物体 objects を消す（使う物の無くなったメッシュも）。骨と揺れものの設定は残す。
@@ -68,7 +68,9 @@ def recolor_pixels(pixels, rule):
     hue, saturation, value = to_hsv(pixels[:, :3])
     low, high = rule["hue_range_deg"]
     soft = rule.get("soft", 6.0)
-    signed = ((hue - low + 180.0) % 360.0) - 180.0 + low            # 範囲の下端を基準に、-180〜180 度に直した色相
+    signed = ((hue - low + 180.0) % 360.0) - 180.0 + low            # 範囲の下端を基準に、-180〜180 度に直した色相（台本と同じ）
+    middle = (low + high) / 2.0                                      # 範囲の中ほどを基準にした ±180 度へ（180 度より広い範囲でも、外の
+    signed = np.where(signed < middle - 180.0, signed + 360.0, signed)  # 色相は近いほうの縁から測る。狭い範囲では重みは変わらない）
     weight = np.clip((signed - (low - soft)) / soft, 0, 1) * np.clip(((high + soft) - signed) / soft, 0, 1)
     weight *= np.clip((saturation - rule.get("min_saturation", 0.15)) / 0.1, 0, 1)
     new_hue = hue + rule.get("hue_shift", 0.0)
@@ -133,6 +135,13 @@ def gain_pixels(texture, mask, gain, dark_below, feather):
 
 
 # ---- Blender の部分 -----------------------------------------------------------------------------------
+
+def slots_using(materials, image):
+    """材質の並びのうち、画像ノードで image を使う材質の番号（部品の uv の範囲は、その材質の面だけで作る。ほかの絵の uv を塗らない）。"""
+    return {index for index, material in enumerate(materials)
+            if material is not None and material.node_tree is not None
+            and any(node.type == "TEX_IMAGE" and node.image == image for node in material.node_tree.nodes)}
+
 
 def image_of(obj, key):
     """物体の材質の画像ノードのうち、名前に key を含む画像（最後に見つかったもの。台本と同じ）。key が None なら、使う画像が 1 つのときだけ。"""
@@ -209,7 +218,8 @@ def main(argv=None):
         uv = np.empty(len(mesh.loops) * 2, dtype=np.float32)
         mesh.uv_layers.active.data.foreach_get("uv", uv)
         uv = uv.reshape(-1, 2) * np.array([width, height], dtype=np.float32)
-        triangles = np.array([uv[list(triangle.loops)] for triangle in mesh.loop_triangles])
+        slots = slots_using(mesh.materials, image)      # 選んだ絵を使う材質の面だけ
+        triangles = np.array([uv[list(triangle.loops)] for triangle in mesh.loop_triangles if triangle.material_index in slots])
         mask = uv_mask(triangles, width, height, settings.get("margin", 3.0))
         gain = np.array(settings["gain"], dtype=np.float32)
         result, amount = gain_pixels(texture, mask, gain, settings.get("dark_below", 0.45), settings.get("feather", 0.1))
