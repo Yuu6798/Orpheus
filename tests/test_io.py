@@ -137,3 +137,29 @@ def test_successful_process_still_reports_log_write_failure(tmp_path, monkeypatc
         run(command(stdout="render succeeded\n"), tmp_path / "render.log")
 
     assert caught.value is failure
+
+
+def test_read_json_file_stops_with_the_given_words(tmp_path):
+    """spec・計画・設定の読み込みの共通の前置き（リファクタリング R1-3）: 無い・JSON でない・数でない値は、呼ぶ側の文言で止める。"""
+    from mv_pipeline.io import read_json_file
+    with pytest.raises(PipelineError, match="^plan not found: x$"):
+        read_json_file(tmp_path / "missing.json", "plan not found: x", "plan is not valid JSON (missing.json)")
+    (tmp_path / "bad.json").write_text("{", encoding="utf-8")
+    with pytest.raises(PipelineError, match=r"^plan is not valid JSON \(bad\.json\): Expecting"):
+        read_json_file(tmp_path / "bad.json", "plan not found", "plan is not valid JSON (bad.json)")
+    (tmp_path / "nan.json").write_text('{"a": NaN}', encoding="utf-8")
+    with pytest.raises(PipelineError, match="Non-finite JSON number"):
+        read_json_file(tmp_path / "nan.json", "plan not found", "plan is not valid JSON (nan.json)")
+    (tmp_path / "ok.json").write_text('{"a": [1, 2]}', encoding="utf-8")
+    assert read_json_file(tmp_path / "ok.json", "plan not found", "plan is not valid JSON") == {"a": [1, 2]}
+
+
+def test_schema_lines_show_the_place_and_at_most_eight_errors():
+    import jsonschema
+
+    from mv_pipeline.io import schema_lines
+    schema = {"type": "object", "required": ["a"], "properties": {"b": {"type": "array", "items": {"type": "integer"}}}}
+    errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors({"b": ["x"] * 10}), key=lambda e: [str(p) for p in e.absolute_path])
+    lines = schema_lines(errors)
+    assert len(lines) == 8 and lines[0] == "  (top): 'a' is a required property" and lines[1] == "  b.0: 'x' is not of type 'integer'"
+    assert schema_lines(errors[:1], lambda e: "custom") == ["  (top): custom"]

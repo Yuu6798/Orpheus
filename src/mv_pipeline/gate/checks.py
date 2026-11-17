@@ -42,7 +42,7 @@ from pathlib import Path
 import jsonschema
 
 from ..fx.probe import decode
-from ..io import PipelineError, atomic_json, sha256
+from ..io import PipelineError, atomic_json, schema_lines, sha256
 from ..media import ffmpeg
 
 THRESHOLDS = {
@@ -586,7 +586,7 @@ def _validate_timeline(timeline):
     schema = json.loads(TIMELINE_SCHEMA.read_text(encoding="utf-8"))
     errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(timeline), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
+        lines = schema_lines(errors)
         raise PipelineError("timeline の形式が違います:\n" + "\n".join(lines))
 
 

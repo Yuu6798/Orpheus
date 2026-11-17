@@ -43,7 +43,7 @@ from pathlib import Path
 import jsonschema
 import numpy as np
 
-from ..io import PipelineError, read_json, safe_path, sha256
+from ..io import PipelineError, read_json, read_json_file, safe_path, schema_lines, sha256
 from . import spec as fxspec
 from . import timeline as fxtimeline
 
@@ -96,12 +96,7 @@ class Timeline:
 
 def load_timeline(path):
     path = Path(path)
-    if not path.is_file():
-        raise PipelineError(f"fx timeline not found: {path}")
-    try:
-        raw = read_json(path)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise PipelineError(f"fx timeline is not valid JSON ({path.name}): {error}") from error
+    raw = read_json_file(path, f"fx timeline not found: {path}", f"fx timeline is not valid JSON ({path.name})")
     return parse_timeline(raw, path.resolve().parent, path.resolve(), sha256(path))
 
 
@@ -139,7 +134,7 @@ def parse_timeline(raw, base_dir, path=None, digest=""):
     _check_version(raw)
     errors = sorted(jsonschema.Draft202012Validator(schema(version)).iter_errors(raw), key=lambda e: [str(p) for p in e.absolute_path])
     if errors:
-        lines = [f"  {'.'.join(str(p) for p in e.absolute_path) or '(top)'}: {e.message[:200]}" for e in errors[:8]]
+        lines = schema_lines(errors)
         raise PipelineError("fx timeline is invalid:\n" + "\n".join(lines))
     base_dir = Path(base_dir).resolve()
     out = raw["output"]

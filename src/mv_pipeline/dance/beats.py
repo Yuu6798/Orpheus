@@ -12,11 +12,10 @@ spec の時刻の欄は秒の数値か、次の参照で書ける（読み込み
     {"path": "beats.json"}      beats（または beats_s）と任意の downbeats の配列。gate・`mv analyze` と同じ形
     {"bpm": 120, "offset_s": 0, "beats_per_bar": 4, "count": 512, "downbeat_phase": 0}
 """
-import json
 import math
 from dataclasses import dataclass
 
-from ..io import PipelineError, read_json
+from ..io import PipelineError, read_json_file
 
 
 def is_ref(value):
@@ -74,12 +73,7 @@ def load_grid(raw, resolve):
         return None
     if "path" in raw:
         path = resolve(raw["path"])
-        if not path.is_file():
-            raise PipelineError(f"beats のファイルが見つかりません: {raw['path']}")
-        try:
-            data = read_json(path)
-        except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise PipelineError(f"beats のファイルが JSON ではありません（{raw['path']}）: {error}") from error
+        data = read_json_file(path, f"beats のファイルが見つかりません: {raw['path']}", f"beats のファイルが JSON ではありません（{raw['path']}）")
         beats = data.get("beats") or data.get("beats_s") if isinstance(data, dict) else None
         if not beats:
             raise PipelineError(f"beats のファイルに beats / beats_s の配列がありません: {raw['path']}")
