@@ -263,6 +263,20 @@ def test_spring_overrides_are_checked():
     assert vrm_bake_springs.keys_of(" skirt, ,sleeve") == ["skirt", "sleeve"]
 
 
+def test_cut_frames_are_read_and_must_lie_after_the_first_frame():
+    assert vrm_bake_springs.cut_list("") == [] and vrm_bake_springs.cut_list(" 240, 120 ") == [120, 240]
+    for bad, message in (("12,a", "整数"), ("1.5", "整数"), ("30,30", "2 回")):
+        with pytest.raises(ValueError, match=message):
+            vrm_bake_springs.cut_list(bad)
+    assert vrm_bake_springs.check_cuts([2, 240], 1, 240) == [2, 240]
+    # 最初のコマはもともと落ち着かせてから始める。範囲の外のコマは打ち間違いとして止める
+    for cuts in ([1], [241], [0, 120]):
+        with pytest.raises(ValueError, match="範囲にありません"):
+            vrm_bake_springs.check_cuts(cuts, 1, 240)
+    args = vrm_bake_springs.parse_args(["--blend", "b", "--out-blend", "o", "--report", "r"])
+    assert args.cuts == "" and args.cut_settle is None                     # 既定は切り替えなし（今までと同じ）
+
+
 # 代役の Blender: 台本の名前で出力を書き分け、受け取った argv を報告に残す
 STAND_IN_MOTION = r'''
 import json, sys
@@ -330,6 +344,60 @@ def test_apply_motion_and_bake_springs_pass_their_inputs_to_blender(tmp_path):
     bake_report = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))
     tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
     assert tail[tail.index("--addon-module") + 1] == "bl_ext.blender_org.vrm" and "--overrides" not in tail and "--fps" not in tail
+    assert "--cuts" not in tail and "--cut-settle" not in tail                 # 切り替えを渡さなければ、今までと同じ引数
+
+
+def test_bake_springs_takes_the_cut_frames_from_the_parameters_or_the_join_report(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN_MOTION))
+    recipe = _motion_recipe(tmp_path, {"blender": blender}, {"blender": blender, "cuts": [240, 120], "settle_s": 1.0})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    bake_report = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
+    assert tail[tail.index("--cuts") + 1] == "120,240"                          # 小さい順
+    assert tail[tail.index("--cut-settle") + 1] == "1.0"                        # 既定は settle_s と同じ
+    # motion.join_clips の report を joined に渡すと、その cuts を使う
+    atomic_json(tmp_path / "join.json", {"schema_version": "model3d-motion-join/0.1", "cuts": [31, 61], "frames": [1, 72]})
+    recipe = json.loads(recipe.read_text(encoding="utf-8"))
+    recipe["inputs"]["join"] = {"path": "join.json"}
+    recipe["steps"][1]["inputs"]["joined"] = "$inputs.join"
+    recipe["steps"][1]["parameters"] = {"blender": blender, "cut_settle_s": 0.5}
+    atomic_json(tmp_path / "recipe.json", recipe)
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    bake_report = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    tail = bake_report["argv"][bake_report["argv"].index("--") + 1:]
+    assert tail[tail.index("--cuts") + 1] == "31,61" and tail[tail.index("--cut-settle") + 1] == "0.5"
+    assert tail[tail.index("--settle") + 1] == "2.0"
+
+
+@pytest.mark.parametrize("parameters, joined, message", [
+    ({"cuts": "120"}, None, "切り替えのコマ"),
+    ({"cuts": [120, 120]}, None, "重ならない"),
+    ({"cuts": [0]}, None, "1 以上"),
+    ({"cuts": [True]}, None, "整数"),
+    ({"cut_settle_s": 1.0}, None, "cuts か joined"),
+    ({"cuts": [120], "cut_settle_s": -1}, None, "cut_settle_s"),
+    ({"cuts": [120]}, {"schema_version": "model3d-motion-join/0.1", "cuts": [31]}, "どちらか"),
+    ({}, {"schema_version": "model3d-vrm-bake-springs/0.1", "cuts": [31]}, "motion.join_clips の report"),
+    ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": ["31"]}, "joined の cuts"),
+])
+def test_bake_springs_rejects_bad_cut_settings(tmp_path, parameters, joined, message):
+    from model3d.ops import get
+    blender = stand_in_executable(tmp_path, "blender", STAND_IN_MOTION)
+    (tmp_path / "dance.blend").write_bytes(b"blend")
+    inputs = {"blend": tmp_path / "dance.blend"}
+    if joined is not None:
+        atomic_json(tmp_path / "join.json", joined)
+        inputs["joined"] = tmp_path / "join.json"
+
+    class Context:
+        tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
+
+    with pytest.raises(ToolError, match=message):
+        get("vrm.bake_springs").function(inputs, {"blender": str(blender), **parameters},
+                                         {"blend": tmp_path / "o.blend", "report": tmp_path / "r.json"}, Context())
 
 
 @pytest.mark.parametrize("operation, parameters, message", [
