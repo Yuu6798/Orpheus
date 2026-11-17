@@ -1,7 +1,8 @@
 """目の作り直しの計算（numpy だけ。Blender の中の台本と、Blender の外の工程の両方で使う）。
 
 目の形の値（model3d-eye-geometry/0.1）: 片目ごとに、目の板を乗せた球（中心・半径・板の向き）、瞳の中心（正面から見た x・z）と楕円の半径、
-目の開きの上下の縁（正面から見た x ごとの上の縁と下の縁の z）、目のまわりの窓、瞳の頂点と、見開きで動かすまぶたの頂点の番号。
+目の開きの上下の縁（正面から見た x ごとの上の縁と下の縁の z）、目のまわりの窓、瞳の頂点と、見開きで動かすまぶたの頂点と、目の板の頂点の番号
+（目の板はあれば。確かめの絵で塗り分ける）。
 位置は世界の座標（m。x はキャラの左が +、y は手前が −、z は上が +）。目の板と瞳を入れる工程（これから持ち帰る）がこの値を出し、
 目の骨・まばたきのキー・新しいキー・VRM の視線の工程が読む。リポジトリ外の 3 作目の VRM のダンスのあとの試しの値の形と同じ中身。
 """
@@ -70,8 +71,9 @@ def validate(geometry, sides=SIDES, vertex_count=None):
         if window[0] >= window[1] or window[2] >= window[3]:
             raise GeometryError(f"{where}.window は [x0, x1, z0, z1]（x0 < x1、z0 < z1）にしてください")
         _indices(eye.get("iris_vertices"), f"{where}.iris_vertices", vertex_count)
-        if eye.get("lid_vertices") is not None:
-            _indices(eye["lid_vertices"], f"{where}.lid_vertices", vertex_count)
+        for key in ("lid_vertices", "plate_vertices"):
+            if eye.get(key) is not None:
+                _indices(eye[key], f"{where}.{key}", vertex_count)
     return geometry
 
 
