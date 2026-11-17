@@ -527,7 +527,13 @@ model3d が描き終えたコマ（`render.stage`・`render.title` などが書�
 ```
 
 - `frames`（必須）: 完成コマの一覧（model3d の `model3d-frames/0.1`）。T は抜けなく続き（`missing` が空）、ファイルは一覧の sha256 と同じこと（描いた後に変わったコマ・無いコマは止める）。
-- `lights`: 光のトラック（model3d の `plan.lights` の `model3d-light-track/0.1`）。コマ T の `flash`（閃光の強さ）・`flash_color`（閃光の色）・`fade`（暗転で掛ける割合）を掛ける。描くどのコマにも値が要り、fps はコマの一覧と同じにする。省くと閃光も暗転も無し。
+- `lights`: 光のトラック（`model3d-light-track/0.1`）。コマ T の `flash`（閃光の強さ。0 以上）・`flash_color`（閃光の色。0〜1 の 3 つの並び）・`fade`（暗転で掛ける割合。0 以上）を掛ける。描くどのコマにも値が要り、fps はコマの一覧と同じにする。省くと閃光も暗転も無し。
+  - model3d の `plan.lights`（光の段取り表から、コマごとの光の値を作る工程。docs/model3d.md の「光の台本」）が書く。手で書くときは次の形（ほかの値と欄は読まない）:
+    ```json
+    {"schema_version": "model3d-light-track/0.1", "fps": 30,
+     "frames": [{"T": 1, "values": {"flash": 0.0, "flash_color": [1.0, 1.0, 1.0], "fade": 1.0}},
+                {"T": 2, "values": {"flash": 0.8, "flash_color": [1.0, 0.9, 0.8], "fade": 1.0}}]}
+    ```
 - `look`: fx と同じ look（周辺の減光・粒・色の調子。`docs/fx.md`）。
 - `audio`・`output`: `mv dance passes` と同じ（T = 1 が音の `offset_s` 秒）。
 - パスは spec のあるフォルダからの相対パス（外へは出られない）。コマの一覧の `directory` は、一覧に書いたまま。
