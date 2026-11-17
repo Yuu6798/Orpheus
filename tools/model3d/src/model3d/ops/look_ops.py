@@ -180,7 +180,8 @@ def _look_settings(parameters):
 
 @register("look.toon", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
           summary="骨へ移した動きのキャラ（blend）に、描く前のセル調の塗りと輪郭線を付ける（Blender の中で）。体は決まった向きの光で"
-                  "影を 2 段に分け、影の色に舞台の色を混ぜ、縁の光を足して Emission で出す（舞台の光は受けない）。顔（faces）は"
+                  "影を 2 段に分け、影の色に舞台の色を混ぜ、縁の光を足して Emission で出す（既定では舞台の光を受けない。toon の "
+                  "real_light で、光の当たり方を明るさだけ混ぜられる。光の色は混ぜない）。顔（faces）は"
                   "光を少し受けて絵の色を直接出す。輪郭線は、面を減らして裏返した写しを骨の変形の後に太らせる反転ハル。"
                   "舞台の色と縁の光の強さは共有のノードグループ model3d_stage_tone に置く（描く工程がコマごとに書き換える）。"
                   "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
@@ -209,4 +210,94 @@ def toon_look(inputs, parameters, outputs, context):
                    "toon_materials": len(report.get("toon_materials") or []),
                    "face_materials": len(report.get("face_materials") or []), "outline_hulls": len(hulls),
                    "outline_triangles": sum(h.get("triangles", 0) for h in hulls)}
+    return StepResult(observations=[observation])
+
+
+LIT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "lit_look.py"
+LIT_PARAMETERS = {"blender", "meshes", "soft", "texture", "lit", "soft_lit", "extra", "floor", "ambient", "timeout"}
+LIT_SHADE_KEYS = {"band", "gain", "ambient"}
+EXTRA_KEYS = {"from", "to"}
+
+
+def _pair(value, key, increasing=True):
+    """[下, 上] の 2 つの数（increasing なら下 < 上）。"""
+    if (not isinstance(value, list) or len(value) != 2
+            or not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)):
+        raise ToolError(f"{key} は [下, 上] の 2 つの数にしてください: {value!r}")
+    if increasing and not value[0] < value[1]:
+        raise ToolError(f"{key} は下を上より小さくしてください: {value!r}")
+    return [float(x) for x in value]
+
+
+def _lit_settings(parameters):
+    """look.lit の設定を確かめる。省いたものは書かない（Blender の側の既定で埋める）。"""
+    out = {"meshes": _names(parameters.get("meshes"), "meshes")}
+    if out["meshes"] is not None and not out["meshes"]:
+        raise ToolError("meshes は塗りを替えるメッシュの名前（1 つ以上）にしてください")
+    if "soft" in parameters:
+        soft = parameters["soft"]
+        if not isinstance(soft, list) or not all(isinstance(n, str) and n for n in soft) or len(set(soft)) != len(soft):
+            raise ToolError(f"soft は材質の名前（空でない・重ならない文字列）の配列にしてください: {soft!r}")
+        out["soft"] = soft
+    if "texture" in parameters:
+        if not isinstance(parameters["texture"], str) or not parameters["texture"]:
+            raise ToolError(f"texture は絵の色の画像ノードの名前に含まれる文字にしてください: {parameters['texture']!r}")
+        out["texture"] = parameters["texture"]
+    for key in ("lit", "soft_lit"):
+        section = _section(parameters, key, LIT_SHADE_KEYS)
+        shade = {}
+        if "band" in section:
+            shade["band"] = _pair(section["band"], f"{key}.band")
+        if "gain" in section:
+            shade["gain"] = float(number(section, "gain", minimum=0))
+        if "ambient" in section:
+            shade["ambient"] = float(number(section, "ambient", minimum=0))
+        if shade:
+            out[key] = shade
+    extra = _section(parameters, "extra", EXTRA_KEYS)
+    if extra:
+        out["extra"] = {}
+        if "from" in extra:
+            out["extra"]["from"] = _pair(extra["from"], "extra.from")
+        if "to" in extra:
+            out["extra"]["to"] = _pair(extra["to"], "extra.to", increasing=False)
+    if "floor" in parameters:
+        out["floor"] = float(number(parameters, "floor", minimum=0, exclusive=True))
+    if "ambient" in parameters:
+        out["ambient"] = _vector(parameters["ambient"], "ambient", lower=0)
+    return out
+
+
+@register("look.lit", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="キャラ（blend。VRM の MToon の材質でもよい）の材質を、舞台の光の向きと色を受ける塗りに差し替える（Blender の中で）。"
+                  "絵の色 ×（まわりの明るさ ＋ 光の当たり具合を 2 段に分けたもの × 光の色あい）を Emission で出す。光の当たり具合と"
+                  "色あいは、白い Diffuse BSDF を Shader to RGB で読む（EEVEE でだけ働く）。元の材質は書き換えず、材質ごと新しく作って"
+                  "枠に入れる。soft の材質（顔など）は段をやわらかく、まわりの明るさを多めに。まわりの明るさは、材質ごとの RGB ノード "
+                  "model3d_lit_ambient に、描く工程（render.show）がコマごとに入れる。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def lit_look(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "look.lit")
+    unknown = set(parameters) - LIT_PARAMETERS
+    if unknown:
+        raise ToolError(f"look.lit の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(LIT_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"look.lit には outputs の {', '.join(missing)} が要ります")
+    settings = _lit_settings(parameters)
+    blender = _blender(parameters, context, "look.lit")
+    settings_path = Path(context.step_dir) / "lit_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--report", outputs["report"],
+            "--settings", str(settings_path)]
+    record = launcher.run_blender(blender, LIT_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                  timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    materials = report.get("materials") or []
+    observation = {"kind": "lit_look", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "meshes": len(report.get("meshes") or []),
+                   "materials": len(materials), "soft_materials": sum(1 for m in materials if m.get("soft")),
+                   "object_slots": len(report.get("object_slots") or []),
+                   "without_material": len(report.get("without_material") or [])}
     return StepResult(observations=[observation])
