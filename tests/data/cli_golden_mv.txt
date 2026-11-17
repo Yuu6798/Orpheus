@@ -576,22 +576,23 @@ options:
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
 {"options": [], "dest": "timeline", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 ==== mv dance
-usage: mv dance [-h] {demo,render,plan,stills,passes,accept} ...
+usage: mv dance [-h] {demo,render,plan,stills,passes,finish,accept} ...
 
 positional arguments:
-  {demo,render,plan,stills,passes,accept}
+  {demo,render,plan,stills,passes,finish,accept}
     demo                write synthetic demo assets and a spec
     render              render dance.mp4 and timeline.json as a run
     plan                print the resolved times as tables
     stills              still sheet of the given times
     passes              composite element passes from model3d render.passes into dance.mp4 as a run
+    finish              finish rendered frames (a model3d frames list) with the flash, fade and look into dance.mp4 as a run
     accept              append a human decision to acceptance.jsonl
 
 options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "dance_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "render", "plan", "stills", "passes", "accept"], "required": true, "metavar": null}
+{"options": [], "dest": "dance_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "render", "plan", "stills", "passes", "finish", "accept"], "required": true, "metavar": null}
 ==== mv dance demo
 usage: mv dance demo [-h] [--width WIDTH] [--height HEIGHT] [--duration DURATION] [--fps FPS] [--schema {0.1,0.2,0.3}] dir
 
@@ -676,6 +677,23 @@ options:
 {"options": ["--hooks"], "dest": "hooks", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 ==== mv dance passes
 usage: mv dance passes [-h] [--out OUT] [--force] [--quiet] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   default: <spec dir>/dance_runs
+  --force     render again even if an identical run exists
+  --quiet     do not report progress on stderr
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv dance finish
+usage: mv dance finish [-h] [--out OUT] [--force] [--quiet] spec
 
 positional arguments:
   spec
