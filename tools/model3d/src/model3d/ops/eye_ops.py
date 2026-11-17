@@ -5,6 +5,8 @@
 - model.eye_rig・model.eye_keys・vrm.look_at: 目の板と瞳を入れた頭を、目の形の値（model3d-eye-geometry/0.1）から、動かせる作りにする
   （目の骨を球の中心へ・まばたきのキーの直しと新しいキー・VRM の視線。docs/model3d.md の「目を動かせる作りにする」）。
 - render.eye_sheet: 動かせる作りにした頭を、姿勢 × 見る向きで描いて並べる（確かめの絵。はみ出しの確かめも）。
+- motion.eye_plan: 目の動きの台本（時刻と量）を、.blend の動きのキー（形状キーの値と目の骨の回転）にする。
+- render.eye_captions: 描いたコマに、台本の区間の説明の字を入れる（見せ直しの区間の説明）。
 """
 import math
 import re
@@ -484,3 +486,125 @@ def eye_sheet(inputs, parameters, outputs, context):
     atomic_json(outputs["report"], report)
     return StepResult(observations=[{"kind": "eye_sheet", "images": len(report.get("images") or []), "sheet_size": list(size),
                                      "unknown_keys": report.get("unknown_keys") or {}, "painted_faces": report.get("painted_faces") or {}}])
+
+
+MOTION_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "eye_motion.py"
+MOTION_PARAMETERS = {"start", "bones", "armature", "blender", "addons", "blender_extensions", "timeout"}
+
+
+@register("motion.eye_plan", inputs=("blend", "geometry", "plan"), outputs=("blend", "timeline", "report"), cacheable=False,
+          summary="目の動きの台本（plan。model3d-eye-plan/0.1。視線の飛び・追いかける目・まばたき・驚き・笑顔・視線につられるまぶた・横で瞳が"
+                  "伸びる、の時刻と量）を、コマごとの視線とキーの値にし、.blend の動きのキー（頭の形状キーの値と目の骨の回転）にする"
+                  "（Blender の中で）。区間（sections）の順に演技の時間をたどり、ゆっくり見せ直す区間もある。timeline にコマごとの値と、区間の"
+                  "コマの範囲と説明（説明の字を重ねる範囲）を書く。台本の値に既定は無い。入力の .blend は変えない。Blender（VRM Add-on）が要り、"
+                  "再利用しない（毎回実行）")
+def motion_eye_plan(inputs, parameters, outputs, context):
+    from .. import eye_plan
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _timeout
+    require(inputs, ("blend", "geometry", "plan"), "motion.eye_plan")
+    blender, addons, extensions, armature = _blender_common(parameters, context, "motion.eye_plan", MOTION_PARAMETERS)
+    for name in ("blend", "timeline", "report"):
+        if name not in outputs:
+            raise ToolError(f"motion.eye_plan には outputs の {name} が要ります")
+    start = parameters.get("start", 1)
+    if isinstance(start, bool) or not isinstance(start, int):
+        raise ToolError(f"start は台本の最初のコマを置くシーンのコマ（整数）にしてください: {start!r}")
+    bones = parameters.get("bones")
+    if bones is not None and (not isinstance(bones, dict) or set(bones) != {"R", "L"}
+                              or not all(isinstance(v, str) and v for v in bones.values()) or bones["R"] == bones["L"]):
+        raise ToolError(f"bones は {{\"R\": 右目の骨, \"L\": 左目の骨}}（別の名前）にしてください: {bones!r}")
+    geometry = _geometry(inputs["geometry"])
+    try:
+        plan = eye_plan.validate(read_json(inputs["plan"]))
+    except eye_plan.PlanError as error:
+        raise ToolError(f"目の動きの台本（plan）: {error}") from error
+    timeline = eye_plan.timeline(plan, start)
+    if not timeline["frames"]:
+        raise ToolError("台本の区間からコマが 1 つもできません（区間の長さ ÷ 速さ × fps が 0.5 より小さい）")
+    atomic_json(outputs["timeline"], {"schema_version": "model3d-eye-timeline/0.1", **timeline})
+    radii = [float(geometry["eyes"][side]["sphere"]["radius"]) for side in ("R", "L")]
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "eye_motion_settings.json"
+    atomic_json(settings_path, {"object": geometry["object"], "radius": sum(radii) / 2, "bones": bones, "armature": armature,
+                                "frames": [{"frame": row["frame"], "gaze": row["gaze"], "keys": row["keys"]} for row in timeline["frames"]]})
+    record = launcher.run_blender(blender, MOTION_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                  "--out", str(outputs["blend"]), "--report", str(outputs["report"])],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    report.update(blender_version=record["blender_version"], radius=sum(radii) / 2, fps=plan["fps"],
+                  sections=[{key: section[key] for key in ("frames", "speed", "view", "caption")} for section in timeline["sections"]])
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "eye_plan", "frames": report["frames"], "count": report["count"], "keyed": len(report["keyed"]),
+                                     "unknown_keys": report["unknown_keys"], "widened": sorted(report["widened"]),
+                                     "sections": len(timeline["sections"])}])
+
+
+CAPTION_PARAMETERS = {"frames_dir", "name", "out_dir", "title", "font", "title_font", *("reference_width", "bar_height", "bar_alpha", "caption_size",
+                                                                                         "caption_at", "title_size", "title_at", "title_stroke")}
+
+
+@register("render.eye_captions", inputs=("timeline",), outputs=("report",), cacheable=False,
+          summary="目の動きの台本の区間の説明の字を、描いたコマに入れて別のフォルダへ書く（Pillow。下に半ば透けた黒い帯と区間の説明、左上に題）。"
+                  "timeline は motion.eye_plan の出力（コマごとの区間と、区間ごとの説明）。コマは frames_dir の name（既定 f{frame:04d}.png）。"
+                  "大きさは基準の幅での画素。書体は font（無ければ Pillow の内蔵の書体。ラテン文字だけ）。元のコマは書き換えない。"
+                  "書体とコマは隠れた入力なので再利用しない（毎回実行）")
+def eye_captions(inputs, parameters, outputs, context):
+    from .. import eye_captions as captions
+    from ..io import read_json, resolve_path
+    require(inputs, ("timeline",), "render.eye_captions")
+    unknown = set(parameters) - CAPTION_PARAMETERS
+    if unknown:
+        raise ToolError(f"render.eye_captions の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(CAPTION_PARAMETERS)}）")
+    if "report" not in outputs:
+        raise ToolError("render.eye_captions には outputs の report が要ります")
+    recipe_dir = getattr(context, "recipe_dir", None)
+
+    def path(key, required=False):
+        value = parameters.get(key)
+        if value is None and not required:
+            return None
+        if not isinstance(value, str) or not value:
+            raise ToolError(f"{key} はパスにしてください: {value!r}")
+        return Path(resolve_path(recipe_dir, value) if recipe_dir is not None else value)
+
+    frames_dir = path("frames_dir", required=True)
+    if not frames_dir.is_dir():
+        raise ToolError(f"frames_dir のフォルダがありません: {frames_dir}")
+    out_dir = path("out_dir") or Path(context.step_dir) / "frames"
+    if out_dir.resolve() == frames_dir.resolve():
+        raise ToolError("out_dir は frames_dir と別のフォルダにしてください（元のコマを書き換えない）")
+    name = parameters.get("name", "f{frame:04d}.png")
+    if not isinstance(name, str) or "{frame" not in name or Path(name).suffix.lower() != ".png":
+        raise ToolError(f"name はコマのファイルの名前の形（{{frame}} を含む .png。既定 f{{frame:04d}}.png）にしてください: {name!r}")
+    fonts = {key: path(key) for key in ("font", "title_font")}
+    for key, value in fonts.items():
+        if value is not None and not value.is_file():
+            raise ToolError(f"{key} の書体のファイルがありません: {value}")
+    title = parameters.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ToolError(f"title は題の文字にしてください: {title!r}")
+    style = dict(captions.STYLE)
+    for key in style:
+        if key not in parameters:
+            continue
+        value = parameters[key]
+        if key in ("caption_at", "title_at"):
+            if not isinstance(value, list) or len(value) != 2:
+                raise ToolError(f"{key} は [x, y]（基準の幅での画素）にしてください: {value!r}")
+            style[key] = [_number(v, key) for v in value]
+        else:
+            style[key] = _whole(value, key, 0 if key in ("title_stroke", "bar_height") else 1, 255 if key == "bar_alpha" else None)
+    timeline = read_json(inputs["timeline"])
+    if not isinstance(timeline, dict) or timeline.get("schema_version") != "model3d-eye-timeline/0.1":
+        raise ToolError("timeline は motion.eye_plan の出力（model3d-eye-timeline/0.1）にしてください")
+    try:
+        written = captions.caption_frames(timeline, frames_dir, out_dir, name, style, title, fonts["font"], fonts["title_font"])
+    except (ValueError, OSError, KeyError) as error:
+        raise ToolError(f"説明の字を入れられません: {error}") from error
+    report = {"schema_version": "model3d-eye-captions/0.1", "frames_dir": str(frames_dir), "out_dir": str(out_dir), "written": len(written),
+              "sections": [{key: s[key] for key in ("frames", "caption")} for s in timeline["sections"]], "title": title,
+              "style": style, "fonts": {key: str(value) if value else None for key, value in fonts.items()}}
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "eye_captions", "written": len(written), "out_dir": str(out_dir)}])
