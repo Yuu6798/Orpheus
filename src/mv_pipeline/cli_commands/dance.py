@@ -41,6 +41,11 @@ def _dance_parser(commands):
     passes.add_argument("--out", type=Path, help="default: <spec dir>/dance_runs")
     passes.add_argument("--force", action="store_true", help="render again even if an identical run exists")
     passes.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
+    finish = sub.add_parser("finish", help="finish rendered frames (a model3d frames list) with the flash, fade and look into dance.mp4 as a run")
+    finish.add_argument("spec", type=Path)
+    finish.add_argument("--out", type=Path, help="default: <spec dir>/dance_runs")
+    finish.add_argument("--force", action="store_true", help="render again even if an identical run exists")
+    finish.add_argument("--quiet", action="store_true", help="do not report progress on stderr")
     accept = sub.add_parser("accept", help="append a human decision to acceptance.jsonl")
     accept.add_argument("run_dir", type=Path)
     accept.add_argument("--decision", choices=["accepted", "rejected", "hold"], required=True)
@@ -65,6 +70,9 @@ def dance_command(args):
     if command == "passes":
         from ..dance import passes
         return passes.render_run(args.spec, args.out, args.force, _progress, args.quiet)
+    if command == "finish":
+        from ..dance import finish_frames
+        return finish_frames.render_run(args.spec, args.out, args.force, _progress, args.quiet)
     from ..dance import runs
     if command == "render":
         return runs.render_run(args.spec, args.start, args.duration, args.out, args.scale, args.force, _progress, args.quiet, args.hooks)

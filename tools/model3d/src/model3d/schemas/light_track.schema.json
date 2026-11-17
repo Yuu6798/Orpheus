@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model3d-light-track/0.1",
+  "title": "model3d light track",
+  "description": "plan.lights が書く、コマごとの光の値。T は書き出すコマの番号（1 から。時刻 (T - 1) / fps 秒）、values は名前 → 数か 3 つの並び（色や位置）。flash（閃光の強さ）・flash_color（閃光の色）・fade（暗転で掛ける割合。1 でそのまま）は、どのトラックにもある。描く工程（render.show）と仕上げ（mv dance finish）が読む。",
+  "type": "object",
+  "required": ["schema_version", "fps", "frames"],
+  "properties": {
+    "schema_version": {"const": "model3d-light-track/0.1"},
+    "fps": {"type": "number", "exclusiveMinimum": 0},
+    "grid": {
+      "type": "object",
+      "required": ["period", "k0_time"],
+      "properties": {"period": {"type": "number", "exclusiveMinimum": 0}, "k0_time": {"type": "number"}},
+      "additionalProperties": false
+    },
+    "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/frame"}},
+    "notes": {"type": "string"}
+  },
+  "patternProperties": {"^x_": {}},
+  "additionalProperties": false,
+  "$defs": {
+    "value": {"oneOf": [{"type": "number"}, {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}]},
+    "frame": {
+      "type": "object",
+      "required": ["T", "values"],
+      "properties": {
+        "T": {"type": "integer", "minimum": 1},
+        "segment": {"description": "段取り表の区間の番号（0 から）", "type": "integer", "minimum": 0},
+        "values": {
+          "type": "object",
+          "required": ["flash", "flash_color", "fade"],
+          "properties": {
+            "flash": {"type": "number", "minimum": 0},
+            "flash_color": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+            "fade": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": {"$ref": "#/$defs/value"}
+        }
+      },
+      "patternProperties": {"^x_": {}},
+      "additionalProperties": false
+    }
+  }
+}
