@@ -975,6 +975,24 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
   - 形（モーフ）: `morph_targets` に、形のあるメッシュごとの番号・名前・形の数・形の名前（glTF の `mesh.extras.targetNames`。VRM Add-on が書く。無ければ null）。
   - 表情の形の割り当て: `expressions` の `preset`・`custom` に、表情ごとの割り当ての並び（node・メッシュの名前・形の番号 `index`・形の名前 `target`・重み）。
     割り当ての無い表情は空の並び。node にメッシュが無い割り当てと、`index` がそのメッシュの形の数の外の割り当ては不合格。
+  - 作りの一覧（`structure`）: キャラを作る道具から受け取った VRM を、Blender に持ち込む前に知るためのもの（3 作目の VRM のダンスで、
+    リポジトリの外の台本で調べていたもの）。数と名前を並べるだけで、良し悪しは決めない。
+    - `meshes`: メッシュごとの primitive（頂点・三角形・描き方 `mode`・材質・形の数・属性）と、そのメッシュを使う node。
+    - `skeleton`: skin の関節の数、人型の骨の node と位置（glTF の座標。Y が上、m。親の回転と拡大も入れる）、揺れものの関節の node の数、
+      人型でも揺れものでもない関節（`other_joints`）、名前に twist・roll を含む関節（`twist_like`。名前で見るだけ）。
+    - `node_constraints`: 骨の拘束（VRMC_node_constraint）の node ごとの種類（roll・aim・rotation）・source・軸・重み。
+    - `springs`: 揺れものの鎖ごとの関節の数・最初と最後の node・固さ・重力・引きずり・当たりの半径の [最小, 最大]（全部の関節）・当たりの組・center。
+      `colliders`（node・形・半径・位置）、`collider_shapes`（形ごとの数）、`collider_groups`（名前と当たりの数）。
+    - `materials`: 透け方・両面・色の掛け率（`baseColorFactor`）と色の絵、MToon の値（影の色 `shadeColorFactor` など）と影の色の絵。
+      MToon でない材質は `mtoon` が null。
+    - `images`（形式・[幅, 高さ]・バイト数。大きさは PNG の IHDR と JPEG の SOF から）、`look_at`（視線）、`first_person`。
+    - `weights`: skin のある node ごとの、頂点の数・使う骨の数・1 頂点に付く骨のいちばん多い数・JOINTS_1 があるか・骨ごとの頂点の数
+      （重みが 1e-4 を超える (頂点, 枠) を、骨の node の番号ごとに数える。名前は重なりうるので添えるだけ）。VRM は 1 頂点に骨 4 本まで（JOINTS_0）
+      なので、重みを書き換えたモデルは書き出した VRM で数え直す。
+    - 値はファイルにあるまま（無い値は null。決まりの既定の値は入れない。`alphaMode`・`doubleSided` だけ glTF の既定 OPAQUE・false）。
+    - たどった参照の番号（skin の joints・primitive の材質と accessor・骨の拘束の source・材質のテクスチャとその画像・画像と accessor の
+      bufferView・JOINTS_0 の番号・node の children）が範囲の外なら不合格。node の親子の循環も不合格。sparse の accessor・GLB の外の
+      バッファとファイル・BIN チャンクに収まらない値は読まずに `unread` に理由を書く（不合格にはしない）。
 
 **VRM に入らないもの**（2 作目の VRM のダンスで分かったこと）: 表情を頭の絵の差し替えで作ったもの（VRM の表情は形の変化。形状キーで作った表情は、
 `vrm.expressions` で割り当てれば入る。[表情を形で作る](#表情を形で作るvrm-に入る表情)）、布の計算、
@@ -997,6 +1015,12 @@ VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model
   （blink 2・blinkLeft 1・blinkRight 1・happy 5・relaxed 3・angry 2・sad 2・surprised 2 個の割り当て）。リポジトリ外の台本（VRM の中の表情を読む台本）と、
   そのアセット・キャラを作った道具が書き出した元の VRM・2 作目の衣装のアセットの 3 本で、メッシュごとの形の名前と、表情ごとの割り当て（メッシュ・形の名前・重み）が
   全部同じ。元の VRM と 2 作目の衣装は形も割り当ても無い（作った道具の初期値の表情は、.blend では形の名前だけでメッシュの無い割り当てで、VRM には書き出されない）。
+- 作りの一覧（2026-11-17。実測）: 3 作目の VRM のダンスの VRM 8 本（キャラを作った道具が書き出した元の VRM・確認用の書き出し 5 本・アセット 2 本）と
+  2 作目の衣装のアセットで、リポジトリ外の 2 本の台本（VRM の作りを読む台本・骨の重みを読む台本）と、メッシュと primitive・骨の数と名前・骨の拘束の数・
+  揺れものの鎖ごとの値・当たり判定・視線・材質の値・画像の大きさ・メッシュごとの骨の重み（骨ごとの頂点の数まで）が全部同じ。
+  人型の骨の位置だけは違う: 台本は親の平行移動だけを足していた（回転のある node があるので目安、と台本自身が書いていた）。model3d は回転と拡大を入れて
+  求め、Blender 5.2.4 の glTF の読み込みで読んだ骨の付け根の位置と 6.4×10⁻⁷ m の中で同じ（アセット。人型の骨 54）。
+  元の VRM（関節 131・骨の拘束 0）と、腕のねじれの骨を足したあとの VRM（関節 137・骨の拘束 6: 前腕の roll 2・aim 4）の違いも一覧で読める。
 
 **限界**: VRM 0.x は読まない（`meta_from` も VRM 1.0 だけ）。ほかのアプリ（VRChat など）で読めるかは確かめない。
 
