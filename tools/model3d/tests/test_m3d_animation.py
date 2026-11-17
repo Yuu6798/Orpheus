@@ -375,6 +375,24 @@ def test_a_moved_armature_keeps_lengths_and_the_floor_in_the_world():
     assert not _found(_events(sunk), "penetration.floor", 10, 12)           # 世界の床（z = 0）より上
 
 
+def test_a_turned_armature_reports_normals_in_the_world():
+    """アーマチュアの物体が回っていると、位置と同じく、向き（normal）も世界で書く。"""
+    turn = np.eye(4)
+    turn[:3, :3] = _rotation((0, 0, 1), 90)
+    base, turned = make_sample(_faulty), make_sample(_faulty)
+    turned.world = np.array([turn] * len(turned.frames))
+    turned.heads = turned.heads @ turn[:3, :3].T
+    turned.foot_world = turned.foot_world @ turn[:3, :3].T
+
+    def pressed(events):
+        return [e for e in events if e["signal"].startswith("penetration.arm_") and e["normal"]]
+    a, b = pressed(_events(base)), pressed(_events(turned))
+    assert a and [(e["signal"], e["frames"]) for e in a] == [(e["signal"], e["frames"]) for e in b]
+    for ea, eb in zip(a, b):
+        assert np.allclose(eb["normal"], turn[:3, :3] @ np.array(ea["normal"]), atol=2e-3)
+        assert np.allclose(eb["location"], turn[:3, :3] @ np.array(ea["location"]), atol=2e-3)
+
+
 def test_foot_lowest_choice_and_missing_feet():
     sample = make_sample(lambda pose, f: _move(pose, "hips", np.array([0.0, 0.0, -0.05])) if 10 <= f <= 12 else None)
     sample.foot_object = sample.foot_object.copy()
@@ -386,6 +404,13 @@ def test_foot_lowest_choice_and_missing_feet():
     assert [s["check"] for s in report["skipped"]] == ["floor_right"]
     with pytest.raises(ac.SettingsError, match="foot_lowest"):
         ac.check(sample, ac.settings({}), foot_lowest="lowest")
+    partial = make_sample(lambda pose, f: None, frames=20)                   # 一部のコマだけ足の点が無い（頂点を足し引きする変形など）
+    partial.foot_world = partial.foot_world.copy()
+    partial.foot_world[[4, 5, 6, 12], 0] = np.nan
+    report = ac.check(partial, ac.settings({}))
+    gaps = [s for s in report["skipped"] if s["check"] == "floor_left"]
+    frames = partial.frames
+    assert gaps and gaps[0]["frames"] == [[frames[4], frames[6]], [frames[12], frames[12]]] and report["overall"] != "clean"
 
 
 def test_head_contact_uses_the_head_surface():

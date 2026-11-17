@@ -214,6 +214,22 @@ def _apply(matrix, point):
     return matrix[:3, :3] @ point + matrix[:3, 3]
 
 
+def _rotate(matrix, normal):
+    """向き（長さ 1）をアーマチュアの中から世界へ（回すだけ。アーマチュアの大きさは 1 に限っている）。無ければ None。"""
+    return None if normal is None else matrix[:3, :3] @ normal
+
+
+def _frame_spans(frames):
+    """コマの並びを、続いたコマの区間 [[始め, 終わり], …] にする。"""
+    spans = []
+    for frame in frames:
+        if spans and frame == spans[-1][1] + 1:
+            spans[-1][1] = frame
+        else:
+            spans.append([frame, frame])
+    return spans
+
+
 def _normalized(v):
     length = float(np.linalg.norm(v))
     return v / length if length > 0 else v
@@ -559,7 +575,7 @@ def static_hits(body, cfg, foot_lowest, hits, contact):
                 if worst is None or over > worst[4]:
                     worst = (depth, f"{SIDE[side]}の{ARM_NAMES[k]} → {region}", pt + n * max(0.0, -sd) if n is not None else pt, n, over)
             if worst and worst[4] >= 0:
-                hits.append((frame, "penetration.arm_body", worst[1], worst[0], _apply(aw, worst[2]), worst[3]))
+                hits.append((frame, "penetration.arm_body", worst[1], worst[0], _apply(aw, worst[2]), _rotate(aw, worst[3])))
             elif worst:
                 contact["腕と体"] = contact.get("腕と体", 0) + 1
             worst = None
@@ -573,7 +589,7 @@ def static_hits(body, cfg, foot_lowest, hits, contact):
                             worst = (depth, f"{SIDE[side]}の{ARM_NAMES[k]} → {SIDE[side2]}の{word}", pt,
                                      _normalized(pt - c) if dist > 1e-6 else None)
             if worst and worst[0] >= cfg["penetration_min_m"]:
-                hits.append((frame, "penetration.arm_leg", worst[1], worst[0], _apply(aw, worst[2]), worst[3]))
+                hits.append((frame, "penetration.arm_leg", worst[1], worst[0], _apply(aw, worst[2]), _rotate(aw, worst[3])))
             elif worst:
                 contact["腕と脚"] = contact.get("腕と脚", 0) + 1
             # 手首: 二の腕から見て、軸まわりに回っていない前腕の向き（前腕の骨そのものの軸まわりの向きには頼らない。前腕の骨が軸まわりに
@@ -805,8 +821,12 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
         skipped.append({"check": "head", "reason": "頭の骨だけに重みのある面がありません（腕と頭の重なりは、頭の中の球だけで見ない）"})
     feet = sample.foot_world if foot_lowest == "world" else sample.foot_object
     for k, side in enumerate(SIDES):
-        if not np.isfinite(feet[:, k]).all(axis=1).any():
+        missing = ~np.isfinite(feet[:, k]).all(axis=1)
+        if missing.all():
             skipped.append({"check": f"floor_{side}", "reason": f"{SIDE[side]}の足のメッシュの点がありません（足が床より下は見ない）"})
+        elif missing.any():                                               # 頂点を足し引きする変形のコマなど
+            skipped.append({"check": f"floor_{side}", "reason": f"{SIDE[side]}の足のメッシュの点が無いコマがあります（そのコマは足が床より下を見ない）",
+                            "frames": _frame_spans([sample.frames[i] for i in np.where(missing)[0]])})
     return {"schema_version": SCHEMA, "frames": [sample.frames[0], sample.frames[-1]] if sample.frames else [], "fps": sample.fps,
             "overall": "review" if events else ("clean_with_skips" if skipped else "clean"),
             "thresholds": cfg, "skip_bones": list(skip_bones), "foot_lowest": foot_lowest,

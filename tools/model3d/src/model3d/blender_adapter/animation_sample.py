@@ -218,6 +218,8 @@ def main(argv=None):
         scene.frame_set(frame)
         depsgraph = bpy.context.evaluated_depsgraph_get()
         worlds[fi] = np.array(world)                                     # アーマチュアの物体が動いていても、そのコマの置き場所
+        if not np.allclose(worlds[fi][:3, :3].T @ worlds[fi][:3, :3], np.eye(3), atol=1e-5):   # 大きさのキーがあっても止める
+            raise SystemExit(f"コマ {frame} で、アーマチュアの物体に大きさ（scale）かずれ（shear）があります（長さを m で測れません）")
         for bi, pose_bone in enumerate(pose_bones):
             matrix = pose_bone.matrix
             pose[fi, bi] = np.array(matrix)
