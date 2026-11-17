@@ -407,8 +407,22 @@ def aligned_overlay(mesh, texture, reference, view, matrix, offset, mask=None, o
     return mixed.reshape(height, width, 3)
 
 
+def soft_ellipses(px, py, shapes, inner_default=0.7):
+    """視点の画素の点 (px, py) の、楕円の集まりの重み（楕円ごとに、中心からの楕円の距離 d が inner 以下で 1、縁 d = 1 で 0、その間は
+    なめらかな段（smoothstep）。重なりは大きいほう）。shapes は [{"center": [x, y], "radius": [rx, ry], "inner": 0〜1}, …]。"""
+    weight = np.zeros_like(np.asarray(px, dtype=np.float64))
+    for shape in shapes:
+        (cx, cy), (rx, ry) = shape["center"], shape["radius"]
+        distance = np.sqrt(((px - cx) / rx) ** 2 + ((py - cy) / ry) ** 2)
+        inner = shape.get("inner", inner_default)
+        local = np.clip((1.0 - distance) / (1.0 - inner), 0.0, 1.0)
+        weight = np.maximum(weight, local * local * (3 - 2 * local))
+    return weight
+
+
 def project_reference(mesh, texture, reference, view, matrix, offset, faces=None, mask=None, min_facing=0.2,
-                      facing_ramp=0.3, depth_tolerance=0.002, expand=1.0, max_stretch=8.0, occlusion=None):
+                      facing_ramp=0.3, depth_tolerance=0.002, expand=1.0, max_stretch=8.0, occlusion=None, visibility=True,
+                      two_sided_depth=None, core=None, regions=None):
     """参照画像をテクスチャへ写した新しいテクスチャ（texture と同じ (H,W,3) か (H,W,4)。アルファは変えない）、画素ごとの重み (H,W)、報告。
 
     faces（面の番号）があれば、その面の上の画素だけを塗る（見え隠れはメッシュ全体で判定する）。matrix・offset は
@@ -416,6 +430,14 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     0〜255 の重み（任意）。max_stretch は `stretch` がこれを超える三角形を塗らない上限。
     occlusion（任意）は view_parts の手前の部品の地図 (owner (H,W), depth (H,W), 自分の番号, 名前の並び)。画素の手前に別の部品があり、
     その奥行きが点より depth_tolerance を超えて手前なら、その点は隠れる（ほかの部品に隠れた所へ参照画像を写さない）。
+    追加の設定（顔の絵を写すときのもの。省けば今までとファイルまで同じ）:
+    - visibility=False: 見え隠れを見ない（z バッファと occlusion を使わず、視点の中の点は全部写す。目の穴の奥の眼球の面や、両面の
+      まつ毛の板の裏など、顔の面の奥の面にも同じ絵を写す）。
+    - two_sided_depth: 角が全部この奥行き（視点の向きに沿った m。正面 -Y なら y）より手前の三角形は、裏向きの角の法線を表へ返して
+      写す（両面の板の裏向きの面に、元の絵を残さない）。
+    - core（{"center", "radius", "inner"}。視点の画素）: この楕円の中は、面の向きで弱めない（鼻のわき・唇の下など下や横を向いた面にも
+      写す。真裏（向きの余弦 −0.2 以下）は除く）。inner の既定は 0.75。
+    - regions（core と同じ形の並び。視点の画素）: 写す範囲を、縁をなめらかにぼかした楕円の集まり（重みに掛ける）。inner の既定は 0.7。
     """
     if mesh.uv is None:
         raise ToolError("メッシュに頂点ごとの uv がありません（テクスチャへ写せません）")
@@ -427,10 +449,11 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     triangles, owner = mesh.triangles()
     _, _, forward, _, _, (width, height) = check_view(view)
     points, depth = project_points(mesh.vertices, view)
-    _, (win_index, win_x, win_y, _) = zbuffer(points, depth, triangles, width, height)
-    front = np.full(width * height, -1, dtype=np.int64)   # 画素ごとのいちばん手前の三角形（無ければ -1）
-    front[win_y * width + win_x] = win_index
-    plane_origin, plane_gradient, plane_depth = depth_planes(points, depth, triangles)
+    if visibility:
+        _, (win_index, win_x, win_y, _) = zbuffer(points, depth, triangles, width, height)
+        front = np.full(width * height, -1, dtype=np.int64)   # 画素ごとのいちばん手前の三角形（無ければ -1）
+        front[win_y * width + win_x] = win_index
+        plane_origin, plane_gradient, plane_depth = depth_planes(points, depth, triangles)
     chosen = np.isin(owner, np.asarray(sorted(set(faces)), dtype=np.int64)) if faces is not None else np.ones(len(triangles), bool)
     candidates = triangles[chosen]
     tex_h, tex_w = texture.shape[:2]
@@ -456,19 +479,28 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
         return with_alpha(new), weights, report
     corner_ids = candidates[index]
     surface = np.einsum("kj,kjc->kc", bary, mesh.vertices[corner_ids])
-    normal = np.einsum("kj,kjc->kc", bary, vertex_normals(mesh, triangles)[corner_ids])
+    corner_normals = vertex_normals(mesh, triangles)[corner_ids]
+    if two_sided_depth is not None:                      # 手前の三角形の裏向きの角は、法線を表へ返す（両面の板の裏にも写す）
+        nearer = (mesh.vertices[corner_ids] @ forward).max(axis=1) < two_sided_depth
+        flip = nearer[:, None] & ((corner_normals @ forward) > 0)
+        corner_normals = np.where(flip[..., None], -corner_normals, corner_normals)
+        report["two_sided_fragments"] = int(flip.any(axis=1).sum())
+    normal = np.einsum("kj,kjc->kc", bary, corner_normals)
     normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
     at, z = project_points(surface, view)
     px, py = np.floor(at[:, 0]).astype(np.int64), np.floor(at[:, 1]).astype(np.int64)
     on_view = (px >= 0) & (py >= 0) & (px < width) & (py < height)
-    nearest = np.full(len(index), -1, dtype=np.int64)
-    nearest[on_view] = front[py[on_view] * width + px[on_view]]
-    visible = on_view & (nearest < 0)   # 画素の中心を覆う面が無い（縁の）点は、隠すものが無い
-    covered = np.flatnonzero(nearest >= 0)
-    k = nearest[covered]
-    surface_z = plane_depth[k] + ((at[covered] - plane_origin[k]) * plane_gradient[k]).sum(axis=1)
-    visible[covered] = z[covered] <= surface_z + depth_tolerance
-    if occlusion is not None:                            # ほかの部品に隠れた点（部品の地図の、画素の中心の奥行きで比べる）
+    if visibility:
+        nearest = np.full(len(index), -1, dtype=np.int64)
+        nearest[on_view] = front[py[on_view] * width + px[on_view]]
+        visible = on_view & (nearest < 0)   # 画素の中心を覆う面が無い（縁の）点は、隠すものが無い
+        covered = np.flatnonzero(nearest >= 0)
+        k = nearest[covered]
+        surface_z = plane_depth[k] + ((at[covered] - plane_origin[k]) * plane_gradient[k]).sum(axis=1)
+        visible[covered] = z[covered] <= surface_z + depth_tolerance
+    else:
+        visible = on_view.copy()            # 見え隠れを見ない（視点の中の点は全部）
+    if occlusion is not None and visibility:            # ほかの部品に隠れた点（部品の地図の、画素の中心の奥行きで比べる）
         occ_owner, occ_depth, self_index, occ_names = occlusion
         part = np.full(len(index), -1, dtype=np.int64)
         part_depth = np.full(len(index), np.inf)
@@ -479,10 +511,17 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
         counts = np.bincount(part[hidden], minlength=len(occ_names)) if hidden.any() else np.zeros(len(occ_names), dtype=np.int64)
         report["occluded_fragments"] = int(hidden.sum())
         report["occluded_by"] = {occ_names[i]: int(c) for i, c in enumerate(counts) if c}
-    facing = np.clip((-(normal @ forward) - min_facing) / facing_ramp, 0.0, 1.0)
+    cosine = -(normal @ forward)
+    facing = np.clip((cosine - min_facing) / facing_ramp, 0.0, 1.0)
+    if core is not None:                                 # 顔の芯では、面の向きで弱めない（真裏は除く）
+        boosted = soft_ellipses(at[:, 0], at[:, 1], [core], 0.75) * (cosine > -0.2)
+        report["core_raised_fragments"] = int((boosted > facing).sum())
+        facing = np.maximum(facing, boosted)
     source = (at - offset) @ np.linalg.inv(matrix).T
     color, outside = sample(reference, source)
     weight = visible * facing * ~outside
+    if regions is not None:                              # 写す範囲（視点の画素の、縁をぼかした楕円の集まり）
+        weight = weight * soft_ellipses(at[:, 0], at[:, 1], regions)
     if reference.shape[2] == 4:
         weight = weight * color[:, 3] / 255.0
     if mask is not None:
