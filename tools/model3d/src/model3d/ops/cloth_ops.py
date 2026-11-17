@@ -3,6 +3,8 @@
 
 - cloth.skirt_proxy: 裾を身代わりの筒の布で動かす（細かい裾は筒に貼り付けて付いて行かせる）。
 - cloth.smooth: 布の動きを骨から見た座標で時間方向にならし、頂点の動きのファイル（.pc2）に置き換える。
+- cloth.pushout: 衣装が体に入った分を、骨盤と太ももの閉じた筒の外へ、層ごとの距離で押し出す補正（Shrinkwrap）を付ける。
+- cloth.lining_gap: 重なった布の裏地を、表から決まった距離まで内側へ離す（形を書き換える。モデル用）。
 """
 import math
 from pathlib import Path
@@ -193,4 +195,137 @@ def cloth_smooth(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "addons": record.get("addons"), "frames": report.get("frames"),
                    **{part: {key: report[part].get(key) for key in ("object", "verts", "jitter_mm_before", "jitter_mm_after", "moved_mm")}
                       for part in ("proxy", "detail") if part in report}}
+    return StepResult(observations=[observation])
+
+
+PUSHOUT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_pushout.py"
+# 数の設定: 名前 → (最小, 最小を含まないか)。長さは m。既定は台本の既定（blender_adapter/cloth_pushout.py の DEFAULTS）
+PUSHOUT_NUMBERS = {"layer_gap": (0.0, True), "patch_inset": (0.0, False), "attached_depth": (0.0, False), "lining_gap": (0.0, False)}
+PUSHOUT_NAMES = ("patch_group", "proxy_prefix", "group", "modifier", "axis_bone")
+
+
+def _cloth_list(value):
+    """cloths（[{"mesh", "offsets"}]。offsets は押し出す距離（m）の [外] か [内, 外]）を確かめる。"""
+    if not isinstance(value, list) or not value:
+        raise ToolError(f"cloths は [{{\"mesh\": 布のメッシュ, \"offsets\": [内, 外]（m）か [外]}}, …] にしてください: {value!r}")
+    checked = []
+    for k, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) - {"mesh", "offsets"}:
+            raise ToolError(f"cloths[{k}] は {{\"mesh\", \"offsets\"}} にしてください: {item!r}")
+        mesh = _name(item, "mesh", "cloth.pushout")
+        offsets = item.get("offsets")
+        if (not isinstance(offsets, list) or len(offsets) not in (1, 2)
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in offsets)):
+            raise ToolError(f"cloths[{k}].offsets は押し出す距離（m。0 より大きい）の [外] か [内, 外] にしてください: {offsets!r}")
+        if len(offsets) == 2 and offsets[0] > offsets[1]:
+            raise ToolError(f"cloths[{k}].offsets の [内, 外] は 内 ≤ 外 にしてください: {offsets!r}")
+        checked.append({"mesh": mesh, "offsets": [float(v) for v in offsets]})
+    meshes = [item["mesh"] for item in checked]
+    if len(set(meshes)) != len(meshes):
+        raise ToolError(f"cloths の mesh が重なっています: {meshes}")
+    return checked
+
+
+def pushout_settings(parameters, lining_only=False):
+    """cloth.pushout（lining_only なら cloth.lining_gap）のパラメーターを確かめ、台本の settings にする。"""
+    operation = "cloth.lining_gap" if lining_only else "cloth.pushout"
+    allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "cloths", "axis_bone", "layer_gap", "patch_group"}
+    if lining_only:
+        allowed |= {"lining_gap"}
+    else:
+        allowed |= {"body", "pelvis", "thighs", "report_bones", "patch_inset", "attached_depth", "proxy_prefix", "group", "modifier"}
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    settings = {"cloths": _cloth_list(parameters.get("cloths")), "axis_bone": _name(parameters, "axis_bone", operation)}
+    if parameters.get("armature") is not None:
+        settings["armature"] = _name(parameters, "armature", operation)
+    for key, (minimum, exclusive) in PUSHOUT_NUMBERS.items():
+        if key in parameters and key in allowed:
+            value = parameters[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or (value <= minimum if exclusive else value < minimum):
+                raise ToolError(f"{key} は {minimum} {'より大きい' if exclusive else '以上の'}数（m）にしてください: {value!r}")
+            settings[key] = float(value)
+    for key in PUSHOUT_NAMES:
+        if key in parameters and key in allowed and key != "axis_bone":
+            settings[key] = _name(parameters, key, operation)
+    if lining_only:
+        if not settings.get("lining_gap"):
+            raise ToolError("cloth.lining_gap には lining_gap（裏地を表から離す距離、m。0 より大きい）が要ります")
+        if not any(len(item["offsets"]) == 2 for item in settings["cloths"]):
+            raise ToolError("cloth.lining_gap の cloths には、層に分ける布（offsets が [内, 外]）を 1 つ以上入れてください")
+        settings["only_lining_gap"] = True
+        return settings
+    settings["body"] = _name(parameters, "body", operation)
+    pelvis = parameters.get("pelvis")
+    if not isinstance(pelvis, dict) or set(pelvis) - {"bones", "centre", "follow"}:
+        raise ToolError(f"pelvis は {{\"bones\": 骨盤の輪に入れる骨, \"centre\": 真ん中の骨（腰）, \"follow\": 輪を動かす骨の並び（下から）}} "
+                        f"にしてください: {pelvis!r}")
+    settings["pelvis"] = {"bones": _names(pelvis.get("bones"), "pelvis.bones"), "centre": _name(pelvis, "centre", operation),
+                          "follow": _names(pelvis.get("follow"), "pelvis.follow")}
+    if settings["pelvis"]["centre"] not in settings["pelvis"]["bones"]:
+        raise ToolError("pelvis.centre（腰の骨）を pelvis.bones に入れてください（股の高さは、腰がいちばん重い真ん中の頂点で決める）")
+    thighs = parameters.get("thighs")
+    if not isinstance(thighs, list) or not thighs:
+        raise ToolError(f"thighs は [{{\"name\", \"upper\", \"lower\", \"bones\"}}, …]（太ももの筒）にしてください: {thighs!r}")
+    checked = []
+    for k, thigh in enumerate(thighs):
+        if not isinstance(thigh, dict) or set(thigh) - {"name", "upper", "lower", "bones"}:
+            raise ToolError(f"thighs[{k}] は {{\"name\", \"upper\", \"lower\", \"bones\"}} にしてください: {thigh!r}")
+        checked.append({"name": _name(thigh, "name", operation), "upper": _name(thigh, "upper", operation),
+                        "lower": _name(thigh, "lower", operation), "bones": _names(thigh.get("bones"), f"thighs[{k}].bones")})
+    if len({t["name"] for t in checked}) != len(checked):
+        raise ToolError("thighs の name が重なっています")
+    settings["thighs"] = checked
+    if parameters.get("report_bones") is not None:
+        settings["report_bones"] = _names(parameters["report_bones"], "report_bones")
+    return settings
+
+
+def _run_pushout(inputs, parameters, outputs, context, settings, operation):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), operation)
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / f"{operation.split('.')[-1]}_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, PUSHOUT_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                 "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    return record, read_json(outputs["report"])
+
+
+@register("cloth.pushout", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="衣装（裾・腰の垂れなど）が体に入った分を、体の外へ押し出す補正（Shrinkwrap の Outside）を付ける（Blender の中で）: 当たりの"
+                  "相手は、初期姿勢の体を輪切りにして作った、骨盤と左右の太ももの閉じた筒（16 方向の太さ。両端を丸める。骨で動き、描かない）。"
+                  "offsets を [内, 外] にした布は、同じメッシュの重なり（表・ひだ・裏地・当て布）を層に分け、層ごとの距離へ押し出す。初期姿勢で"
+                  "筒にもぐっている頂点（付け根）は動かさない。筒から離れた点の内外の判定と、体が筒からはみ出す量を報告する。元のファイルは変えない")
+def cloth_pushout(inputs, parameters, outputs, context):
+    settings = pushout_settings(parameters)
+    record, report = _run_pushout(inputs, parameters, outputs, context, settings, "cloth.pushout")
+    tubes = report.get("tubes") or {}
+    observation = {"kind": "cloth_pushout", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "targets": report.get("targets"),
+                   "objects": {name: value.get("layers") for name, value in (report.get("objects") or {}).items() if isinstance(value, dict)},
+                   "sign_wrong_points": {name: value.get("sign_wrong_points") for name, value in tubes.items() if "sign_wrong_points" in value}}
+    unresolved = [f"{name}: 筒から離れた点の内外の判定が {value['sign_wrong_points']} 点外れました（遠くの頂点を吸い寄せうる）"
+                  for name, value in tubes.items() if value.get("sign_wrong_points")]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+@register("cloth.lining_gap", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="重なった布の裏地（いちばん内の層）が表から lining_gap（m）より近い所を、見えない内側（縦の軸の向き）へ寄せて、その距離まで"
+                  "離す（Blender の中で。形を書き換える。モデルの .blend 用。当たりも押し出しの補正も付けない）。層の分け方は cloth.pushout と同じ"
+                  "（offsets を [内, 外] にした布だけ）。元のファイルは変えない")
+def cloth_lining_gap(inputs, parameters, outputs, context):
+    settings = pushout_settings(parameters, lining_only=True)
+    record, report = _run_pushout(inputs, parameters, outputs, context, settings, "cloth.lining_gap")
+    observation = {"kind": "cloth_lining_gap", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "objects": report.get("objects")}
     return StepResult(observations=[observation])
