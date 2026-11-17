@@ -197,3 +197,92 @@ def test_closed_eye_key_rejects_bad_settings(tmp_path, parameters, message):
     with pytest.raises(ToolError, match=message):
         get("model.closed_eye_key").function({"blend": tmp_path / "model.blend"}, {"blender": str(blender), "head": "Head", **parameters},
                                              {"blend": tmp_path / "o.blend", "report": tmp_path / "r.json"}, Context(tmp_path))
+
+
+# ---------- 形状キーの値の時刻のキー（values。形で作った表情の時刻の表） ----------
+
+def test_expression_values_join_the_keys_with_straight_lines():
+    values = {"blink_L": [[1.0, 0.0], [1.1, 1.0], [1.2, 0.0]], "mouth_smile": [[0.0, 0.3]]}
+    assert pass_render.expression_values(values, 1.05) == {"blink_L": pytest.approx(0.5), "mouth_smile": 0.3}
+    assert pass_render.expression_values(values, 1.1)["blink_L"] == 1.0                  # キーの秒のちょうどは、その値のまま
+    assert pass_render.expression_values(values, 0.0)["blink_L"] == 0.0                  # 最初より前は最初の値
+    assert pass_render.expression_values(values, 9.0) == {"blink_L": 0.0, "mouth_smile": 0.3}   # 最後より後は最後の値
+    per_frame = {"k": [[(T - 1) / 30, round(0.37 * T % 1, 4)] for T in range(1, 91)]}     # 毎コマのキーなら、どのコマもその値
+    assert all(pass_render.expression_values(per_frame, (T - 1) / 30)["k"] == round(0.37 * T % 1, 4) for T in range(1, 91))
+
+
+def test_expressions_report_keeps_names_and_values_apart():
+    assert pass_render.expressions_report({1: "smile", 2: "closed", 3: "smile"}, {1: {}, 2: {}, 3: {}}, True) == {
+        "shown": {"1": "smile", "2": "closed", "3": "smile"}, "counts": {"closed": 1, "smile": 2}}
+    assert pass_render.expressions_report({1: None, 5: None}, {1: {"blink_L": 0.0}, 5: {"blink_L": 0.5}}, False) == {
+        "values": {"1": {"blink_L": 0.0}, "5": {"blink_L": 0.5}}}
+
+
+VALUES_STAND_IN = r'''
+import json, os, sys
+from model3d.blender_adapter import pass_render
+if "--version" in sys.argv:
+    print("Blender 5.2.4")
+    sys.exit(0)
+args = sys.argv[sys.argv.index("--") + 1:]
+def value(flag):
+    return args[args.index(flag) + 1] if flag in args else None
+settings = pass_render.merged(json.load(open(value("--settings"), encoding="utf-8")))
+track = json.load(open(value("--track"), encoding="utf-8"))
+plan = [(fr["T"], fr["f"]) for fr in track["frames"]]
+expressions = settings["expressions"]
+shown, valued, rendered = {}, {}, {k: [] for k in pass_render.all_kinds(settings)}
+for T, f in plan:
+    t = (T - 1) / track["fps"]
+    shown[T] = pass_render.expression_at(expressions["times"], t) if expressions["times"] else None
+    valued[T] = pass_render.expression_values(expressions.get("values", {}), t)
+    for kind in rendered:
+        path = os.path.join(value("--passes-dir"), pass_render.pass_file(kind, T, settings["format"]))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").write(b"x")
+        rendered[kind].append(T)
+frames = [pass_render.camera_entry(T, f, [[1, 0, 0, 0], [0, 1, 0, -3], [0, 0, 1, 1], [0, 0, 0, 1]], 35.0, (0.0, 0.0), 24.0,
+                                   settings["resolution"], 1.0, [0.0, 0.0, 1.0]) for T, f in plan]
+json.dump({"schema_version": "model3d-cameras/0.1", "unit": "m", "resolution": settings["resolution"], "fps": track["fps"],
+           "frames": frames}, open(value("--cameras-out"), "w"))
+json.dump({"schema_version": "model3d-pass-render/0.1", "planned": [{"T": T, "f": f} for T, f in plan], "rendered": rendered,
+           "skipped_existing": {k: [] for k in rendered}, "fps": track["fps"], "resolution": settings["resolution"],
+           "camera": {"from_record": 0, "from_track": len(plan)}, "objects": {"character": ["Body", "Head"]}, "settings": settings,
+           "expressions": pass_render.expressions_report(shown, valued, bool(expressions["times"]))}, open(value("--report"), "w"))
+'''
+
+
+def test_passes_with_only_shape_key_values(tmp_path):
+    from model3d import executor
+    write_recipe(tmp_path, {"objects": ["Head"], "images": {"smile": "smile.png"}, "times": [[0.0, "smile"]]})   # 絵と台を作る
+    recipe = json.loads((tmp_path / "recipe.json").read_text(encoding="utf-8"))
+    recipe["steps"][0]["parameters"]["blender"] = str(stand_in_executable(tmp_path, "blender_values", VALUES_STAND_IN))
+    recipe["steps"][0]["parameters"]["expressions"] = {"objects": ["Head"], "values": {"blink_L": [[2.8, 0.0], [2.9, 1], [3.0, 0.0]],
+                                                                                         "mouth_smile": [[0.0, 0.2], [4.1, 0.8]]}}
+    atomic_json(tmp_path / "recipe.json", recipe)
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    report = json.loads(Path(result["steps"]["passes"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    settings = report["settings"]["expressions"]
+    assert settings["times"] == [] and settings["images"] == {} and settings["values"]["blink_L"] == [[2.8, 0.0], [2.9, 1.0], [3.0, 0.0]]
+    assert set(report["expressions"]) == {"values"}                                      # 名前の表が無ければ、値だけを報告する
+    assert report["expressions"]["values"]["85"] == {"blink_L": pytest.approx(0.0), "mouth_smile": pytest.approx(0.2 + 0.6 * 2.8 / 4.1)}
+    assert result["steps"]["passes"]["observations"][0]["expressions"]["values"] == ["blink_L", "mouth_smile"]
+
+
+@pytest.mark.parametrize("expressions, message", [
+    ({"objects": ["Head"], "values": {"blink_L": [[1.0, 0.0], [1.0, 1.0]]}}, "重ねない"),
+    ({"objects": ["Head"], "values": {"blink_L": [[1.0, 0.0], [0.5, 1.0]]}}, "小さい順"),
+    ({"objects": ["Head"], "values": {"blink_L": []}}, r"\[\[秒, 値\], …\]"),
+    ({"objects": ["Head"], "values": {"blink_L": [[1.0, float("nan")]]}}, "有限"),
+    ({"objects": ["Head"], "values": {"blink_L": [[1.0, True]]}}, "有限"),
+    ({"objects": ["Head"], "values": {"": [[1.0, 0.0]]}}, "空でない"),
+    ({"objects": ["Head"], "values": [["blink_L", 1.0]]}, "expressions.values"),
+    ({"objects": ["Head"], "values": {"blink_L": [[0.0, 0.0]]}, "shape_keys": {"closed": "eyes_closed"}}, "times"),
+    ({"objects": ["Head"], "values": {"eyes_closed": [[0.0, 0.0]]}, "times": [[0.0, "closed"]], "shape_keys": {"closed": "eyes_closed"}},
+     "同じ形状キー"),
+])
+def test_bad_expression_values_stop_before_blender(tmp_path, expressions, message):
+    from model3d.ops.render_ops import _expression_settings
+    with pytest.raises(ToolError, match=message):
+        _expression_settings(expressions, tmp_path)
