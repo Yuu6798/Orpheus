@@ -2,13 +2,44 @@
 （Blender なし）、工程の受け渡しと悪い設定（代役の Blender）。本物の Blender 5.2.4 での確かめは docs/model3d.md（CI には Blender が無い）。"""
 import json
 from pathlib import Path
+from types import SimpleNamespace as NS
 
 import pytest
 
 from m3d_helpers import stand_in_executable
 from model3d.blender_adapter import cloth_follow as cf
+from model3d.blender_adapter import cloth_over as co
 from model3d.io import ToolError, atomic_json
 from model3d.ops.cloth_ops import over_summary
+
+
+def _mesh(name, kind="MESH"):
+    return NS(name=name, type=kind, modifiers=[])
+
+
+def _modifier(owner, name, kind, show=True, baked=None, **targets):
+    modifier = NS(name=name, type=kind, show_viewport=show, id_data=owner, **targets)
+    if baked is not None:
+        modifier.point_cache = NS(is_baked=baked)
+    owner.modifiers.append(modifier)
+    return modifier
+
+
+def test_cached_motion_follows_modifier_targets_and_refuses_unbaked_simulations():
+    rig = _mesh("Rig", "ARMATURE")
+    proxy, skirt, panels = _mesh("skirt_proxy"), _mesh("Skirt"), _mesh("Panels")
+    _modifier(proxy, "follow_hips", "ARMATURE", object=rig)
+    cloth = _modifier(proxy, "skirt_cloth", "CLOTH", baked=True)
+    _modifier(skirt, "follow_proxy", "SURFACE_DEFORM", target=proxy)      # 裾は筒に貼り付く（筒の焼いた布の計算も外す）
+    _modifier(panels, "baked_motion", "MESH_CACHE")
+    _modifier(panels, "off", "MESH_CACHE", show=False)                    # 表示で止めてある物は触らない
+    found = co.cached_motion([panels, skirt])
+    assert [(m.id_data.name, m.name) for m in found] == [("Panels", "baked_motion"), ("skirt_proxy", "skirt_cloth")]
+    _modifier(proxy, "back", "SURFACE_DEFORM", target=skirt)              # 互いに指し合っても 1 回ずつ
+    assert [m.name for m in co.cached_motion([skirt])] == ["skirt_cloth"]
+    cloth.point_cache.is_baked = False
+    with pytest.raises(SystemExit, match="焼かれていません"):
+        co.cached_motion([skirt])
 
 
 def test_nearer_leader_vertices_weigh_more():

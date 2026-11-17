@@ -12,7 +12,9 @@
   - 上の布（over）の頂点（変形した後）から外向きに depth（m）まで線を伸ばし、下の布（under）の面（変形した後。当て布 patch_group の面は数えない）に
     当たったら「入り込み」。深さは、当たるまでの距離。初期姿勢でも同じ判定をして、もともと下の布の内側にある頂点（付け根など）は数から除く。
   - 初期姿勢は、アーマチュアを REST にして評価する。ファイルから動きを読む変形（MESH_CACHE・MESH_SEQUENCE_CACHE。cloth.smooth が置き換えた
-    変形など）は、REST にしても開いたコマの形を読むので、初期姿勢の判定の間だけ外す（外した物は報告の rest_caches_off）。
+    変形など）と焼いた物理の計算（CLOTH・SOFT_BODY。cloth.skirt_proxy の筒など）は、REST にしても開いたコマの形を返すので、初期姿勢の判定の
+    間だけ外す。上の布・下の布と、そのモディファイアの相手（貼り付けの相手の筒など。その先も）の物を外す（外した物は報告の rest_caches_off）。
+    焼いていない物理の計算は止める（外すと計算の途中が消え、焼いていないとコマを飛ばして読むたびに形が変わる）。
   - tol より浅い入り込みは数えない。
   - 上の布・下の布と、それらのモディファイアの相手のほかのメッシュは評価しない（速くする）。
 
@@ -37,8 +39,31 @@ except ImportError:   # Blender が台本として動かすとき
 
 DEFAULTS = {"over": None, "under": None, "armature": None, "axis_bone": None, "patch_group": "lining_patch", "depth": 0.06, "tol": 0.001,
             "frames": None}
-# ファイルから動きを読む変形。アーマチュアを REST にしても、開いたコマの形を読む（初期姿勢の形にならない）
-CACHE_READERS = {"MESH_CACHE", "MESH_SEQUENCE_CACHE"}
+# 初期姿勢でも開いたコマの形を返す変形: ファイルから動きを読む変形（cloth.smooth が置き換えた MESH_CACHE など）と、焼いた物理の計算
+# （cloth.skirt_proxy の筒の CLOTH など）。アーマチュアを REST にしても初期姿勢の形にならない
+CACHED_MOTION = {"MESH_CACHE", "MESH_SEQUENCE_CACHE", "CLOTH", "SOFT_BODY"}
+SIMULATIONS = {"CLOTH", "SOFT_BODY"}
+
+
+def cached_motion(objects):
+    """objects と、そのモディファイアが指すメッシュ（貼り付けの相手の筒など。その先も）の、効いている CACHED_MOTION のモディファイア
+    （初期姿勢を評価する間だけ外す。物体とモディファイアの名前の順）。焼いていない物理の計算があれば止める（外すと計算の途中が消え、
+    焼いていないとコマを飛ばして読むたびに形が変わる）。"""
+    seen, stack, found = set(), list(objects), []
+    while stack:
+        obj = stack.pop()
+        if getattr(obj, "type", None) != "MESH" or obj.name in seen:
+            continue
+        seen.add(obj.name)
+        for m in obj.modifiers:
+            if m.type in CACHED_MOTION and m.show_viewport:
+                if m.type in SIMULATIONS and not m.point_cache.is_baked:
+                    raise SystemExit(f"{obj.name} の物理の計算 {m.name}（{m.type}）が焼かれていません。焼いてから測ってください"
+                                     "（初期姿勢の間だけ外すと計算の途中が消え、焼いていないとコマを飛ばして読むたびに形が変わる）")
+                found.append(m)
+            for attr in ("target", "object", "auxiliary_target"):
+                stack.append(getattr(m, attr, None))
+    return sorted(found, key=lambda m: (m.id_data.name, m.name))
 
 
 def parse_args(argv):
@@ -127,10 +152,9 @@ def main(argv=None):
                 depth[i] = hit[3]
         return depth
 
-    # 初期姿勢の形: アーマチュアを REST にして評価する。ファイルから動きを読む変形（cloth.smooth が置き換えた MESH_CACHE など）は、REST にしても
-    # 開いたコマの形を読む（その形の入り込みを全部のコマから除いてしまう）ので、初期姿勢の判定の間だけ外す
-    caches = [m for name in sorted(needed) if bpy.data.objects[name].type == "MESH"
-              for m in bpy.data.objects[name].modifiers if m.type in CACHE_READERS and m.show_viewport]
+    # 初期姿勢の形: アーマチュアを REST にして評価する。ファイルから動きを読む変形・焼いた物理の計算は、REST にしても開いたコマの形を返す
+    # （その形の入り込みを全部のコマから除いてしまう）ので、初期姿勢の判定の間だけ外す（モディファイアの相手の筒なども）
+    caches = cached_motion([over, under])
     for m in caches:
         m.show_viewport = False
     saved = armature.data.pose_position
