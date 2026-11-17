@@ -21,6 +21,23 @@ def test_camera_offset_turns_to_the_characters_left_and_up():
     assert render_side.image_name("happy", "q30") == "happy_q30.png"
 
 
+def test_image_names_refuse_combinations_that_share_a_file():
+    names = render_side.image_names(["neutral", "blink"], ["front", "q30"])
+    assert len(names) == 4 and names[("blink", "q30")] == "blink_q30.png"
+    with pytest.raises(ValueError, match="重なります"):
+        render_side.image_names(["smile_left", "smile"], ["front", "left_front"])     # どちらも smile_left_front.png
+    with pytest.raises(ValueError, match="重なります"):
+        render_side.image_names(["Smile", "smile"], ["front"])                         # Windows では同じファイル
+
+
+def test_view_lengths_in_metres_become_blender_units():
+    view = {"name": "q30", "azimuth": 30, "elevation": 0, "scale": 0.17, "centre": [0.0, -0.05, 1.49]}
+    assert render_side.view_in_units(view) == ([0.0, -0.05, 1.49], 1.0, 0.17)           # 1 Blender 単位 = 1 m なら値はそのまま
+    centre, distance, scale = render_side.view_in_units(view, 0.01)                      # 1 Blender 単位 = 1 cm のシーン
+    assert centre == pytest.approx([0.0, -5.0, 149.0]) and distance == pytest.approx(100.0) and scale == pytest.approx(17.0)
+    assert render_side.view_in_units({**view, "centre": None}, 0.01)[0] is None            # 狙う点は箱の中心（もとから Blender 単位）
+
+
 def _images(folder, labels, views, size=(40, 36)):
     folder.mkdir(parents=True, exist_ok=True)
     for r, label in enumerate(labels):
@@ -40,6 +57,8 @@ def test_join_places_expressions_in_rows_and_views_in_columns(tmp_path):
     assert Image.open(tmp_path / "sheet.jpg").format == "JPEG"
     with pytest.raises(ValueError, match="絵がありません"):
         face_sheet.join(tmp_path / "views", ["neutral", "wink"], ["front"], tmp_path / "x.png", cell=100)
+    with pytest.raises(ValueError, match="重なります"):                                    # 2 つのこまに同じ絵を入れない
+        face_sheet.join(tmp_path / "views", ["a_b", "a"], ["c", "b_c"], tmp_path / "y.png", cell=100)
 
 
 STAND_IN = r'''
@@ -117,6 +136,9 @@ def _with(**changes):
     (_with(views=[{"name": "front", "azimuth": 0, "elevation": 0, "scale": 0.1, "roll": 3}]), "知らない設定"),
     (_with(views=[{"name": "f", "azimuth": 0, "elevation": 0, "scale": 0.1}, {"name": "f", "azimuth": 9, "elevation": 0, "scale": 0.1}]), "重なって"),
     (_with(views=[{"name": "f", "azimuth": 0, "elevation": 0, "scale": 0.1, "centre": [0, 0]}]), "centre"),
+    (_with(combos=[["smile_left", {}], ["smile", {}]], views=[{"name": "front", "azimuth": 0, "elevation": 0, "scale": 0.1},
+                                                             {"name": "left_front", "azimuth": 30, "elevation": 0, "scale": 0.1}]), "重なります"),
+    (_with(combos=[["Smile", {}], ["smile", {}]]), "重なります"),
     (_with(background=[0.1, 0.2]), "background"),
     (_with(size=8000), "4096"),
     (_with(font="no_such_font.ttf"), "書体"),

@@ -324,6 +324,7 @@ def _safe(value, where):
 
 def face_sheet_settings(parameters, recipe_dir=None):
     """render.face_sheet のパラメーターを確かめる。戻り: (描く側の settings, 並べる側の設定)。"""
+    from ..blender_adapter.face_sheet import image_names
     from ..io import resolve_path
     _refuse_unknown(parameters, COMMON | {"object", "combos", "views", "hide", "size", "samples", "background", "cell", "font", "font_size",
                                           "quality"}, "render.face_sheet")
@@ -362,6 +363,10 @@ def face_sheet_settings(parameters, recipe_dir=None):
         out_views.append(entry)
     if len({view["name"] for view in out_views}) != len(out_views):
         raise ToolError("views の name が重なっています")
+    try:                                                 # 絵の名前 <札>_<向き>.png が別の組み合わせと重なると、前の絵が上書きされる
+        image_names([label for label, _ in checked], [view["name"] for view in out_views])
+    except ValueError as error:
+        raise ToolError(f"{error}。札か向きの名前を変えてください") from error
     hide = parameters.get("hide", [])
     if not isinstance(hide, list) or not all(isinstance(name, str) and name for name in hide):
         raise ToolError(f"hide は描かない物体の名前の並びにしてください: {hide!r}")
