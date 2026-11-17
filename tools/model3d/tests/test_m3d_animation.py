@@ -10,6 +10,7 @@ import pytest
 
 from m3d_helpers import stand_in_executable
 from model3d import animation_check as ac
+from model3d.blender_adapter import animation_evidence as evidence
 from model3d.blender_adapter import animation_sample as sampler
 from model3d.io import atomic_json
 
@@ -550,6 +551,59 @@ def test_cloth_skips_are_reported():
     assert "頂点の数が変わるコマ" in report["skipped"][0]["reason"] and report["overall"] == "clean_with_skips"
 
 
+def test_evidence_picks_the_largest_events_but_not_cuts():
+    events = [{"id": 1, "signal": "motion.cut", "severity": 1e-7}, {"id": 2, "signal": "joint.neck", "severity": 2.5},
+              {"id": 3, "signal": "penetration.floor", "severity": 4.0}, {"id": 4, "signal": "motion.pop", "severity": 2.5}]
+    assert [e["id"] for e in ac.evidence_events(events, 30)] == [3, 2, 4]          # 同じ severity は報告の順
+    assert [e["id"] for e in ac.evidence_events(events, 2)] == [3, 2]
+
+
+def test_table_lists_the_summary_and_the_events():
+    report = ac.check(make_sample(_faulty), ac.settings({}))
+    report["blend"] = "dance.blend"
+    report["events"][0]["images"] = ["e001_f0006.jpg", "e001_f0007.jpg"]
+    lines = ac.table_markdown(report).splitlines()
+    assert lines[0] == "# 動きの検品の報告" and lines[2] == "- 調べた物: `dance.blend`" and lines[3] == "- コマ: 1〜120（30 fps、4.00 秒）"
+    assert lines[6].startswith("- 浅い接触（1〜3 cm。出来事には挙げていない）のコマ数: ")
+    assert "| 番号 | 秒 | コマ | 種類 | 見つけた物 | 場所 | いちばん大きい所 | 絵 |" in lines
+    first = next(line for line in lines if line.startswith("| 1 | "))
+    assert first.endswith("| `img/e001_f0006.jpg` `img/e001_f0007.jpg` |")
+    assert lines[-3:-1] == ["## 見なかった検査", ""] and lines[-1].startswith("- cloth: ")     # 布が無いので見なかった
+    summary = lines[lines.index("## まとめ（見つけた物と場所ごと）") + 4]
+    biggest = max(report["events"], key=lambda e: e["severity"])
+    assert summary.startswith(f"| {biggest['title']} | {biggest['part']} | ")
+
+
+def test_contact_sheets_put_six_cells_in_a_row(tmp_path):
+    from PIL import Image
+    events = []
+    for k in range(1, 13):
+        names = [evidence.image_name(k, 10 * k + d) for d in (-1, 0, 1)] if k % 2 else [evidence.image_name(k, 10 * k)]
+        for name in names:
+            Image.new("RGB", (48, 48), (10 * k, 100, 200)).save(tmp_path / name)
+        events.append({"id": k, "images": names, "peak_frame": 10 * k, "signal": "motion.pop", "peak_value": 31.0, "unit": "度",
+                       "kind": "動的" if k % 2 else "静的", "frames": [10 * k, 10 * k + 1]})
+    report = {"events": events, "frames": [1, 200], "fps": 30.0}
+    sheets = ac.contact_sheets(report, tmp_path, columns=6, rows=5, cell=100)
+    assert len(sheets) == 1 and sheets[0].size == (600, 4 * 160)                    # 24 枚 = 6 列 × 4 段
+    sheets = ac.contact_sheets(report, tmp_path, columns=4, rows=2, cell=100)
+    assert [sheet.size for sheet in sheets] == [(400, 320)] * 3                       # 8 枚ずつ 3 枚
+    assert np.allclose(sheets[0].getpixel((50, 50)), (10, 100, 200), atol=4)                    # 1 枚目の絵（JPEG の揺れを許す）
+
+
+def test_evidence_camera_and_shots():
+    assert evidence.shots({"peak_frame": 10, "kind": "動的"}, 1, 100) == [9, 10, 11]
+    assert evidence.shots({"peak_frame": 1, "kind": "動的"}, 1, 100) == [1, 2]       # 範囲の外のコマは描かない
+    assert evidence.shots({"peak_frame": 10, "kind": "静的"}, 1, 100) == [10]
+    assert evidence.image_name(7, 12) == "e007_f0012.jpg"
+    # 場所の外向き（無ければ腰から場所へ）と、体の前と少し上から。静的 0.95 m 離れる。床すれすれより下からは撮らない
+    place = evidence.camera_place([1.0, 0.0, 1.0], None, P(0.0, 0.0, 1.0), P(0.0, -1.0, 0.0), "静的", P)
+    toward = np.array([0.9, -0.5, 0.25])
+    assert np.allclose(place.v, np.array([1.0, 0.0, 1.0]) + toward / np.linalg.norm(toward) * 0.95)
+    place = evidence.camera_place([0.0, 0.0, 0.05], [0.0, 0.0, -1.0], P(0.0, 0.0, 1.0), P(0.0, -1.0, 0.0), "動的", P)
+    assert place.v[2] == pytest.approx(evidence.CAMERA_LOWEST_M)
+
+
 # ---------------------------------------------------------------- 測る所（Blender の中の台本の小さな関数）
 def test_sampler_helpers():
     names = {0: "hips", 1: "skirt_01", 2: "head"}
@@ -627,6 +681,33 @@ class V:
         return float(self.v @ self.v)
 
 
+class P(V):
+    """mathutils の Vector の代役（x・y・z と normalized も。証拠の絵のカメラの計算に使う所）。"""
+
+    def __add__(self, other):
+        return P(self.v + other.v)
+
+    def __sub__(self, other):
+        return P(self.v - other.v)
+
+    def __mul__(self, k):
+        return P(self.v * k)
+
+    def normalized(self):
+        return P(self.v / np.linalg.norm(self.v))
+
+    x = property(lambda self: self.v[0])
+    y = property(lambda self: self.v[1])
+
+    @property
+    def z(self):
+        return self.v[2]
+
+    @z.setter
+    def z(self, value):
+        self.v[2] = value
+
+
 class Wall:
     """布の代役: x = at の平らな布（面の番号は 0）。光線の当たりと、いちばん近い所までの距離だけ（mathutils の BVHTree の代わり）。"""
 
@@ -676,6 +757,21 @@ args = sys.argv[sys.argv.index("--") + 1:]
 def value(flag):
     return args[args.index(flag) + 1]
 settings = json.load(open(value("--settings"), encoding="utf-8"))
+script = sys.argv[sys.argv.index("--python") + 1]
+if script.endswith("animation_evidence.py"):                     # 証拠の絵: 出来事ごとに、描くコマの絵を書く
+    import os
+    from PIL import Image
+    os.makedirs(settings["directory"], exist_ok=True)
+    images = {}
+    for event in settings["events"]:
+        peak = event["peak_frame"]
+        frames = [peak - 1, peak, peak + 1] if event["kind"] == "動的" else [peak]
+        names = ["e%03d_f%04d.jpg" % (event["id"], f) for f in frames if settings["frames"][0] <= f <= settings["frames"][1]]
+        for name in names:
+            Image.new("RGB", (settings["resolution"],) * 2, (90, 90, 90)).save(os.path.join(settings["directory"], name))
+        images[str(event["id"])] = names
+    json.dump({"images": images, "render_changes": {"x_settings": settings}}, open(value("--report"), "w", encoding="utf-8"))
+    sys.exit(0)
 source = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixture.json"), encoding="utf-8"))   # 代役の名前は OS で違う
 shutil.copyfile(source["npz"], value("--out"))
 meta = json.load(open(source["meta"], encoding="utf-8"))
@@ -717,10 +813,10 @@ def test_sample_files_round_trip(tmp_path):
         ac.load_sample(tmp_path / "sample.npz", {"schema_version": "other"})
 
 
-def _recipe(tmp_path, parameters):
+def _recipe(tmp_path, parameters, outputs=None):
     (tmp_path / "dance.blend").write_bytes(b"blend")
     step = {"id": "check", "operation": "check.animation", "inputs": {"blend": "$inputs.dance"}, "parameters": parameters,
-            "outputs": {"report": "animation.json"}}
+            "outputs": {"report": "animation.json", **(outputs or {})}}
     atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "animation",
                                            "inputs": {"dance": {"path": "dance.blend"}}, "steps": [step]})
     return tmp_path / "recipe.json"
@@ -752,10 +848,38 @@ def test_check_animation_runs_blender_and_reports_events(tmp_path):
     assert quiet["status"] == "succeeded"
 
 
+def test_check_animation_draws_evidence_and_writes_the_table(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    _write_sample(make_sample(_faulty), tmp_path)
+    recipe = _recipe(tmp_path, {"blender": blender, "max_images": 3}, outputs={"table": "report.md", "sheet": "events.jpg"})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "needs_review", result
+    artifacts = result["steps"]["check"]["artifacts"]
+    report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))
+    drawn = [e for e in report["events"] if e.get("images")]
+    assert len(drawn) == 3 and report["images_directory"] == "img" and report["sheets"] == ["events.jpg"]
+    biggest = ac.evidence_events(report["events"], 3)
+    assert [e["id"] for e in drawn] == sorted(e["id"] for e in biggest)
+    settings = report["render_changes"]["x_settings"]
+    assert settings["resolution"] == 480 and settings["quality"] == 88 and settings["hips"] == "hips" and settings["frames"] == [1, 120]
+    step_dir = Path(artifacts["report"]).parent
+    assert all((step_dir / "img" / name).exists() for e in drawn for name in e["images"])
+    table = Path(artifacts["table"]).read_text(encoding="utf-8")
+    assert "`img/" in table and table.startswith("# 動きの検品の報告")
+    from PIL import Image
+    with Image.open(artifacts["sheet"]) as sheet:
+        assert sheet.size[0] == 6 * 300
+    for outputs, message in (({"table": "report.txt"}, ".md"), ({"sheet": "events.png"}, ".jpg")):
+        failed = executor.run_recipe(_recipe(tmp_path, {"blender": blender}, outputs=outputs), tmp_path / "runs")
+        assert failed["status"] == "failed" and message in failed["steps"]["check"]["error"]
+
+
 @pytest.mark.parametrize("parameters, message", [
     ({"strict": True}, "知らないパラメーター"), ({"frames": [10, 5]}, "frames"), ({"skip_bones": "twist"}, "skip_bones"),
     ({"foot_lowest": "lowest"}, "foot_lowest"), ({"arm_upper": [[1.0, 0.04]]}, "3 点"), ({"armature": ""}, "armature"),
-    ({"report_only": "yes"}, "report_only"), ({"cloth": 1}, "cloth"), ({"cloth_min_vertices": 2.5}, "整数")])
+    ({"report_only": "yes"}, "report_only"), ({"cloth": 1}, "cloth"), ({"cloth_min_vertices": 2.5}, "整数"),
+    ({"max_images": 0}, "max_images")])
 def test_check_animation_refuses_bad_parameters(tmp_path, parameters, message):
     from model3d import executor
     blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))

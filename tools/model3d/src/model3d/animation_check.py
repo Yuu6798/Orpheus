@@ -30,6 +30,7 @@ evidence: measured。異常と読むかは、絵を見て人やエージェン�
 """
 import fnmatch
 import math
+from pathlib import Path
 
 import numpy as np
 
@@ -91,6 +92,8 @@ LABEL = {"penetration.arm_body": ("貫通", "腕が体に入る", "cm"), "penetr
          "motion.jitter": ("震え", "小刻みに震える", "回"), "motion.foot_slide": ("足", "着いた足が滑る", "cm"),
          "motion.cut": ("切り替え", "全身が同じコマで切り替わる", "%")}
 SEVERITY_SCALE = {"cm": 1.0, "度": 30.0, "回": 3.0, "%": 1e9}
+UNIT_ASCII = {"cm": "cm", "度": "deg", "回": "x", "%": "%"}   # 一覧の絵の字は ASCII だけ（書体に頼らない）
+IMAGE_DIRECTORY = "img"                                       # 証拠の絵を置くフォルダ（報告と同じフォルダの中）
 
 
 class SettingsError(ValueError):
@@ -840,6 +843,78 @@ def events_from(hits, frames, fps, merge_gap):
     for i, event in enumerate(events):
         event["id"] = i + 1
     return events
+
+
+# ---------------------------------------------------------------- 証拠の絵と読む用の表（検-6）
+def evidence_events(events, max_images):
+    """証拠の絵を描く出来事: 全身の切り替えを除き、severity の大きい順に max_images 件まで（同じなら報告の順）。"""
+    return sorted((e for e in events if e["signal"] != "motion.cut"), key=lambda e: -e["severity"])[:max_images]
+
+
+def table_markdown(report, image_dir=IMAGE_DIRECTORY):
+    """読む用の表（Markdown）: 頭に、見つけた物と場所ごとのまとめ（severity の大きい順）、続けて出来事の一覧（時間の順。証拠の絵の名前）。
+    リポジトリ外の試作の表と同じ形。終わりに、見なかった検査を足す。"""
+    events, cfg = report["events"], report["thresholds"]
+    f0, f1, fps = report["frames"][0], report["frames"][1], report["fps"]
+    contact = "、".join("%s %d" % kv for kv in report.get("contact_frames", {}).items()) or "なし"
+    lines = ["# 動きの検品の報告", "", "- 調べた物: `%s`" % report.get("blend", ""),
+             "- コマ: %d〜%d（%.0f fps、%.2f 秒）" % (f0, f1, fps, (f1 - f0 + 1) / fps),
+             "- 布として見た物: %s" % ("、".join(report.get("cloth_objects", [])) or "なし"),
+             "- 出来事: %d 件（数と場所を出すだけ。異常と読むかは人が決める）" % len(events),
+             "- 浅い接触（%g〜%g cm。出来事には挙げていない）のコマ数: %s" % (cfg["contact_min_m"] * 100, cfg["penetration_min_m"] * 100, contact),
+             "", "## まとめ（見つけた物と場所ごと）", "", "| 見つけた物 | 場所 | 件数 | 合わせて何コマ | いちばん大きい値 | 最初に出る秒 |",
+             "|---|---|---|---|---|---|"]
+    groups = {}
+    for event in events:
+        groups.setdefault((event["title"], event["part"]), []).append(event)
+    for (title, part), group in sorted(groups.items(), key=lambda kv: -max(x["severity"] for x in kv[1])):
+        lines.append("| %s | %s | %d | %d | %.1f %s | %.2f |" % (title, part, len(group), sum(x["frames"][1] - x["frames"][0] + 1 for x in group),
+                                                        max(x["peak_value"] for x in group), group[0]["unit"],
+                                                        min(x["seconds"][0] for x in group)))
+    lines += ["", "## 出来事の一覧（時間の順）", "", "| 番号 | 秒 | コマ | 種類 | 見つけた物 | 場所 | いちばん大きい所 | 絵 |", "|---|---|---|---|---|---|---|---|"]
+    for event in events:
+        a, b = event["frames"]
+        seconds = "%.2f" % event["seconds"][0] if a == b else "%.2f〜%.2f" % tuple(event["seconds"])
+        frames = "%d" % a if a == b else "%d〜%d" % (a, b)
+        kind = event["kind"] + ("・一瞬" if event.get("momentary") else "")
+        extra = "（%d 頂点）" % event["vertices"] if "vertices" in event else ""
+        images = " ".join("`%s/%s`" % (image_dir, name) for name in event.get("images", [])) or "—"
+        lines.append("| %d | %s | %s | %s | %s | %s | %s %s%s（コマ %d） | %s |" % (
+            event["id"], seconds, frames, kind, event["title"], event["part"], ("%.1f" % event["peak_value"]), event["unit"], extra,
+            event["peak_frame"], images))
+    if report.get("skipped"):
+        lines += ["", "## 見なかった検査", ""] + ["- %s: %s" % (item["check"], item["reason"]) for item in report["skipped"]]
+    return "\n".join(lines) + "\n"
+
+
+def contact_sheets(report, folder, columns=6, rows=5, cell=300):
+    """証拠の絵の一覧の絵（Pillow の画像の並び）。1 枚に rows 段まで、多ければ次の 1 枚へ。字は ASCII だけ（番号・秒・コマ・信号・値）。
+    folder は証拠の絵のフォルダ。"""
+    from PIL import Image, ImageDraw, ImageFont
+    font = ImageFont.load_default(size=14)
+    cells = [(event, name) for event in report["events"] for name in event.get("images", [])]
+    sheets = []
+    caption = 60
+    for start in range(0, len(cells), columns * rows):
+        chunk = cells[start:start + columns * rows]
+        height = (len(chunk) + columns - 1) // columns
+        sheet = Image.new("RGB", (columns * cell, height * (cell + caption)), (24, 24, 26))
+        draw = ImageDraw.Draw(sheet)
+        for i, (event, name) in enumerate(chunk):
+            with Image.open(Path(folder) / name) as image:
+                tile = image.convert("RGB").resize((cell - 4, cell - 4), Image.LANCZOS)
+            x, y = (i % columns) * cell, (i // columns) * (cell + caption)
+            sheet.paste(tile, (x + 2, y + 2))
+            frame = int(name.split("_f")[1][:4])
+            seconds = (frame - report["frames"][0]) / report["fps"]
+            draw.text((x + 4, y + cell), "#%d  %.2fs (f %d)%s" % (event["id"], seconds, frame, "  PEAK" if frame == event["peak_frame"] else ""),
+                      fill=(255, 255, 0), font=font)
+            draw.text((x + 4, y + cell + 18), "%s  %.1f %s" % (event["signal"], event["peak_value"], UNIT_ASCII[event["unit"]]),
+                      fill=(235, 235, 235), font=font)
+            draw.text((x + 4, y + cell + 36), "%s, %d frames" % (event["kind"] == "静的" and "static" or "dynamic",
+                                                               event["frames"][1] - event["frames"][0] + 1), fill=(190, 190, 190), font=font)
+        sheets.append(sheet)
+    return sheets
 
 
 def check(sample, cfg, skip_bones=(), foot_lowest="world"):
