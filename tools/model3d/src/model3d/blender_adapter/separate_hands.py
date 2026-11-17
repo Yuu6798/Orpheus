@@ -161,8 +161,9 @@ class Separator:
                 pos[("forearm", side, t)] = elbow * (1 - t) + wrist * t
         return pos
 
-    def measure(self, pos):
-        """コマごとの、いちばん大きい重なりと、その 2 点・要る離れ・組の名前（pos は全コマでも一部のコマでもよい）。"""
+    def measure(self, pos, hard_only=False):
+        """コマごとの、いちばん大きい重なりと、その 2 点・要る離れ・組の名前（pos は全コマでも一部のコマでもよい）。
+        hard_only なら、袖どうし（どちらもやわらかい区切り）の組を除いて測る（手・指・前腕の芯がからむ重なり）。"""
         s, left, right = self.s, self.names.sides[0], self.names.sides[1]
         m = len(pos[(self.names.hand(left), "head")])
         overlap = np.full(m, -1.0)
@@ -171,6 +172,8 @@ class Separator:
         which = np.empty(m, dtype=object)
         for name_l, a0, a1, rl, soft_l in self.segs[left]:
             for name_r, b0, b1, rr, soft_r in self.segs[right]:
+                if hard_only and soft_l and soft_r:
+                    continue
                 p, q = closest(pos[a0], pos[a1], pos[b0], pos[b1])
                 wanted = (rl + rr) * (s["soft_factor"] if (soft_l and soft_r) else 1.0) + s["gap"]
                 ov = wanted - np.linalg.norm(p - q, axis=1)
@@ -318,6 +321,11 @@ class Separator:
             if not on and start is not None:
                 runs.append((start, i - 1))
                 start = None
+        split = []                                       # 切り替えのコマをまたぐ区間は、切り替えごとに分ける（どの本の区間も手当てする）
+        for g0, g1 in runs:
+            inner = [e for e in self.edges if g0 < e <= g1]
+            split += list(zip([g0] + inner, [e - 1 for e in inner] + [g1]))
+        runs = split
         spread = s["dilate"] + self.radius
         amounts = np.arange(0.01, s["detour_max"] + 1e-9, 0.005)
         todo, records = [], []
@@ -580,6 +588,8 @@ def main(argv=None):
         if not todo:
             break
     report["after"] = plan.summary(overlap, which, fps)
+    hard, _, _, _, hard_which = plan.measure(pos, hard_only=True)
+    report["after_hard"] = plan.summary(hard, hard_which, fps)   # 袖どうしでない組だけ（いちばん大きい組が袖どうしでも隠れない）
     moved = {side: np.linalg.norm(pos[(names.hand(side), "head")] - start_wrist[side], axis=1) for side in names.sides}
     report["wrist_moved"] = {side: {"frames_over_1mm": int((moved[side] > 0.001).sum()), "max_mm": round(float(moved[side].max()) * 1000, 1),
                                     "at_frame": frames[int(np.argmax(moved[side]))]} for side in names.sides}

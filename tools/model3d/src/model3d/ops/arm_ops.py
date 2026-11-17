@@ -371,8 +371,14 @@ def separate_hands(inputs, parameters, outputs, context):
     observation = {"kind": "separate_hands", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "armature": report.get("armature"),
                    "before": (report.get("before") or {}).get("frames_over"), "after": (report.get("after") or {}).get("frames_over"),
-                   "wrist_moved": report.get("wrist_moved"), "detours": len(report.get("detours") or [])}
-    # 残った重なりのうち、袖どうし（やわらかい物どうし。押し出しで直す）でないものは要確認
-    unresolved = [f"腕どうしの重なりが残っています: コマ {run['frames']}（{run['pair']}、{run['max_overlap_mm']} mm）"
-                  for run in (report.get("after") or {}).get("runs", []) if str(run.get("pair")).count("(袖)") < 2]
+                   "wrist_moved": report.get("wrist_moved"), "detours": len(report.get("detours") or []),
+                   "after_hard": (report.get("after_hard") or {}).get("frames_over")}
+    # 残った重なりのうち、袖どうし（やわらかい物どうし。押し出しで直す）でない組の重なりは要確認。袖どうしの組を除いて測った after_hard で見る
+    # （区間やコマのいちばん大きい組が袖どうしでも、手や指の重なりが隠れないように）
+    if "after_hard" in report:
+        runs = (report["after_hard"] or {}).get("runs", [])
+    else:
+        runs = [run for run in (report.get("after") or {}).get("runs", []) if str(run.get("pair")).count("(袖)") < 2]
+    unresolved = [f"腕どうしの重なりが残っています（袖どうしでない組）: コマ {run['frames']}（{run['pair']}、{run['max_overlap_mm']} mm）"
+                  for run in runs]
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))

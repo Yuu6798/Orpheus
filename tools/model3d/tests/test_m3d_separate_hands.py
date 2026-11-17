@@ -74,6 +74,17 @@ def test_soft_sleeves_may_come_closer():
     assert soft.measure(pos)[3][0] < plan.measure(pos)[3][0]               # 袖どうしは要る離れが小さい
 
 
+def test_hard_only_leaves_out_sleeve_pairs():
+    profile_soft = {side: [(k / 5, (k + 1) / 5, 0.03, True) for k in range(5)] for side in ("L", "R")}
+    plan = separator(profile_soft)
+    pos = plan.add_forearm(arms())
+    full, _, _, _, which = plan.measure(pos)
+    hard, _, _, _, hard_which = plan.measure(pos, hard_only=True)
+    assert all(str(w).count("(袖)") == 2 for w in which)                    # 交差した前腕どうし（どちらも袖）がいちばん大きい
+    assert np.all(hard <= full) and hard.max() < full.max()
+    assert not any(str(w).count("(袖)") == 2 for w in hard_which if w is not None)   # 袖どうしの組は数えない
+
+
 def test_smoothing_spreads_the_peak_but_never_across_a_cut():
     plan = separator(cuts=[11], dilate=1, sigma=1.0)
     x = np.zeros(20)
@@ -115,6 +126,18 @@ def test_detour_finds_a_way_past_a_short_crossing():
     planned, todo, records = plan.plan_detours(pos)
     assert records and records[0]["solved"] and todo
     assert plan.measure(planned)[0][8:12].max() <= plan.s["gap"] + 1e-9
+
+
+def test_detour_runs_are_split_at_cuts():
+    # 切り替えのコマ（11）をまたいで手が通り抜ける区間は、切り替えの前と後で別の区間として手当てする（後ろを捨てない）
+    plan = separator(bones={**BONES, "fingers": ["thumb", "index"], "parts": ["proximal"]}, detour_max=0.2, threshold=0.003, cuts=[11])
+    base = arms(gap=0.15)
+    pos = plan.add_forearm({k: v.copy() for k, v in base.items()})
+    for key in [k for k in pos if k[0] != "forearm" and k[0].endswith(".L") and not k[0].startswith("upper_arm")]:
+        pos[key][9:11, 1] -= 0.15
+    pos = plan.add_forearm(pos)
+    _, _, records = plan.plan_detours(pos)
+    assert sorted(record["frames"][0] for record in records) == [10, 11]
 
 
 STAND_IN = r'''
@@ -167,6 +190,36 @@ def test_cuts_can_come_from_the_joined_report(tmp_path):
     assert result["status"] == "succeeded", result
     sent = json.loads(Path(result["steps"]["separate"]["artifacts"]["report"]).read_text(encoding="utf-8"))["settings"]
     assert sent["cuts"] == [299, 596]
+
+
+def test_overlaps_hidden_behind_a_sleeve_pair_still_need_review(tmp_path):
+    # 区間のいちばん大きい組が袖どうしでも、袖どうしを除いて測った after_hard に重なりがあれば要確認
+    from model3d.ops import get
+    sleeve_run = {"frames": [5, 9], "seconds": [0.13, 0.27], "max_overlap_mm": 30.0, "at": 7, "pair": "forearm_0(袖) × forearm_0(袖)"}
+    hand_run = {"frames": [6, 6], "seconds": [0.17, 0.17], "max_overlap_mm": 8.0, "at": 6, "pair": "palm_index × forearm_80"}
+    for after_hard, review in (({"frames_over": 1, "runs": [hand_run]}, True), ({"frames_over": 0, "runs": []}, False)):
+        report = {"armature": "Rig", "after": {"frames_over": 5, "runs": [sleeve_run]}, "after_hard": after_hard}
+        source = tmp_path / "report.json"
+        source.write_text(json.dumps(report), encoding="utf-8")
+        blender = stand_in_executable(tmp_path, "blender", f"SOURCE = {str(source)!r}\n" + STAND_IN_REPORT)
+        (tmp_path / "dance.blend").write_bytes(b"dance")
+        result = get("motion.separate_hands").function({"blend": tmp_path / "dance.blend"}, {"blender": str(blender), "body": "Body", "bones": BONES, **SIZES},
+                                                       {"blend": tmp_path / "o.blend", "report": tmp_path / "r.json"}, Context(tmp_path))
+        assert result.review is review and len(result.unresolved) == (1 if review else 0)
+        assert result.observations[0]["after_hard"] == after_hard["frames_over"]
+
+
+STAND_IN_REPORT = r'''
+import json, shutil, sys
+if "--version" in sys.argv:
+    print("Blender 5.2.4 LTS")
+    sys.exit(0)
+args = sys.argv[sys.argv.index("--") + 1:]
+def value(flag):
+    return args[args.index(flag) + 1]
+shutil.copyfile(value("--blend"), value("--out-blend"))
+shutil.copyfile(SOURCE, value("--report"))
+'''
 
 
 class Context:
