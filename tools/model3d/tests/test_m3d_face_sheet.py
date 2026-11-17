@@ -30,6 +30,11 @@ def test_image_names_refuse_combinations_that_share_a_file():
         render_side.image_names(["Smile", "smile"], ["front"])                         # Windows では同じファイル
 
 
+def test_absolute_shape_keys_are_refused():
+    assert render_side.absolute_keys_problem("Head", True) is None                     # 相対の形状キー（いつもの）はそのまま
+    assert "絶対" in render_side.absolute_keys_problem("Head", False)                   # 時間で形を選ぶので、値で組み合わせを描けない
+
+
 def test_view_lengths_in_metres_become_blender_units():
     view = {"name": "q30", "azimuth": 30, "elevation": 0, "scale": 0.17, "centre": [0.0, -0.05, 1.49]}
     assert render_side.view_in_units(view) == ([0.0, -0.05, 1.49], 1.0, 0.17)           # 1 Blender 単位 = 1 m なら値はそのまま

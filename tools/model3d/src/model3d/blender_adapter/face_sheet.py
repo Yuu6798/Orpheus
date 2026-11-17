@@ -3,6 +3,7 @@
     blender --background --factory-startup --python face_sheet.py -- --blend in.blend --settings settings.json --out-dir views \
         --report report.json
 
+- object の形状キーは相対だけ（絶対の形状キーは値で形を選べないので止める。absolute_keys_problem）。
 - settings の combos（[[札, {形状キー: 値}], …]）ごとに、object のほかの形状キー（基準のキーのほか）を 0 にしてから値を入れ、views の向きごとに、
   正射影のカメラで <札>_<向き>.png を描く（image_names。名前が重なる組み合わせは止める）。並べるのは Blender の外（render.face_sheet）。
 - 向き（views の 1 つ）: name、azimuth（度。0 が正面、正でカメラがキャラの左へ回る）、elevation（度。正で上から）、scale（正射影の幅 m）、
@@ -64,6 +65,16 @@ def image_names(labels, views):
     return names
 
 
+def absolute_keys_problem(name, use_relative):
+    """表情の組み合わせは、相対の形状キーの値で入り切りする。絶対の形状キー（Relative のチェックなし）は値でなく時間（eval_time）で形を
+    選ぶので、値を入れても組み合わせの形にならず、どの組み合わせも同じ絵になりうる（model.shape_keys・render.passes と同じ考え）。
+    そのときの説明（相対なら None）。"""
+    if use_relative:
+        return None
+    return (f"{name} の形状キーは絶対（Relative のチェックなし）で、時間で形を選びます。表情の組み合わせは形状キーの値で入り切りするので、"
+            "相対の形状キーのメッシュにしてください")
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
@@ -87,6 +98,9 @@ def main(argv=None):
         raise SystemExit(f"hide の物体がありません: {missing}")
     for name in settings["hide"]:
         bpy.data.objects[name].hide_render = True
+    problem = absolute_keys_problem(head.name, head.data.shape_keys.use_relative) if head.data.shape_keys else None
+    if problem:
+        raise SystemExit(problem)
     keys = head.data.shape_keys.key_blocks if head.data.shape_keys else {}
     absent = sorted({name for _, values in settings["combos"] for name in values if name not in keys})
     if absent:
