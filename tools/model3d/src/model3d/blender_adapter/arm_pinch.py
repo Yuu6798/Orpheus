@@ -93,11 +93,14 @@ def main(argv=None):
     for obj in bpy.data.objects:
         if obj.type == "MESH" and obj is not body:
             obj.hide_viewport = True                     # 体のほかのメッシュは評価しない（台本と同じ）
-    muted = []
+    muted, synced = [], []
     for modifier in body.modifiers:                     # 押し出しの補正などは止めて、骨の変形だけを見る
         if modifier.type != "ARMATURE" and modifier.show_viewport:
             modifier.show_viewport = False
             muted.append(modifier.name)
+        elif modifier.type == "ARMATURE" and modifier.show_viewport != modifier.show_render:
+            modifier.show_viewport = modifier.show_render   # 骨の変形は、描く形と同じ効き方で（保存しない）
+            synced.append(modifier.name)
     rest = world_points(body)
     rings, out = [], {}
     for ring in settings["rings"]:
@@ -132,7 +135,7 @@ def main(argv=None):
             axis = m[:3, 1] / np.linalg.norm(m[:3, 1])
             out[ring["name"]]["ratio"].append(spread(points[chosen], axis) / base)
     report = {"schema_version": "model3d-arm-pinch/0.1", "blender": bpy.app.version_string, "scene": scene.name, "armature": armature.name,
-              "body": body.name, "modifiers_off": muted, "frames": frames, "rings": out}
+              "body": body.name, "modifiers_off": muted, "modifiers_synced": synced, "frames": frames, "rings": out}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False)

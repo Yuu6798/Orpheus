@@ -35,9 +35,11 @@ import sys
 import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
+    from .stage_render import sync_to_render
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from stage_render import sync_to_render
     from vrm_apply_motion import use_scene_of
 
 DEFAULTS = {"body": None, "arms": [], "aliases": {}, "frames": None, "armature": None, "depth": 0.002,
@@ -104,6 +106,7 @@ def main(argv=None):
     for obj in bpy.data.objects:                         # 体のほかのメッシュは要らない（コマ送りを速くする。台本と同じ）
         if obj.type == "MESH" and obj is not body:
             obj.hide_viewport = True
+    synced = sync_to_render(body)                        # 描く形で測る: 表示と描画でモディファイアの効き方が違えば描画にそろえる（保存しない）
 
     deform = {bone.name for bone in armature.data.bones if bone.use_deform}
     names = {group.index: group.name for group in body.vertex_groups if s["all_groups"] or group.name in deform}
@@ -205,7 +208,7 @@ def main(argv=None):
                 kinds[key][1] = max(kinds[key][1], depth)
         rows.append({"frame": frame, **{key: [n, round(depth * 1000, 1)] for key, (n, depth) in kinds.items()}})
     report = {"schema_version": "model3d-arm-overlap/0.1", "blender": bpy.app.version_string, "scene": scene.name, "armature": armature.name,
-              "body": body.name, "arms": {arm["name"]: {"verts": int((side_of == k + 1).sum()), "sleeve_verts": int((sleeve & (side_of == k + 1)).sum()),
+              "body": body.name, "modifiers_synced": synced, "arms": {arm["name"]: {"verts": int((side_of == k + 1).sum()), "sleeve_verts": int((sleeve & (side_of == k + 1)).sum()),
                                                         "rest_ignored": len(ignore[k + 1])} for k, arm in enumerate(s["arms"])},
               "rows": rows}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
