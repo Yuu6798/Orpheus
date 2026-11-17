@@ -31,7 +31,8 @@ settings.json（look.toon が書く）:
   threshold ± soft）。影の側は、影の色に舞台の色（共有のノードグループ model3d_stage_tone の a）を tint だけ混ぜた色を掛ける。
 - 縁の光: 面が横を向く所（Layer Weight の Facing を rim_from〜rim_to）に、カメラから見て左は a、右は b の色を、強さ gain で
   スクリーンで足す。face_attribute の所と、weak_rim の属性の所は弱める。
-- 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（舞台の光は受けない）。EEVEE が使う材質の
+- 裏の面と inside_attribute の所は inside_color を掛ける。全部を Emission で出す（既定では舞台の光を受けない。real_light で、
+  光の当たり方を明るさだけ混ぜられる。光の色は混ぜない。光の向きと色を受ける塗りは look.lit）。EEVEE が使う材質の
   出力につなぐ。元の透け（Alpha につないだ出口か、1 未満の値）は、Transparent BSDF と混ぜて残す。
 - 顔の塗り: Principled BSDF のつやを消し（Roughness 1、Specular 0）、絵の色の lit 倍を受け、絵の色を emit の強さで出す（この
   3 つの入力につないだノードは外す）。
