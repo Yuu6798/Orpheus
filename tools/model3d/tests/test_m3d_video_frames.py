@@ -67,6 +67,18 @@ def test_a_video_of_these_frames_matches(tmp_path):
     assert row["same_mean_abs"] < 0.5 * row["nearest_other"]["mean_abs"]                # 同じコマはほかのコマより十分近い
     assert row["frames_motion_mean_abs"] > 1.0 and report["ratio"] == 0.5 and report["max_mean_abs"] is None
     assert set(row["offset_mean_abs"]) == {"-3", "3"} and report["size"] == [64, 96]
+    assert report["color"] == {"matrix": "bt709", "range": "tv"}                          # render.assemble の動画の印を読む
+
+
+def test_the_colour_tags_choose_the_matrix_and_the_range(tmp_path):
+    from model3d import video_frames
+    frames = _frames(tmp_path / "frames", count=4)
+    video = _video(frames, tmp_path / "v.mp4", count=4)
+    assert video_frames.video_info(FFMPEG, video) == (64, 96, "bt709", "tv")
+    full = tmp_path / "full.mp4"                                                          # 印の無い、pc の範囲の動画
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-framerate", "30", "-i", str(frames / "f%04d.png"), "-pix_fmt", "yuvj420p",
+                    "-c:v", "libx264", "-crf", "12", str(full)], check=True, capture_output=True)
+    assert video_frames.video_info(FFMPEG, full)[2:] == ("bt601", "pc")
 
 
 def test_a_shifted_video_or_frames_of_another_run_mismatch(tmp_path):
@@ -106,6 +118,7 @@ def test_still_frames_cannot_be_told_apart(tmp_path):
     ({"frames_dir": "frames", "ratio": 0}, "ratio"),
     ({"frames_dir": "frames", "ratio": 1.5}, "ratio"),
     ({"frames_dir": "frames", "still": -1}, "still"),
+    ({"frames_dir": "frames", "timeout": 0}, "timeout"),
     ({"frames_dir": "frames", "wobble": 1}, "知らないパラメーター"),
 ])
 def test_bad_parameters_stop(tmp_path, params, message):

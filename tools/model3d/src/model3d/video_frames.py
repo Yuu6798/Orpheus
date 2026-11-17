@@ -4,8 +4,8 @@
 リポジトリ外の 3 作目の VRM のダンスで、演出版を書き出すたびに、動画から数コマを取り出してもとのコマと比べた使い捨ての比べ
 （同じコマとの差は平均 1.2〜1.9/255、5 コマ先との差は 10〜62 だった）を部品にした。
 
-- 取り出し: 動画の n 番目のコマ（復号した順。0 から）が、コマ T = first + n。ffmpeg の select で取り出し、BT.709 の式と TV の範囲で
-  RGB に戻す（render.assemble と同じ書き方の動画）。
+- 取り出し: 動画の n 番目のコマ（復号した順。0 から）が、コマ T = first + n。ffmpeg の select で取り出し、動画の印の色の式（bt709 か、
+  ほかは bt601）と範囲（tv か pc）で RGB に戻す（render.assemble の動画は BT.709・TV の範囲）。
 - 比べ: 取り出したコマと、もとのコマ T・T ± offset の範囲の各コマとの、色の差の平均（R・G・B の 3 つで割る。0〜255）。
 - 合う: 範囲の中で差がいちばん小さいのが T で、T との差が T ± offset のコマとの差の ratio 倍以下（既定 0.5。古い版の動画のように、
   どのコマとも同じくらい離れていれば合わない）。max_mean_abs を渡せば、T との差がそれ以下であることも。
@@ -20,26 +20,36 @@ from PIL import Image
 from .io import ToolError
 
 
-def video_size(ffmpeg, path):
-    """動画の映像の幅と高さ（ffmpeg -i の表示から）。"""
+def video_info(ffmpeg, path):
+    """動画の映像の (幅, 高さ, 色の式, 範囲)（ffmpeg -i の表示から）。式は印が bt709 なら bt709、ほかは bt601。範囲は印が pc か、
+    画素の形が yuvj なら pc、ほかは tv（render.assemble の動画は bt709・tv）。"""
     run = subprocess.run([str(ffmpeg), "-hide_banner", "-i", str(path)], capture_output=True, text=True, encoding="utf-8",
                          errors="replace")
     for line in run.stderr.splitlines():
         if "Video:" in line:
             m = re.search(r"\b(\d{2,5})x(\d{2,5})\b", line)
             if m:
-                return int(m.group(1)), int(m.group(2))
+                tags = re.search(r"yuvj?\w*\(([^)]*)\)", line)
+                info = [t.strip() for t in tags.group(1).split(",")] if tags else []
+                matrix = "bt709" if "bt709" in info else "bt601"
+                in_range = "pc" if "pc" in info or "yuvj" in line else "tv"
+                return int(m.group(1)), int(m.group(2)), matrix, in_range
     raise ToolError(f"check.video_frames: 動画の映像の大きさが読めません: {path}")
 
 
-def decode(ffmpeg, path, indices, size, timeout=600):
-    """動画の、復号した順のコマ indices（0 から）を、BT.709・TV の範囲から RGB（uint8、(高さ, 幅, 3)）に戻して {番号: 配列}。"""
+def video_size(ffmpeg, path):
+    """動画の映像の幅と高さ。"""
+    return video_info(ffmpeg, path)[:2]
+
+
+def decode(ffmpeg, path, indices, size, timeout=600, matrix="bt709", in_range="tv"):
+    """動画の、復号した順のコマ indices（0 から）を、色の式 matrix・範囲 in_range から RGB（uint8、(高さ, 幅, 3)）に戻して {番号: 配列}。"""
     wanted = sorted(set(int(i) for i in indices))
     chosen = "+".join(f"eq(n\\,{i})" for i in wanted)
     width, height = size
     argv = [str(ffmpeg), "-hide_banner", "-v", "error", "-i", str(path), "-map", "0:v:0", "-fps_mode", "passthrough",
-            "-vf", f"select='{chosen}',scale=iw:ih:flags=bicubic+accurate_rnd+full_chroma_int:in_color_matrix=bt709:in_range=tv:"
-                   "out_range=pc", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
+            "-vf", f"select='{chosen}',scale=iw:ih:flags=bicubic+accurate_rnd+full_chroma_int:in_color_matrix={matrix}:"
+                   f"in_range={in_range}:out_range=pc", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
     try:
         run = subprocess.run(argv, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as error:
