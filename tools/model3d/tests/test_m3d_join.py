@@ -113,6 +113,16 @@ def test_bind_action_makes_the_armature_play_the_rewritten_action():
     assert animation.action is other and animation.action_slot is None
 
 
+def test_muted_curves_are_named():
+    from types import SimpleNamespace as N
+    curves = [N(data_path='pose.bones["a"].location', array_index=0, mute=False, group=None),
+              N(data_path='pose.bones["a"].location', array_index=1, mute=True, group=None),
+              N(data_path='pose.bones["b"].rotation_quaternion', array_index=2, mute=False, group=N(mute=True)),
+              N(data_path='pose.bones["c"].rotation_quaternion', array_index=0, mute=False, group=N(mute=False))]
+    assert join_clips.muted_curves(curves) == ['pose.bones["a"].location[1]', 'pose.bones["b"].rotation_quaternion[2]']
+    assert join_clips.muted_curves(curves[:1]) == []
+
+
 def test_bone_channel_reads_escaped_bone_names():
     assert join_clips.bone_channel('pose.bones["mixamorig:Hips"].location') == ("mixamorig:Hips", ".location")
     assert join_clips.bone_channel('pose.bones["a\\"]b\\\\c"].rotation_quaternion') == ('a"]b\\c', ".rotation_quaternion")

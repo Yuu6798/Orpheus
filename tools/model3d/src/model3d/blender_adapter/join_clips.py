@@ -9,6 +9,7 @@
   （範囲の外のコマは、最初か最後の姿勢で止まる。2D の合成で本を並べる式と同じ）。
 - 本ごとに、動き（F カーブのいちばん多いアクション）の F カーブを、元のコマで読む。F カーブの組がそろっていない本・fps が違う本は止める。
   キーの無い F カーブは読まず、組んだ動きでも書き直さない（そのまま残す。数は報告の clips の empty_curves）。
+  ミュートした F カーブ（ミュートした組の F カーブも）がある本は止める（値は読めるが再生では使われないので、組むと動きが変わる）。
 - align が mean のとき、本ごとに、使うコマの腰（hips の骨）の位置の平均が原点（左右・前後。高さは変えない）に来るように、
   腰の位置をずらす（本ごとに、踊り手を画面の中央へ置き直すのと同じ）。
 - 最初の区間の本の .blend の動きに、組んだ値を全部のコマのキー（補間は直線）として打ち直し、シーンのコマの範囲を 1〜最後、fps を
@@ -173,6 +174,12 @@ def strip_modifiers(curves):
     return removed
 
 
+def muted_curves(curves):
+    """ミュートした F カーブ（ミュートした組の F カーブも）の名前。値は読めるが再生では使われないので、組むと動きが変わる。"""
+    return [f"{curve.data_path}[{curve.array_index}]" for curve in curves
+            if curve.mute or (getattr(curve, "group", None) is not None and curve.group.mute)]
+
+
 def bind_action(armature, action):
     """action を armature が再生する動きにし（付いていなければ付け、層つきのアクションなら最初のスロットに）、NLA の層を外す
     （vrm.apply_motion と同じ。残すと組んだ動きに混ざる）。→ (付け替えたか, 外した層の数)"""
@@ -200,6 +207,10 @@ def _read_clip(bpy, path, armature_name, hips):
         raise SystemExit(f"{path}: 動き（F カーブのあるアクション）がありません")
     every = fcurves_of(action)
     curves = keyed_curves(every)
+    muted = muted_curves(curves)
+    if muted:
+        raise SystemExit(f"{path}: ミュートした F カーブがあります（再生では使われないので、組むと動きが変わります。ミュートを外すか、"
+                         f"消してください）: {muted[:4]}")
     first, last = key_range(curves)
     keys = [(curve.data_path, curve.array_index) for curve in curves]
     if len(set(keys)) != len(keys):
