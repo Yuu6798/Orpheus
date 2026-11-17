@@ -152,6 +152,15 @@ def test_hit_and_the_bands_follow_the_grid_and_the_keys():
     assert _at(_plan({"l": "low"}), 1)["l"] == 0.0        # 光のキーが無ければ帯は 0
 
 
+def test_hit_is_one_on_the_frame_of_the_beat():
+    """ちょうど拍のコマ（t = 0.7。拍 1 は 0.2 + 0.5）で、(0.7 − 0.2) mod 0.5 が丸めでほぼ 0.5 になっても、hit は 1（区間と同じ境目のゆとり）。"""
+    plan = {**_plan({"pulse": "hit"}), "grid": {"period": 0.5, "k0_time": 0.2}}
+    assert 0.5 - (0.7 - 0.2) % 0.5 < 1e-9                                      # 丸めの罠（そのままなら hit は 0.02 ほど）
+    p = light_plan.Plan(plan)
+    assert [p.at(T)[0]["pulse"] for T in (8, 9)] == [1.0, math.exp(-((0.8 - 0.2) % 0.5) / 0.13)]   # 次のコマは拍の頭から減る
+    assert p.at(7)[0]["pulse"] == math.exp(-((0.6 - 0.2) % 0.5) / 0.13)                          # 拍の前のコマは前の拍から
+
+
 def test_the_grid_fps_and_frames_come_from_the_keys_or_the_plan():
     keys = _keys(25)
     p = light_plan.Plan({**_plan(), "frames": None, "fps": None, "grid": None}, keys)

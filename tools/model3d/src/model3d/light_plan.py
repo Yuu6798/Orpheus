@@ -13,7 +13,8 @@ flash（閃光の強さ。既定 0）・flash_color（既定 [1, 1, 1]）・fade
 
 式（Python の式の書き方の一部だけ。ast で読み、決めた形のほかは読む前に止める。eval は使わない）:
 - 名前: t（秒）、low・mid・high（光のキーのそのコマの帯の強さ。キーが無ければ 0）、hit（直前の拍からの減衰
-  exp(−((t − k0_time) mod period) / hit.tau)）、colors の名前、その区間の let の名前（前に書いたもの）。
+  exp(−((t − k0_time) mod period) / hit.tau)。拍の 1e-6 秒前からのコマは、区間と同じく拍に届いたとみなして 1）、colors の名前、
+  その区間の let の名前（前に書いたもの）。
 - 関数: beat(k)（拍 k の時刻 k0_time + period × k）、ramp(x, a, b)（ease((x − a) / max(b − a, 1e-6))）、ease(u[, "smooth"|"linear"|"in"|"out"])
   （u を 0〜1 に切ってから。smooth は u²(3 − 2u)、in は u²、out は 1 − (1 − u)²）、mix(a, b, u)（a + (b − a) × u。a と b は数どうしか
   3 つの並びどうし）、max・min（2 つ以上の数）、exp。
@@ -26,7 +27,7 @@ import math
 import operator
 
 from .io import ToolError
-from .stage_plan import Clock, find, inside, spans
+from .stage_plan import EPS, Clock, find, inside, spans
 
 SIGNALS = ("t", "low", "mid", "high", "hit")
 FUNCTIONS = {"beat": (1, 1), "ramp": (3, 3), "ease": (1, 2), "mix": (3, 3), "max": (2, None), "min": (2, None), "exp": (1, 1)}
@@ -287,7 +288,10 @@ class Plan:
             low, mid, high = self.keys["low"][i], self.keys["mid"][i], self.keys["high"][i]
         else:
             low = mid = high = 0.0
-        hit = math.exp(-((t - self.grid["k0_time"]) % self.grid["period"]) / self.tau)
+        phase = (t - self.grid["k0_time"]) % self.grid["period"]
+        if self.grid["period"] - phase <= EPS:           # 拍の EPS 秒前からのコマは拍に届いたとみなす（区間・閃光と同じゆとり。
+            phase = 0.0                                  # ちょうど拍のコマで、引き算の丸めのために余りがほぼ 1 拍ぶんになり、hit が落ちないように）
+        hit = math.exp(-phase / self.tau)
         return {"t": t, "low": low, "mid": mid, "high": high, "hit": hit, **self.colors,
                 "@k0": self.grid["k0_time"], "@period": self.grid["period"]}
 
