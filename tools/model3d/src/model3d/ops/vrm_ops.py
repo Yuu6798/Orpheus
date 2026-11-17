@@ -99,14 +99,39 @@ def apply_motion(inputs, parameters, outputs, context):
 
 
 BAKE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_bake_springs.py"
-BAKE_PARAMETERS = {"blender", "addons", "blender_extensions", "settle_s", "rate", "no_spring", "armature", "timeout"}
+BAKE_PARAMETERS = {"blender", "addons", "blender_extensions", "settle_s", "rate", "no_spring", "armature", "timeout", "cuts",
+                   "cut_settle_s"}
+JOIN_SCHEMA = "model3d-motion-join/0.1"
 
 
-@register("vrm.bake_springs", inputs=("blend", "overrides"), outputs=("blend", "report"), cacheable=False,
+def _cuts(parameters, inputs):
+    """切り替えのコマ: パラメーターの cuts か、入力 joined（motion.join_clips の report）の cuts。両方は使えない。
+    → (切り替えのコマ, joined の組んだ動きのコマの範囲 [最初, 最後]。joined でなければ None)"""
+    cuts, frames = parameters.get("cuts"), None
+    if "joined" in inputs:
+        if cuts is not None:
+            raise ToolError("vrm.bake_springs: 切り替えのコマは、パラメーターの cuts か入力の joined のどちらかで渡してください（両方は使えない）")
+        report = read_json(inputs["joined"])
+        if not isinstance(report, dict) or report.get("schema_version") != JOIN_SCHEMA:
+            raise ToolError(f"vrm.bake_springs の joined は motion.join_clips の report（{JOIN_SCHEMA}）にしてください")
+        cuts, frames, where = report.get("cuts"), report.get("frames"), "joined の cuts"
+        if not (isinstance(frames, list) and len(frames) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in frames)
+                and frames[0] <= frames[1]):
+            raise ToolError(f"vrm.bake_springs の joined の frames（組んだ動きのコマの範囲 [最初, 最後]）が読めません: {frames!r}")
+    else:
+        cuts, where = ([] if cuts is None else cuts), "cuts"
+    if (not isinstance(cuts, list) or not all(isinstance(cut, int) and not isinstance(cut, bool) and cut >= 1 for cut in cuts)
+            or len(set(cuts)) != len(cuts)):
+        raise ToolError(f"{where} は切り替えのコマ（Blender のコマ番号。1 以上の整数で、重ならない）の並びにしてください: {cuts!r}")
+    return sorted(cuts), frames
+
+
+@register("vrm.bake_springs", inputs=("blend", "overrides", "joined"), outputs=("blend", "report"), cacheable=False,
           summary="動きを付けた VRM のキャラ（blend）の揺れもの（VRM 1.0 のばね）を、VRM Add-on の計算を 1/rate 秒（既定 1/60）刻みで"
                   "進めて、コマごとの骨の回転のキーに焼く（Blender の中で）。最初のコマで settle_s 秒（既定 2）落ち着かせる。"
-                  "overrides（JSON）で硬さ・重力・当たり判定をこの .blend の中だけ上書きし、no_spring に挙げた文字を名前に含む揺れものは"
-                  "動かさない。元のファイルは変えない")
+                  "切り替えのコマ（cuts か、joined＝motion.join_clips の report の cuts）では、揺れものを初期に戻し、そのコマの姿勢で"
+                  "cut_settle_s 秒（既定は settle_s と同じ）落ち着かせ直す。overrides（JSON）で硬さ・重力・当たり判定をこの .blend の中だけ"
+                  "上書きし、no_spring に挙げた文字を名前に含む揺れものは動かさない。元のファイルは変えない")
 def bake_springs(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher, vrm_bake_springs
     require(inputs, ("blend",), "vrm.bake_springs")
@@ -114,6 +139,10 @@ def bake_springs(inputs, parameters, outputs, context):
     settle = number(parameters, "settle_s", 2.0, minimum=0)
     rate = number(parameters, "rate", 60.0, minimum=0, exclusive=True)
     no_spring = _names(parameters, "no_spring")
+    cuts, joined_frames = _cuts(parameters, inputs)
+    cut_settle = number(parameters, "cut_settle_s", settle, minimum=0)
+    if parameters.get("cut_settle_s") is not None and not cuts and "joined" not in inputs:
+        raise ToolError("vrm.bake_springs: cut_settle_s は切り替えのコマ（cuts か joined）と一緒に使ってください")
     if "overrides" in inputs:
         try:
             vrm_bake_springs.check_overrides(read_json(inputs["overrides"]))
@@ -131,6 +160,10 @@ def bake_springs(inputs, parameters, outputs, context):
         args += ["--no-spring", ",".join(no_spring)]
     if armature:
         args += ["--armature", armature]
+    if cuts:
+        args += ["--cuts", ",".join(str(cut) for cut in cuts), "--cut-settle", repr(float(cut_settle))]
+    if joined_frames is not None:                         # 組んだ動きの報告と、焼く .blend のコマの範囲が同じかを台本が確かめる
+        args += ["--joined-frames", f"{joined_frames[0]}:{joined_frames[1]}"]
     record = launcher.run_blender(blender, BAKE_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                   timeout=_timeout(parameters), addons=addons, extensions=extensions)
     report = read_json(outputs["report"])
@@ -138,6 +171,8 @@ def bake_springs(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "addons": record.get("addons"), "armature": report.get("armature"),
                    "frames": report.get("frames"), "joints": report.get("joints"), "still_joints": report.get("still_joints"),
                    "steps": report.get("steps"), "overridden": sorted(report.get("overridden") or {})}
+    if cuts:
+        observation["cuts"] = report.get("cuts")
     return StepResult(observations=[observation])
 
 

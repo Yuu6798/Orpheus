@@ -2,10 +2,15 @@
 
     blender --background --factory-startup --python-expr <VRM Add-on を有効にする前置き> \
         --python vrm_bake_springs.py -- --blend dance.blend --out-blend out.blend --report report.json \
-        [--overrides overrides.json] [--settle 2.0] [--rate 60] [--no-spring skirt] [--addon-module bl_ext.user_default.vrm]
+        [--overrides overrides.json] [--settle 2.0] [--rate 60] [--no-spring skirt] [--addon-module bl_ext.user_default.vrm] \
+        [--cuts 120,240 [--cut-settle 2.0]]
 
 - VRM Add-on の揺れものの計算を 1/rate 秒（既定 1/60 秒）刻みで進め、コマごとに揺れものの骨の回転をキーとして打つ。
   最初のコマの姿勢で settle 秒ぶん進めて落ち着かせてから始める。刻みはシーンの fps（fps / fps_base）とコマの範囲から決める。
+- --cuts に挙げたコマ（別々に骨へ載せた動きを組んだ踊りの、新しい本が始まるコマ。motion.join_clips の cuts）では、揺れものの状態を
+  初期に戻し、そのコマの姿勢で --cut-settle 秒（既定は --settle と同じ）ぶん進めて落ち着かせ直してから、キーを打つ。
+  切り替えのコマでは姿勢が飛ぶので、そのまま続けて計算すると、切り替えの直後に裾と髪が大きく跳ね上がる。刻みの数は、
+  切り替えのコマから数え直す。
 - 動きの側に揺れものの骨のキーがあれば、先に消す（残すとコマを進めるたびに計算の結果が打ち消される）。
 - アドオン自身のコマ送りの計算は、焼く間だけ止める（自分で刻みを進めるので、二重に進まないように）。
 - --overrides の JSON で、揺れものの設定をこの .blend の中だけ上書きする（元の VRM は変えない）:
@@ -16,7 +21,8 @@
 - --no-spring に挙げた文字を名前に含む揺れものの骨は、動かさず初期の向きのままにする（布の計算など、別の方法で動かす部位）。
 
 **検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスでリポジトリの外の台本と同じキーになることを
-確かめた（docs/model3d.md）。CI には Blender が無い。
+確かめた。切り替えのコマ（--cuts）は、3 作目の VRM のダンスで、リポジトリの外の台本と同じキーになることを確かめた（docs/model3d.md）。
+CI には Blender が無い。
 """
 import argparse
 import importlib
@@ -39,7 +45,37 @@ def parse_args(argv):
     ap.add_argument("--no-spring", default="", help="動かさない揺れもの（名前に含まれる文字。カンマ区切り）")
     ap.add_argument("--addon-module", default="bl_ext.user_default.vrm", help="VRM Add-on のモジュール名")
     ap.add_argument("--armature", default="", help="アーマチュアの名前（揺れもののあるものが 1 つだけなら省ける）")
+    ap.add_argument("--cuts", default="", help="揺れものを落ち着かせ直す切り替えのコマ（Blender のコマ番号。カンマ区切り）")
+    ap.add_argument("--cut-settle", type=float, default=None, help="切り替えのコマで落ち着かせる秒数（既定は --settle と同じ）")
+    ap.add_argument("--joined-frames", default="", help="切り替えのコマを読んだ、組んだ動きのコマの範囲（a:b。シーンの範囲と同じかを確かめる）")
     return ap.parse_args(argv)
+
+
+def cut_list(text):
+    """--cuts の「299,596」を、小さい順の整数の並びにする。整数でない・重なる値は ValueError。"""
+    values = [part.strip() for part in text.split(",") if part.strip()]
+    if not all(value.lstrip("-").isdigit() for value in values):
+        raise ValueError(f"--cuts はコマの番号（整数）のカンマ区切りにしてください: {text!r}")
+    cuts = [int(value) for value in values]
+    if len(set(cuts)) != len(cuts):
+        raise ValueError(f"--cuts に同じコマが 2 回あります: {text!r}")
+    return sorted(cuts)
+
+
+def check_cuts(cuts, first, last, joined=""):
+    """切り替えのコマが、最初のコマより後で最後のコマまでにあるか（最初のコマは、もともと落ち着かせてから始める）。
+    joined（「a:b」）を渡すと、切り替えのコマを読んだ組んだ動きのコマの範囲が、シーンの範囲と同じかも確かめる（別の動きの報告を止める）。"""
+    if joined:
+        bounds = joined.split(":")
+        if len(bounds) != 2 or not all(bound.strip().lstrip("-").isdigit() for bound in bounds):
+            raise ValueError(f"--joined-frames は a:b にしてください: {joined!r}")
+        if [int(bound) for bound in bounds] != [first, last]:
+            raise ValueError(f"切り替えのコマを読んだ組んだ動きのコマの範囲（{joined.replace(':', '〜')}）が、シーンのコマの範囲（{first}〜{last}）と"
+                             "違います（同じ動きを組んだときの report を渡してください）")
+    outside = [cut for cut in cuts if not first < cut <= last]
+    if outside:
+        raise ValueError(f"切り替えのコマ {outside} が、最初のコマ（{first}）より後で最後のコマ（{last}）までの範囲にありません")
+    return cuts
 
 
 def _number(value):
@@ -138,6 +174,13 @@ def main(argv=None):
     a = parse_args(argv)
     if a.settle < 0 or a.rate <= 0:
         raise SystemExit(f"--settle は 0 以上、--rate は正の数にしてください: {a.settle}, {a.rate}")
+    cut_settle = a.settle if a.cut_settle is None else a.cut_settle
+    if cut_settle < 0:
+        raise SystemExit(f"--cut-settle は 0 以上にしてください: {cut_settle}")
+    try:
+        cuts = cut_list(a.cuts)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     overrides = {}
     if a.overrides:
         with open(a.overrides, encoding="utf-8") as stream:
@@ -158,6 +201,10 @@ def main(argv=None):
         raise SystemExit(f"揺れもののあるアーマチュアが {len(armatures)} 個あります（--armature で選んでください）")
     armature = armatures[0]
     scene = use_scene_of(bpy, armature)
+    try:
+        check_cuts(cuts, scene.frame_start, scene.frame_end, a.joined_frames)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     action = armature.animation_data.action if armature.animation_data else None
     if action is None:
         raise SystemExit(f"{armature.name} に動き（アクション）がありません")
@@ -256,13 +303,29 @@ def main(argv=None):
     # 刻みの間は画面の更新をしない（アドオンがコマ送りのときに進めるのと同じ。メッシュの計算を避けて速くする）
     for _ in range(int(round(a.settle / step))):
         handler.update_pose_bone_rotations(bpy.context, step)
-    steps_done = 0
-    for frame in range(first, last + 1):
+
+    def settle_again(frame):
+        """切り替えのコマで、揺れものを初期の向きと状態に戻し、そのコマの姿勢で落ち着かせ直す。"""
         scene.frame_set(frame)
-        goal = target_steps(frame, first, fps, step)
-        while steps_done < goal:
+        for bone in joints:                               # 前のコマまでに打ったキーの向きを捨てる
+            bone.rotation_quaternion = IDENTITY
+        bpy.context.view_layer.update()
+        bpy.ops.vrm.reset_spring_bone1_animation_state(armature_object_name=armature.name)
+        for _ in range(int(round(cut_settle / step))):
             handler.update_pose_bone_rotations(bpy.context, step)
-            steps_done += 1
+
+    steps_done, base_frame, total_steps = 0, first, 0
+    for frame in range(first, last + 1):
+        if frame in cuts:                                 # 新しい本が始まるコマ: 落ち着かせ直し、刻みはここから数え直す
+            settle_again(frame)
+            steps_done, base_frame = 0, frame
+        else:
+            scene.frame_set(frame)
+            goal = target_steps(frame, base_frame, fps, step)
+            while steps_done < goal:
+                handler.update_pose_bone_rotations(bpy.context, step)
+                steps_done += 1
+                total_steps += 1
         for bone in joints:
             if bone.name not in still_names:
                 bone.keyframe_insert("rotation_quaternion", frame=frame)
@@ -278,13 +341,14 @@ def main(argv=None):
     bpy.ops.wm.save_as_mainfile(filepath=out, copy=True, compress=True)
     report = {"schema_version": "model3d-vrm-bake-springs/0.1", "blender": bpy.app.version_string, "armature": armature.name,
               "action": action.name, "frames": [first, last], "fps": fps, "rate": a.rate, "settle_s": a.settle,
-              "springs": names, "joints": len(joints), "still_joints": len(still_names), "steps": steps_done,
-              "removed_curves": removed_curves, "overridden": overridden, "bake_seconds": round(time.time() - started, 1)}
+              "springs": names, "joints": len(joints), "still_joints": len(still_names), "steps": total_steps,
+              "removed_curves": removed_curves, "overridden": overridden, "cuts": cuts,
+              "cut_settle_s": cut_settle if cuts else None, "bake_seconds": round(time.time() - started, 1)}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
         stream.write("\n")
-    print(json.dumps({"joints": len(joints), "steps": steps_done, "out_blend": out}))
+    print(json.dumps({"joints": len(joints), "steps": total_steps, "out_blend": out}))
 
 
 if __name__ == "__main__":
