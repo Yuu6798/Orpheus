@@ -312,17 +312,17 @@ options:
 {"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 ==== model3d validate
-usage: model3d validate [-h] {mesh,asset-manifest,semantic-map,correspondence,recipe,observation,run,rig,preset,handoff,initial-model,stage-track,frames,stage-plan,light-keys,bone-path,passes,cameras,orbit-plan,shot-plan} file
+usage: model3d validate [-h] {mesh,asset-manifest,semantic-map,correspondence,recipe,observation,run,rig,preset,handoff,initial-model,stage-track,frames,stage-plan,light-keys,bone-path,passes,cameras,orbit-plan,shot-plan,light-plan,light-track} file
 
 positional arguments:
-  {mesh,asset-manifest,semantic-map,correspondence,recipe,observation,run,rig,preset,handoff,initial-model,stage-track,frames,stage-plan,light-keys,bone-path,passes,cameras,orbit-plan,shot-plan}
+  {mesh,asset-manifest,semantic-map,correspondence,recipe,observation,run,rig,preset,handoff,initial-model,stage-track,frames,stage-plan,light-keys,bone-path,passes,cameras,orbit-plan,shot-plan,light-plan,light-track}
   file
 
 options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "kind", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["mesh", "asset-manifest", "semantic-map", "correspondence", "recipe", "observation", "run", "rig", "preset", "handoff", "initial-model", "stage-track", "frames", "stage-plan", "light-keys", "bone-path", "passes", "cameras", "orbit-plan", "shot-plan"], "required": true, "metavar": null}
+{"options": [], "dest": "kind", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["mesh", "asset-manifest", "semantic-map", "correspondence", "recipe", "observation", "run", "rig", "preset", "handoff", "initial-model", "stage-track", "frames", "stage-plan", "light-keys", "bone-path", "passes", "cameras", "orbit-plan", "shot-plan", "light-plan", "light-track"], "required": true, "metavar": null}
 {"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 ==== model3d check
 usage: model3d check [-h] {structure,penetration,continuity} ...

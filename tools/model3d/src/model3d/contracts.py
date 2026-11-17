@@ -30,6 +30,8 @@ FILES = {
     "cameras": "cameras.schema.json",
     "orbit-plan": "orbit_plan.schema.json",
     "shot-plan": "shot_plan.schema.json",
+    "light-plan": "light_plan.schema.json",
+    "light-track": "light_track.schema.json",
 }
 
 KINDS = tuple(FILES)

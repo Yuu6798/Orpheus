@@ -36,6 +36,8 @@ SCHEMAS = {
     "cameras": "model3d-cameras/0.1",
     "orbit-plan": "model3d-orbit-plan/0.1",
     "shot-plan": "model3d-shot-plan/0.1",
+    "light-plan": "model3d-light-plan/0.1",
+    "light-track": "model3d-light-track/0.1",
 }
 
 
