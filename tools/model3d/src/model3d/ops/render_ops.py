@@ -177,14 +177,40 @@ def frames_manifest(report, frames_dir):
     return contracts.validate("frames", manifest)
 
 
+def _stage_key(inputs, settings, blender):
+    """render.stage の入力のまとまり（コマのフォルダの入力の控え。render_inputs）。only は描く絵を変えないので除く。"""
+    from .. import render_inputs
+    from ..blender_adapter import launcher
+    return {"operation": "render.stage", "blend": render_inputs.file_sha(inputs["blend"]),
+            "track": render_inputs.file_sha(inputs.get("track")), "settings": {k: v for k, v in settings.items() if k != "only"},
+            "scripts": render_inputs.scripts(RENDER_SCRIPT), "blender": launcher.blender_version(blender)}
+
+
+def _stage_files(track, frames_dir, only):
+    """描く工程がとばしうるコマのファイル（フォルダからの相対パス）。トラックがあればその並び（only で絞る）、無ければ並びは .blend の
+    シーンで決まるので、フォルダにもうある f<T>.png の全部（only で絞る）。"""
+    import re
+    from ..blender_adapter.stage_render import frame_name
+    if track is not None:
+        return [frame_name(fr["T"]) for fr in track["frames"] if only is None or fr["T"] in only]
+    names = []
+    for path in Path(frames_dir).iterdir():
+        m = re.fullmatch(r"f(\d+)\.png", path.name)
+        if m and path.is_file() and (only is None or int(m.group(1)) in only):
+            names.append(path.name)
+    return sorted(names)
+
+
 @register("render.stage", inputs=("blend", "track"), outputs=("frames", "report"), cacheable=False,
           summary="塗りと輪郭線を付けたキャラ（blend）を、舞台（床・LED の壁・トラス・光の柱）と 4 つのスポットの中で、コマごとに "
                   "PNG に描く（Blender の EEVEE）。トラック（model3d-stage-track/0.1）があれば、そのコマの並びとカメラ・舞台・光・"
                   "塗りの値で、無ければシーンの全コマを腰を追う正面のカメラと動かない光で描く。輪郭線の太さはカメラの距離で"
                   "画面の上の太さにそろえる。舞台を切って background で緑背景か透けにも描ける。push で、描く直前に帯などの頂点を"
-                  "当たり（閉じたメッシュ）の外へ出す。描いたコマはとばす（続きから描ける）。frames は描いたコマの一覧（model3d-frames/0.1）。"
-                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+                  "当たり（閉じたメッシュ）の外へ出す。描いたコマはとばす（続きから描ける）。とばせるのは、フォルダの入力の控え"
+                  "（model3d_inputs.json）がいまの入力と同じコマだけで、違うコマか控えの無いコマがあれば描く前に止める。"
+                  "frames は描いたコマの一覧（model3d-frames/0.1）。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def stage_render(inputs, parameters, outputs, context):
+    from .. import render_inputs
     from ..blender_adapter import launcher
     from ..io import read_json
     from .motion_ops import _blender, _timeout
@@ -197,28 +223,37 @@ def stage_render(inputs, parameters, outputs, context):
         raise ToolError(f"render.stage には outputs の {', '.join(missing)} が要ります")
     blender = _blender(parameters, context, "render.stage")
     settings = _render_settings(parameters)
-    if inputs.get("track") is not None:
-        _track(inputs["track"])
+    track = _track(inputs["track"]) if inputs.get("track") is not None else None
     if parameters.get("frames_dir"):
         frames_dir = resolve_path(context.recipe_dir, parameters["frames_dir"])
     else:
         frames_dir = Path(context.step_dir) / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
+    only = set(settings["only"]) if settings.get("only") else None
+    key = _stage_key(inputs, settings, blender)
+    files = _stage_files(track, frames_dir, only)
+    _, kept = render_inputs.check(frames_dir, key, files, "render.stage")
+    if track is not None:                                 # 描く前に控える（途中で止まっても、描いたコマには控えがある）
+        render_inputs.claim(frames_dir, key, files)
     settings_path = Path(context.step_dir) / "render_settings.json"
     atomic_json(settings_path, settings)
     args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--frames-dir", str(frames_dir),
             "--report", outputs["report"]]
-    if inputs.get("track") is not None:
+    if track is not None:
         args += ["--track", inputs["track"]]
     record = launcher.run_blender(blender, RENDER_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
                                   timeout=_timeout(parameters))
     report = read_json(outputs["report"])
+    if track is None:                                     # 並びはシーンで決まったので、描いたコマを描いた後に控える
+        from ..blender_adapter.stage_render import frame_name
+        render_inputs.claim(frames_dir, key, [frame_name(T) for T in report.get("rendered") or []])
     manifest = frames_manifest(report, frames_dir)
     atomic_json(outputs["frames"], manifest)
     observation = {"kind": "stage_render", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "planned": len(report["planned"]),
                    "rendered": len(report.get("rendered") or []), "skipped_existing": len(report.get("skipped_existing") or []),
-                   "frames": len(manifest["frames"]), "missing": len(manifest["missing"])}
+                   "frames": len(manifest["frames"]), "missing": len(manifest["missing"]),
+                   "inputs": {"key": render_inputs.key_id(key), "kept": kept}}
     if report.get("push"):
         observation["push_max_mm"] = report["push"].get("max_mm")
     return StepResult(observations=[observation])
@@ -722,6 +757,25 @@ def passes_manifest(report, passes_dir, settings, order=None):
     return contracts.validate("passes", manifest)
 
 
+def _passes_key(inputs, settings, blender, addons, extensions, bones_used):
+    """render.passes の入力のまとまり（コマのフォルダの入力の控え。render_inputs）。描く絵を変えない only と、どの要素を描くかの
+    passes・mirror.passes は除く（要素を足しても、もう描いた要素のコマはそのまま使える）。表情の絵はパスでなく中身（sha256）で控える。"""
+    from .. import render_inputs
+    from ..blender_adapter import launcher
+    from ..io import sha256 as file_sha256
+    kept = {k: v for k, v in settings.items() if k not in ("only", "passes")}
+    if "mirror" in kept:
+        kept["mirror"] = {k: v for k, v in kept["mirror"].items() if k != "passes"}
+    if kept.get("expressions"):
+        kept["expressions"] = {**kept["expressions"],
+                               "images": {name: file_sha256(path) for name, path in kept["expressions"]["images"].items()}}
+    return {"operation": "render.passes", "blend": render_inputs.file_sha(inputs["blend"]),
+            "track": render_inputs.file_sha(inputs["track"]), "cameras": render_inputs.file_sha(inputs.get("cameras")),
+            "bones": render_inputs.file_sha(inputs["bones"]) if bones_used else None, "settings": kept,
+            "scripts": render_inputs.scripts(PASS_SCRIPT), "blender": launcher.blender_version(blender),
+            "addons": [launcher.addon_record(name, extensions) for name in addons]}
+
+
 @register("render.passes", inputs=("blend", "track", "cameras", "bones"), outputs=("passes", "cameras", "report"), cacheable=False,
           summary="キャラ（blend）を要素に分けて、Blender の簡易描画（Workbench）でコマごとに描く: room（部屋の物体）・char（人物の"
                   "色の絵のまま。透けの PNG）・shade（白い人物にスタジオの光）・disc（踊り手の点の真下の床の円）・head（顔の物体だけ白）。"
@@ -730,10 +784,11 @@ def passes_manifest(report, passes_dir, settings, order=None):
                   "分身と踊り手のカメラからの距離を比べて、一覧に near（分身が手前）を書く。"
                   "コマの並びとカメラはトラック（model3d-stage-track/0.1）、cameras（model3d-cameras/0.1）があればそのコマのカメラは"
                   "行列と焦点距離と主点から。出力の cameras は、並びの全部のコマのカメラと踊り手の点（重ねる側が使う）。描いたコマは"
-                  "とばす（続きから描ける）。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"
+                  "とばす（続きから描ける）。とばせるのは、フォルダの入力の控え（model3d_inputs.json）がいまの入力と同じコマだけで、"
+                  "違うコマか控えの無いコマがあれば描く前に止める。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"
                   "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def render_passes(inputs, parameters, outputs, context):
-    from .. import contracts
+    from .. import contracts, render_inputs
     from ..blender_adapter import launcher
     from ..blender_adapter import pass_render as script
     from ..blender_adapter import stage_render
@@ -778,6 +833,12 @@ def render_passes(inputs, parameters, outputs, context):
     else:
         passes_dir = Path(context.step_dir) / "passes"
     passes_dir.mkdir(parents=True, exist_ok=True)
+    key = _passes_key(inputs, settings, blender, addons, extensions, bool(needed))
+    chosen = set(merged["only"]) if merged["only"] else None
+    files = [script.pass_file(kind, T, merged["format"]) for T, _, _ in plan if chosen is None or T in chosen
+             for kind in script.all_kinds(merged)]
+    _, kept = render_inputs.check(passes_dir, key, files, "render.passes")
+    render_inputs.claim(passes_dir, key, files)           # 描く前に控える（途中で止まっても、描いたコマには控えがある）
     settings_path = Path(context.step_dir) / "pass_settings.json"
     atomic_json(settings_path, settings)
     args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--track", inputs["track"],
@@ -798,7 +859,8 @@ def render_passes(inputs, parameters, outputs, context):
                    "passes": {k: {"rendered": len(report["rendered"].get(k, [])),
                                   "skipped_existing": len(report["skipped_existing"].get(k, [])),
                                   "frames": len(v["frames"]), "missing": len(v["missing"])} for k, v in manifest["passes"].items()},
-                   "camera": report.get("camera"), "objects": {k: len(v) for k, v in (report.get("objects") or {}).items()}}
+                   "camera": report.get("camera"), "objects": {k: len(v) for k, v in (report.get("objects") or {}).items()},
+                   "inputs": {"key": render_inputs.key_id(key), "kept": kept}}
     if merged.get("expressions"):                       # 表情の絵の素性（隠れた入力なので、sha256 を残す）
         observation["expressions"] = {"images": {name: {"path": path, "sha256": sha256(path)}
                                                  for name, path in merged["expressions"]["images"].items()},
