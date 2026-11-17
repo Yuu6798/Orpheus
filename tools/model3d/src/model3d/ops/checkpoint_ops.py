@@ -7,6 +7,7 @@
 - check.illustration: 立ち絵か T ポーズの体の絵の、人物の比率を測る（numpy と Pillow。model3d/checkpoint.py）。
 - check.body_image・check.face_image: 体の絵と顔の絵を、元絵と同じ物差しで比べる（numpy と Pillow）。
 - check.three_view: 三面図の同じ部位の高さがそろっているかを測る。texture.face_length: 頭の絵の目から下を縦に詰める（numpy と Pillow）。
+- check.candidate: 骨の無い 3D の候補を読み込んで太さを測り、粘土の見た目で描く（Blender で読み込み、測るのは model3d/mesh_slices.py）。
 """
 import math
 from pathlib import Path
@@ -485,3 +486,76 @@ def face_length(inputs, parameters, outputs, context):
         atomic_json(outputs["report"], report)
     return StepResult(observations=[{"kind": "face_length", **{key: report[key] for key in ("band_y", "k", "shift_px", "chin_y_after",
                                                                                          "above_band")}}])
+
+
+CANDIDATE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "candidate_mesh.py"
+CANDIDATE_PARAMETERS = {"kind", "gap", "thigh_at", "slices", "size", "blender", "timeout", "strict", "report_only"}
+
+
+@register("check.candidate", inputs=("model",), outputs=("report", "views", "check", "mesh"), cacheable=False,
+          summary="3D の候補（FBX・glTF・OBJ。骨の無い T ポーズの体か頭）を Blender で読み込んで測り、粘土の見た目で数方向から描く。体（kind: body）"
+                  "は、床から腕の先までの高さ S を物差しに、切り口を面のつながりで輪にたどって、くびれ・ひざ・ふくらはぎと、thigh_at の高さの太もも"
+                  "（既定は無い）の幅と厚み（S に対する割合）と、足の裏からくびれまでの高さ U に対する値（元絵や体の絵と同じ決め方）、胴の幅の並び。slices の高さの切り口の輪の数と範囲も。"
+                  "views は正面・横・後ろと、体は下から見上げた正面・頭は斜め前を並べた絵、check は測った高さの線の絵、mesh は頂点と三角形の npz。"
+                  "どれを選ぶかは決めない（合否は出さない。report_only で要確認にしない）。Blender が要り、再利用しない（毎回実行）")
+def candidate(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+
+    from .. import checkpoint, mesh_slices
+    from ..blender_adapter import launcher
+    from .check_ops import _finish
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("model",), "check.candidate")
+    _refuse_unknown(parameters, CANDIDATE_PARAMETERS, "check.candidate")
+    if Path(inputs["model"]).suffix.lower() not in (".fbx", ".glb", ".gltf", ".obj"):
+        raise ToolError(f"check.candidate の model は .fbx・.glb・.gltf・.obj にしてください: {inputs['model']}")
+    kind = parameters.get("kind", "body")
+    if kind not in ("body", "head"):
+        raise ToolError(f"kind は body（体）か head（頭）にしてください: {kind!r}")
+    if kind == "head" and "check" in outputs:
+        raise ToolError("check（測った高さの線の絵）は kind: body だけです（頭は測らない）")
+    gap = _real(parameters, "gap", 0.0)
+    gap = 0.002 if gap is None else gap
+    thigh_at = _real(parameters, "thigh_at", 0.0, exclusive=True, maximum=1.0)
+    if thigh_at is not None and kind != "body":
+        raise ToolError("thigh_at（太ももを測る高さ）は kind: body だけです")
+    slices = parameters.get("slices", [])
+    if (not isinstance(slices, list) or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
+                                            for v in slices)):
+        raise ToolError(f"slices は高さの割合（0 = いちばん下、1 = いちばん上）の並びにしてください: {slices!r}")
+    size = parameters.get("size", [520, 760])
+    if (not isinstance(size, list) or len(size) != 2
+            or any(isinstance(v, bool) or not isinstance(v, int) or not 16 <= v <= 4096 for v in size)):
+        raise ToolError(f"size は描く絵の [幅, 高さ]（16〜4096 の整数）にしてください: {size!r}")
+    blender = _blender(parameters, context, "check.candidate")
+    step_dir = Path(context.step_dir)
+    mesh_path = Path(outputs["mesh"]) if "mesh" in outputs else step_dir / "candidate_mesh.npz"
+    args = ["--model", inputs["model"], "--mesh", mesh_path, "--kind", kind, "--size", f"{size[0]}x{size[1]}"]
+    if "views" in outputs:
+        args += ["--views", step_dir / "views"]
+    record = launcher.run_blender(blender, CANDIDATE_SCRIPT, None, args, log=step_dir / "blender.log", timeout=_timeout(parameters))
+    with np.load(mesh_path, allow_pickle=False) as data:
+        V, T, names = data["V"], data["T"], [str(n) for n in data["names"]]
+    lo, hi = V.min(axis=0), V.max(axis=0)
+    report = {"schema_version": "model3d-candidate/0.1", "check": "candidate", "model": str(inputs["model"]), "kind": kind,
+              "meshes": names, "verts": int(len(V)), "triangles": int(len(T)), "bounds": [lo.tolist(), hi.tolist()],
+              "blender_version": record["blender_version"]}
+    if kind == "body":
+        report["body"] = mesh_slices.measure_candidate(V, T, gap, thigh_at)
+        if "check" in outputs:
+            mesh_slices.check_picture(V, report["body"], outputs["check"])
+    if slices:
+        report["slices"] = mesh_slices.slice_rows(V, T, slices)
+    if "views" in outputs:
+        files = [step_dir / "views" / f"{name}.png" for name, _ in _view_names(kind)]
+        report["views"] = [f.name for f in files]
+        panels = [np.asarray(Image.open(f).convert("RGB")) for f in files]
+        checkpoint.save_picture(Image.fromarray(checkpoint.side_by_side(panels, gap=4)), outputs["views"])
+    report.update({"pass": None, "reason": "測っただけ（どれを選ぶかは決めない。report_only で測るだけにできる）", "failures": []})
+    return _finish(report, outputs, parameters, "候補の測り")
+
+
+def _view_names(kind):
+    from ..blender_adapter.candidate_mesh import view_list
+    return view_list(kind)
