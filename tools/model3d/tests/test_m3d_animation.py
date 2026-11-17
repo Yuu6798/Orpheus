@@ -502,7 +502,7 @@ def test_lowest_points_by_object_axis_and_by_world():
 
 # ---------------------------------------------------------------- 工程の受け渡し（代役の Blender）
 STAND_IN = r'''
-import json, shutil, sys
+import json, os, shutil, sys
 if "--version" in sys.argv:
     print("Blender 5.2.4 LTS")
     sys.exit(0)
@@ -510,7 +510,7 @@ args = sys.argv[sys.argv.index("--") + 1:]
 def value(flag):
     return args[args.index(flag) + 1]
 settings = json.load(open(value("--settings"), encoding="utf-8"))
-source = json.load(open(__file__.replace("blender_stand_in.py", "fixture.json"), encoding="utf-8"))
+source = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixture.json"), encoding="utf-8"))   # 代役の名前は OS で違う
 shutil.copyfile(source["npz"], value("--out"))
 meta = json.load(open(source["meta"], encoding="utf-8"))
 meta["x_settings"], meta["x_argv"] = settings, sys.argv[1:]
