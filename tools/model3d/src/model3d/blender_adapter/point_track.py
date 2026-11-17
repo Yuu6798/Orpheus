@@ -6,12 +6,15 @@
 位置の取り方）。標本は時刻に等間隔であること（plan.retime のトラックで motion.bone_path を測る）。
 """
 import math
+import os
+import sys
 
 import numpy as np
 
-try:   # パッケージとして読むとき
+try:   # パッケージとして読むとき（テスト）
     from . import stage_render
-except ImportError:   # Blender が台本として動かすとき（同じフォルダが sys.path にある）
+except ImportError:   # Blender が台本として動かすとき（ほかの部品と同じく、自分のフォルダを sys.path に足してから読む）
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import stage_render
 
 UNIFORM = 1e-6        # 標本の時刻の間隔のずれの許し（秒）
