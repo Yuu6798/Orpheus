@@ -4,6 +4,7 @@
 - motion.bake_roll: 手の回転の一部を写す骨（model.twist_bones の roll）の回転を、拘束に頼らず正確な値でキーに焼く（拘束は止める）。
 - check.arm_pinch: 腕の関節のまわりのメッシュが、ねじれで絞ったように細くなっていないかをコマごとに測る（太さの比）。
 - check.arm_overlap: 左右の腕のメッシュが互いの中に入り込んでいるコマを、変形した後の形で調べる。
+- motion.separate_hands: 左右の腕・手・指が互いを通り抜けているコマで、上腕を肩のまわりに少し回して離す。
 """
 import math
 from pathlib import Path
@@ -266,3 +267,112 @@ def check_arm_overlap(inputs, parameters, outputs, context):
     report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "armature": raw.get("armature"),
                    "body": raw.get("body"), "raw": str(raw_path)})
     return _finish(report, outputs, parameters, "腕どうしの入り込みの検査")
+
+
+SEPARATE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "separate_hands.py"
+JOIN_SCHEMA = "model3d-motion-join/0.1"
+# 数の設定: 名前 → (最小, 最小を含まないか, 最大, 整数か)。体の太さ（SEPARATE_SIZES・DETOUR_SIZES）は体ごとに違うので既定を置かない。
+# ほかの数の既定は 3 作目で使った値（blender_adapter/separate_hands.py の DEFAULTS）
+SEPARATE_NUMBERS = {
+    "passes": (1, False, None, True), "forearm_radius": (0.0, True, None, False), "forearm_bins": (1, False, None, True),
+    "soft_from": (0.0, True, None, False), "soft_factor": (0.0, False, None, False), "soft_percentile": (0.0, False, 100.0, False),
+    "soft_radius": (0.0, False, None, False), "palm_radius": (0.0, True, None, False), "finger_radius": (0.0, True, None, False),
+    "gap": (0.0, False, None, False), "dilate": (0, False, None, True), "sigma": (0.0, True, None, False), "merge": (0, False, None, True),
+    "relax": (0.0, True, None, False), "up_share": (0.0, False, 1.0, False), "threshold": (0.0, False, None, False),
+    "detour": (0, False, None, True), "detour_max": (0.0, True, None, False), "detour_body_loss": (0.0, False, None, False),
+    "head_radius": (0.0, True, None, False), "torso_radius": (0.0, True, None, False),
+}
+SEPARATE_SIZES = ("forearm_radius", "soft_from", "palm_radius", "finger_radius")   # 必須（前腕の細い所・袖とみなす太さ・手のひら・指）
+DETOUR_SIZES = ("head_radius", "torso_radius")                                    # detour のときだけ必須（手を頭と胴から離す）
+
+
+def _template(bones, key, fields):
+    value = bones.get(key)
+    if not isinstance(value, str) or not value or any("{" + field + "}" not in value for field in fields):
+        raise ToolError(f"bones.{key} は骨の名前の型（{'・'.join('{' + f + '}' for f in fields)} を入れた文字列）にしてください: {value!r}")
+    return value
+
+
+def bone_templates(bones):
+    """motion.separate_hands の bones（骨の名前の型）を確かめ、既定を埋める。"""
+    from ..blender_adapter.separate_hands import FINGERS, PARTS
+    if not isinstance(bones, dict):
+        raise ToolError("bones は {\"sides\", \"upper\", \"forearm\", \"hand\", \"finger\", …}（骨の名前の型）にしてください: "
+                        f"{bones!r}")
+    _refuse_unknown(bones, ("sides", "upper", "forearm", "hand", "finger", "fingers", "parts", "torso", "head"), "bones")
+    sides = bones.get("sides")
+    if not isinstance(sides, list) or len(sides) != 2 or not all(isinstance(v, str) and v for v in sides) or sides[0] == sides[1]:
+        raise ToolError(f"bones.sides は 2 つの別の側の名前（{{side}} に入る。例 [\"L\", \"R\"]）にしてください: {sides!r}")
+    out = {"sides": sides, **{key: _template(bones, key, ("side",)) for key in ("upper", "forearm", "hand")},
+           "finger": _template(bones, "finger", ("side", "finger", "part")),
+           "fingers": _names(bones.get("fingers", list(FINGERS)), "bones.fingers"), "parts": _names(bones.get("parts", list(PARTS)), "bones.parts"),
+           "torso": _names(bones["torso"], "bones.torso") if bones.get("torso") else [], "head": None}
+    if len(out["fingers"]) < 2:
+        raise ToolError(f"bones.fingers は 2 本以上にしてください（手のひらの棒は 2 本目の指から）: {out['fingers']!r}")
+    if bones.get("head") is not None:
+        out["head"] = _name(bones["head"], "bones.head")
+    return out
+
+
+def _separate_cuts(parameters, inputs):
+    """切り替えのコマ: パラメーターの cuts か、入力 joined（motion.join_clips の report）の cuts。両方は使えない。"""
+    cuts = parameters.get("cuts")
+    if "joined" in inputs:
+        if cuts is not None:
+            raise ToolError("motion.separate_hands: 切り替えのコマは、パラメーターの cuts か入力の joined のどちらかで渡してください")
+        report = read_json(inputs["joined"])
+        if not isinstance(report, dict) or report.get("schema_version") != JOIN_SCHEMA:
+            raise ToolError(f"motion.separate_hands の joined は motion.join_clips の report（{JOIN_SCHEMA}）にしてください")
+        cuts, where = report.get("cuts"), "joined の cuts"
+    else:
+        cuts, where = ([] if cuts is None else cuts), "cuts"
+    if (not isinstance(cuts, list) or not all(isinstance(cut, int) and not isinstance(cut, bool) and cut >= 1 for cut in cuts)
+            or len(set(cuts)) != len(cuts)):
+        raise ToolError(f"{where} は切り替えのコマ（Blender のコマ番号。1 以上の整数で、重ならない）の並びにしてください: {cuts!r}")
+    return sorted(cuts)
+
+
+def separate_settings(parameters, inputs):
+    """motion.separate_hands のパラメーターを確かめ、台本の settings にする（体の太さは必須。省いたほかの数は台本の既定）。"""
+    _refuse_unknown(parameters, COMMON | {"body", "bones", "aliases", "cuts"} | set(SEPARATE_NUMBERS), "motion.separate_hands")
+    if parameters.get("bones") is None:
+        raise ToolError("motion.separate_hands には bones（骨の名前の型）が要ります")
+    aliases = parameters.get("aliases", {})
+    if not isinstance(aliases, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v and k != v for k, v in aliases.items()):
+        raise ToolError(f"aliases は {{頂点グループの名前: 仲間にする骨の名前}}（別の名前どうし）にしてください: {aliases!r}")
+    settings = {"body": _name(parameters.get("body"), "body"), "bones": bone_templates(parameters["bones"]), "aliases": aliases,
+                "cuts": _separate_cuts(parameters, inputs), "armature": _armature(parameters)}
+    for key, (minimum, exclusive, maximum, integer) in SEPARATE_NUMBERS.items():
+        if key in parameters:
+            value = parameters[key]
+            if integer and (isinstance(value, bool) or not isinstance(value, int)):
+                raise ToolError(f"{key} は整数にしてください: {value!r}")
+            settings[key] = _real(value, key, minimum, exclusive, maximum)
+    missing = [key for key in SEPARATE_SIZES + (DETOUR_SIZES if settings.get("detour", 0) > 0 else ()) if key not in settings]
+    if missing:
+        raise ToolError(f"motion.separate_hands には体の太さ {', '.join(missing)}（m）が要ります（体ごとに違うので既定は無い。"
+                        "腕の太さは check.body_size で測れる。head_radius・torso_radius は detour のときだけ）")
+    return settings
+
+
+@register("motion.separate_hands", inputs=("blend", "joined"), outputs=("blend", "report"), cacheable=False,
+          summary="左右の腕・手・指が互いを通り抜けているコマを測り、上腕を肩のまわりに少し回して離す（Blender の中で）: 腕を太さのある棒の"
+                  "集まり（前腕は体のメッシュから測った区切りごとの太さ、手のひら・指）とみなし、左右の棒の重なりを、前腕の両方に垂直な向きへ、"
+                  "区間ごとに側を決めて離す（上へ動くほうの腕に up_share。量は前後に広げてならす。切り替えのコマ cuts か joined はまたがない）。"
+                  "passes 回くり返し、残った短い重なりは detour 回まで、すれ違う向きと量を計算で探す。骨の名前は bones の型。上腕の回転のキー"
+                  "だけを打ち直す（肘から先は変えない）。元のファイルは変えない")
+def separate_hands(inputs, parameters, outputs, context):
+    require(inputs, ("blend",), "motion.separate_hands")
+    _outputs(outputs, ("blend", "report"), "motion.separate_hands")
+    settings = separate_settings(parameters, inputs)
+    record = _run(SEPARATE_SCRIPT, inputs, parameters, outputs, context, settings, "motion.separate_hands",
+                  ["--out-blend", outputs["blend"], "--report", outputs["report"]])
+    report = read_json(outputs["report"])
+    observation = {"kind": "separate_hands", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "armature": report.get("armature"),
+                   "before": (report.get("before") or {}).get("frames_over"), "after": (report.get("after") or {}).get("frames_over"),
+                   "wrist_moved": report.get("wrist_moved"), "detours": len(report.get("detours") or [])}
+    # 残った重なりのうち、袖どうし（やわらかい物どうし。押し出しで直す）でないものは要確認
+    unresolved = [f"腕どうしの重なりが残っています: コマ {run['frames']}（{run['pair']}、{run['max_overlap_mm']} mm）"
+                  for run in (report.get("after") or {}).get("runs", []) if str(run.get("pair")).count("(袖)") < 2]
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
