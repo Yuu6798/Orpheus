@@ -66,6 +66,11 @@ def test_closed_shape_reads_lengths_in_meters_whatever_the_scene_unit():
     assert centimeters == pytest.approx(meters * 100) and scaled["L"]["rim_verts"] == report["L"]["rim_verts"]
 
 
+def test_absolute_shape_keys_are_refused():
+    assert ce.absolute_keys_problem("Head", True) is None                       # 相対の形状キー（いつもの）はそのまま
+    assert "絶対" in ce.absolute_keys_problem("Head", False)                     # 時間で形を選ぶキーには足さない
+
+
 def test_shared_shape_keys_stay_on_for_every_expression_that_uses_them():
     shape_keys = {"closed_smile": "eyes_closed", "closed_sad": "eyes_closed", "wink": "wink_L"}
     assert pass_render.shape_key_values(shape_keys, "closed_smile") == {"eyes_closed": 1.0, "wink_L": 0.0}

@@ -124,6 +124,16 @@ def closed_shape(points, roots, boundary, loops, settings):
     return moved, report, sizes[face_root]
 
 
+def absolute_keys_problem(name, use_relative):
+    """閉じ目のキーは、相対の形状キーの値（0 と 1）で入り切りする。絶対の形状キー（Relative のチェックなし）は値でなく時間（eval_time）で
+    形を選ぶので、値 0 で消せず、キーを足すと今の形の時間の並びも変わる（stage_render.shape_key_problem と同じ考え）。
+    そのときの説明（相対なら None）。"""
+    if use_relative:
+        return None
+    return (f"{name} の形状キーは絶対（Relative のチェックなし）で、時間で形を選びます。閉じ目のキーは値で入り切りするので、相対の形状キーの"
+            "メッシュ（または形状キーの無いメッシュ）にだけ足せます")
+
+
 def closed_shape_in_units(points, unit, roots, boundary, loops, settings):
     """Blender 単位の点 (N, 3) で closed_shape を呼ぶ。設定の長さは m なので、シーンの scale_length（1 Blender 単位が何 m か）で m に直して
     から形を作り、Blender 単位へ戻す（scale_length が 1 なら値はそのまま）。"""
@@ -147,6 +157,9 @@ def main(argv=None):
     keys = mesh.shape_keys
     if keys is not None and settings["key"] in keys.key_blocks:
         raise SystemExit(f"{head.name} に形状キー {settings['key']} がもうあります（model.closed_eye_key を 2 回かけない）")
+    problem = absolute_keys_problem(head.name, keys.use_relative) if keys is not None else None
+    if problem:
+        raise SystemExit(problem)
     count = len(mesh.vertices)
     world = np.array(head.matrix_world)
     inverse = np.array(head.matrix_world.inverted())

@@ -474,6 +474,11 @@ def main(argv=None):
         for key in expressions["shape_keys"].values():
             if not any(o.type == "MESH" and o.data.shape_keys is not None and key in o.data.shape_keys.key_blocks for o in face_objects):
                 raise SystemExit(f"expressions の形状キー {key} が、objects の物体にありません")
+        absolute = sorted(o.name for o in face_objects if o.type == "MESH" and o.data.shape_keys is not None
+                          and not o.data.shape_keys.use_relative and any(k in o.data.shape_keys.key_blocks for k in expressions["shape_keys"].values()))
+        if absolute:                                     # 絶対の形状キーは時間で形を選ぶので、値で入り切りできない
+            raise SystemExit(f"expressions の形状キーを持つ {absolute} の形状キーは絶対（Relative のチェックなし）です。表情の形状キーは値で"
+                             "入り切りするので、相対の形状キーにしてください")
 
     def set_expression(t):
         """時刻 t の表情の絵と形状キーにする。戻り: 表情の名前。"""
