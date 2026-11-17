@@ -1,0 +1,47 @@
+{
+ "Windows-AMD64-py3.13-cv25.0.0-np2.3.5-pil13.0.0-imageio-ffmpeg0.8.1": {
+  "dance": {
+   "demo/audio.wav": "a52dd454d89a78a043d764f37eb2f146c67fbb121c6406fdea2f1bfa8f7b2e09",
+   "demo/end.png": "6492920b38f402fef0976eb140af2c6c823a206b43649af05d48436af2e841da",
+   "demo/spec.json": "0af04e7713fd1377274246f4e3164a1566a797606842068c206d3cfab23ddfb7",
+   "run/spec.json": "0af04e7713fd1377274246f4e3164a1566a797606842068c206d3cfab23ddfb7",
+   "run/timeline.json": "dbbbd0a7256f639947a38d48292d1789e33c512211ca20cac9a95e5e056d8cf8",
+   "write/00/stage.mp4": "bd5e312947ab86fe26c6c7538a9f9e8524e65140846eeb07f27165ea32c1b00a",
+   "write/01/clip_a.mp4": "56d1d620b5eadc23c5dc4d9948a2728221d2b9279fe0a0f58d84a1af5eb4abc3",
+   "write/02/clip_b.mp4": "298549fdef7d1dab80fb0b7609f56010c98d44178e318b18dfe0b9b75b59b1b2",
+   "write/03/clip_c.mp4": "72f8627166c7781de166008cadf2c639642bb7e4cb2cb0d66e5bc46852db31d4",
+   "write/04/dance.mp4": "3d5579d7aaddb0f93773c7b7ca3cef6f61e4bf66ca85b70692f7310a187266b7"
+  },
+  "fx": {
+   "demo/audio.wav": "af932b8b545753fbb10df68627704950600a8b87f7bcb40271a134c3e391b61c",
+   "demo/base.png": "128a44c330d74a32f6a4f6cf9823dc7c42d8f4af9b8f82d340493f8cba7a602b",
+   "demo/depth.png": "f646cf72748ead5f4fd647f9985d924233c28ba5b084681b7c73e3f617b2f214",
+   "demo/mask_ground.png": "6d46280445ce280ccfbe072a29a034ca152bca55cc22cbdae65f48baed524236",
+   "demo/mask_subject.png": "618a95a31df9d4f6ea2bdfeef2c0c543ec3e3c902d71b81e86585b326c93c98d",
+   "demo/spec.json": "79ef06bcb0e8429b19d6a15d88cbc5b08a89326aa7c84a1c51dbcdd381269ec8",
+   "run/spec.json": "79ef06bcb0e8429b19d6a15d88cbc5b08a89326aa7c84a1c51dbcdd381269ec8",
+   "write/00/base.mp4": "a7d54f5556b2f3399bfbc53161554e8a00e96b52804e9f9c6204d65cc056b4d5",
+   "write/01/layers.mp4": "7188844cd59525048d805a6c3f64704c2d9d16128ae7dee0ca051f6193fd88a8",
+   "write/02/light.mp4": "c727c8adb59e5ab564e5af825de6873a3261f275e0bacf2154f7396577473398",
+   "write/03/both.mp4": "03afc6bcd27a1799e4ff2eaf17a23584ec5177e41eaafd07efa3bb9a0556ae9c",
+   "write/04/grid.mp4": "249e86ee2323ebec21e385e5f95120a7b56ec37e390efa800b451eb826a3a3a4"
+  },
+  "fx timeline": {
+   "demo/shots/audio.wav": "1998b9dfb4d1d8a4512cee9c3ff37b3f4553d15d3622097ff48803b0a03ed8fe",
+   "demo/shots/base.png": "78f6a9bf8e768e48a281d47622ee2d843ca467f2c2db99f41b25e9dbd44de98e",
+   "demo/shots/depth.png": "88e7fdbd3577086d121169d423406345b4e336392d06bdea740281d8574965c6",
+   "demo/shots/mask_ground.png": "0f3f20aca6d931f35307fb1301da085d07938cb9c55f701217f694a53adc8a2b",
+   "demo/shots/mask_subject.png": "aba84c1b1c6590e07e1a51bc4d3a4653d644aa27943bc66af41d9ec643d5d77e",
+   "demo/shots/shot_a.json": "f7bb20c42e8fa55a44ee1f8208e125c2829d0e919ee5e03f585f72fd7966b362",
+   "demo/shots/shot_b.json": "5b27bee8eb4437368022d016bf36494635c83576ab3fbb406cdfb8511e7743d0",
+   "demo/shots/shot_c.json": "578975450e347e6acfbf3d7588f8fad2c378d8cafe7d0ad251dcad9c714908d3",
+   "demo/shots/spec.json": "92a3266615367d860583ac5cd05fd999d2031a6c7e6787c3a16c57536a25069f",
+   "demo/timeline.json": "8d6077382927759f7c305c159e1c7f97497a0e9cc8aac332856c592f856bf8ee",
+   "run/faces.json": "368e8848e62020939ec524695baed64cd191633f430a095c047798d725f58de1",
+   "run/fx_timeline.json": "8d6077382927759f7c305c159e1c7f97497a0e9cc8aac332856c592f856bf8ee",
+   "run/timeline.json": "ca3c7040a9aee600b4fd9b1ff0eb05a3b83b5b9800d5eb90d2a68a30ee20c94a",
+   "write/00/clip.mp4": "dd18534c122cfff535eef4b0d6114dab9e7788107baf67efdd16a679d7eb9870",
+   "write/01/timeline.mp4": "973eaedb982f0e66575c0e30ccb050cb798569c31946fcba13ecc1c21ddbe64c"
+  }
+ }
+}
