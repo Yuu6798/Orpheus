@@ -3,12 +3,13 @@
 
 - motion.bake_roll: 手の回転の一部を写す骨（model.twist_bones の roll）の回転を、拘束に頼らず正確な値でキーに焼く（拘束は止める）。
 - check.arm_pinch: 腕の関節のまわりのメッシュが、ねじれで絞ったように細くなっていないかをコマごとに測る（太さの比）。
+- check.arm_overlap: 左右の腕のメッシュが互いの中に入り込んでいるコマを、変形した後の形で調べる。
 """
 import math
 from pathlib import Path
 
 from ..io import ToolError, atomic_json, read_json
-from . import StepResult, register, require
+from . import StepResult, number, register, require
 
 BAKE_ROLL_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "bake_roll.py"
 ARM_PINCH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "arm_pinch.py"
@@ -176,3 +177,92 @@ def check_arm_pinch(inputs, parameters, outputs, context):
     report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "armature": raw.get("armature"),
                    "body": raw.get("body"), "modifiers_off": raw.get("modifiers_off"), "raw": str(raw_path)})
     return _finish(report, outputs, parameters, "腕の関節の細りの検査")
+
+
+ARM_OVERLAP_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "arm_overlap.py"
+HARD_KINDS = ("skin_in_skin", "sleeve_in_skin", "skin_in_sleeve")      # 肌がからむ入り込み（袖どうしは、やわらかい物どうしなので別に数える）
+
+
+def overlap_settings(parameters):
+    """check.arm_overlap のパラメーターを確かめ、台本の settings にする。"""
+    _refuse_unknown(parameters, COMMON | {"body", "arms", "aliases", "all_groups", "frames", "sleeve_until", "depth", "near", "vote",
+                                          "min_verts", "min_depth_mm", "max_frames", "strict", "report_only"}, "check.arm_overlap")
+    arms = parameters.get("arms")
+    if not isinstance(arms, list) or len(arms) != 2:
+        raise ToolError(f"arms は 2 本の腕 [{{\"name\", \"bones\", \"forearm\", \"wrist\"}}, …] にしてください: {arms!r}")
+    checked = []
+    for k, arm in enumerate(arms):
+        if not isinstance(arm, dict):
+            raise ToolError(f"arms[{k}] は {{\"name\", \"bones\", \"forearm\", \"wrist\"}} にしてください: {arm!r}")
+        _refuse_unknown(arm, ("name", "bones", "forearm", "wrist"), f"arms[{k}]")
+        entry = {"name": _name(arm.get("name"), f"arms[{k}].name"), "bones": _names(arm.get("bones"), f"arms[{k}].bones"),
+                 "forearm": _name(arm.get("forearm"), f"arms[{k}].forearm"), "wrist": _name(arm.get("wrist"), f"arms[{k}].wrist")}
+        if entry["forearm"] not in entry["bones"]:
+            raise ToolError(f"arms[{k}].forearm（{entry['forearm']}）を bones に入れてください（袖と肌を分けるのは前腕がいちばん重い頂点）")
+        checked.append(entry)
+    if checked[0]["name"] == checked[1]["name"] or set(checked[0]["bones"]) & set(checked[1]["bones"]):
+        raise ToolError("arms の 2 本は、別の name と、重ならない bones にしてください")
+    aliases = parameters.get("aliases", {})
+    if not isinstance(aliases, dict) or not all(isinstance(k, str) and k and isinstance(v, str) and v and k != v for k, v in aliases.items()):
+        raise ToolError(f"aliases は {{頂点グループの名前: 仲間にする骨の名前}}（別の名前どうし）にしてください: {aliases!r}")
+    all_groups = parameters.get("all_groups", False)
+    if not isinstance(all_groups, bool):
+        raise ToolError(f"all_groups は true か false にしてください: {all_groups!r}")
+    return {"body": _name(parameters.get("body"), "body"), "arms": checked, "aliases": aliases, "all_groups": all_groups,
+            "frames": _frames(parameters), "armature": _armature(parameters),
+            "sleeve_until": _real(parameters.get("sleeve_until"), "sleeve_until（袖の終わる位置の割合。衣装ごとに渡す）", 0.0,
+                                  exclusive=True, maximum=1.0),
+            "depth": _real(parameters.get("depth", 0.002), "depth", 0.0),
+            "near": _real(parameters.get("near", 0.04), "near", 0.0, exclusive=True),
+            "vote": _real(parameters.get("vote", 0.7), "vote", 0.0, exclusive=True, maximum=1.0)}
+
+
+def overlap_summary(raw, min_verts=3, min_depth_mm=3.0, max_frames=None):
+    """check.arm_overlap の測った値（コマごとの 4 つの入り込みの数と深さ）の要約と合否（max_frames を渡したときだけ）。
+    重なりのあるコマ: 肌がからむ 3 つのどれかで、min_verts 頂点以上・深さ min_depth_mm 以上（深さは 0.1 mm に丸めた値。台本と同じ）。"""
+    rows = raw["rows"]
+
+    def bad(row, keys):
+        return any(row[key][0] >= min_verts and row[key][1] >= min_depth_mm for key in keys)
+
+    hard = [row for row in rows if bad(row, HARD_KINDS)]
+    runs = []
+    for row in hard:
+        if runs and row["frame"] - runs[-1][1] <= 1:
+            runs[-1][1] = row["frame"]
+        else:
+            runs.append([row["frame"], row["frame"]])
+    worst = sorted(([row["frame"]] + [row[key] for key in HARD_KINDS] for row in hard), key=lambda item: -max(v[1] for v in item[1:]))[:12]
+    report = {"check": "arm_overlap", "frames": [rows[0]["frame"], rows[-1]["frame"]] if rows else [], "frames_checked": len(rows),
+              "arms": raw.get("arms"), "frames_overlapping": len(hard), "frames_skin_in_skin": sum(1 for row in rows if bad(row, ("skin_in_skin",))),
+              "frames_sleeve_only": sum(1 for row in rows if bad(row, ("sleeve_in_sleeve",)) and not bad(row, HARD_KINDS)),
+              "runs": runs, "worst": worst, "limits": {"min_verts": min_verts, "min_depth_mm": min_depth_mm},
+              "thresholds": {} if max_frames is None else {"max_frames": max_frames}}
+    if max_frames is None:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+    else:
+        failures = [] if len(hard) <= max_frames else [f"腕どうしが入り込んでいるコマが {len(hard)}（しきい値 {max_frames}。最初の区間 {runs[0]}）"]
+        report.update({"pass": not failures, "failures": failures})
+    return report
+
+
+@register("check.arm_overlap", inputs=("blend",), outputs=("report",), cacheable=False,
+          summary="左右の腕（前腕・袖口・手・指）のメッシュが互いの中に入り込んでいるコマを、変形した後の形（体のモディファイアも効かせる）で"
+                  "調べる（Blender の中で。.blend は変えない）: 体の頂点をいちばん重い骨（変形に使う骨の頂点グループで比べる。all_groups で"
+                  "全部のグループ）で 2 本の腕に分け（aliases でねじれの骨を元の骨の仲間に）、前腕の頂点は肘から sleeve_until までを袖にする。いちばん近い面の裏側にあり、14 の向きの線が面を奇数回横切る向きが"
+                  "vote 以上の頂点を入り込みとし、肌が肌に・袖が肌に・肌が袖に・袖が袖にの 4 つに分けて数える（初期姿勢で内側の頂点は除く）。"
+                  "重なりのあるコマの数と区間。max_frames を渡したときだけ合否を出す。好みは判定しない")
+def check_arm_overlap(inputs, parameters, outputs, context):
+    from .check_ops import _finish
+    require(inputs, ("blend",), "check.arm_overlap")
+    settings = overlap_settings(parameters)
+    min_verts = number(parameters, "min_verts", 3, minimum=1, integer=True)
+    min_depth = _real(parameters.get("min_depth_mm", 3.0), "min_depth_mm", 0.0)
+    limit = None if parameters.get("max_frames") is None else number(parameters, "max_frames", minimum=0, integer=True)
+    raw_path = Path(context.step_dir) / "arm_overlap_raw.json"
+    record = _run(ARM_OVERLAP_SCRIPT, inputs, parameters, outputs, context, settings, "check.arm_overlap", ["--report", str(raw_path)])
+    raw = read_json(raw_path)
+    report = overlap_summary(raw, min_verts, min_depth, limit)
+    report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "armature": raw.get("armature"),
+                   "body": raw.get("body"), "raw": str(raw_path)})
+    return _finish(report, outputs, parameters, "腕どうしの入り込みの検査")
