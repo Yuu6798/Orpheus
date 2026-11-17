@@ -667,6 +667,10 @@ def test_fault_pins_keep_the_clean_motion_outside():
         (0, "rotation_quaternion", 4), (1, "rotation_quaternion", 4), (1, "location", 4), (1, "location", 10),
         (2, "rotation_quaternion", 10), (3, "rotation_quaternion", 19)]
     assert fault_inject.keyed_props({"kind": "shift"}) == ("rotation_quaternion", "location")
+    assert fault_inject.fault_pins([{"frames": [1000, 1010], "kind": "local"}], ["head"], {("head", "rotation_quaternion"): list(range(1, 355))},
+                                   1, 354) == []                                  # シーンに重ならない破綻は留めない
+    # シーンの範囲の外に置いた破綻だけの骨は、元に戻す骨にしない（読んだコマが無い）
+    assert fault_inject.first_frames({"hips": {12, 9, 30}, "head": set()}) == {"hips": 9}
 
 
 # ---------------------------------------------------------------- 測る所（Blender の中の台本の小さな関数）

@@ -85,17 +85,25 @@ def pin_range(first, last, keys, start, end):
 
 
 def fault_pins(faults, names, keys, start, end):
-    """区間の外を留める (破綻の番号, 値, コマ) の並び。keys は {(骨, 値): 元のキーのコマ}。同じ骨のほかの破綻の区間の中のコマは除く。"""
+    """区間の外を留める (破綻の番号, 値, コマ) の並び。keys は {(骨, 値): 元のキーのコマ}。同じ骨のほかの破綻の区間の中のコマと、
+    シーンに重ならない破綻は除く。"""
     inside = {}
     for fault, name in zip(faults, names):
         inside.setdefault(name, set()).update(range(fault["frames"][0], fault["frames"][1] + 1))
     out = []
     for k, (fault, name) in enumerate(zip(faults, names)):
+        if fault["frames"][1] < start or fault["frames"][0] > end:        # シーンに重ならない破綻は入らないので、留めない
+            continue
         for prop in keyed_props(fault):
             for f in pin_range(fault["frames"][0], fault["frames"][1], keys.get((name, prop), []), start, end):
                 if f not in inside[name] and (k, prop, f) not in out:
                     out.append((k, prop, f))
     return out
+
+
+def first_frames(wanted):
+    """骨ごとに、元の値を読んだいちばん前のコマ。読んだコマが無い骨（シーンの範囲の外に置いた破綻だけの骨）は除く。"""
+    return {name: min(frames) for name, frames in wanted.items() if frames}
 
 
 def bone_key_frames(armature, names):
@@ -216,8 +224,8 @@ def main(argv=None):
             if f not in boundary.setdefault(fault["name"], []):
                 boundary[fault["name"]].append(f)
         # キーを打たない位置と大きさ（world で行列を入れると、小さなずれが出る）は、元の値に戻す。キーが無いので全部のコマに効くため
-        for name, frames in wanted.items():
-            _, location, scale = clean[(name, min(frames))]
+        for name, f in first_frames(wanted).items():
+            _, location, scale = clean[(name, f)]
             pose[name].location, pose[name].scale = location, scale
     finally:
         for obj in hidden:
