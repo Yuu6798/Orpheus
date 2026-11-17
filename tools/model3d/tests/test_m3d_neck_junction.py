@@ -29,7 +29,11 @@ def test_the_head_weight_is_set_to_the_ramp_and_the_rest_is_shared():
     NECK, HEAD, SPINE = 1, 2, 3
     weights = neck_junction.set_head_weight({NECK: 0.7, SPINE: 0.3}, HEAD, NECK, 0.4)
     assert list(weights) == [NECK, SPINE, HEAD] and weights[HEAD] == 0.4
-    assert weights[NECK] == 0.7 * (1 - 0.4) and weights[SPINE] == 0.3 * (1 - 0.4)       # 頭の重みが無ければ台本と同じ計算
+    assert weights[NECK] == pytest.approx(0.7 * (1 - 0.4)) and weights[SPINE] == pytest.approx(0.3 * (1 - 0.4))   # 頭が無く和が 1 なら add と同じ
+    weights = neck_junction.set_head_weight({NECK: 0.6, HEAD: 0.6}, HEAD, NECK, 0.8)     # 和が 1 でなくても、和は 1 に
+    assert weights == {NECK: pytest.approx(0.2), HEAD: 0.8}
+    weights = neck_junction.set_head_weight({NECK: 0.5, SPINE: 0.25}, HEAD, NECK, 0.4)
+    assert weights == {NECK: pytest.approx(0.4), SPINE: pytest.approx(0.2), HEAD: 0.4}
     weights = neck_junction.set_head_weight({NECK: 0.5, HEAD: 0.5}, HEAD, NECK, 0.8)     # もとから頭の重みがあっても、頭は s
     assert weights == {NECK: pytest.approx(0.2), HEAD: 0.8}
     assert neck_junction.set_head_weight({HEAD: 1.0}, HEAD, NECK, 0.8) == {NECK: pytest.approx(0.2), HEAD: 0.8}
