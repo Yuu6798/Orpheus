@@ -87,6 +87,8 @@ def test_eye_bones_come_from_the_humanoid_when_not_given():
     with pytest.raises(SystemExit, match="right_eye"):
         eye_rig.eye_bones(None, {"left_eye": "eye.L"})
     assert eye_rig.GROUP_ORDER == ("L", "R")                                   # 頂点グループは左目・右目の順に足す
+    from model3d.blender_adapter import vrm_apply_motion
+    assert eye_rig.use_scene_of is vrm_apply_motion.use_scene_of               # 作業用のシーンを開いたまま保存されたファイルでも、アーマチュアのシーンで直す
 
 
 STAND_IN = r'''

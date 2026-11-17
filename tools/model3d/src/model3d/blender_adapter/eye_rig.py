@@ -26,10 +26,12 @@ import numpy as np
 try:   # パッケージとして読むとき（テスト）
     from .animation_sample import humanoid_map, pick_armature
     from .eye_math import bone_ends, to_armature, up_in_armature, validate, world_length
+    from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from animation_sample import humanoid_map, pick_armature
     from eye_math import bone_ends, to_armature, up_in_armature, validate, world_length
+    from vrm_apply_motion import use_scene_of
 
 GROUP_ORDER = ("L", "R")         # 頂点グループを足す順（試しと同じ）
 BONE_ORDER = ("R", "L")          # 骨を直す順（試しと同じ。結果は順によらない）
@@ -87,6 +89,7 @@ def main(argv=None):
             group.remove(iris)
         head.vertex_groups[names[side]].add(iris, 1.0, "REPLACE")
         report["eyes"][side] = {"iris_vertices": len(iris)}
+    use_scene_of(bpy, armature)                                           # 作業用のシーンを開いたまま保存されたファイルでも、アーマチュアのシーンで
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="EDIT")
     world = np.array(armature.matrix_world)
