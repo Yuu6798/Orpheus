@@ -56,6 +56,23 @@ def test_closed_shape_covers_the_hole_and_tucks_the_lashes():
     assert (moved[:348] == points[:348]).all()                                 # 顔の面は動かさない
 
 
+def test_closed_shape_reads_lengths_in_meters_whatever_the_scene_unit():
+    points, roots, boundary, loops = synthetic_head()
+    settings = ce.merged({"head": "Head", **EYE})
+    meters, report, _ = ce.closed_shape(points, roots, boundary, loops, settings)
+    same, _, _ = ce.closed_shape_in_units(points, 1.0, roots, boundary, loops, settings)
+    assert (same == meters).all()                                              # scale_length 1 なら値はそのまま
+    centimeters, scaled, _ = ce.closed_shape_in_units(points * 100, 0.01, roots, boundary, loops, settings)   # 1 単位 = 1 cm のシーン
+    assert centimeters == pytest.approx(meters * 100) and scaled["L"]["rim_verts"] == report["L"]["rim_verts"]
+
+
+def test_shared_shape_keys_stay_on_for_every_expression_that_uses_them():
+    shape_keys = {"closed_smile": "eyes_closed", "closed_sad": "eyes_closed", "wink": "wink_L"}
+    assert pass_render.shape_key_values(shape_keys, "closed_smile") == {"eyes_closed": 1.0, "wink_L": 0.0}
+    assert pass_render.shape_key_values(shape_keys, "closed_sad") == {"eyes_closed": 1.0, "wink_L": 0.0}
+    assert pass_render.shape_key_values(shape_keys, "smile") == {"eyes_closed": 0.0, "wink_L": 0.0}
+
+
 def test_closed_shape_stops_without_an_eyeball():
     points, roots, boundary, loops = synthetic_head()
     with pytest.raises(ValueError, match="眼球"):

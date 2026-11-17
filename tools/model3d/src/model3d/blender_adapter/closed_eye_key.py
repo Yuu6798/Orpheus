@@ -124,6 +124,13 @@ def closed_shape(points, roots, boundary, loops, settings):
     return moved, report, sizes[face_root]
 
 
+def closed_shape_in_units(points, unit, roots, boundary, loops, settings):
+    """Blender 単位の点 (N, 3) で closed_shape を呼ぶ。設定の長さは m なので、シーンの scale_length（1 Blender 単位が何 m か）で m に直して
+    から形を作り、Blender 単位へ戻す（scale_length が 1 なら値はそのまま）。"""
+    moved, sides, face_verts = closed_shape(points * unit, roots, boundary, loops, settings)
+    return moved / unit, sides, face_verts
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -146,13 +153,15 @@ def main(argv=None):
     local = np.empty(count * 3)
     mesh.vertices.foreach_get("co", local)
     local = local.reshape(-1, 3)
-    points = local @ world[:3, :3].T + world[:3, 3]        # 初期姿勢での位置（顔は −Y を向く）
+    points = local @ world[:3, :3].T + world[:3, 3]        # 初期姿勢での位置（顔は −Y を向く。Blender 単位）
+    scene = head.users_scene[0] if head.users_scene else bpy.context.scene
+    unit = float(scene.unit_settings.scale_length)       # 1 Blender 単位が何 m か（設定の長さは m）
     roots = islands(count, mesh_edges(mesh))
     sizes = {root: int((roots == root).sum()) for root in np.unique(roots)}
     face_root = max(sizes, key=sizes.get)
     boundary, loops = boundary_loops(count, [polygon.edge_keys for polygon in mesh.polygons], roots, face_root)
     try:
-        moved, sides, face_verts = closed_shape(points, roots, boundary, loops, settings)
+        moved, sides, face_verts = closed_shape_in_units(points, unit, roots, boundary, loops, settings)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     if mesh.shape_keys is None:
@@ -162,7 +171,7 @@ def main(argv=None):
     key.value = 0.0
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     report = {"schema_version": "model3d-closed-eye-key/0.1", "blender": bpy.app.version_string, "head": head.name, "key": settings["key"],
-              "face_island_verts": face_verts, "sides": sides, "settings": settings}
+              "face_island_verts": face_verts, "sides": sides, "scale_length": unit, "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

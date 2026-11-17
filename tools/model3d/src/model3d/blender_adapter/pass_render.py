@@ -127,6 +127,13 @@ def expression_at(times, t):
     return name
 
 
+def shape_key_values(shape_keys, name):
+    """表情 name のときの形状キーの値 {キー: 1 か 0}。同じキーを分け合う表情があっても、キーごとに 1 回だけ決める（ループのあとの
+    表情でそのキーを 0 に戻さない）。"""
+    active = shape_keys.get(name)
+    return {key: 1.0 if key == active else 0.0 for key in sorted(set(shape_keys.values()))}
+
+
 def phantom_index(kind):
     """ph<i>・rph<i> の i（分身でなければ None）。"""
     name = kind[1:] if kind.startswith("rph") else kind
@@ -473,13 +480,14 @@ def main(argv=None):
         name = expression_at(expressions["times"], t)
         for node, base in face_nodes:
             node.image = face_images.get(name, base)
+        values = shape_key_values(expressions["shape_keys"], name)
         for obj in face_objects:
             keys = obj.data.shape_keys if obj.type == "MESH" else None
             if keys is None:
                 continue
-            for owner, key in expressions["shape_keys"].items():
+            for key, value in values.items():
                 if key in keys.key_blocks:
-                    keys.key_blocks[key].value = 1.0 if name == owner else 0.0
+                    keys.key_blocks[key].value = value
         return name
 
     disc = None
