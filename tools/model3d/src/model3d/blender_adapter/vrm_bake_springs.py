@@ -448,6 +448,8 @@ def main(argv=None):
         if shared:
             raise SystemExit(f"{label}: ほかの指定と同じ球の当たり（番号 {shared}）をゆるめようとしています")
         taken.update(index for index, _ in walls)
+        if "frames" in spec and not scene.frame_start <= spec["frames"][0] <= spec["frames"][1] <= scene.frame_end:
+            raise SystemExit(f"{label}: frames {spec['frames']} が、シーンのコマの範囲（{scene.frame_start}〜{scene.frame_end}）の中にありません")
         watched, reference_bone = [], ""
         if "bones" in spec:
             reference_bone = spec.get("reference") or humanoid_bone(armature, "hips")
@@ -474,9 +476,9 @@ def main(argv=None):
                 places.append((tuple(armature.data.bones[guard_bone].matrix_local.inverted() @ rest_place), base))
             bpy.ops.vrm.add_spring_bone1_collider_group(armature_object_name=armature.name)
             group_index = len(spring.collider_groups) - 1
-            guard_group = f"model3d_release_guard_{position}"
-            spring.collider_groups[group_index].vrm_name = guard_group
-            guard_groups.add(spring.collider_groups[group_index].uuid)
+            spring.collider_groups[group_index].vrm_name = f"model3d_release_guard_{position}"
+            guard_group = spring.collider_groups[group_index].uuid         # 外すときは名前でなく、作った組の識別子で探す
+            guard_groups.add(guard_group)
             for place, base in places:
                 bpy.ops.vrm.add_spring_bone1_collider(armature_object_name=armature.name)
                 index = len(spring.colliders) - 1
@@ -649,8 +651,8 @@ def main(argv=None):
     for release in releases:
         if not release["guard_group"]:
             continue
-        group_index = next(index for index, group in enumerate(spring.collider_groups) if group.vrm_name == release["guard_group"])
-        group_uuid = spring.collider_groups[group_index].uuid
+        group_index = next(index for index, group in enumerate(spring.collider_groups) if group.uuid == release["guard_group"])
+        group_uuid = release["guard_group"]
         for spring_index, item in enumerate(spring.springs):
             for index in reversed(range(len(item.collider_groups))):
                 if item.collider_groups[index].collider_group_uuid == group_uuid:
