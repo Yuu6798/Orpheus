@@ -4,8 +4,10 @@
 - model.export_mesh: 物体のメッシュ（頭など）と色の絵を、Blender の外で計算するための npz と PNG に書き出す（Blender の中で）。
 - model.face_shapes: 頭のメッシュから、表情の形状キーの頂点の動き（まばたき・笑顔の閉じ目・眉・口角）を計算する（Blender の外。numpy だけ）。
 - model.shape_keys: 計算した形を、メッシュの形状キーとして入れる（Blender の中で）。VRM の表情への割り当ては vrm.expressions（vrm_ops）。
+- render.face_sheet: 表情の組み合わせを、いくつかの向きから描いて一覧の絵に並べる（描くのは Blender の中、並べるのは Pillow）。
 """
 import math
+import re
 from pathlib import Path
 
 from ..io import ToolError, atomic_json, read_json
@@ -307,4 +309,124 @@ def shape_keys(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "object": report.get("object"),
                    "keys": [key.get("name") for key in report.get("keys") or []], "replaced": [key.get("name") for key in report.get("keys") or []
                                                                                               if key.get("replaced")]}
+    return StepResult(observations=[observation])
+
+
+FACE_SHEET_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "face_sheet.py"
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _safe(value, where):
+    if not isinstance(value, str) or not SAFE_NAME.match(value):
+        raise ToolError(f"{where} は英数字と _ . - の名前にしてください（ファイルの名前になる）: {value!r}")
+    return value
+
+
+def face_sheet_settings(parameters, recipe_dir=None):
+    """render.face_sheet のパラメーターを確かめる。戻り: (描く側の settings, 並べる側の設定)。"""
+    from ..blender_adapter.face_sheet import image_names
+    from ..io import resolve_path
+    _refuse_unknown(parameters, COMMON | {"object", "combos", "views", "hide", "size", "samples", "background", "cell", "font", "font_size",
+                                          "quality"}, "render.face_sheet")
+    combos = parameters.get("combos")
+    if not isinstance(combos, list) or not combos:
+        raise ToolError(f"combos は [[札, {{形状キー: 値}}], …] にしてください: {combos!r}")
+    checked = []
+    for k, combo in enumerate(combos):
+        if not isinstance(combo, list) or len(combo) != 2 or not isinstance(combo[1], dict):
+            raise ToolError(f"combos[{k}] は [札, {{形状キー: 値}}] にしてください: {combo!r}")
+        label = _safe(combo[0], f"combos[{k}] の札")
+        values = {}
+        for key, value in combo[1].items():
+            if not isinstance(key, str) or not key:
+                raise ToolError(f"combos[{k}] の形状キーの名前は空でない文字列にしてください: {key!r}")
+            values[key] = _real(value, f"combos[{k}].{key}", -10.0, maximum=10.0)   # Blender の形状キーの値の幅
+        checked.append([label, values])
+    if len({label for label, _ in checked}) != len(checked):
+        raise ToolError("combos の札が重なっています")
+    views = parameters.get("views")
+    if not isinstance(views, list) or not views:
+        raise ToolError(f"views は [{{\"name\", \"azimuth\", \"elevation\", \"scale\"}}, …] にしてください: {views!r}")
+    out_views = []
+    for k, view in enumerate(views):
+        if not isinstance(view, dict):
+            raise ToolError(f"views[{k}] は {{\"name\", \"azimuth\", \"elevation\", \"scale\", \"centre\"}} にしてください: {view!r}")
+        _refuse_unknown(view, ("name", "azimuth", "elevation", "scale", "centre"), f"views[{k}]")
+        entry = {"name": _safe(view.get("name"), f"views[{k}].name"), "azimuth": _real(view.get("azimuth"), f"views[{k}].azimuth"),
+                 "elevation": _real(view.get("elevation"), f"views[{k}].elevation", -89.0, maximum=89.0),
+                 "scale": _real(view.get("scale"), f"views[{k}].scale", 0.0, exclusive=True)}
+        if view.get("centre") is not None:
+            centre = view["centre"]
+            if not isinstance(centre, list) or len(centre) != 3:
+                raise ToolError(f"views[{k}].centre は狙う点 [x, y, z]（m）にしてください: {centre!r}")
+            entry["centre"] = [_real(v, f"views[{k}].centre") for v in centre]
+        out_views.append(entry)
+    if len({view["name"] for view in out_views}) != len(out_views):
+        raise ToolError("views の name が重なっています")
+    try:                                                 # 絵の名前 <札>_<向き>.png が別の組み合わせと重なると、前の絵が上書きされる
+        image_names([label for label, _ in checked], [view["name"] for view in out_views])
+    except ValueError as error:
+        raise ToolError(f"{error}。札か向きの名前を変えてください") from error
+    hide = parameters.get("hide", [])
+    if not isinstance(hide, list) or not all(isinstance(name, str) and name for name in hide):
+        raise ToolError(f"hide は描かない物体の名前の並びにしてください: {hide!r}")
+    background = parameters.get("background", [0.18, 0.18, 0.2])
+    if not isinstance(background, list) or len(background) != 3:
+        raise ToolError(f"background は背景の色 [R, G, B]（シーンの直線の値 0〜1）にしてください: {background!r}")
+    render = {"object": _name(parameters.get("object"), "object"), "combos": checked, "views": out_views, "hide": hide,
+              "size": _integer(parameters.get("size", 500), "size", 16), "samples": _integer(parameters.get("samples", 16), "samples", 1),
+              "background": [_real(v, "background", 0.0, maximum=1.0) for v in background]}
+    if render["size"] > 4096:
+        raise ToolError(f"size は 4096 画素までにしてください: {render['size']}")
+    if render["object"] in hide:
+        raise ToolError(f"hide に object（{render['object']}）は入れられません（描く頭が消える）")
+    font = parameters.get("font")
+    if font is not None:
+        if not isinstance(font, str) or not font:
+            raise ToolError(f"font は札の書体のファイルのパスにしてください: {font!r}")
+        font = resolve_path(recipe_dir, font) if recipe_dir is not None else Path(font)
+        if not Path(font).is_file():
+            raise ToolError(f"font の書体のファイルがありません: {font}")
+    quality = _integer(parameters.get("quality", 90), "quality", 1)
+    if quality > 100:
+        raise ToolError(f"quality は 1〜100 にしてください: {quality}")
+    join = {"cell": _integer(parameters.get("cell", 320), "cell", 16), "font": str(font) if font is not None else None,
+            "font_size": _integer(parameters.get("font_size", 16), "font_size", 4), "quality": quality}
+    return render, join
+
+
+@register("render.face_sheet", inputs=("blend",), outputs=("sheet", "report"), cacheable=False,
+          summary="表情の一覧の絵: 頭（object）の形状キーの組み合わせ（combos）ごとに、いくつかの向き（views。方位・高さの角・正射影の幅・狙う点）から"
+                  "寄りで描き（Blender の中で EEVEE。保存しない）、表情（行）× 向き（列）に並べる（Pillow）。正面だけでは気づけない、斜めから白目が"
+                  "のぞくなどを見るため。hide の物体（髪など）は描かない。Blender が要り、再利用しない（毎回実行）")
+def face_sheet(inputs, parameters, outputs, context):
+    from .. import face_sheet as sheet
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "render.face_sheet")
+    render, join = face_sheet_settings(parameters, getattr(context, "recipe_dir", None))
+    if "sheet" not in outputs or "report" not in outputs:
+        raise ToolError("render.face_sheet には outputs の sheet と report が要ります")
+    if Path(outputs["sheet"]).suffix.lower() not in (".jpg", ".jpeg", ".png"):
+        raise ToolError(f"render.face_sheet の outputs の sheet は .jpg か .png にしてください: {Path(outputs['sheet']).name}")
+    blender = _blender(parameters, context, "render.face_sheet")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path, views_dir, render_report = step_dir / "face_sheet_settings.json", step_dir / "views", step_dir / "face_sheet_render.json"
+    atomic_json(settings_path, render)
+    record = launcher.run_blender(blender, FACE_SHEET_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path), "--out-dir",
+                                                                     str(views_dir), "--report", str(render_report)],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(render_report)
+    try:
+        size = sheet.join(views_dir, [label for label, _ in render["combos"]], [view["name"] for view in render["views"]], outputs["sheet"],
+                          join["cell"], join["font"], join["font_size"], join["quality"])
+    except (ValueError, OSError) as error:
+        raise ToolError(f"表情の一覧の絵を作れません: {error}") from error
+    report.update(schema_version="model3d-face-sheet/0.1", sheet={"size": list(size), **join}, views_dir=str(views_dir))
+    atomic_json(outputs["report"], report)
+    observation = {"kind": "face_sheet", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "object": report.get("object"), "images": len(report.get("images") or []),
+                   "sheet_size": list(size)}
     return StepResult(observations=[observation])
