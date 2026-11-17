@@ -489,6 +489,21 @@ def mouth_inside_settings(parameters):
     return settings
 
 
+def _read_texture(path, keep_alpha):
+    """色の絵を 8 ビットの (H, W, 3)（keep_alpha なら透けのある絵は (H, W, 4)）の配列で読む（texture.mouth_inside と check.mouth で同じ読み方）。
+    16 ビットの灰色・整数・浮動小数の絵は止める（色に変えると 255 で切られて白くなる）。"""
+    import numpy as np
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            if im.mode.startswith("I") or im.mode == "F":
+                raise ToolError(f"色の絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は、色に変えると 255 で切られて白くなる）")
+            keep = keep_alpha and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info)   # 透明色キー（tRNS）も透け
+            return np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
+    except OSError as error:
+        raise ToolError(f"色の絵を読めません: {path}（{error}）") from error
+
+
 def _head_arrays(path, keys):
     """頭のメッシュの npz（model.export_mesh）の配列を読み、形と番号の範囲を確かめる。"""
     import numpy as np
@@ -519,7 +534,6 @@ def _head_arrays(path, keys):
                   " npz）を正面から描き、口のまわりの肌の三角形のうち 3 頂点とも見えないもの（唇の裏の袋）と、口の中の部品（parts の島）が uv で使う"
                   "画素を暗い赤に、舌（tongue の島）を明るい赤に塗る。外から見える面が使う画素には触らない。口のまわりの箱と部品の見つけ方に既定は無い")
 def mouth_inside(inputs, parameters, outputs, context):
-    import numpy as np
     from PIL import Image
     from .. import mouth
     require(inputs, ("mesh", "texture"), "texture.mouth_inside")
@@ -529,14 +543,7 @@ def mouth_inside(inputs, parameters, outputs, context):
     if Path(outputs["texture"]).suffix.lower() != ".png":
         raise ToolError(f"texture.mouth_inside の outputs の texture は .png にしてください: {Path(outputs['texture']).name}")
     arrays = _head_arrays(inputs["mesh"], ("co", "edges", "tris", "tri_loops", "uv"))
-    try:
-        with Image.open(inputs["texture"]) as im:
-            if im.mode.startswith("I") or im.mode == "F":    # 16 ビットの灰色・整数・浮動小数の絵は、8 ビットの色に変えると値が切られる
-                raise ToolError(f"色の絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は、色に変えると 255 で切られて白くなる）")
-            keep = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info   # 透明色キー（RGB・灰色・パレットの tRNS）も透け
-            image = np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
-    except OSError as error:
-        raise ToolError(f"色の絵を読めません: {inputs['texture']}（{error}）") from error
+    image = _read_texture(inputs["texture"], keep_alpha=True)
     try:
         painted, report = mouth.paint_inside(arrays["co"], arrays["edges"], arrays["tris"], arrays["tri_loops"], arrays["uv"], image, settings)
     except ValueError as error:
@@ -588,7 +595,6 @@ def mouth_check_settings(parameters):
                   "面が集まる辺と穴の縁、口の中の面と部品と奥行き、色の絵（texture）があれば口の中の色と肌の色の差。front は正面の色分け、section は"
                   "真ん中の断面の絵。口を開ける形を作る前に、頭の候補を選ぶため")
 def check_mouth(inputs, parameters, outputs, context):
-    import numpy as np
     from PIL import Image
     from .. import mouth
     require(inputs, ("mesh",), "check.mouth")
@@ -600,13 +606,7 @@ def check_mouth(inputs, parameters, outputs, context):
             raise ToolError(f"check.mouth の outputs の {key} は .png にしてください: {Path(outputs[key]).name}")
     keys = ("co", "edges", "tris") + (("tri_loops", "uv") if "texture" in inputs else ())
     arrays = _head_arrays(inputs["mesh"], keys)
-    image = None
-    if "texture" in inputs:
-        try:
-            with Image.open(inputs["texture"]) as im:
-                image = np.asarray(im.convert("RGB"))
-        except OSError as error:
-            raise ToolError(f"色の絵を読めません: {inputs['texture']}（{error}）") from error
+    image = _read_texture(inputs["texture"], keep_alpha=False) if "texture" in inputs else None
     try:
         report, front, section = mouth.check_mouth(arrays["co"], arrays["edges"], arrays["tris"], settings, arrays.get("uv"),
                                                    arrays.get("tri_loops"), image)

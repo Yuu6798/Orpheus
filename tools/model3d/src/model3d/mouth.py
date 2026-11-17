@@ -257,8 +257,9 @@ def check_mouth(co, edges, tris, settings, uv=None, tri_loops=None, image=None):
         inside_mask = raster_uv(uv, tri_loops, pocket, width, height, settings["uv_margin"])
         skin_mask = raster_uv(uv, tri_loops, front_skin, width, height, settings["uv_margin"]) & ~inside_mask
         rgb = image[..., :3].astype(float)
+        corners = uv[tri_loops[pocket | front_skin]]      # uv が 0〜1 の外の所は絵の外として数えない
         color = {"inside_pixels": int(inside_mask.sum()), "skin_pixels": int(skin_mask.sum()), "inside_median": None, "skin_median": None,
-                 "distance": None}
+                 "distance": None, "uv_outside_triangles": int(((corners < 0) | (corners > 1)).any(axis=(1, 2)).sum())}
         if inside_mask.any() and skin_mask.any():
             a, b = np.median(rgb[inside_mask], axis=0), np.median(rgb[skin_mask], axis=0)
             color.update(inside_median=[round(float(v), 1) for v in a], skin_median=[round(float(v), 1) for v in b],

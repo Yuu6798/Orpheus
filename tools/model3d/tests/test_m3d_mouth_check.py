@@ -94,6 +94,11 @@ def test_mouth_colour_is_compared_with_the_skin():
     assert color["skin_median"] == [240.0, 200.0, 190.0] and color["distance"] > 150
     same = mouth.check_mouth(co, edges, tris, SETTINGS, uv, tri_loops, np.full((height, 160, 3), 200, dtype=np.uint8))[0]["color"]
     assert same["distance"] == 0.0                                          # 口の中も肌の色（口を開けると肌色に見える）
+    assert color["uv_outside_triangles"] == 0
+    shifted = uv.copy()
+    shifted[:, 0] += 1.0                                                    # uv を絵の外へ
+    outside = mouth.check_mouth(co, edges, tris, SETTINGS, shifted, tri_loops, image)[0]["color"]
+    assert outside["uv_outside_triangles"] > 0 and outside["inside_pixels"] < color["inside_pixels"]   # 絵の外は数えず、数を出す
 
 
 def test_shortest_paths_and_face_counts():
@@ -149,6 +154,14 @@ def test_check_mouth_rejects_bad_settings(tmp_path, parameters, message):
     from model3d.ops import face_ops
     with pytest.raises(ToolError, match=message):
         face_ops.mouth_check_settings(parameters)
+
+
+def test_check_mouth_refuses_16_bit_textures(tmp_path):
+    from model3d import executor
+    recipe = _recipe(tmp_path, SETTINGS, texture=True)
+    Image.fromarray(np.full((32, 32), 50000, dtype=np.uint16)).save(tmp_path / "head.png")   # 色に変えると 255 で切られて白くなる
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "failed" and "8 ビット" in result["steps"]["check"]["error"]
 
 
 def test_check_mouth_stops_when_there_is_no_seam(tmp_path):
