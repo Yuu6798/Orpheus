@@ -61,6 +61,10 @@ def test_size_and_unchanged_regions(pair, tmp_path):
     assert report["status"] == "fail" and report["size"]["same"] is False and "measured" not in report
     with pytest.raises(PipelineError, match="大きさ"):
         handoff.run(base_path, bigger, ["25,15,55,35"], restore=tmp_path / "x.png")
+    for lossy in ("x.jpg", "x.JPEG", "x.webp"):                                        # 可逆の PNG だけ（検査の前に止める）
+        with pytest.raises(PipelineError, match="PNG"):
+            handoff.run(base_path, delivered_path, ["25,15,55,35"], restore=tmp_path / lossy)
+        assert not (tmp_path / lossy).exists()
     shrunk, _ = handoff.run(base_path, bigger, ["25,15,55,35"], allow_resize=True)
     assert shrunk["size"]["resized"] is True and shrunk["status"] == "warn"           # 縮めて比べた（元に戻る）
     same, _ = handoff.run(base_path, base_path, ["25,15,55,35"])

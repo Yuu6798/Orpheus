@@ -154,13 +154,16 @@ def run(base, delivered, regions, regions_width=None, tolerance=8.0, max_changed
         raise PipelineError("--regions-width は 0 より大きくしてください")
     if feather < 0:
         raise PipelineError("--feather は 0 以上にしてください")
+    if restore is not None and Path(restore).suffix.lower() != ".png":   # 非可逆の書き出し（JPEG など）は、戻した範囲の外の画素まで変える
+        raise PipelineError(f"--restore は PNG（.png）にしてください: {Path(restore).name}（JPEG などは範囲の外の画素まで変え、"
+                            "切り替えたときのちらつきを戻してしまう）")
     report, base_image, compared, inside, scale = check(base, delivered, parsed, regions_width, tolerance, max_changed, allow_resize)
     if restore is not None:
         if compared is None:
             raise PipelineError("大きさが違うので、範囲の外を戻した絵を書けません（--allow-resize で縮めて比べると書けます）")
         result = restored(base_image, compared, inside, feather * scale)
         Path(restore).parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(np.clip(result + 0.5, 0, 255).astype(np.uint8)).save(restore)
+        Image.fromarray(np.clip(result + 0.5, 0, 255).astype(np.uint8)).save(restore, format="PNG")
         report["restored"] = {"name": Path(restore).name, "sha256": sha256(restore), "feather": feather}
     delivered = Path(delivered)
     out = Path(out) if out else delivered.with_name(delivered.stem + "_handoff_report")

@@ -222,7 +222,8 @@ def _handoff_parser(commands):
     check.add_argument("--tolerance", type=float, default=8.0, help="a pixel counts as changed above this difference (0-255, default 8)")
     check.add_argument("--max-changed", type=int, default=0, help="fail when more changed pixels than this lie outside (default 0)")
     check.add_argument("--allow-resize", action="store_true", help="compare after shrinking a delivered image of another size (warn)")
-    check.add_argument("--restore", type=Path, help="write the delivered image with everything outside the regions put back to the base")
+    check.add_argument("--restore", type=Path, metavar="OUT.png",
+                       help="write the delivered image with everything outside the regions put back to the base (PNG only: lossless)")
     check.add_argument("--feather", type=float, default=12.0, help="soft edge of the restored regions in region pixels (default 12)")
     check.add_argument("--out", type=Path, help="default: <delivered stem>_handoff_report next to the delivered image")
 
