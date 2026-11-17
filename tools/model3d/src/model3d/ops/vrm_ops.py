@@ -305,7 +305,9 @@ def export(inputs, parameters, outputs, context):
     # 骨の拘束: 書き出した数と、.blend の骨の拘束のうち書き出されなかったもの（合否には使わない。IK など VRM に要らない拘束もある）
     exported = (checked.get("structure") or {}).get("node_constraints") or []
     observation["constraints_exported"] = len(exported)
-    observation["constraints_not_exported"] = left_out(report.get("bone_constraints") or [], exported)
+    not_exported, unmatched = left_out(report.get("bone_constraints") or [], exported)
+    observation["constraints_not_exported"] = not_exported
+    observation["constraints_unmatched"] = unmatched      # VRM にあって .blend に同じ形・相手・重みの拘束が見つからないもの（ふつうは無い）
     # 透過を使う材質の絵を JPEG にしたもの（透過が消える）は、検査の不合格と同じく要確認にする
     problems = [f"VRM の検査: {f}" for f in checked["failures"]]
     problems += [f"透過を使う材質の絵を JPEG にしました（透過が消える）: {name}" for name in observation["alpha_dropped"]]

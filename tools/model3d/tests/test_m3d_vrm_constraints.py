@@ -24,22 +24,62 @@ NODES = [
         "aim": {"source": 0, "aimAxis": "PositiveY", "weight": 0.5}}}}},
     {"name": "spine", "extensions": {"VRMC_node_constraint": {"constraint": {"rotation": {"source": 1}}}}},
 ]
-BLEND = [{"bone": "lower_arm_twist.L", "constraint": "Copy Rotation", "type": "COPY_ROTATION", "mute": False},
-         {"bone": "lower_arm_twist.L", "constraint": "Copy Rotation.001", "type": "COPY_ROTATION", "mute": False},   # 2 つ目は書かれない
-         {"bone": "lower_arm_swing.L", "constraint": "Muted", "type": "DAMPED_TRACK", "mute": True},              # ミュートは書かれない
-         {"bone": "lower_arm_swing.L", "constraint": "Damped Track", "type": "DAMPED_TRACK", "mute": False},
-         {"bone": "spine", "constraint": "Copy Rotation", "type": "COPY_ROTATION", "mute": False},
-         {"bone": "leg.L", "constraint": "IK", "type": "IK", "mute": False}]                                     # VRM の拘束でない種類
+
+
+def copy_rotation(bone, name, source, axes="Y", mix="ADD", spaces=("LOCAL", "LOCAL"), inverted=False, mute=False, influence=1.0):
+    return {"bone": bone, "constraint": name, "type": "COPY_ROTATION", "mute": mute, "influence": influence, "source": source,
+            "axes": axes, "inverted": inverted, "mix": mix, "spaces": list(spaces)}
+
+
+def damped_track(bone, name, source, track="TRACK_Y", head_tail=0.0, mute=False, influence=1.0):
+    return {"bone": bone, "constraint": name, "type": "DAMPED_TRACK", "mute": mute, "influence": influence, "source": source,
+            "track": track, "head_tail": head_tail}
+
+
+BLEND = [copy_rotation("lower_arm_twist.L", "Not roll", "hand.L", mix="REPLACE"),      # 先にある書き出されない形（混ぜ方が違う）
+         copy_rotation("lower_arm_twist.L", "Copy Rotation", "hand.L"),
+         copy_rotation("lower_arm_twist.L", "Copy Rotation.001", "hand.L"),           # 骨 1 本に 2 つ目は書かれない
+         damped_track("lower_arm_swing.L", "Muted", "hand.L", mute=True, influence=0.5),  # ミュートは書かれない
+         damped_track("lower_arm_swing.L", "Damped Track", "hand.L", influence=0.5),
+         copy_rotation("spine", "Copy Rotation", "lower_arm.L", axes="XYZ"),
+         {"bone": "leg.L", "constraint": "IK", "type": "IK", "mute": False, "influence": 1.0, "source": "foot.L"}]   # VRM の拘束でない種類
+
+
+def exported_rows():
+    return vrm.inspect(glb({"asset": {"version": "2.0"}, "nodes": NODES}))["structure"]["node_constraints"]
+
+
+def test_vrm_form_follows_the_vrm_constraint_shapes():
+    assert ve.vrm_form(copy_rotation("b", "c", "s")) == ("roll", "Y")
+    assert ve.vrm_form(copy_rotation("b", "c", "s", axes="XYZ")) == ("rotation", None)
+    assert ve.vrm_form(damped_track("b", "c", "s", track="TRACK_NEGATIVE_Z")) == ("aim", "NegativeZ")
+    for row in (copy_rotation("b", "c", "s", axes="XY"), copy_rotation("b", "c", "s", mix="REPLACE"),
+                copy_rotation("b", "c", "s", spaces=("WORLD", "LOCAL")), copy_rotation("b", "c", "s", inverted=True),
+                copy_rotation("b", "c", "s", mute=True), damped_track("b", "c", "s", head_tail=0.5), BLEND[-1]):
+        assert ve.vrm_form(row) is None
 
 
 def test_constraints_left_out_of_the_vrm_are_listed():
-    exported = vrm.inspect(glb({"asset": {"version": "2.0"}, "nodes": NODES}))["structure"]["node_constraints"]
-    assert [(row["node"], row["kind"], row["source"]) for row in exported] == [
-        ("lower_arm_twist.L", "roll", "hand.L"), ("lower_arm_swing.L", "aim", "hand.L"), ("spine", "rotation", "lower_arm.L")]
-    left = ve.left_out(BLEND, exported)
-    assert [(row["bone"], row["constraint"]) for row in left] == [("lower_arm_twist.L", "Copy Rotation.001"),
-                                                                  ("lower_arm_swing.L", "Muted"), ("leg.L", "IK")]
-    assert ve.left_out(BLEND, []) == BLEND                       # 何も書き出さなければ、全部が書き出されなかった拘束
+    exported = exported_rows()
+    assert [(row["node"], row["kind"], row["source"], row["axis"]) for row in exported] == [
+        ("lower_arm_twist.L", "roll", "hand.L", "Y"), ("lower_arm_swing.L", "aim", "hand.L", "PositiveY"),
+        ("spine", "rotation", "lower_arm.L", None)]
+    left, unmatched = ve.left_out(BLEND, exported)
+    # 書き出されない形の拘束が先にあっても、形・軸・相手・重みが同じ「Copy Rotation」を書き出されたものとする
+    assert [(row["bone"], row["constraint"]) for row in left] == [
+        ("lower_arm_twist.L", "Not roll"), ("lower_arm_twist.L", "Copy Rotation.001"), ("lower_arm_swing.L", "Muted"), ("leg.L", "IK")]
+    assert unmatched == []
+    assert ve.left_out(BLEND, []) == (BLEND, [])                    # 何も書き出さなければ、全部が書き出されなかった拘束
+
+
+def test_vrm_constraints_without_a_matching_blend_constraint_are_reported():
+    exported = exported_rows()
+    other_weight = [dict(row, influence=0.25) if row["constraint"] == "Damped Track" else row for row in BLEND]
+    left, unmatched = ve.left_out(other_weight, exported)
+    assert [row["node"] for row in unmatched] == ["lower_arm_swing.L"]          # 重みが違えば同じ拘束とみなさない
+    assert ("lower_arm_swing.L", "Damped Track") in [(row["bone"], row["constraint"]) for row in left]
+    other_source = [dict(row, source="hand.R") if row["constraint"] == "Copy Rotation" and row["bone"] == "spine" else row for row in BLEND]
+    assert [row["node"] for row in ve.left_out(other_source, exported)[1]] == ["spine"]   # 相手が違っても同じ
 
 
 STAND_IN = r'''
@@ -68,6 +108,6 @@ def test_vrm_export_observes_the_constraints_it_left_out(tmp_path):
                                                       "outputs": {"vrm": "a.vrm", "blend": "a.blend", "report": "export.json"}}]})
     result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
     observation = result["steps"]["export"]["observations"][0]
-    assert observation["constraints_exported"] == 3
-    assert [row["constraint"] for row in observation["constraints_not_exported"]] == ["Copy Rotation.001", "Muted", "IK"]
+    assert observation["constraints_exported"] == 3 and observation["constraints_unmatched"] == []
+    assert [row["constraint"] for row in observation["constraints_not_exported"]] == ["Not roll", "Copy Rotation.001", "Muted", "IK"]
     assert result["status"] == "needs_review"          # この代役の VRM は VRM 1.0 の拡張が無いので検査に通らない（拘束は合否に使わない）
