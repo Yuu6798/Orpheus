@@ -12,9 +12,12 @@
 - 頂点グループごとの重みの最大（どの骨が見た目を動かすか）
 - コマごと: アーマチュアの世界の行列、全部の骨の姿勢の行列（アーマチュアの中）と向き（クォータニオン）、骨の付け根の世界の位置、足と、つま先の骨にいちばん
   重い頂点の低い点（2 通り: 物体の中の z がいちばん小さい頂点＝リポジトリ外の試作と同じ、世界の z がいちばん小さい頂点）
+- 布（cloth が true で、布のメッシュがあるとき）: 初期姿勢で布の近くにある体の頂点を選び（もう布の外にある頂点は見ない）、コマごとに、
+  その頂点から骨の軸へ向けた光線が布に当たった所を、(骨, 布) ごとに数・いちばん深い所・位置の平均・外向きの向きにまとめる
+  （光線の当たり判定は Blender の BVHTree。試作と同じ手順と計算（mathutils））
 
 settings.json（check.animation が書く）: armature（省くと VRM 1.0 の人型の骨の割り当てのあるアーマチュアが 1 つのときそれ）、
-frames（[最初, 最後]。省くとシーンの全コマ）。
+frames（[最初, 最後]。省くとシーンの全コマ）、cloth（布を見るか）・cloth_near_m・cloth_depth_min_m。
 シーンの scale_length が 1 でないとき、アーマチュアの物体に大きさ（scale）があるときは止める（長さを m で測るため）。
 **検証**: 本物の Blender 5.2.4 で、リポジトリ外の試作と同じ入力から同じ出来事になることを確かめた（docs/model3d.md）。
 """
@@ -35,6 +38,9 @@ SCHEMA = "model3d-animation-sample/0.1"
 TORSO_ROLES = ("hips", "spine", "chest", "upper_chest", "neck")
 SPRING_SHARE, HEAD_SHARE = 0.6, 0.5        # 布: 人型でない骨にいちばん重い頂点が 6 割以上で、頭の骨の下の骨のものが 5 割未満
 UNIT_TOLERANCE = 1e-6
+# 布の光線（試作と同じ決まった値）: 骨の軸から 1 cm 未満の頂点は見ない、光線は頂点から 0.5 mm 骨の側から始め、長さは 6 cm と
+# 骨の軸までの 9 割の短い方
+CLOTH_GAP_M, CLOTH_START_M, CLOTH_RAY_M, CLOTH_RAY_SHARE = 0.01, 0.0005, 0.06, 0.9
 
 
 def parse_args(argv):
@@ -103,6 +109,62 @@ def lowest_indices(co, matrix):
     return int(np.argmin(co[:, 2])), int(np.argmin(world_z))
 
 
+def seg_closest(p, a, b):
+    """点 p から線分 a–b のいちばん近い点までの距離と、その点（試作と同じ式。mathutils の Vector でも、テストの代役でも動く）。"""
+    ab = b - a
+    u = max(0.0, min(1.0, (p - a).dot(ab) / max(ab.length_squared, 1e-12)))
+    c = a + ab * u
+    return (p - c).length, c
+
+
+def toward_bone(p, a, b):
+    """体の頂点 p から、その骨の線分 a–b の軸へ向かう光線（始まり, 向き, 長さ）。骨の軸から 1 cm 未満の頂点は None。"""
+    dist, c = seg_closest(p, a, b)
+    if dist < CLOTH_GAP_M:
+        return None
+    direction = (c - p) / dist
+    return p + direction * CLOTH_START_M, direction, min(CLOTH_RAY_M, dist * CLOTH_RAY_SHARE)
+
+
+def watched(points, names, human, head_tree, segment, tree, near, depth_min):
+    """初期姿勢で、布の近く（near 未満）にある体の頂点（人型の骨にいちばん重く、頭の骨の下でないもの）の番号。
+    骨の軸へ向かって見て、深さ depth_min の半分以上奥で布に当たる頂点（もう布の外にある。帯の下に差し込んだ裾の上など、作りとして
+    そうなっている所）は見ない。segment(骨の名前) は骨の線分の両端。返す: (見る頂点の番号の並び, 見ない頂点の数)。"""
+    picked, tucked = [], 0
+    for i, (p, name) in enumerate(zip(points, names)):
+        if name not in human or name in head_tree:
+            continue
+        nearest = tree.find_nearest(p)
+        if nearest[3] is None or nearest[3] >= near:
+            continue
+        ray = toward_bone(p, *segment(name))
+        if ray is not None:
+            hit = tree.ray_cast(*ray)
+            if hit[0] is not None and hit[3] >= depth_min * 0.5:
+                tucked += 1
+                continue
+        picked.append(i)
+    return picked, tucked
+
+
+def through_cloth(points, names, segment, tree, face_object, depth_min, zero, found=None):
+    """体の頂点から骨の軸へ向かう光線が、depth_min 以上奥で布に当たる（体が布の外へ出ている）所を、(骨, 布の物体) ごとに数える。
+    返す（found に足す）: {(骨, 布の物体): [数, いちばん深い所, 位置の和, 外向きの和]}（並びは見つけた順）。zero() は 0 の 3 次元の値。"""
+    found = {} if found is None else found
+    for p, name in zip(points, names):
+        ray = toward_bone(p, *segment(name))
+        if ray is None:
+            continue
+        hit = tree.ray_cast(*ray)
+        if hit[0] is not None and hit[3] >= depth_min:
+            entry = found.setdefault((name, face_object[hit[2]]), [0, 0.0, zero(), zero()])
+            entry[0] += 1
+            entry[1] = max(entry[1], hit[3])
+            entry[2] += p
+            entry[3] -= ray[1]
+    return found
+
+
 def pick_armature(bpy, name):
     if name:
         armature = bpy.data.objects.get(name)
@@ -119,6 +181,7 @@ def pick_armature(bpy, name):
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
 
     if argv is None:
         argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -172,13 +235,32 @@ def main(argv=None):
         meshes.append({"object": obj, "names": names, "vertices": vertices, "dominant": top,
                        "kind": classify(top, human, head_tree)})
     arrays = {"rest": np.array([np.array(bone.matrix_local) for bone in (armature.data.bones[name] for name in bones)])}
-    body_meta, feet = [], {"left": [], "right": []}
+    cloth_objects = [m["object"] for m in meshes if m["kind"] == "cloth"]
+    look_at_cloth = bool(settings.get("cloth", True)) and bool(cloth_objects)
+    if look_at_cloth:                                                    # 初期姿勢の布（世界の座標）
+        cv, cf = [], []
+        for obj in cloth_objects:
+            base = len(cv)
+            cv += [obj.matrix_world @ vertex.co for vertex in obj.data.vertices]
+            cf += [[base + i for i in polygon.vertices] for polygon in obj.data.polygons]
+        rest_cloth = BVHTree.FromPolygons(cv, cf)
+
+        def rest_segment(name):
+            bone = armature.data.bones[name]
+            return world @ bone.head_local, world @ bone.tail_local
+    body_meta, feet, watch, tucked = [], {"left": [], "right": []}, [], 0
     for mesh in meshes:
         if mesh["kind"] != "body":
             continue
         obj, k = mesh["object"], len(body_meta)
         matrix = obj.matrix_world
         co = [matrix @ vertex.co for vertex in obj.data.vertices]          # リポジトリ外の試作と同じ計算（mathutils）
+        if look_at_cloth:
+            picked, skipped = watched(co, mesh["dominant"], human, head_tree, rest_segment, rest_cloth,
+                                      settings["cloth_near_m"], settings["cloth_depth_min_m"])
+            tucked += skipped
+            if picked:
+                watch.append((obj, np.array(picked, dtype=np.int64), [mesh["dominant"][i] for i in picked]))
         if to_armature is not None:
             co = [to_armature @ point for point in co]
         torso = []
@@ -214,6 +296,13 @@ def main(argv=None):
     foot_object = np.full((len(frames), 2, 3), np.nan)
     foot_world = np.full((len(frames), 2, 3), np.nan)
     pose_bones = [armature.pose.bones[name] for name in bones]
+    bone_index = {name: i for i, name in enumerate(bones)}
+    cloth_index = {obj.name: i for i, obj in enumerate(cloth_objects)}
+    cloth_rows = []                                                      # (コマの番号, 骨, 布, 数, 深さ, 位置 3, 外向き 3)
+
+    def pose_segment(name):
+        bone = armature.pose.bones[name]
+        return world @ bone.head, world @ bone.tail
     for fi, frame in enumerate(frames):
         scene.frame_set(frame)
         depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -246,7 +335,33 @@ def main(argv=None):
             if by_object is not None:
                 foot_object[fi, si] = tuple(by_object)
                 foot_world[fi, si] = tuple(by_world)
+        if watch:                                                        # 体 → 布（試作と同じ手順と計算）
+            cv, cf, face_object = [], [], []
+            for obj in cloth_objects:
+                evaluated = obj.evaluated_get(depsgraph)
+                base = len(cv)
+                matrix = evaluated.matrix_world
+                cv += [matrix @ vertex.co for vertex in evaluated.data.vertices]
+                cf += [[base + i for i in polygon.vertices] for polygon in obj.data.polygons]
+                face_object += [obj.name] * len(obj.data.polygons)
+            tree = BVHTree.FromPolygons(cv, cf)
+            found = {}
+            for obj, picked, names in watch:
+                evaluated = obj.evaluated_get(depsgraph)
+                co = np.empty(len(evaluated.data.vertices) * 3)
+                evaluated.data.vertices.foreach_get("co", co)
+                co = co.reshape(-1, 3)[picked]
+                matrix = evaluated.matrix_world
+                through_cloth([matrix @ Vector((x, y, z)) for x, y, z in co], names, pose_segment, tree, face_object,
+                              settings["cloth_depth_min_m"], lambda: Vector((0.0, 0.0, 0.0)), found)
+            for (name, cloth), (number, depth, position_sum, outward_sum) in found.items():
+                normal = tuple(outward_sum.normalized()) if outward_sum.length > 1e-6 else (np.nan,) * 3
+                cloth_rows.append((fi, bone_index[name], cloth_index[cloth], number, depth, *tuple(position_sum / number), *normal))
     arrays.update(pose=pose, quat=quat, heads=heads, foot_object=foot_object, foot_world=foot_world, world=worlds)
+    rows = np.array(cloth_rows, dtype=np.float64).reshape(-1, 11)
+    arrays.update(cloth_frame=rows[:, 0].astype(np.int32), cloth_bone=rows[:, 1].astype(np.int32),
+                  cloth_object=rows[:, 2].astype(np.int32), cloth_count=rows[:, 3].astype(np.int32), cloth_depth=rows[:, 4],
+                  cloth_location=rows[:, 5:8], cloth_normal=rows[:, 8:11])
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "wb") as stream:
         np.savez_compressed(stream, **arrays)
@@ -254,7 +369,8 @@ def main(argv=None):
             "armature": armature.name, "armature_world": [list(row) for row in world],
             "fps": scene.render.fps / scene.render.fps_base, "frames": frames, "humanoid": humanoid, "bones": bones,
             "parents": parents, "groups": groups, "deform": deform, "body": body_meta,
-            "cloth_objects": [m["object"].name for m in meshes if m["kind"] == "cloth"],
+            "cloth_objects": [obj.name for obj in cloth_objects], "cloth_measured": look_at_cloth,
+            "cloth_watched": int(sum(len(picked) for _, picked, _ in watch)), "cloth_tucked": tucked,
             "hair_objects": [m["object"].name for m in meshes if m["kind"] == "hair"],
             "foot_objects": {side: [obj.name for obj, _ in feet[side]] for side in feet}}
     with open(a.meta, "w", encoding="utf-8") as stream:

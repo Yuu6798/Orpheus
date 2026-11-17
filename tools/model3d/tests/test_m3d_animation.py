@@ -200,7 +200,8 @@ def _found(events, signal, first, last, part=""):
 # ---------------------------------------------------------------- 数える所（Blender なし）
 def test_clean_motion_has_no_events():
     report = ac.check(make_sample(_clean), ac.settings({}))
-    assert report["events"] == [] and report["overall"] == "clean"
+    assert report["events"] == [] and report["overall"] == "clean_with_skips"                      # 布のメッシュが無いので布は見ない
+    assert [s["check"] for s in report["skipped"]] == ["cloth"]
     assert report["schema_version"] == "model3d-animation-check/0.1" and report["frames"] == [1, 120] and report["fps"] == FPS
     assert report["torso"]["slices"] >= 20 and report["head_triangles"] == 8 * 12 * 2
     assert report["arm_torso_baseline_m"] == {"left": [0.0, 0.0, 0.0], "right": [0.0, 0.0, 0.0]}     # 細い胴では、下ろした腕は胴に触れない
@@ -415,7 +416,7 @@ def test_foot_lowest_choice_and_missing_feet():
     assert not _found(ac.check(sample, ac.settings({}), foot_lowest="object")["events"], "penetration.floor", 10, 12)
     sample.foot_world[:, 1] = np.nan
     report = ac.check(sample, ac.settings({}))
-    assert [s["check"] for s in report["skipped"]] == ["floor_right"]
+    assert [s["check"] for s in report["skipped"]] == ["floor_right", "cloth"]
     with pytest.raises(ac.SettingsError, match="foot_lowest"):
         ac.check(sample, ac.settings({}), foot_lowest="lowest")
     partial = make_sample(lambda pose, f: None, frames=20)                   # 一部のコマだけ足の点が無い（頂点を足し引きする変形など）
@@ -438,7 +439,7 @@ def test_head_contact_uses_the_head_surface():
     no_head = make_sample(touch)
     no_head.body[0]["faces"] = []
     report = ac.check(no_head, ac.settings({}))
-    assert report["head_triangles"] == 0 and [s["check"] for s in report["skipped"]] == ["head"]
+    assert report["head_triangles"] == 0 and [s["check"] for s in report["skipped"]] == ["head", "cloth"]
 
 
 def test_closest_on_triangles_matches_brute_force():
@@ -500,6 +501,51 @@ def test_missing_roles_and_bad_samples_stop():
         ac.check(no_torso, ac.settings({}))
 
 
+def _cloth_rows(rows):
+    """布の当たりのまとめ（コマの位置, 骨, 布の番号, 数, 深さ, 位置, 外向き）の並びを、Sample の cloth_hits にする。"""
+    return {"frame": np.array([r[0] for r in rows], int), "bone": np.array([NAMES.index(r[1]) for r in rows], int),
+            "object": np.array([r[2] for r in rows], int), "count": np.array([r[3] for r in rows], int),
+            "depth": np.array([r[4] for r in rows], float), "location": np.array([r[5] for r in rows], float).reshape(-1, 3),
+            "normal": np.array([r[6] for r in rows], float).reshape(-1, 3)}
+
+
+def test_body_through_cloth_needs_enough_vertices():
+    """体が布を突き抜ける所は、(骨, 布) ごとに 22 頂点以上のコマだけ挙げ、続いたコマを 1 件にまとめる（頂点の数はいちばん多いコマ）。"""
+    sample = make_sample(_clean, frames=40)
+    out = [0.0, -1.0, 0.0]
+    rows = [(9, "upper_leg.R", 0, 30, 0.059, [-0.1, -0.1, 0.7], out), (10, "upper_leg.R", 0, 25, 0.041, [-0.1, -0.1, 0.71], out),
+            (12, "upper_leg.R", 0, 40, 0.02, [-0.1, -0.1, 0.72], [np.nan] * 3),     # すき間 1 コマ（コマ 12 は挙がる）はつなぐ
+            (20, "upper_leg.L", 1, 21, 0.09, [0.1, -0.1, 0.7], out),                   # 21 頂点（小さい所）は挙げない
+            (30, "hips", 1, 22, 0.012, [0.0, 0.1, 0.95], out)]
+    sample.cloth = ["Skirt", "Sash"]
+    sample.cloth_hits = _cloth_rows(rows)
+    events = [e for e in ac.check(sample, ac.settings({}))["events"] if e["signal"] == "penetration.body_cloth"]
+    assert [(e["part"], e["frames"]) for e in events] == [("右の太もも → Skirt", [10, 13]), ("腰 → Sash", [31, 31])]
+    first = events[0]
+    assert first["peak_frame"] == 10 and first["peak_value"] == 5.9 and first["vertices"] == 40 and first["normal"] == out
+    assert first["location"] == [-0.1, -0.1, 0.7] and first["title"] == "体が布を突き抜ける" and first["kind"] == "静的"
+    assert ac.check(sample, ac.settings({"cloth_min_vertices": 50}))["events"] == []
+    # 布の当たりの番号が範囲の外なら止める
+    sample.cloth_hits["object"][0] = 5
+    with pytest.raises(ac.SettingsError, match="布の当たり"):
+        ac.Sample(sample.humanoid, sample.bones, sample.parents, sample.rest, sample.frames, sample.fps, sample.pose, sample.quat,
+                  sample.heads, sample.foot_object, sample.foot_world, sample.deform, sample.body, cloth=sample.cloth,
+                  cloth_hits=sample.cloth_hits)
+
+
+def test_cloth_skips_are_reported():
+    sample = make_sample(_clean, frames=5)
+    sample.cloth = ["Skirt"]
+    sample.meta = {"cloth_measured": False}
+    assert [s["reason"] for s in ac.check(sample, ac.settings({}))["skipped"]] == ["cloth: false（体が布を突き抜けるは見ない）"]
+    sample.meta = {"cloth_measured": True, "cloth_watched": 0, "cloth_tucked": 3}
+    report = ac.check(sample, ac.settings({}))
+    assert "近くにある体の頂点がありません" in report["skipped"][0]["reason"] and report["cloth"]["tucked_vertices"] == 3
+    sample.meta = {"cloth_measured": True, "cloth_watched": 120, "cloth_tucked": 3}
+    report = ac.check(sample, ac.settings({}))
+    assert report["skipped"] == [] and report["overall"] == "clean" and report["cloth"]["watched_vertices"] == 120
+
+
 # ---------------------------------------------------------------- 測る所（Blender の中の台本の小さな関数）
 def test_sampler_helpers():
     names = {0: "hips", 1: "skirt_01", 2: "head"}
@@ -539,6 +585,83 @@ def test_lowest_points_by_object_axis_and_by_world():
     assert sampler.lowest_indices(co, np.eye(4)) == (0, 0)                    # 回っていなければ同じ
 
 
+class V:
+    """mathutils の Vector の代役（布の光線の計算に使う所だけ）。"""
+
+    def __init__(self, *values):
+        self.v = np.array(values[0] if len(values) == 1 else values, dtype=float)
+
+    def __add__(self, other):
+        return V(self.v + other.v)
+
+    def __sub__(self, other):
+        return V(self.v - other.v)
+
+    def __mul__(self, k):
+        return V(self.v * k)
+
+    def __truediv__(self, k):
+        return V(self.v / k)
+
+    def __iadd__(self, other):
+        self.v = self.v + other.v
+        return self
+
+    def __isub__(self, other):
+        self.v = self.v - other.v
+        return self
+
+    def dot(self, other):
+        return float(self.v @ other.v)
+
+    @property
+    def length(self):
+        return float(np.linalg.norm(self.v))
+
+    @property
+    def length_squared(self):
+        return float(self.v @ self.v)
+
+
+class Wall:
+    """布の代役: x = at の平らな布（面の番号は 0）。光線の当たりと、いちばん近い所までの距離だけ（mathutils の BVHTree の代わり）。"""
+
+    def __init__(self, at):
+        self.at = at
+
+    def ray_cast(self, origin, direction, distance):
+        if abs(direction.v[0]) < 1e-12:
+            return None, None, None, None
+        t = (self.at - origin.v[0]) / direction.v[0]
+        if 0 <= t <= distance:
+            return origin + direction * t, V(1.0, 0.0, 0.0), 0, t
+        return None, None, None, None
+
+    def find_nearest(self, point):
+        return V(self.at, point.v[1], point.v[2]), V(1.0, 0.0, 0.0), 0, abs(point.v[0] - self.at)
+
+
+def test_cloth_rays_from_the_body_toward_the_bone():
+    """体の頂点から骨の軸へ向けた光線が、布に深さ cloth_depth_min_m 以上で当たる（体が布の外へ出ている）所を数える。"""
+    segment = lambda name: (V(0.09, 0.0, 1.0), V(0.09, 0.0, 0.5))                 # 太ももの骨（x = 0.09 の縦の線）
+    assert sampler.toward_bone(V(0.095, 0.0, 0.7), *segment("t")) is None          # 骨の軸から 1 cm 未満は見ない
+    origin, direction, length = sampler.toward_bone(V(0.15, 0.0, 0.7), *segment("t"))
+    assert np.allclose(direction.v, [-1.0, 0.0, 0.0]) and origin.v[0] == pytest.approx(0.1495) and length == pytest.approx(0.054)
+    wall = Wall(0.13)                                                              # 布は、頂点と骨の軸の間（体が布の外へ出ている）
+    points = [V(0.15, 0.0, 0.7), V(0.16, 0.0, 0.7), V(0.135, 0.0, 0.7), V(0.12, 0.0, 0.7)]
+    found = sampler.through_cloth(points, ["thigh.R"] * 4, segment, wall, ["Skirt"], 0.008, lambda: V(0.0, 0.0, 0.0))
+    (key, (count, depth, position, outward)), = found.items()
+    assert key == ("thigh.R", "Skirt") and count == 2 and depth == pytest.approx(0.0295)  # 5 mm と布より内の頂点は数えない
+    assert np.allclose(position.v / count, [0.155, 0.0, 0.7]) and np.allclose(outward.v, [2.0, 0.0, 0.0])
+    more = sampler.through_cloth([V(0.17, 0.0, 0.7)], ["thigh.R"], segment, wall, ["Skirt"], 0.008, lambda: V(0.0, 0.0, 0.0), found)
+    assert more is found and found[("thigh.R", "Skirt")][0] == 3                  # 同じコマのほかのメッシュの頂点も同じ所へ足す
+    # 初期姿勢: 布の近くの頂点だけを見る。もう布の外にある頂点（作りとしてそうなっている所）は見ない
+    names = ["thigh.R", "thigh.R", "thigh.R", "head", "skirt_01"]
+    rest = [V(0.12, 0.0, 0.7), V(0.15, 0.0, 0.7), V(0.25, 0.0, 0.7), V(0.12, 0.0, 0.7), V(0.12, 0.0, 0.7)]
+    picked, tucked = sampler.watched(rest, names, {"thigh.R", "head"}, {"head"}, segment, wall, 0.06, 0.008)
+    assert picked == [0] and tucked == 1                                           # 0.15 は布の外（深さ 2 cm）、0.25 は遠い
+
+
 # ---------------------------------------------------------------- 工程の受け渡し（代役の Blender）
 STAND_IN = r'''
 import json, os, shutil, sys
@@ -568,17 +691,21 @@ def _write_sample(sample, folder):
         arrays[f"body{k}_torso"] = mesh["torso"]
         arrays[f"body{k}_face_start"] = np.cumsum([0] + [len(f) for f in mesh["faces"][:-1]]).astype(np.int32)
         arrays[f"body{k}_face_verts"] = np.concatenate([np.asarray(f) for f in mesh["faces"]]).astype(np.int32)
+    arrays.update({f"cloth_{key}": value for key, value in sample.cloth_hits.items()})
     np.savez_compressed(folder / "sample.npz", **arrays)
     meta = {"schema_version": "model3d-animation-sample/0.1", "blender": "5.2.4 LTS", "scene": "Scene", "armature": "Rig",
             "armature_world": np.eye(4).tolist(), "fps": sample.fps, "frames": sample.frames, "humanoid": sample.humanoid,
             "bones": sample.bones, "parents": sample.parents, "groups": groups, "deform": sample.deform,
-            "body": [{"name": m["name"]} for m in sample.body], "cloth_objects": ["Skirt"], "hair_objects": []}
+            "body": [{"name": m["name"]} for m in sample.body], "cloth_objects": sample.cloth, "hair_objects": [],
+            "cloth_measured": bool(sample.cloth), "cloth_watched": 50 if sample.cloth else 0, "cloth_tucked": 0}
     atomic_json(folder / "sample.json", meta)
     atomic_json(folder / "fixture.json", {"npz": str(folder / "sample.npz"), "meta": str(folder / "sample.json")})
 
 
 def test_sample_files_round_trip(tmp_path):
     sample = make_sample(_faulty)
+    sample.cloth = ["Skirt"]
+    sample.cloth_hits = _cloth_rows([(40, "upper_leg.R", 0, 30, 0.03, [-0.1, -0.1, 0.7], [0.0, -1.0, 0.0])])
     _write_sample(sample, tmp_path)
     loaded = ac.load_sample(tmp_path / "sample.npz", json.loads((tmp_path / "sample.json").read_text(encoding="utf-8")))
     assert ac.check(loaded, ac.settings({}))["events"] == ac.check(sample, ac.settings({}))["events"]
@@ -598,8 +725,11 @@ def _recipe(tmp_path, parameters):
 def test_check_animation_runs_blender_and_reports_events(tmp_path):
     from model3d import executor
     blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
-    _write_sample(make_sample(_faulty), tmp_path)
-    recipe = _recipe(tmp_path, {"blender": blender, "frames": [1, 120], "skip_bones": ["*twist*"], "wrist_bend_max_deg": 70})
+    faulty = make_sample(_faulty)
+    faulty.cloth = ["Skirt"]
+    _write_sample(faulty, tmp_path)
+    recipe = _recipe(tmp_path, {"blender": blender, "frames": [1, 120], "skip_bones": ["*twist*"], "wrist_bend_max_deg": 70,
+                                "cloth_near_m": 0.05})
     result = executor.run_recipe(recipe, tmp_path / "runs")
     assert result["status"] == "needs_review", result                         # 出来事があれば要確認（関門ではない）
     step = result["steps"]["check"]
@@ -609,7 +739,7 @@ def test_check_animation_runs_blender_and_reports_events(tmp_path):
     assert report["armature"] == "Rig" and report["cloth_objects"] == ["Skirt"] and report["overall"] == "review"
     assert any(e["signal"] == "joint.wrist_bend" for e in report["events"])
     meta = json.loads((Path(step["artifacts"]["report"]).parent / "sample.json").read_text(encoding="utf-8"))
-    assert meta["x_settings"] == {"armature": None, "frames": [1, 120]}
+    assert meta["x_settings"] == {"armature": None, "frames": [1, 120], "cloth": True, "cloth_near_m": 0.05, "cloth_depth_min_m": 0.008}
     argv = meta["x_argv"]
     assert Path(argv[argv.index("--python") + 1]).name == "animation_sample.py" and "--factory-startup" in argv
     assert "bl_ext.user_default.vrm" in argv[argv.index("--python-expr") + 1]          # VRM Add-on を既定で有効にする
@@ -621,7 +751,7 @@ def test_check_animation_runs_blender_and_reports_events(tmp_path):
 @pytest.mark.parametrize("parameters, message", [
     ({"strict": True}, "知らないパラメーター"), ({"frames": [10, 5]}, "frames"), ({"skip_bones": "twist"}, "skip_bones"),
     ({"foot_lowest": "lowest"}, "foot_lowest"), ({"arm_upper": [[1.0, 0.04]]}, "3 点"), ({"armature": ""}, "armature"),
-    ({"report_only": "yes"}, "report_only")])
+    ({"report_only": "yes"}, "report_only"), ({"cloth": 1}, "cloth"), ({"cloth_min_vertices": 2.5}, "整数")])
 def test_check_animation_refuses_bad_parameters(tmp_path, parameters, message):
     from model3d import executor
     blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))

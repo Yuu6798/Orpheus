@@ -11,6 +11,7 @@ evidence: measured。異常と読むかは、絵を見て人やエージェン�
   - penetration.arm_arm: 左右の腕が重なる（手首とこぶしは見ない）
   - penetration.leg_leg: 左右の脚が重なる
   - penetration.floor: 足のメッシュの低い点が床（z = 0）より下
+  - penetration.body_cloth: 体が、上に重なる布（裾など。揺れものの骨で動くメッシュ）を突き抜ける
   - joint.wrist_bend・joint.wrist_twist・joint.neck・joint.knee_back: 関節の無理
 - 動的（前後のコマと比べて分かる）
   - motion.pop: 骨の向きが 1 コマで飛ぶ（戻る／切り替わる）
@@ -58,10 +59,11 @@ DEFAULTS = {
     "pos_pop_min_m": 0.03,
     "jitter_window": 8, "jitter_reversals": 5, "jitter_min_deg": 2.0,
     "slide_min_m_per_frame": 0.008, "slide_max_m_per_frame": 0.04, "slide_frames": 3, "plant_height_m": 0.015, "plant_dz_m": 0.004,
+    "cloth_depth_min_m": 0.008, "cloth_min_vertices": 22, "cloth_near_m": 0.06,   # 22 頂点より小さい所（結び目・垂れの先）は挙げない
     "merge_gap_frames": 2,
 }
 ARM_BODY_KEYS = ("upper_arm", "elbow", "forearm", "wrist", "fist")
-INTEGER_KEYS = {"pop_window", "jitter_window", "jitter_reversals", "slide_frames", "merge_gap_frames"}
+INTEGER_KEYS = {"pop_window", "jitter_window", "jitter_reversals", "slide_frames", "merge_gap_frames", "cloth_min_vertices"}
 FOOT_LOWEST = ("world", "object")   # 足のメッシュの低い点の選び方: 世界の z（既定）か、物体の中の z（試作と同じ。誤り）
 LEG_RADIUS_GUESS_M = 0.05           # 脚の太さを測れないとき（その骨にいちばん重い頂点が無い）の推定の太さ（仮の値。試作と同じ）
 
@@ -82,7 +84,7 @@ JP_WORDS = (("left_", "左の"), ("right_", "右の"), ("upper_chest", "胸の�
             ("_intermediate", "の中"), ("_distal", "の先"), ("eye", "目"))
 LABEL = {"penetration.arm_body": ("貫通", "腕が体に入る", "cm"), "penetration.arm_arm": ("貫通", "腕どうしが重なる", "cm"),
          "penetration.arm_leg": ("貫通", "腕が脚に入る", "cm"), "penetration.leg_leg": ("貫通", "脚どうしが重なる", "cm"),
-         "penetration.floor": ("貫通", "足が床より下", "cm"),
+         "penetration.body_cloth": ("貫通", "体が布を突き抜ける", "cm"), "penetration.floor": ("貫通", "足が床より下", "cm"),
          "joint.wrist_bend": ("関節", "手首の曲げすぎ", "度"), "joint.wrist_twist": ("関節", "手首のねじれすぎ", "度"),
          "joint.neck": ("関節", "首の曲げすぎ", "度"), "joint.knee_back": ("関節", "ひざが逆に曲がる", "cm"),
          "motion.pop": ("飛び", "向きが 1 コマで飛ぶ", "度"), "motion.position_pop": ("飛び", "位置が 1 コマだけ飛ぶ", "cm"),
@@ -157,10 +159,13 @@ class Sample:
     - deform: {頂点グループの名前: どれかの頂点の重みの最大}（描くメッシュ全部）
     - body: 体のメッシュの並び {name, co (V, 3), dominant (V,) 頂点ごとのいちばん重い頂点グループの名前（無ければ None）,
       torso (V, 2) 胴の骨の重みの和と全部の重みの和, faces: 面ごとの頂点の番号の並び}
+    - cloth: 布の物体の名前の並び。cloth_hits: 体の頂点から骨の軸へ向けた光線が布に当たった所の、コマと (骨, 布) ごとのまとめ
+      {frame (N,) コマの番号の位置, bone (N,) 骨の番号, object (N,) 布の番号, count (N,) 頂点の数, depth (N,) いちばん深い所（m）,
+      location (N, 3) 位置の平均（世界）, normal (N, 3) 外向き（無ければ nan）}。並びは、コマの中では見つけた順
     """
 
     def __init__(self, humanoid, bones, parents, rest, frames, fps, pose, quat, heads, foot_object, foot_world, deform, body,
-                 world=None, cloth=(), meta=None):
+                 world=None, cloth=(), cloth_hits=None, meta=None):
         self.humanoid, self.bones, self.parents = dict(humanoid), list(bones), list(parents)
         self.rest = np.asarray(rest, dtype=np.float64)
         self.frames, self.fps = [int(f) for f in frames], float(fps)
@@ -174,6 +179,9 @@ class Sample:
         world = np.eye(4) if world is None else np.asarray(world, dtype=np.float64)
         self.world = np.broadcast_to(world, (len(self.frames), 4, 4)).copy() if world.shape == (4, 4) else world
         self.cloth = list(cloth)
+        empty = {"frame": np.zeros(0, int), "bone": np.zeros(0, int), "object": np.zeros(0, int), "count": np.zeros(0, int),
+                 "depth": np.zeros(0), "location": np.zeros((0, 3)), "normal": np.zeros((0, 3))}
+        self.cloth_hits = {key: np.asarray((cloth_hits or empty)[key]) for key in empty}
         self.meta = dict(meta or {})
         T, B = len(self.frames), len(self.bones)
         shapes = {"rest": (self.rest, (B, 4, 4)), "pose": (self.pose, (T, B, 4, 4)), "quat": (self.quat, (T, B, 4)),
@@ -189,6 +197,12 @@ class Sample:
             if (np.shape(mesh["co"]) != (count, 3) or np.shape(mesh["torso"]) != (count, 2)
                     or any(len(face) < 3 or min(face) < 0 or max(face) >= count for face in mesh["faces"])):
                 raise SettingsError(f"体のメッシュ {mesh.get('name')} の書き出しの形が合いません（頂点 {count} 個）")
+        hits = self.cloth_hits
+        rows = len(hits["frame"])
+        if (any(len(hits[key]) != rows for key in hits) or (rows and (hits["frame"].min() < 0 or hits["frame"].max() >= T
+                or hits["bone"].min() < 0 or hits["bone"].max() >= B or hits["object"].min() < 0
+                or hits["object"].max() >= len(self.cloth)))):
+            raise SettingsError("書き出した布の当たりの形が合いません")
 
 
 def load_sample(npz_path, meta):
@@ -207,7 +221,9 @@ def load_sample(npz_path, meta):
                      "faces": [verts[a:b] for a, b in zip(start, ends)]})
     return Sample(meta["humanoid"], meta["bones"], meta["parents"], arrays["rest"], meta["frames"], meta["fps"], arrays["pose"],
                   arrays["quat"], arrays["heads"], arrays["foot_object"], arrays["foot_world"], meta["deform"], body,
-                  world=arrays.get("world", meta.get("armature_world")), cloth=meta.get("cloth_objects", []), meta=meta)
+                  world=arrays.get("world", meta.get("armature_world")), cloth=meta.get("cloth_objects", []),
+                  cloth_hits={key: arrays[f"cloth_{key}"] for key in ("frame", "bone", "object", "count", "depth", "location", "normal")}
+                  if "cloth_frame" in arrays else None, meta=meta)
 
 
 # ---------------------------------------------------------------- 小さな計算（倍精度）
@@ -534,6 +550,9 @@ def static_hits(body, cfg, foot_lowest, hits, contact):
     regions = (("chest", body.chest), ("hips", H["hips"]), ("head", H["head"]))
     torso_ranges = (("chest", "胸", (body.waist_z, body.slices[-1][0])), ("hips", "腰", (body.slices[0][0], body.waist_z + WAIST_MARGIN_M)))
     arm_mins = [cfg["arm_body_min_m"][key] for key in ARM_KEYS]
+    cloth_rows = {}
+    for row, fi in enumerate(sample.cloth_hits["frame"].tolist()):
+        cloth_rows.setdefault(fi, []).append(row)
     for fi, frame in enumerate(sample.frames):
         P, aw = sample.pose[fi], sample.world[fi]
         M = {role: P[body.index[bone]] for role, bone in H.items()}
@@ -661,6 +680,14 @@ def static_hits(body, cfg, foot_lowest, hits, contact):
         neck = math.degrees(2 * math.acos(min(1.0, abs(quaternion(rel)[0]))))
         if neck > cfg["neck_max_deg"]:
             hits.append((frame, "joint.neck", "首", neck, _apply(aw, M["head"][:3, 3]), None))
+        for row in cloth_rows.get(fi, ()):                                     # 体 → 布（22 頂点より小さい所は挙げない）
+            count = int(sample.cloth_hits["count"][row])
+            if count >= cfg["cloth_min_vertices"]:
+                bone = sample.bones[int(sample.cloth_hits["bone"][row])]
+                normal = sample.cloth_hits["normal"][row]
+                hits.append((frame, "penetration.body_cloth", f"{body.jp(bone)} → {sample.cloth[int(sample.cloth_hits['object'][row])]}",
+                             float(sample.cloth_hits["depth"][row]), sample.cloth_hits["location"][row].copy(),
+                             normal.copy() if np.isfinite(normal).all() else None, count))
 
 
 # ---------------------------------------------------------------- 動的な検査（検-5。前後のコマと比べる）
@@ -802,7 +829,7 @@ def events_from(hits, frames, fps, merge_gap):
                      "momentary": bool(static and run[-1][0] - run[0][0] + 1 <= 2), "location": [round(float(v), 4) for v in peak[4]],
                      "normal": [round(float(v), 3) for v in peak[5]] if peak[5] is not None else None,
                      "evidence": "measured", "status": "review"}
-            if len(peak) > 6:
+            if signal == "penetration.body_cloth":
                 event["vertices"] = max(r[6] for r in run)
             events.append(event)
             run = [hit] if hit is not None else []
@@ -840,10 +867,19 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
         elif missing.any():                                               # 頂点を足し引きする変形のコマなど
             skipped.append({"check": f"floor_{side}", "reason": f"{SIDE[side]}の足のメッシュの点が無いコマがあります（そのコマは足が床より下を見ない）",
                             "frames": _frame_spans([sample.frames[i] for i in np.where(missing)[0]])})
+    measured = sample.meta.get("cloth_measured")
+    if not sample.cloth:
+        skipped.append({"check": "cloth", "reason": "布（揺れものの骨で動くメッシュ）がありません（体が布を突き抜けるは見ない）"})
+    elif measured is False:
+        skipped.append({"check": "cloth", "reason": "cloth: false（体が布を突き抜けるは見ない）"})
+    elif sample.meta.get("cloth_watched") == 0:
+        skipped.append({"check": "cloth", "reason": "初期姿勢で布の近くにある体の頂点がありません（体が布を突き抜けるは見ない）"})
     return {"schema_version": SCHEMA, "frames": [sample.frames[0], sample.frames[-1]] if sample.frames else [], "fps": sample.fps,
             "overall": "review" if events else ("clean_with_skips" if skipped else "clean"),
             "thresholds": cfg, "skip_bones": list(skip_bones), "foot_lowest": foot_lowest,
             "bones": len(body.pop_bones), "body_objects": [mesh["name"] for mesh in sample.body], "cloth_objects": list(sample.cloth),
+            "cloth": {"measured": measured, "watched_vertices": sample.meta.get("cloth_watched"),
+                      "tucked_vertices": sample.meta.get("cloth_tucked")},
             "torso": {"points": body.torso_points, "slices": len(body.slices)},
             "head_triangles": 0 if body.head_tris is None else int(len(body.head_tris)),
             "leg_radius_m": {f"{side}_{part}": round(value, 4) for (side, part), value in body.leg_radius.items()},
