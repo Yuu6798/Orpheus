@@ -7,6 +7,8 @@
 - cloth.lining_gap: 重なった布の裏地を、表から決まった距離まで内側へ離す（形を書き換える。モデル用）。
 - cloth.follow: 上に重なる布を、下の布の表面と同じ動きにする（骨の重みを、すぐ下の布の重みで置きかえる）。
 - check.cloth_over: 上に重なる布が、下の布の内側へ入っているコマを数える。
+- cloth.patch_lining: 布の内側から見て裏地の色でなく見える所に、裏地の色の当て布（面）を足す。
+- check.cloth_layers: 重なった布の順番が入れ替わっているコマを数える。
 """
 import math
 from pathlib import Path
@@ -466,3 +468,156 @@ def check_cloth_over(inputs, parameters, outputs, context):
     report = over_summary(read_json(raw_path), min_verts, max_frames, max_mean)
     report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "raw": str(raw_path)})
     return _finish(report, outputs, parameters, "布の重なりの検査")
+
+
+PATCH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_patch.py"
+LAYER_CHECK_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_layer_check.py"
+
+
+def _lining_color(value):
+    """lining_color（{"channel": "r"|"g"|"b", "min": 0〜1, "ratio": 0〜1}）を確かめる。"""
+    if not isinstance(value, dict) or set(value) != {"channel", "min", "ratio"} or value["channel"] not in ("r", "g", "b"):
+        raise ToolError(f"lining_color は {{\"channel\": \"r\"|\"g\"|\"b\", \"min\": 値, \"ratio\": 割合}}（裏地の色の決め方）にしてください: {value!r}")
+    for key in ("min", "ratio"):
+        v = value[key]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1:
+            raise ToolError(f"lining_color.{key} は 0〜1 の数にしてください: {v!r}")
+    return {"channel": value["channel"], "min": float(value["min"]), "ratio": float(value["ratio"])}
+
+
+@register("cloth.patch_lining", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="布（裾など）の内側から見て、裏地の色（lining_color）でなく見える面のすぐ内側に、裏地の色の当て布（面）を足す（Blender の中で）:"
+                  "布の内側の何か所かから見えて、色の絵を読むと裏地の色でない点が min_dark 以上ある面を選び、頂点を内側へ offset 寄せた面を張る"
+                  "（骨の重みは元の頂点と同じ。uv は裏地の色の 1 点。色の絵と材質は変えない）。外（cover_reach 以内で布にも cover_objects にも"
+                  "隠れない）から見えてしまう面は張らない。当て布の頂点に頂点グループ group（既定 lining_patch）。元のファイルは変えない")
+def cloth_patch_lining(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "cloth.patch_lining")
+    allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "object", "axis_bone", "lining_color", "image", "offset",
+               "min_dark", "samples", "view_spread", "keep_outside_visible", "cover_reach", "cover_objects", "group"}
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"cloth.patch_lining の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    settings = {key: _name(parameters, key, "cloth.patch_lining") for key in ("object", "axis_bone")}
+    settings["lining_color"] = _lining_color(parameters.get("lining_color"))
+    for key in ("armature", "image", "group"):
+        if parameters.get(key) is not None:
+            settings[key] = _name(parameters, key, "cloth.patch_lining")
+    settings.update({"offset": float(_positive(parameters, "offset", 0.002)), "cover_reach": float(_positive(parameters, "cover_reach", 0.25)),
+                     "view_spread": float(_positive(parameters, "view_spread", 0.4, exclusive=False)),
+                     "samples": _positive(parameters, "samples", 30, integer=True)})
+    min_dark = parameters.get("min_dark", 0.10)
+    if isinstance(min_dark, bool) or not isinstance(min_dark, (int, float)) or not 0 < min_dark <= 1:
+        raise ToolError(f"min_dark は 0 より大きく 1 以下の割合にしてください: {min_dark!r}")
+    settings["min_dark"] = float(min_dark)
+    keep = parameters.get("keep_outside_visible", False)
+    if not isinstance(keep, bool):
+        raise ToolError(f"keep_outside_visible は true か false にしてください: {keep!r}")
+    settings["keep_outside_visible"] = keep
+    covers = parameters.get("cover_objects", [])
+    settings["cover_objects"] = _names(covers, "cover_objects") if covers else []
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"cloth.patch_lining には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, "cloth.patch_lining")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "patch_lining_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, PATCH_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                               "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "cloth_patch_lining", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("object", "faces_added", "verts_added", "dropped_because_seen_from_outside", "lining_colour")}}
+    return StepResult(observations=[observation])
+
+
+def layers_summary(raw, min_verts=3, max_frames=None):
+    """check.cloth_layers の測った値（コマごとの入れ替わった頂点の数）の要約と合否（max_frames を渡したときだけ）。数え方は台本と同じ。"""
+    rows = raw["rows"]
+    bad = [row for row in rows if row["total"][0] >= min_verts]
+    runs = []
+    for row in bad:
+        if runs and row["frame"] - runs[-1][1] <= 1:
+            runs[-1][1] = row["frame"]
+            runs[-1][2] = max(runs[-1][2], row["total"][0])
+            runs[-1][3] = max(runs[-1][3], row["total"][1])
+        else:
+            runs.append([row["frame"], row["frame"], row["total"][0], row["total"][1]])
+    report = {"check": "cloth_layers", "objects": raw.get("objects"), "patches": raw.get("patches"), "without": raw.get("without"),
+              "rest_caches_off": raw.get("rest_caches_off", []), "modifiers_synced": raw.get("modifiers_synced", []),
+              "patch_verts": raw.get("patch_verts"), "frames_checked": len(rows), "frames_swapped": len(bad),
+              "max_swapped_verts": max((row["total"][0] for row in rows), default=0), "max_poke_mm": max((row["total"][1] for row in rows), default=0.0),
+              "layers_rest": raw.get("layers_rest"), "layers_rest_unlayered": raw.get("layers_rest_unlayered"), "pairs_checked": raw.get("pairs_checked"),
+              "checked_gap_mm_p10_p50_p90": raw.get("checked_gap_mm_p10_p50_p90"), "innermost_gap_mm_p10_p50_p90": raw.get("innermost_gap_mm_p10_p50_p90"),
+              "runs": [{"frames": [a, b], "max_verts": n, "max_poke_mm": d} for a, b, n, d in runs],
+              "thresholds": {} if max_frames is None else {"max_frames": max_frames}}
+    if max_frames is None:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+    else:
+        failures = [] if len(bad) <= max_frames else [f"布の層の順番が入れ替わったコマが {len(bad)}（しきい値 {max_frames}）"]
+        report.update({"pass": not failures, "failures": failures})
+    return report
+
+
+@register("check.cloth_layers", inputs=("blend",), outputs=("report",), cacheable=False,
+          summary="重なった布（裾の表と裏地、その上の垂れなど）の順番が入れ替わっているコマを数える（Blender の中で。.blend は変えない）: 初期姿勢で"
+                  "縦の軸から各頂点へ水平に引いた線で、すぐ外の層の面と面の中の位置を覚え、コマごとに頂点がその面の外向きの側へ tol より出ていれば"
+                  "入れ替わり。いちばん内の層だけ（only_innermost）・メッシュの組（pair_from・pair_to）・当て布だけ（patches: only）・補正を外して"
+                  "（without）も数えられる。max_frames を渡したときだけ合否を出す。好みは判定しない")
+def check_cloth_layers(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .check_ops import _finish
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "check.cloth_layers")
+    allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "objects", "axis_bone", "tol", "without", "max_gap",
+               "only_innermost", "pair_from", "pair_to", "patch_group", "patches", "rest_unlayered", "body", "frames", "min_verts", "max_frames",
+               "strict", "report_only"}
+    unknown = set(parameters) - allowed
+    if unknown:
+        raise ToolError(f"check.cloth_layers の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    settings = {"objects": _names(parameters.get("objects"), "objects"), "axis_bone": _name(parameters, "axis_bone", "check.cloth_layers"),
+                "tol": float(_positive(parameters, "tol", 0.0005, exclusive=False)), "max_gap": float(_positive(parameters, "max_gap", 0.015))}
+    for key in ("armature", "without", "pair_from", "pair_to", "patch_group", "body"):
+        if parameters.get(key) is not None:
+            settings[key] = _name(parameters, key, "check.cloth_layers")
+    for key in ("pair_from", "pair_to"):
+        if settings.get(key) and settings[key] not in settings["objects"]:
+            raise ToolError(f"{key}（{settings[key]}）は objects のメッシュにしてください")
+    only = parameters.get("only_innermost", False)
+    if not isinstance(only, bool):
+        raise ToolError(f"only_innermost は true か false にしてください: {only!r}")
+    settings["only_innermost"] = only
+    patches = parameters.get("patches", "ignore")
+    if patches not in ("ignore", "only"):
+        raise ToolError(f"patches は ignore か only にしてください: {patches!r}")
+    settings["patches"] = patches
+    if "rest_unlayered" in parameters:                   # 体までの距離で、層を数えなかった頂点を層 0 に入れるか（既定。台本と同じ）、別に出すか
+        if parameters["rest_unlayered"] not in ("layer0", "separate"):
+            raise ToolError(f"rest_unlayered は layer0（層を数えなかった頂点を層 0 に入れる。既定）か separate（別に出す）にしてください: "
+                            f"{parameters['rest_unlayered']!r}")
+        settings["rest_unlayered"] = parameters["rest_unlayered"]
+    span = parameters.get("frames")
+    if span is not None:
+        if (not isinstance(span, list) or len(span) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in span)
+                or span[0] > span[1]):
+            raise ToolError(f"frames は [最初のコマ, 最後のコマ]（整数、最初 ≤ 最後）にしてください: {span!r}")
+        settings["frames"] = span
+    min_verts = _positive(parameters, "min_verts", 3, integer=True)
+    max_frames = None if parameters.get("max_frames") is None else _positive(parameters, "max_frames", 0, integer=True, exclusive=False)
+    blender = _blender(parameters, context, "check.cloth_layers")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path, raw_path = step_dir / "cloth_layers_settings.json", step_dir / "cloth_layers_raw.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, LAYER_CHECK_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                     "--report", str(raw_path)],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = layers_summary(read_json(raw_path), min_verts, max_frames)
+    report.update({"blend": str(inputs["blend"]), "blender_version": record["blender_version"], "raw": str(raw_path)})
+    return _finish(report, outputs, parameters, "布の層の順番の検査")
