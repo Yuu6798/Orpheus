@@ -7,7 +7,7 @@
 2. t を含む区間（segments。頭は前の区間の until、最後の区間だけ until を省ける。時刻は秒・拍 {"beat": k}・marks の名前）の
    let（区間の中の名前。書いた順に求める）を求め、set の値で上書きする。
 3. 区間の flashes（at・strength・color・decay・length）を並べた順に見て、0 ≤ t − at < length なら（境目は区間と同じく、
-   1e-6 秒前のコマから届いたとみなす）strength × exp(−max(t − at, 0) / decay) を求め、今の flash より強ければ flash と
+   1e-6 秒前のコマから届いたとみなす）strength × exp(−max(t − at, 0) / decay)（decay は 0 より大きい数）を求め、今の flash より強ければ flash と
    flash_color をそれにする。
 flash（閃光の強さ。既定 0）・flash_color（既定 [1, 1, 1]）・fade（暗転で掛ける割合。既定 1）は、どの段取り表にもある値。
 
@@ -232,6 +232,9 @@ class Plan:
 
     def __init__(self, plan, keys=None):
         self.keys = keys
+        for band in ("low", "mid", "high") if keys is not None else ():   # 数がそろわないと、後のコマの帯が黙って止まるか読めない
+            if len(keys[band]) != keys["frames"]:                          # （plan.stage と同じ確かめ）
+                raise ToolError(f"光のキーの {band} の数（{len(keys[band])}）が frames（{keys['frames']}）と違います")
         grid = (keys or {}).get("grid") or plan.get("grid")
         if grid is None:
             raise ToolError("光の段取り表の拍の格子（grid）が要ります（光のキー keys を渡すか、段取り表に grid を書く）")
@@ -275,8 +278,13 @@ class Plan:
             for k, flash in enumerate(segment.get("flashes") or []):
                 f = {**FLASH, **flash}
                 spot = f"{where}.flashes[{k}]"
-                flashes.append({"at": self.clock(f["at"], f"{spot}.at"),
-                                **{key: Value(f[key], f"{spot}.{key}", names) for key in ("strength", "decay", "length")},
+                scalars = {key: Value(f[key], f"{spot}.{key}", names) for key in ("strength", "decay", "length")}
+                for key, value in scalars.items():
+                    if value.kind == "vector":
+                        raise ToolError(f"{spot}.{key} は数か式にしてください（3 つの並びは使えません）: {f[key]!r}")
+                if scalars["decay"].kind == "number" and scalars["decay"].parts <= 0:
+                    raise ToolError(f"{spot}.decay（減り方の秒）は 0 より大きい数にしてください: {f['decay']!r}")
+                flashes.append({"at": self.clock(f["at"], f"{spot}.at"), **scalars,
                                 "color": Value(f["color"], f"{spot}.color", names) if "color" in f else None,
                                 "where": spot})
             self.compiled.append((lets, sets, flashes))
@@ -315,10 +323,12 @@ class Plan:
             out[name] = got
         for flash in flashes:
             d = t - flash["at"]
-            length = self._value(flash["length"], local, T, flash["where"])
+            length = self._number(flash["length"], local, T)
             if inside(d, 0.0, length):                   # 区間の境目と同じゆとり（ちょうど拍のコマを、丸めで外さない）
-                strength = self._value(flash["strength"], local, T, flash["where"])
-                decay = self._value(flash["decay"], local, T, flash["where"])
+                strength = self._number(flash["strength"], local, T)
+                decay = self._number(flash["decay"], local, T)
+                if decay <= 0:                           # 0 で割る・強まっていく閃光にしない（式は、求めた値を確かめる）
+                    raise ToolError(f"T {T} の {flash['decay'].where}（減り方の秒）は 0 より大きい数にしてください: {decay}")
                 v = strength * math.exp(-max(d, 0.0) / decay)
                 if v > out["flash"]:
                     color = default_color if flash["color"] is None else self._value(flash["color"], local, T, flash["where"])
@@ -329,6 +339,14 @@ class Plan:
         if not isinstance(out["flash_color"], tuple):
             raise ToolError(f"T {T} の flash_color は 3 つの並びにしてください")
         return out, n
+
+    @classmethod
+    def _number(cls, value, env, T):
+        """閃光の strength・decay・length。数でなければ（式が 3 つの並びになれば）止める。"""
+        got = cls._value(value, env, T, value.where)
+        if isinstance(got, tuple):
+            raise ToolError(f"T {T} の {value.where} は数にしてください（3 つの並びになりました）: {list(got)}")
+        return got
 
     @staticmethod
     def _value(value, env, T, name):
