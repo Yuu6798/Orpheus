@@ -98,6 +98,17 @@ def held_frames(Ts, cuts):
     return held
 
 
+FRAME_EPS = 1e-6   # 動きのコマ f の端数のゆとり（時刻から求めた f の丸め。plan.orbit の 63.00000000000001 など）
+
+
+def motion_frame(f):
+    """カメラの控えの動きのコマ f。整数から FRAME_EPS 以内なら、その整数にする（時刻の計算の丸めの端数）。ほかは float のまま
+    （小数のコマ。motion_frames_problem で止める）。"""
+    f = float(f)
+    nearest = round(f)
+    return int(nearest) if abs(f - nearest) <= FRAME_EPS else f
+
+
 def motion_frames_problem(rows):
     """カメラのキーは動きのコマ f に打つので、f は整数で、T の順に増えていく並びにする。そうでなければその説明。"""
     previous = None
@@ -117,6 +128,12 @@ def lens_and_shift(frame, resolution, sensor_height):
     shift = (tuple(float(v) for v in frame["shift"]) if "shift" in frame
              else pass_render.shift_from_principal([float(v) for v in frame["principal_px"]], width, height))
     return lens, shift
+
+
+def shift_keys(shifts):
+    """ずらしのキーを打つか: ずらしのあるコマが 1 つでもあれば、全部のコマ（ずらし 0 のコマも）に打つ。0 のコマにキーが無いと、
+    最初のずらしのキーが前のコマへ延びて、そのコマの写る範囲がずれるため。どのコマも 0 なら打たない（ずらしは 0 のまま）。"""
+    return any(tuple(shift) != (0.0, 0.0) for shift in shifts)
 
 
 def depth_of_field(frame):
@@ -275,7 +292,7 @@ def main(argv=None):
         with open(a.lights, encoding="utf-8") as stream:
             track = {int(fr["T"]): fr["values"] for fr in json.load(stream)["frames"]}
     cameras = {int(fr["T"]): fr for fr in record["frames"]}
-    rows = sorted((T, pass_render.stage_render.motion_frame(fr.get("f", T))) for T, fr in cameras.items())
+    rows = sorted((T, motion_frame(fr.get("f", T))) for T, fr in cameras.items())
     problem = motion_frames_problem(rows)
     if problem:
         raise SystemExit(problem)
@@ -399,21 +416,21 @@ def main(argv=None):
     sc.camera = cam
     cam.rotation_mode = "QUATERNION"
     previous = None
-    shifts = False
+    optics = {T: lens_and_shift(cameras[T], resolution, sensor) for T, _ in rows}
+    shifts = shift_keys(shift for _, shift in optics.values())
     for T, f in rows:
         frame = cameras[T]
         M = Matrix(frame["matrix"])
         quaternion = same_sign(tuple(M.to_quaternion()), previous)
         previous = quaternion
-        lens, shift = lens_and_shift(frame, resolution, sensor)
+        lens, shift = optics[T]
         cam.location = M.translation / unit
         cam.rotation_quaternion = quaternion
         cam_d.lens = lens
         cam.keyframe_insert("location", frame=int(f))
         cam.keyframe_insert("rotation_quaternion", frame=int(f))
         cam_d.keyframe_insert("lens", frame=int(f))
-        if shift != (0.0, 0.0) or shifts:
-            shifts = True
+        if shifts:                                   # ずらしのあるコマが 1 つでもあれば、ずらし 0 のコマにも打つ
             cam_d.shift_x, cam_d.shift_y = shift
             cam_d.keyframe_insert("shift_x", frame=int(f))
             cam_d.keyframe_insert("shift_y", frame=int(f))

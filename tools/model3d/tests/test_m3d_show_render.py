@@ -33,6 +33,22 @@ def test_camera_keys_need_whole_and_rising_motion_frames():
     assert "増えて" in show_render.motion_frames_problem([(1, 3), (2, 2)])
 
 
+def test_motion_frames_within_a_hair_of_an_integer_are_whole():
+    """時刻から求めた f の丸めの端数（plan.orbit の T 63 は 63.00000000000001）は整数にする。本当の小数のコマは止める。"""
+    assert show_render.motion_frame(63.00000000000001) == 63 and isinstance(show_render.motion_frame(63.00000000000001), int)
+    assert show_render.motion_frame(61.99999999999999) == 62 and show_render.motion_frame("7") == 7
+    assert show_render.motion_frame(62.5) == 62.5 and show_render.motion_frame(62.00001) == 62.00001
+    rows = [(T, show_render.motion_frame((T - 1) * (1 / 30) * 30 + 1)) for T in range(1, 200)]
+    assert show_render.motion_frames_problem(rows) is None and all(isinstance(f, int) for _, f in rows)
+    assert "整数" in show_render.motion_frames_problem([(1, show_render.motion_frame(1)), (2, show_render.motion_frame(2.25))])
+
+
+def test_shift_keys_go_on_every_frame_once_one_frame_is_shifted():
+    """ずらしのあるコマが 1 つでもあれば全部のコマに打つ（0 のコマにキーが無いと、最初のずらしが前のコマへ延びる）。"""
+    assert show_render.shift_keys([(0.0, 0.0), (0.0, 0.0), (0.2, 0.0)]) is True
+    assert show_render.shift_keys([(0.0, 0.0), (0.0, 0.0)]) is False and show_render.shift_keys([]) is False
+
+
 def test_lens_and_shift_come_from_the_record():
     frame = {"T": 1, "focal_px": 1920.0, "principal_px": [540.0, 960.0]}
     assert show_render.lens_and_shift(frame, [1080, 1920], 36.0) == (36.0, (0.0, 0.0))        # 焦点距離の画素から
