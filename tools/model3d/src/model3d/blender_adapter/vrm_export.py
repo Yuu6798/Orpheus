@@ -9,16 +9,26 @@
   残らないことがあるので、元の VRM から写すために使う（利用条件などほかのメタは .blend のまま）。
 - --jpeg-quality が 0 より大きければ、材質が使う画像を JPEG（その品質）にして --textures に書き、.blend に埋め込み直す
   （色の絵を PNG のまま埋めると大きくなる。2 作目の VRM のダンスでは 4 枚で 68 MB → 14 MB）。透過の要る画像には使わない。
-- 入れないもの: 動き（VRM には入らない）。表情・布の計算・骨の拘束は、そもそも VRM の仕組みに無いか、アプリによって効かない。
+- 入れないもの: 動き（VRM には入らない）。布の計算は VRM の仕組みに無い。表情は形状キーを VRM の表情に割り当てたものだけが入る。
+- 骨の拘束: VRM Add-on は、VRM 1.0 の拘束（VRMC_node_constraint の aim・roll・rotation）の形の拘束だけを書き出す（骨 1 本に 1 つ。
+  ミュートした拘束は書き出さない）。報告の bone_constraints に、.blend の骨の拘束（骨・拘束の名前・種類・ミュート・影響・相手と、
+  Copy Rotation なら軸・混ぜ方・空間・反転、Damped Track なら向き・head_tail）を並べる。書き出した拘束は check.vrm の作りの一覧
+  （structure の node_constraints）にあるので、工程（vrm.export）が left_out で、骨・VRM の拘束の形（vrm_form）・軸・相手・重みが
+  同じものどうしを突き合わせ、書き出されなかった拘束と、.blend に見つからなかった VRM の拘束を観測に載せる。
 
-**検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスの衣装のアセットと同じ VRM になることを確かめた
-（docs/model3d.md）。CI には Blender が無い。
+**検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスの衣装のアセットと同じ VRM になることを確かめた。
+3 作目の VRM のダンスの腕のねじれの骨の拘束 6 個も突き合わせた（docs/model3d.md）。CI には Blender が無い（突き合わせ方はテストする）。
 """
 import argparse
 import json
 import os
 import re
 import sys
+
+# Damped Track の向き → VRM の aim の軸（VRMC_node_constraint の aimAxis）
+AIM_AXES = {"TRACK_X": "PositiveX", "TRACK_Y": "PositiveY", "TRACK_Z": "PositiveZ",
+            "TRACK_NEGATIVE_X": "NegativeX", "TRACK_NEGATIVE_Y": "NegativeY", "TRACK_NEGATIVE_Z": "NegativeZ"}
+WEIGHT_TOLERANCE = 1e-6                                 # 影響（float32）と VRM の重み（JSON の数）の比べ
 
 
 def parse_args(argv):
@@ -32,6 +42,58 @@ def parse_args(argv):
     ap.add_argument("--textures", default="", help="JPEG にした絵の書き先のフォルダ（--jpeg-quality のとき）")
     ap.add_argument("--armature", default="", help="アーマチュアの名前（1 つだけなら省ける）")
     return ap.parse_args(argv)
+
+
+def vrm_form(row):
+    """.blend の骨の拘束 1 つ（報告の bone_constraints の 1 行）が VRM 1.0 の拘束の形なら (種類, 軸)、形でなければ None。
+    roll: Copy Rotation の軸 1 つ・Add・ローカルどうし・反転なし。rotation: 同じで軸 3 つ。aim: Damped Track の head_tail 0。
+    ミュートした拘束は形でない（書き出されない）。"""
+    if row.get("mute"):
+        return None
+    if (row.get("type") == "COPY_ROTATION" and row.get("mix") == "ADD" and row.get("spaces") == ["LOCAL", "LOCAL"]
+            and not row.get("inverted")):
+        axes = row.get("axes") or ""
+        if axes == "XYZ":
+            return ("rotation", None)
+        if len(axes) == 1:
+            return ("roll", axes)
+    if row.get("type") == "DAMPED_TRACK" and row.get("head_tail") == 0 and row.get("track") in AIM_AXES:
+        return ("aim", AIM_AXES[row["track"]])
+    return None
+
+
+def left_out(bone_constraints, exported):
+    """.blend の骨の拘束（報告の bone_constraints。骨ごとに拘束の並びの順）と、書き出した VRM の拘束（check.vrm の structure の
+    node_constraints: [{"node", "kind", "source", "axis", "weight"}]）を突き合わせる。VRM の拘束ごとに、同じ骨（node）の拘束のうち、
+    VRM の拘束の形（vrm_form）の種類と軸・相手（source）・重み（影響）が同じ最初のものを、書き出された拘束とする。
+    戻り: (書き出されなかった .blend の拘束, .blend に見つからなかった VRM の拘束)。"""
+    taken, unmatched = set(), []
+    for row in exported:
+        weight = 1.0 if row.get("weight") is None else row["weight"]      # VRM の重みの既定は 1
+        for index, constraint in enumerate(bone_constraints):
+            if (index not in taken and constraint["bone"] == row["node"] and vrm_form(constraint) == (row["kind"], row["axis"])
+                    and constraint.get("source") == row["source"]
+                    and abs(float(constraint.get("influence", 1.0)) - float(weight)) <= WEIGHT_TOLERANCE):
+                taken.add(index)
+                break
+        else:
+            unmatched.append(row)
+    return [c for index, c in enumerate(bone_constraints) if index not in taken], unmatched
+
+
+def constraint_row(pose_bone, constraint, armature):
+    """突き合わせに使う、骨の拘束 1 つの値（Blender の中で読む）。相手は、このアーマチュアの骨ならその名前、ほかの物体ならその名前。"""
+    row = {"bone": pose_bone.name, "constraint": constraint.name, "type": constraint.type, "mute": bool(constraint.mute),
+           "influence": float(constraint.influence)}
+    target = getattr(constraint, "target", None)
+    row["source"] = (getattr(constraint, "subtarget", "") or None) if target == armature else getattr(target, "name", None)
+    if constraint.type == "COPY_ROTATION":
+        row.update({"axes": "".join(a for a, on in zip("XYZ", (constraint.use_x, constraint.use_y, constraint.use_z)) if on),
+                    "inverted": bool(constraint.invert_x or constraint.invert_y or constraint.invert_z),
+                    "mix": constraint.mix_mode, "spaces": [constraint.owner_space, constraint.target_space]})
+    elif constraint.type == "DAMPED_TRACK":
+        row.update({"track": constraint.track_axis, "head_tail": float(constraint.head_tail)})
+    return row
 
 
 def texture_name(image_name, taken):
@@ -158,6 +220,8 @@ def main(argv=None):
     if result != {"FINISHED"} or not os.path.exists(out_vrm):
         raise SystemExit(f"VRM の書き出しに失敗しました: {result}")
     report["vrm_bytes"] = os.path.getsize(out_vrm)
+    report["bone_constraints"] = [constraint_row(pose_bone, constraint, armature)
+                                  for pose_bone in armature.pose.bones for constraint in pose_bone.constraints]
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
