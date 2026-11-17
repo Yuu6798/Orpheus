@@ -18,6 +18,9 @@
   入れる値が効くように、この場で（保存しない）ミュートを外し、範囲を広げ、ピン（形状キーを 1 つだけ見せる設定）を切り、形状キーの
   アニメーションとドライバーを外す（render.face_sheet と同じ手当て。報告の key_changes）。絶対の形状キーと基準のキーは止める。
 - 空（world: [R, G, B] 線形。省くと .blend の空）、にじみ（bloom: Glare の Bloom を合成で。省くと切る）。
+- 光と影のつなぎ分け（links。Blender の Light Linking）: 項目ごとに、光（lights）が照らす物だけ（receivers）か照らさない物（exclude）と、
+  影を落とす物だけ（blockers）を決める。"character" は踊り手（.blend にもとからある、描画に出るメッシュ。フックの build の前に数える）。
+  フックの build の後で入れる（フックが作った光と物体も指せる）。幕だけを照らし、踊り手だけが影を落とす光など。
 - フック（--hooks）: 舞台を作る build(ctx) をカメラを置く前に 1 回、コマごとに動かす frame(ctx) を描く直前に呼ぶ（どちらも任意）。
   ctx: bpy・scene・unit（scale_length）・settings・track（光の値 {T: {名前: 値}}）・cameras（{T: カメラのコマ}）・state（フックが
   使ってよい辞書）、コマごとに T・f・t（秒）・values（そのコマの光の値）・camera（そのコマのカメラ。position は m）。
@@ -36,18 +39,21 @@ import sys
 import time
 
 try:   # パッケージとして読むとき（テスト）
-    from . import face_sheet, pass_render
+    from . import face_sheet, pass_render, toon_look
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import face_sheet
     import pass_render
+    import toon_look
 
 DEFAULTS = {
     "resolution": [1080, 1920], "samples": 64, "raytracing": True, "shadows": True, "view_transform": "Standard",
     "camera": {"sensor_height": 36.0, "clip": [0.1, 1000.0]},
     "motion_blur": {"shutter": 0.0, "steps": 1, "off": []},
-    "cuts": [], "lights": {}, "ambient": None, "world": None, "bloom": None, "expressions": None, "only": None,
+    "cuts": [], "lights": {}, "ambient": None, "world": None, "bloom": None, "expressions": None, "only": None, "links": [],
 }
+CHARACTER = "character"                                  # links で、踊り手（.blend にもとからある、描画に出るメッシュ）を指す名前
+LINK_KEYS = {"lights", "receivers", "exclude", "blockers"}
 SECTIONS = ("camera", "motion_blur")
 LIT_MARK, LIT_SCALE, LIT_AMBIENT = "model3d_lit", "model3d_lit_ambient_scale", "model3d_lit_ambient"   # look.lit の印
 RENDER_FIXED = {"use_sequencer": False, "use_border": False, "pixel_aspect_x": 1.0, "pixel_aspect_y": 1.0, "use_multiview": False,
@@ -162,6 +168,83 @@ def action_curves(action):
     return curves
 
 
+def links_problem(links):
+    """光と影のつなぎ分け（links）の形の確かめ。問題があればその説明、無ければ None。項目は {lights: [光の物体の名前],
+    receivers | exclude: [物体の名前] か "character", blockers: [物体の名前] か "character"}。receivers と exclude は同じ項目に書けない。
+    1 つの光の照らす物（receivers・exclude）と影を落とす物（blockers）は、それぞれ 1 つの項目にだけ書く。"""
+    if not isinstance(links, list):
+        return "links は [{lights, receivers | exclude, blockers}, …] にしてください"
+    seen = {"receivers": {}, "blockers": {}}
+    for n, entry in enumerate(links):
+        where = f"links[{n}]"
+        if not isinstance(entry, dict) or set(entry) - LINK_KEYS:
+            return f"{where} は {{lights, receivers | exclude, blockers}} にしてください: {entry!r}"
+        lights = entry.get("lights")
+        if not isinstance(lights, list) or not lights or not all(isinstance(v, str) and v for v in lights) or len(set(lights)) != len(lights):
+            return f"{where}.lights は光の物体の名前（空でない・重ならない）の並びにしてください"
+        if "receivers" in entry and "exclude" in entry:
+            return f"{where} の receivers と exclude は、どちらか 1 つにしてください"
+        if not {"receivers", "exclude", "blockers"} & set(entry):
+            return f"{where} には receivers か exclude か blockers が要ります"
+        for key in ("receivers", "exclude", "blockers"):
+            if key not in entry:
+                continue
+            value = entry[key]
+            if value != CHARACTER and (not isinstance(value, list) or not value
+                                       or not all(isinstance(v, str) and v for v in value) or len(set(value)) != len(value)):
+                return f"{where}.{key} は物体の名前（空でない・重ならない）の並びか \"{CHARACTER}\" にしてください"
+            role = "blockers" if key == "blockers" else "receivers"
+            for light in lights:
+                if light in seen[role]:
+                    return f"{where}: 光 {light} の {role} は links[{seen[role][light]}] にも書いてあります（1 つの項目にだけ書く）"
+                seen[role][light] = n
+    return None
+
+
+def apply_links(bpy, links, character):
+    """光と影のつなぎ分け（Blender の Light Linking。5.2 の EEVEE でも効く）を入れる。項目ごとにコレクションを作り、光の
+    receiver_collection（照らす物。exclude はコレクションの中で EXCLUDE にする）と blocker_collection（影を落とす物）にする。
+    character は踊り手の物体の並び。戻り: 報告の並び（項目ごとの光と、照らす・照らさない・影を落とす物体の名前）。"""
+    report = []
+    for n, entry in enumerate(links):
+        lights = []
+        for name in entry["lights"]:
+            ob = bpy.data.objects.get(name)
+            if ob is None or ob.type != "LIGHT":
+                raise SystemExit(f"links[{n}] の光の物体がありません: {name}")
+            lights.append(ob)
+
+        def members(value, key):
+            if value == CHARACTER:
+                return list(character)
+            found = []
+            for name in value:
+                ob = bpy.data.objects.get(name)
+                if ob is None:
+                    raise SystemExit(f"links[{n}].{key} の物体がありません: {name}")
+                found.append(ob)
+            return found
+
+        item = {"lights": list(entry["lights"])}
+        for key in ("receivers", "exclude", "blockers"):
+            if key not in entry:
+                continue
+            group = bpy.data.collections.new(f"model3d_show_links_{n}_{key}")
+            for ob in members(entry[key], key):
+                group.objects.link(ob)
+            if key == "exclude":                         # この光は、この物体を照らさない（ほかは照らす）
+                for member in group.collection_objects:
+                    member.light_linking.link_state = "EXCLUDE"
+            for light in lights:
+                if key == "blockers":
+                    light.light_linking.blocker_collection = group
+                else:
+                    light.light_linking.receiver_collection = group
+            item[key] = [ob.name for ob in group.objects]
+        report.append(item)
+    return report
+
+
 def version_problem(version):
     """この描き方が動かない Blender の版なら、その理由（5.x の EEVEE の名前と合成の API で書いた。5.2.4 で確かめた）。"""
     if tuple(version[:2]) < (5, 0):
@@ -182,6 +265,9 @@ def main(argv=None):
     a = parse_args(argv)
     with open(a.settings, encoding="utf-8") as stream:
         settings = merged(json.load(stream))
+    problem = links_problem(settings["links"])
+    if problem:
+        raise SystemExit(problem)
     with open(a.cameras, encoding="utf-8") as stream:
         record = json.load(stream)
     track = {}
@@ -248,13 +334,8 @@ def main(argv=None):
            if m.get(LIT_MARK) is not None and m.node_tree is not None and LIT_AMBIENT in m.node_tree.nodes]
     if settings["ambient"] is not None and not lit:
         raise SystemExit("ambient を渡しましたが、光を受ける塗り（look.lit）の材質がありません")
-    lights = {}
-    for name, spec in settings["lights"].items():
-        ob = bpy.data.objects.get(name)
-        if ob is None or ob.type != "LIGHT":
-            lights[name] = None                          # フックが作るかもしれないので、build の後で確かめる
-        else:
-            lights[name] = ob
+    # 踊り手（links の "character"）: .blend にもとからある、描画に出るメッシュ（フックが作る舞台の物は入れない）
+    character = [o for o in bpy.data.objects if o.type == "MESH" and toon_look.rendered(o, sc.view_layers)]
     hooks, hooks_sha = None, None
     ctx = Context(bpy=bpy, scene=sc, unit=unit, settings=settings, track=track, cameras=cameras)
     if a.hooks:
@@ -264,11 +345,13 @@ def main(argv=None):
         hooks = load_hooks(a.hooks)
         if hasattr(hooks, "build"):
             hooks.build(ctx)
+    lights = {}                                          # 光の物体は、フックが作ってもよい（build の後で確かめる）
     for name in settings["lights"]:
         ob = bpy.data.objects.get(name)
         if ob is None or ob.type != "LIGHT":
             raise SystemExit(f"lights の光の物体がありません: {name}")
         lights[name] = ob
+    links = apply_links(bpy, settings["links"], character) if settings["links"] else []
     expressions = settings["expressions"]
     fps = record.get("fps") or sc.render.fps / sc.render.fps_base
     shape_targets, key_report = [], {}
@@ -410,7 +493,8 @@ def main(argv=None):
                          "dof_frames": len(dof_frames)},
               "motion_blur": {"shutter": blur["shutter"], "steps": blur["steps"], "position": "START", "frames": len(blurred),
                               "off": sorted(T for T in off if T in {p for p, _ in plan})},
-              "lights": sorted(settings["lights"]), "lit_materials": len(lit),
+              "lights": sorted(settings["lights"]), "lit_materials": len(lit), "links": links,
+              "character": [o.name for o in character],
               "hooks": {"path": os.path.abspath(a.hooks), "sha256": hooks_sha} if a.hooks else None,
               "render_changes": render_changes, "key_changes": key_report, "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}

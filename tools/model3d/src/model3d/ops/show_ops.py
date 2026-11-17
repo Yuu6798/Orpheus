@@ -35,7 +35,7 @@ def plan_lights(inputs, parameters, outputs, context):
 
 SHOW_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "show_render.py"
 SHOW_PARAMETERS = {"blender", "timeout", "resolution", "samples", "raytracing", "shadows", "view_transform", "camera", "motion_blur",
-                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only"}
+                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links"}
 CAMERA_KEYS = {"sensor_height", "clip"}
 BLUR_KEYS = {"shutter", "steps", "off"}
 LIGHT_KEYS = {"energy", "base", "color"}
@@ -160,6 +160,12 @@ def _show_settings(parameters):
         s["expressions"] = _expressions(parameters["expressions"])
     if parameters.get("only") is not None:
         s["only"] = _frames(parameters["only"], "only")
+    if parameters.get("links") is not None:
+        from ..blender_adapter.show_render import links_problem
+        problem = links_problem(parameters["links"])
+        if problem:
+            raise ToolError(problem)
+        s["links"] = parameters["links"]
     return s
 
 
@@ -202,7 +208,8 @@ def show_manifest(report, frames_dir):
                   "（cameras。model3d-cameras/0.1）は全部のコマをキーにして置き、カットの最後のキー（cuts の 1 つ前のコマ）を止めるので、"
                   "動きのぶれ（motion_blur。コマから後ろ）がカットをまたがない。fstop と focus_m のコマは被写界深度。光の値"
                   "（lights。plan.lights の model3d-light-track/0.1）で、名前で指した光の強さと色、look.lit の塗りのまわりの明るさ"
-                  "（ambient）をコマごとに入れる。表情の形状キー（expressions）、空（world）、にじみ（bloom）。作品ごとの舞台は、"
+                  "（ambient）をコマごとに入れる。表情の形状キー（expressions）、空（world）、にじみ（bloom）、光と影のつなぎ分け"
+                  "（links。幕だけを照らし、踊り手だけが影を落とす光など）。作品ごとの舞台は、"
                   "フック（hooks。Python の台本。レシピに明示したときだけ実行し、sha256 を報告に残す）の build と frame で作って動かす。"
                   "描いたコマは毎回描き直す（とばさない）。frames は描いたコマの一覧（model3d-frames/0.1）。Blender が要り、再利用しない（毎回実行）")
 def show_render(inputs, parameters, outputs, context):
