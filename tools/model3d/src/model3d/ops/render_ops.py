@@ -207,7 +207,7 @@ def _stage_files(track, frames_dir, only):
                   "塗りの値で、無ければシーンの全コマを腰を追う正面のカメラと動かない光で描く。輪郭線の太さはカメラの距離で"
                   "画面の上の太さにそろえる。舞台を切って background で緑背景か透けにも描ける。push で、描く直前に帯などの頂点を"
                   "当たり（閉じたメッシュ）の外へ出す。描いたコマはとばす（続きから描ける）。とばせるのは、フォルダの入力の控え"
-                  "（model3d_inputs.json）がいまの入力と同じコマだけで、違うコマか控えの無いコマがあれば描く前に止める。"
+                  "（model3d_inputs.json）がいまの入力と同じコマだけで、違うコマ・控えの無いコマ・別の入力で描くと控えたコマがあれば描く前に止める。"
                   "frames は描いたコマの一覧（model3d-frames/0.1）。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def stage_render(inputs, parameters, outputs, context):
     from .. import render_inputs
@@ -232,17 +232,24 @@ def stage_render(inputs, parameters, outputs, context):
     only = set(settings["only"]) if settings.get("only") else None
     key = _stage_key(inputs, settings, blender)
     files = _stage_files(track, frames_dir, only)
-    _, kept = render_inputs.check(frames_dir, key, files, "render.stage")
-    if track is not None:                                 # 描く前に控える（途中で止まっても、描いたコマには控えがある）
-        render_inputs.claim(frames_dir, key, files)
+    # トラックがあれば、確かめと同じ待ち合わせの中で、描く前に控える（途中で止まっても、描いたコマには控えがある）
+    _, kept = render_inputs.check(frames_dir, key, files, "render.stage", claim=track is not None)
     settings_path = Path(context.step_dir) / "render_settings.json"
     atomic_json(settings_path, settings)
     args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--frames-dir", str(frames_dir),
             "--report", outputs["report"]]
     if track is not None:
         args += ["--track", inputs["track"]]
-    record = launcher.run_blender(blender, RENDER_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
-                                  timeout=_timeout(parameters))
+    try:
+        record = launcher.run_blender(blender, RENDER_SCRIPT, None, args, log=Path(context.step_dir) / "blender.log",
+                                      timeout=_timeout(parameters))
+    except BaseException:
+        if track is None:                                 # 並びはシーンで決まるので、止まる前に書いたコマを控えてから止める
+            try:
+                render_inputs.claim(frames_dir, key, [n for n in _stage_files(None, frames_dir, only) if n not in set(files)])
+            except ToolError:
+                pass
+        raise
     report = read_json(outputs["report"])
     if track is None:                                     # 並びはシーンで決まったので、描いたコマを描いた後に控える
         from ..blender_adapter.stage_render import frame_name
@@ -785,7 +792,7 @@ def _passes_key(inputs, settings, blender, addons, extensions, bones_used):
                   "コマの並びとカメラはトラック（model3d-stage-track/0.1）、cameras（model3d-cameras/0.1）があればそのコマのカメラは"
                   "行列と焦点距離と主点から。出力の cameras は、並びの全部のコマのカメラと踊り手の点（重ねる側が使う）。描いたコマは"
                   "とばす（続きから描ける）。とばせるのは、フォルダの入力の控え（model3d_inputs.json）がいまの入力と同じコマだけで、"
-                  "違うコマか控えの無いコマがあれば描く前に止める。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"
+                  "違うコマ・控えの無いコマ・別の入力で描くと控えたコマがあれば描く前に止める。render.stage と並ぶ 2 つ目の描き方で、重ね合わせは Blender の外。"
                   "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def render_passes(inputs, parameters, outputs, context):
     from .. import contracts, render_inputs
@@ -837,8 +844,8 @@ def render_passes(inputs, parameters, outputs, context):
     chosen = set(merged["only"]) if merged["only"] else None
     files = [script.pass_file(kind, T, merged["format"]) for T, _, _ in plan if chosen is None or T in chosen
              for kind in script.all_kinds(merged)]
-    _, kept = render_inputs.check(passes_dir, key, files, "render.passes")
-    render_inputs.claim(passes_dir, key, files)           # 描く前に控える（途中で止まっても、描いたコマには控えがある）
+    # 確かめと同じ待ち合わせの中で、描く前に控える（途中で止まっても、描いたコマには控えがある）
+    _, kept = render_inputs.check(passes_dir, key, files, "render.passes", claim=True)
     settings_path = Path(context.step_dir) / "pass_settings.json"
     atomic_json(settings_path, settings)
     args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--track", inputs["track"],

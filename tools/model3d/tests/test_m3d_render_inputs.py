@@ -93,8 +93,21 @@ def test_clips_drawn_with_other_inputs_share_the_folder(tmp_path):
     assert render_inputs.check(tmp_path, other, ["f0003.png", "f0004.png"], "test")[1] == 2
     saved = render_inputs.read(tmp_path)
     assert sorted(saved["keys"]) == sorted([render_inputs.key_id(KEY), render_inputs.key_id(other)])
-    render_inputs.claim(tmp_path, other, ["f0001.png", "f0002.png"])      # 前のクリップのコマを描き直すと、使わない控えは消える
-    assert list(render_inputs.read(tmp_path)["keys"]) == [render_inputs.key_id(other)]
+    with pytest.raises(ToolError, match="控えを書き換えません"):              # 別の入力で控えたコマの控えは書き換えない
+        render_inputs.claim(tmp_path, other, ["f0001.png", "f0002.png"])
+    assert render_inputs.read(tmp_path) == saved
+
+
+def test_a_frame_claimed_by_other_inputs_stops_even_before_it_is_drawn(tmp_path):
+    other = {**KEY, "blend": "c" * 64}
+    render_inputs.check(tmp_path, KEY, ["f0001.png", "f0002.png"], "test", claim=True)   # 確かめて、同じ待ち合わせの中で控える
+    assert sorted(render_inputs.read(tmp_path)["files"]) == ["f0001.png", "f0002.png"]
+    with pytest.raises(ToolError, match=r"2 個のコマ（f0001.png, f0002.png）は、まだファイルはありませんが、別の入力で描くと控えてあります"
+                                         r"（違うもの: \.blend"):
+        render_inputs.check(tmp_path, other, ["f0001.png", "f0002.png", "f0003.png"], "render.passes", claim=True)
+    assert "f0003.png" not in render_inputs.read(tmp_path)["files"]                     # 止まった方は控えない
+    assert render_inputs.check(tmp_path, KEY, ["f0001.png"], "test")[1] == 0              # 同じ入力なら続けられる
+    assert render_inputs.check(tmp_path, other, ["f0004.png"], "test", claim=True)[1] == 0  # 重ならないコマは別の入力でもよい
 
 
 def test_a_record_of_another_kind_is_not_read(tmp_path):
@@ -138,6 +151,10 @@ for T, f in plan:
         continue
     open(path, "wb").write(blend + b" %d" % T)
     rendered.append(T)
+    marker = os.path.join(os.path.dirname(os.path.abspath(value("--frames-dir"))), "fail_after_two")
+    if len(rendered) == 2 and os.path.exists(marker):          # 2 コマ描いたところで止まる（止まった描画の続きの確かめ）
+        os.remove(marker)
+        sys.exit(3)
 json.dump({"schema_version": "model3d-stage-render/0.1", "planned": [{"T": T, "f": f} for T, f in plan], "rendered": rendered,
            "skipped_existing": existing, "fps": (track or {}).get("fps", 24), "resolution": settings.get("resolution", [1080, 1920]),
            "settings": settings}, open(value("--report"), "w"))
@@ -225,6 +242,17 @@ def test_render_stage_without_a_track_records_the_frames_after_drawing(tmp_path)
     assert sorted(render_inputs.read(frames)["files"]) == ["f0001.png", "f0002.png", "f0003.png"]
     assert _ok(_run(_stage_recipe(tmp_path / "a", params, Ts=None), tmp_path / "runs"))["inputs"]["kept"] == 3
     _fails(_run(_stage_recipe(tmp_path / "a", params, blend=b"dance r2", Ts=None), tmp_path / "runs"), "別の入力で描いたもの")
+
+
+def test_render_stage_without_a_track_records_the_frames_written_before_a_failure(tmp_path):
+    frames = tmp_path / "frames"
+    params = {"blender": str(stand_in_executable(tmp_path, "blender", STAGE_STAND_IN)), "frames_dir": str(frames)}
+    (tmp_path / "fail_after_two").write_bytes(b"")
+    _fails(_run(_stage_recipe(tmp_path / "a", params, Ts=None), tmp_path / "runs"), "終了コード 3")
+    assert sorted(p.name for p in frames.glob("f*.png")) == ["f0001.png", "f0002.png"]
+    assert sorted(render_inputs.read(frames)["files"]) == ["f0001.png", "f0002.png"]        # 止まる前に書いたコマも控える
+    again = _ok(_run(_stage_recipe(tmp_path / "a", params, Ts=None), tmp_path / "runs"))  # 同じ入力なら続きから描ける
+    assert again["inputs"]["kept"] == 2 and again["rendered"] == 1
 
 
 def test_render_stage_in_its_own_step_folder_writes_the_record_there(tmp_path):

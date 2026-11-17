@@ -4,7 +4,8 @@ render.stage と render.passes は、描いてあるコマのファイルをと�
 Blender の版）を変えたのに同じフォルダへ描くと、とばしたコマは前の入力の絵のまま残る（リポジトリ外の 3 作目の VRM のダンスで、作り直した
 踊りの下見に古いコマが混ざった）。そこで、描く前に、コマのファイルごとに「どの入力で描くか」をフォルダの控えに書いておき、次に同じフォルダへ
 描くときは、とばすコマ（もうファイルがあるコマ）の控えが今の入力と同じときだけ続きから描く。違うコマか、控えの無いコマ（どの入力で描いたか
-分からない）が 1 つでもあれば、描く前に止める。
+分からない）が 1 つでもあれば、描く前に止める。まだファイルが無くても、別の入力で描くと控えたコマがあれば止める（ほかのプロセスが同じ
+フォルダへ別の入力で描いている途中なら、とばしたコマの持ち主が入れ替わるため）。確かめと控えは、同じ待ち合わせの中で続けて行う。
 
 - 入力のまとまり（key）: 工程の名前と、入力のファイルの sha256・設定（描く絵を変えない only などは除く）・描く台本（Blender が読む
   blender_adapter の台本と、それが読む同じフォルダの台本）の sha256・Blender の版など。sha256(正規の JSON) の先頭 16 文字を番号にする。
@@ -101,30 +102,64 @@ def _first(names, count=5):
     return shown + (" …" if len(names) > count else "")
 
 
-def check(directory, key, files, where):
-    """フォルダにもうあるコマのファイル（files のうち、ファイルのあるもの）の控えが key と同じかを確かめる。違うか控えが無ければ止める。
-    files はフォルダからの相対パス（/ 区切り）。(控え, とばす数) を返す。"""
+def _reasons(record, groups, key):
+    return "、".join(sorted({reason for recorded in groups for reason in differences(record["keys"].get(recorded), key)})) or "控えの番号"
+
+
+def check(directory, key, files, where, claim=False):
+    """files（フォルダからの相対パス。/ 区切り）を key で描いてよいかを確かめる。次のどれかがあれば止める:
+    - もうファイルがあるのに控えの無いコマ（どの入力で描いたか分からない）
+    - もうファイルがあり、別のまとまりで描いたと控えたコマ（とばすと前の絵のまま残る）
+    - まだファイルが無いが、別のまとまりで描くと控えたコマ（ほかのプロセスが描いている途中か、途中で止まった描画か、消したコマ。
+      同じフォルダへ別の入力で同時に描くと、とばしたコマの持ち主が入れ替わるため）
+    claim なら、確かめたのと同じ待ち合わせの中で、files を key で描くと控える（確かめてから控えるまでの間に、ほかのプロセスが割り込まない）。
+    (控え, もうファイルのあるコマの数) を返す。"""
     directory = Path(directory)
-    record = read(directory)
+    lock = _locked(directory)
+    try:
+        record = read(directory)
+        current = key_id(key)
+        present, unknown, drawn, claimed = 0, [], {}, {}
+        for name in files:
+            exists = (directory / name).is_file()
+            recorded = record["files"].get(name)
+            present += exists
+            if exists and recorded is None:
+                unknown.append(name)
+            elif recorded is not None and recorded != current:
+                (drawn if exists else claimed).setdefault(recorded, []).append(name)
+        if unknown:
+            raise ToolError(f"{where}: コマのフォルダ {directory} に、入力の控え（{NAME}）の無いコマが {len(unknown)} 個あります"
+                            f"（{_first(unknown)}）。どの入力で描いたコマか分からないので、続きから描けません。別のフォルダへ描くか、"
+                            "そのコマを消してから描いてください")
+        if drawn:
+            names = sorted(n for group in drawn.values() for n in group)
+            raise ToolError(f"{where}: コマのフォルダ {directory} の {len(names)} 個のコマ（{_first(names)}）は、別の入力で描いたものです"
+                            f"（違うもの: {_reasons(record, drawn, key)}）。続きから描けるのは、同じ入力で描くときだけです（とばしたコマが"
+                            f"前の絵のまま残るため）。別のフォルダへ描くか、そのコマと控え（{NAME}）を消してから描いてください")
+        if claimed:
+            names = sorted(n for group in claimed.values() for n in group)
+            raise ToolError(f"{where}: コマのフォルダ {directory} の {len(names)} 個のコマ（{_first(names)}）は、まだファイルはありませんが、"
+                            f"別の入力で描くと控えてあります（違うもの: {_reasons(record, claimed, key)}。ほかのプロセスがこのフォルダへ描いて"
+                            "いる途中か、途中で止まった描画か、消したコマ）。別のフォルダへ描くか、ほかに描いているプロセスが無いことを"
+                            f"確かめてから、フォルダのコマと控え（{NAME}）を消して描いてください")
+        if claim:
+            _write(directory, record, key, files)
+    finally:
+        lock.__exit__(None, None, None)
+    return record, present
+
+
+def _write(directory, record, key, files):
     current = key_id(key)
-    present = [name for name in files if (directory / name).is_file()]
-    unknown = [name for name in present if name not in record["files"]]
-    other = {}
-    for name in present:
-        recorded = record["files"].get(name)
-        if recorded is not None and recorded != current:
-            other.setdefault(recorded, []).append(name)
-    if unknown:
-        raise ToolError(f"{where}: コマのフォルダ {directory} に、入力の控え（{NAME}）の無いコマが {len(unknown)} 個あります"
-                        f"（{_first(unknown)}）。どの入力で描いたコマか分からないので、続きから描けません。別のフォルダへ描くか、"
-                        "そのコマを消してから描いてください")
-    if other:
-        names = sorted(n for group in other.values() for n in group)
-        reasons = sorted({reason for recorded in other for reason in differences(record["keys"].get(recorded), key)})
-        raise ToolError(f"{where}: コマのフォルダ {directory} の {len(names)} 個のコマ（{_first(names)}）は、別の入力で描いたものです"
-                        f"（違うもの: {'、'.join(reasons) or '控えの番号'}）。続きから描けるのは、同じ入力で描くときだけです（とばしたコマが"
-                        "前の絵のまま残るため）。別のフォルダへ描くか、そのコマを消してから描いてください")
-    return record, len(present)
+    record["keys"][current] = key
+    for name in files:
+        record["files"][name] = current
+    used = set(record["files"].values())
+    record["keys"] = {k: v for k, v in sorted(record["keys"].items()) if k in used}
+    record["files"] = dict(sorted(record["files"].items()))
+    atomic_json(Path(directory) / NAME, record)
+    return current
 
 
 def _locked(directory):
@@ -142,19 +177,17 @@ def _locked(directory):
 
 
 def claim(directory, key, files):
-    """files（フォルダからの相対パス）を key で描く、と控えに書く（前の控えは読み直してから足す）。使われなくなった key は消す。"""
+    """files（フォルダからの相対パス）を key で描いた（描く）、と控えに書く（前の控えは読み直してから足す）。別のまとまりで控えた
+    ファイルは書き換えずに止める。使われなくなった key は消す。"""
     directory = Path(directory)
     lock = _locked(directory)
     try:
         record = read(directory)
         current = key_id(key)
-        record["keys"][current] = key
-        for name in files:
-            record["files"][name] = current
-        used = set(record["files"].values())
-        record["keys"] = {k: v for k, v in sorted(record["keys"].items()) if k in used}
-        record["files"] = dict(sorted(record["files"].items()))
-        atomic_json(directory / NAME, record)
+        taken = sorted(name for name in files if record["files"].get(name) not in (None, current))
+        if taken:
+            raise ToolError(f"コマのフォルダ {directory} の {len(taken)} 個のコマ（{_first(taken)}）は、別の入力で描くと控えてあるので、"
+                            "控えを書き換えません")
+        return _write(directory, record, key, files)
     finally:
         lock.__exit__(None, None, None)
-    return current
