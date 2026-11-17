@@ -596,6 +596,8 @@ def test_evidence_camera_and_shots():
     assert evidence.shots({"peak_frame": 1, "kind": "動的"}, 1, 100) == [1, 2]       # 範囲の外のコマは描かない
     assert evidence.shots({"peak_frame": 10, "kind": "静的"}, 1, 100) == [10]
     assert evidence.image_name(7, 12) == "e007_f0012.jpg"
+    for frame in (12, 10000, 123456, -53):                                       # コマの番号は桁の数によらず読み戻せる
+        assert ac.evidence_frame(evidence.image_name(7, frame)) == frame
     # 場所の外向き（無ければ腰から場所へ）と、体の前と少し上から。静的 0.95 m 離れる。床すれすれより下からは撮らない
     place = evidence.camera_place([1.0, 0.0, 1.0], None, P(0.0, 0.0, 1.0), P(0.0, -1.0, 0.0), "静的", P)
     toward = np.array([0.9, -0.5, 0.25])

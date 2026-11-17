@@ -887,6 +887,11 @@ def table_markdown(report, image_dir=IMAGE_DIRECTORY):
     return "\n".join(lines) + "\n"
 
 
+def evidence_frame(name):
+    """証拠の絵の名前（e<番号>_f<コマ>.jpg）のコマ。桁の数によらず、拡張子の前まで読む（10000 コマ目より後でも、負のコマでも）。"""
+    return int(Path(name).stem.rsplit("_f", 1)[1])
+
+
 def contact_sheets(report, folder, columns=6, rows=5, cell=300):
     """証拠の絵の一覧の絵（Pillow の画像の並び）。1 枚に rows 段まで、多ければ次の 1 枚へ。字は ASCII だけ（番号・秒・コマ・信号・値）。
     folder は証拠の絵のフォルダ。"""
@@ -905,7 +910,7 @@ def contact_sheets(report, folder, columns=6, rows=5, cell=300):
                 tile = image.convert("RGB").resize((cell - 4, cell - 4), Image.LANCZOS)
             x, y = (i % columns) * cell, (i // columns) * (cell + caption)
             sheet.paste(tile, (x + 2, y + 2))
-            frame = int(name.split("_f")[1][:4])
+            frame = evidence_frame(name)
             seconds = (frame - report["frames"][0]) / report["fps"]
             draw.text((x + 4, y + cell), "#%d  %.2fs (f %d)%s" % (event["id"], seconds, frame, "  PEAK" if frame == event["peak_frame"] else ""),
                       fill=(255, 255, 0), font=font)
