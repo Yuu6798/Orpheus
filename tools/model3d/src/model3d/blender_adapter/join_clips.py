@@ -8,6 +8,7 @@
       その本の最初のキー ＋ round(((T − 1) ÷ fps − offset_s) × fps) を、その本のキーの範囲に収めた値
   （範囲の外のコマは、最初か最後の姿勢で止まる。2D の合成で本を並べる式と同じ）。
 - 本ごとに、動き（F カーブのいちばん多いアクション）の F カーブを、元のコマで読む。F カーブの組がそろっていない本・fps が違う本は止める。
+  キーの無い F カーブは読まず、組んだ動きでも書き直さない（そのまま残す。数は報告の clips の empty_curves）。
 - align が mean のとき、本ごとに、使うコマの腰（hips の骨）の位置の平均が原点（左右・前後。高さは変えない）に来るように、
   腰の位置をずらす（本ごとに、踊り手を画面の中央へ置き直すのと同じ）。
 - 最初の区間の本の .blend の動きに、組んだ値を全部のコマのキー（補間は直線）として打ち直し、シーンのコマの範囲を 1〜最後、fps を
@@ -146,10 +147,14 @@ def main_action(actions):
     return max(actions, key=lambda action: len(fcurves_of(action))) if actions else None
 
 
+def keyed_curves(curves):
+    """キーのある F カーブだけ（キーの無い F カーブは、値を読まず、組んだ動きでも書き直さずにそのまま残す）。"""
+    return [curve for curve in curves if len(curve.keyframe_points)]
+
+
 def key_range(curves):
-    """F カーブの最初と最後のキーのコマ（全部の F カーブの、最初のキーの最小と最後のキーの最大）。"""
-    frames = [point.co[0] for curve in curves for point in (curve.keyframe_points[0], curve.keyframe_points[-1])
-              if len(curve.keyframe_points)]
+    """F カーブの最初と最後のキーのコマ（キーのある F カーブの、最初のキーの最小と最後のキーの最大）。"""
+    frames = [point.co[0] for curve in keyed_curves(curves) for point in (curve.keyframe_points[0], curve.keyframe_points[-1])]
     if not frames:
         raise SystemExit("動きのアクションにキーがありません")
     return int(round(min(frames))), int(round(max(frames)))
@@ -165,7 +170,8 @@ def _read_clip(bpy, path, armature_name, hips):
     action = main_action(bpy.data.actions)
     if action is None:
         raise SystemExit(f"{path}: 動き（F カーブのあるアクション）がありません")
-    curves = fcurves_of(action)
+    every = fcurves_of(action)
+    curves = keyed_curves(every)
     first, last = key_range(curves)
     keys = [(curve.data_path, curve.array_index) for curve in curves]
     if len(set(keys)) != len(keys):
@@ -173,7 +179,7 @@ def _read_clip(bpy, path, armature_name, hips):
     values = {key: [curve.evaluate(frame) for frame in range(first, last + 1)] for key, curve in zip(keys, curves)}
     hips_keys = [key for key in keys if bone_channel(key[0]) == (hips, ".location")]
     return {"keys": keys, "values": values, "range": (first, last), "fps": scene.render.fps / scene.render.fps_base,
-            "hips_keys": hips_keys, "action": action.name, "armature": armatures[0].name}
+            "hips_keys": hips_keys, "action": action.name, "armature": armatures[0].name, "empty_curves": len(every) - len(curves)}
 
 
 def main(argv=None):
@@ -217,7 +223,7 @@ def main(argv=None):
     scene = bpy.context.scene
     armature = bpy.data.objects[base["armature"]]
     action = main_action(bpy.data.actions)
-    curves = fcurves_of(action)
+    curves = keyed_curves(fcurves_of(action))
 
     # 本ごとの腰の位置のずらし（使うコマの、世界の左右・前後の平均を原点へ。高さは変えない）
     offsets = {}
@@ -285,8 +291,8 @@ def main(argv=None):
 
     report = {"schema_version": "model3d-motion-join/0.1", "blender": bpy.app.version_string, "armature": armature.name,
               "action": action.name, "curves": len(curves), "frames": [1, total], "fps": scene.render.fps / scene.render.fps_base,
-              "clips": [{"name": name, "keys": list(clips[name]["range"]), "fps": clips[name]["fps"], "action": clips[name]["action"]}
-                        for name in order],
+              "clips": [{"name": name, "keys": list(clips[name]["range"]), "fps": clips[name]["fps"], "action": clips[name]["action"],
+                         "empty_curves": clips[name]["empty_curves"]} for name in order],
               "segments": segment_report, "cuts": cut_frames(segments), "align": align, "hips": hips,
               "offsets": {name: {k: v for k, v in item.items() if k != "keys"} for name, item in offsets.items()},
               "points_frames_removed": removed_points_frames}

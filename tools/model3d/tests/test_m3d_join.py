@@ -63,6 +63,20 @@ def test_source_table_uses_the_private_script_rounding():
         assert [source for _, source in table] == expected, (fps, offset)
 
 
+def test_key_range_skips_curves_without_keys():
+    from types import SimpleNamespace as N
+
+    def curve(*frames):
+        return N(keyframe_points=[N(co=(float(frame), 0.0)) for frame in frames])
+
+    curves = [curve(1, 24, 48), curve(), curve(5, 52), curve()]
+    assert join_clips.keyed_curves(curves) == [curves[0], curves[2]]          # キーの無い F カーブは読まず、書き直さない
+    assert join_clips.key_range(curves) == (1, 52)
+    assert join_clips.key_range([curve(0.4, 99.6)]) == (0, 100)              # 小数のコマは丸める
+    with pytest.raises(SystemExit, match="キーがありません"):
+        join_clips.key_range([curve(), curve()])
+
+
 def test_bone_channel_reads_escaped_bone_names():
     assert join_clips.bone_channel('pose.bones["mixamorig:Hips"].location') == ("mixamorig:Hips", ".location")
     assert join_clips.bone_channel('pose.bones["a\\"]b\\\\c"].rotation_quaternion') == ('a"]b\\c', ".rotation_quaternion")
