@@ -63,6 +63,7 @@ DEFAULTS = {
 ARM_BODY_KEYS = ("upper_arm", "elbow", "forearm", "wrist", "fist")
 INTEGER_KEYS = {"pop_window", "jitter_window", "jitter_reversals", "slide_frames", "merge_gap_frames"}
 FOOT_LOWEST = ("world", "object")   # 足のメッシュの低い点の選び方: 世界の z（既定）か、物体の中の z（試作と同じ。誤り）
+LEG_RADIUS_GUESS_M = 0.05           # 脚の太さを測れないとき（その骨にいちばん重い頂点が無い）の推定の太さ（仮の値。試作と同じ）
 
 # 決まった値（パラメーターにしない。試作と同じ）
 SLICE_DZ, BINS = 0.02, 24                 # 胴の輪切りの間隔（m）と、向きの数
@@ -397,7 +398,7 @@ class Body:
         self.head_box = (lo, hi)
 
     def _legs(self):
-        self.leg_radius = {}
+        self.leg_radius, self.leg_estimated = {}, set()
         for side in SIDES:
             for part, child in (("upper_leg", "lower_leg"), ("lower_leg", "foot")):
                 bone = self.H[f"{side}_{part}"]
@@ -408,7 +409,11 @@ class Body:
                     if picked:
                         distances.extend(_segment_distances(mesh["co"][picked], a, b).tolist())
                 distances.sort()
-                self.leg_radius[(side, part)] = distances[len(distances) // 2] if distances else 0.05
+                if distances:
+                    self.leg_radius[(side, part)] = distances[len(distances) // 2]
+                else:                                                         # 測れない脚（重みが補助の骨にあるなど）: 推定の太さで見る
+                    self.leg_radius[(side, part)] = LEG_RADIUS_GUESS_M
+                    self.leg_estimated.add((side, part))
 
     # その体で避けられない重なり: 腕を自然に下ろした時の、二の腕と胴の重なり。肩幅より胸まわりが広い体では、下ろしただけで重なる。
     # 動きの破綻ではないので、二の腕の点の深さから差し引く
@@ -524,6 +529,7 @@ def slice_sd(sl, q):
 def static_hits(body, cfg, foot_lowest, hits, contact):
     """1 コマで分かる物を hits に足す（試作と同じ順: コマごとに、左右の腕と体・腕と脚・手首・ひざ・床、腕どうし、脚どうし、首）。"""
     sample, H = body.sample, body.H
+    body.estimated_labels = set()                                         # 推定の脚の太さを使った出来事（信号, 場所）
     feet = sample.foot_world if foot_lowest == "world" else sample.foot_object
     regions = (("chest", body.chest), ("hips", H["hips"]), ("head", H["head"]))
     torso_ranges = (("chest", "胸", (body.waist_z, body.slices[-1][0])), ("hips", "腰", (body.slices[0][0], body.waist_z + WAIST_MARGIN_M)))
@@ -587,9 +593,11 @@ def static_hits(body, cfg, foot_lowest, hits, contact):
                         depth = r + body.leg_radius[(side2, part)] - dist
                         if depth >= cfg["contact_min_m"] and (worst is None or depth > worst[0]):
                             worst = (depth, f"{SIDE[side]}の{ARM_NAMES[k]} → {SIDE[side2]}の{word}", pt,
-                                     _normalized(pt - c) if dist > 1e-6 else None)
+                                     _normalized(pt - c) if dist > 1e-6 else None, (side2, part) in body.leg_estimated)
             if worst and worst[0] >= cfg["penetration_min_m"]:
                 hits.append((frame, "penetration.arm_leg", worst[1], worst[0], _apply(aw, worst[2]), _rotate(aw, worst[3])))
+                if worst[4]:
+                    body.estimated_labels.add(("penetration.arm_leg", worst[1]))
             elif worst:
                 contact["腕と脚"] = contact.get("腕と脚", 0) + 1
             # 手首: 二の腕から見て、軸まわりに回っていない前腕の向き（前腕の骨そのものの軸まわりの向きには頼らない。前腕の骨が軸まわりに
@@ -642,9 +650,12 @@ def static_hits(body, cfg, foot_lowest, hits, contact):
                     if part == "upper_leg" and part2 == "upper_leg":     # 太ももは、片方の軸が相手の中ほどまで入った時だけ
                         limit = max(limit, r1 + r2 - 0.5 * min(r1, r2))
                     if depth >= limit and (worst is None or depth > worst[0]):
-                        worst = (depth, f"左の{word} ↔ 右の{word2}", (pt + c) / 2)
+                        worst = (depth, f"左の{word} ↔ 右の{word2}", (pt + c) / 2,
+                                 ("left", part) in body.leg_estimated or ("right", part2) in body.leg_estimated)
         if worst:
             hits.append((frame, "penetration.leg_leg", worst[1], worst[0], _apply(aw, worst[2]), None))
+            if worst[3]:
+                body.estimated_labels.add(("penetration.leg_leg", worst[1]))
         head, chest = H["head"], body.chest
         rel = (M["head"][:3, :3] @ np.linalg.inv(body.rest3[head])).T @ (P[body.index[chest]][:3, :3] @ np.linalg.inv(body.rest3[chest]))
         neck = math.degrees(2 * math.acos(min(1.0, abs(quaternion(rel)[0]))))
@@ -816,6 +827,8 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
     counts = {}
     for event in events:
         counts[event["signal"]] = counts.get(event["signal"], 0) + 1
+        if (event["signal"], event["part"]) in body.estimated_labels:       # 推定の脚の太さで測った重なりは、実測と分ける
+            event["evidence"] = "estimated"
     skipped = []
     if body.head_tris is None:
         skipped.append({"check": "head", "reason": "頭の骨だけに重みのある面がありません（腕と頭の重なりは、頭の中の球だけで見ない）"})
@@ -834,6 +847,7 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
             "torso": {"points": body.torso_points, "slices": len(body.slices)},
             "head_triangles": 0 if body.head_tris is None else int(len(body.head_tris)),
             "leg_radius_m": {f"{side}_{part}": round(value, 4) for (side, part), value in body.leg_radius.items()},
+            "leg_radius_estimated": sorted(f"{side}_{part}" for side, part in body.leg_estimated),
             "cuts": cuts, "contact_frames": contact,
             "arm_torso_baseline_m": {side: [round(v, 4) for v in values] for side, values in body.baseline.items()},
             "counts": counts, "skipped": skipped, "events": events}

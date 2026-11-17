@@ -2014,6 +2014,8 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 
 - **直さない・採点しない・関門にしない**（ユウ 2026-11-17〜18。作る側のエージェントが破綻に気づくための手助け）。出来事はどれも
   `status: review`・`evidence: measured` で、数と場所だけを出す。異常と読むかは、絵を見て決める。**出来事が無いことは、破綻が無いことではない**。
+  - 脚の太さを測れない（その骨にいちばん重い頂点が体のメッシュに無い。重みが補助の骨にある、など）ときは、推定の太さ 5 cm（仮の値）で見て、
+    その脚を使った腕と脚・脚どうしの重なりの出来事は `evidence: estimated` にする（実測と分ける）。報告の `leg_radius_estimated` に、推定にした脚を並べる。
   - 工程は、出来事があれば `needs_review`、無ければ `succeeded`（`report_only: true` なら測るだけで `succeeded`）。合否（`pass`）・`strict` は無い。
   - 縮める・押し出すなどの直す機能は入れない（直すのは `motion.push_hands`・`motion.ground_feet` などの別の工程）。
 - **報告の形は `mv inspect` に合わせた**（出来事ごとの `status: review`・`evidence: measured`、コマと秒、いちばん大きいコマ）。ただしコマは
@@ -2091,7 +2093,8 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 | `merge_gap_frames` | 2 | 出来事にまとめる、すき間のコマ数 |
 
 **出力** `report`（`model3d-animation-check/0.1`）: `overall`（`review`＝出来事がある／`clean_with_skips`／`clean`。どれも合否ではない）・`frames`・`fps`・
-使ったしきい値・`skip_bones`・`foot_lowest`・飛びを見た骨の数（`bones`）・体と布と髪のメッシュ・胴の点と輪切りの数・頭の三角形の数・脚の太さ・
+使ったしきい値・`skip_bones`・`foot_lowest`・飛びを見た骨の数（`bones`）・体と布と髪のメッシュ・胴の点と輪切りの数・頭の三角形の数・脚の太さ
+（`leg_radius_m`。推定にした脚は `leg_radius_estimated`）・
 `cuts`（切り替えのコマ）・`contact_frames`・`arm_torso_baseline_m`・信号ごとの数（`counts`）・見なかった検査（`skipped`。頭の面が無い、足の点が無い）・
 `events`（`id`・`category`・`signal`・`title`・`part`・`frames`・`seconds`・`peak_frame`・`peak_value`・`unit`・`kind`・`momentary`・`location`・
 `normal`・`severity`・`evidence`・`status`）。Blender の書き出し（`sample.npz`・`sample.json`）は工程のフォルダに残る。

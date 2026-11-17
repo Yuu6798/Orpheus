@@ -287,6 +287,20 @@ def test_thighs_need_a_deeper_overlap_than_the_other_leg_pairs():
     assert deep and deep[0]["part"] == "左の太もも ↔ 右の太もも"
 
 
+def test_unmeasured_legs_are_estimates():
+    """脚の太さを測れない（その骨にいちばん重い頂点が無い）と、推定の太さで見て、その脚を使った重なりを evidence: estimated にする。"""
+    sample = make_sample(_faulty)
+    for mesh in sample.body:
+        mesh["dominant"] = ["hips" if name == "upper_leg.L" else name for name in mesh["dominant"]]   # 左の太ももの重みが別の骨に
+    report = ac.check(sample, ac.settings({}))
+    assert report["leg_radius_estimated"] == ["left_upper_leg"] and report["leg_radius_m"]["left_upper_leg"] == ac.LEG_RADIUS_GUESS_M
+    legs = [e for e in report["events"] if e["signal"] in ("penetration.leg_leg", "penetration.arm_leg")]
+    assert {e["signal"] for e in legs if "左の太もも" in e["part"]} == {"penetration.leg_leg", "penetration.arm_leg"}
+    for event in report["events"]:
+        assert event["evidence"] == ("estimated" if event in legs and "左の太もも" in event["part"] else "measured")
+    assert ac.check(make_sample(_faulty), ac.settings({}))["leg_radius_estimated"] == []
+
+
 def test_wrist_twist_is_measured_from_the_untwisted_forearm():
     """前腕の骨が軸まわりに裏返り、手が逆に回って打ち消している時（見た目は変わらない）は、手首のねじれに数えない。"""
     def flip(pose, f):
