@@ -126,6 +126,14 @@ def test_per_shot_smoothing_does_not_carry_motion_across_the_cut():
     assert split[15]["matrix"][0][3] == pytest.approx(1.0, abs=1e-12)                         # （重みの和の丸めで 1 ± 2e-16 になる環境がある）
     assert 0.0 < whole[14]["matrix"][0][3] < 0.5 < whole[15]["matrix"][0][3] < 1.0           # 全体でならすと、つなぎ目の前後に混ざる
     assert report["samples"]["per_shot"] is True
+    cylinder = [{"until": 0.5, "keys": [{**{k: v for k, v in _key().items() if k != "el"}, "height": {"above": 0.0}}]},
+                {"until": 1.0, "keys": [{**{k: v for k, v in _key().items() if k != "el"}, "height": {"above": 0.0}}]}]
+    centred, _ = _build(cylinder, path=path, smooth={"sigma_s": 4 / 30, "reach": 2.0, "per_shot": True})
+    assert centred[14]["matrix"][0][3] == 0.0                                              # 円柱の置き方の回る中心も、区間の中だけ
+    assert centred[15]["matrix"][0][3] == pytest.approx(1.0, abs=1e-12)
+    assert centred[14]["dancer"][0] == 0.0 and centred[15]["dancer"][0] == pytest.approx(1.0, abs=1e-12)
+    blended, _ = _build(cylinder, path=path, smooth={"sigma_s": 4 / 30, "reach": 2.0})
+    assert 0.0 < blended[14]["matrix"][0][3] < 0.5
     bump = np.zeros(count)
     bump[5] = 1.0
     path = _path(count, points={"hips": np.stack([bump, np.zeros(count), np.ones(count)], axis=1)})

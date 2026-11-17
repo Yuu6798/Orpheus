@@ -30,8 +30,8 @@ f = dance.frame0 + dance.fps × 踊りの時刻。
   - ease の in2・out2: 2 乗のつなぎ方（u²・1 − (1 − u)²）。
   - キーの offset（[x, y, z] m）: 狙う点を世界の座標でずらす（dz の代わり）。
   - キーの follow（0〜1）: 狙う点 = 区間のコマの生の点の平均 × (1 − follow) + その時刻の点 × follow（区間の中で少しだけ追う）。
-  - smooth.per_shot: 点を、通り道の全体でなく区間のコマの並びだけでならす（端は端の値で延ばす。σ は sigma_s × fps コマ、
-    ±ceil(reach × σ) コマ）。区間の外の動きを、つなぎ目の前後のカメラに入れない。
+  - smooth.per_shot: 点（狙う点・回る中心・ピントの点）を、通り道の全体でなく区間のコマの並びだけでならす（端は端の値で延ばす。
+    σ は sigma_s × fps コマ、±ceil(reach × σ) コマ）。区間の外の動きを、つなぎ目の前後のカメラに入れない。
   - 区間の fstop（f 値）とキーの focus（ピントの点の名前）: 絞りのある区間のコマの cameras に fstop と focus_m（カメラの位置から
     ピントの点までのまっすぐの距離 m）を書く。focus はキーの間で混ぜる（ピントが手前から奥へ移る）。どちらのキーにも focus が
     無ければ、ピントは狙う点。ピントの点は smooth.focus_sigma_s（省くと sigma_s）でならす（follow・offset は掛けない）。
@@ -330,7 +330,11 @@ class Orbit(Keyed):
         shot = self.shots[n]
         a, b, w = self.keys_at(n, t)
         dance_t, held = self.dance_time(t)
-        centre = samples.at(self.p["centre"], dance_t)
+        if self.per_shot:                                # 回る中心も、区間の中だけでならす（つなぎ目の前後の位置に混ぜない）
+            first, smooth, _ = self._shot_series(n, self.p["centre"], self.sigma_frames, _need(points, "raw"))
+            centre = smooth[T - first]
+        else:
+            centre = samples.at(self.p["centre"], dance_t)
         aim_a = self._point(a, n, T, dance_t, samples, points)
         aim_b = self._point(b, n, T, dance_t, samples, points)
         aim = lerp(aim_a, aim_b, w)
