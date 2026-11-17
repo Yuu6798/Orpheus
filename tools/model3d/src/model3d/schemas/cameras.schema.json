@@ -22,6 +22,7 @@
     "frame": {
       "type": "object",
       "required": ["T", "matrix", "focal_px", "principal_px"],
+      "dependentRequired": {"fstop": ["focus_m"], "focus_m": ["fstop"]},
       "properties": {
         "T": {"type": "integer", "minimum": 1},
         "f": {"type": "number"},
@@ -34,7 +35,9 @@
         "lens_mm": {"type": "number", "exclusiveMinimum": 0},
         "shift": {"description": "Blender のレンズのずらし（x・y。画面の高さに対する割合）", "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
         "dancer": {"description": "踊り手の点（世界の座標、m）。足もとの影の円はこの真下の床に置く", "$ref": "#/$defs/vec3"},
-        "distance_m": {"description": "カメラから踊り手の点までの距離", "type": "number", "minimum": 0}
+        "distance_m": {"description": "カメラから踊り手の点までの距離", "type": "number", "minimum": 0},
+        "fstop": {"description": "絞り（f 値）。focus_m と組で、被写界深度を入れるコマだけに書く（無いコマは被写界深度なし）", "type": "number", "exclusiveMinimum": 0},
+        "focus_m": {"description": "カメラの位置からピントの点までのまっすぐの距離（m）。fstop と組", "type": "number", "minimum": 0}
       },
       "patternProperties": {"^x_": {}},
       "additionalProperties": false

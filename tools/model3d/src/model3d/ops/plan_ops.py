@@ -80,6 +80,9 @@ def _camera_plan(inputs, parameters, outputs, operation, kind, table):
                   "画角・ロールのキーとつなぎ方、手持ちの揺れと打点の揺れ、踊りの時刻の止め）と、骨から決めた点の通り道（bones。"
                   "model3d-bone-path/0.1。plan.retime のトラックで等間隔に測ったもの）から、コマごとのカメラ（cameras。"
                   "model3d-cameras/0.1。行列・焦点距離・主点・踊り手の点）とコマの並び（track。T と動きのコマ f）を作る。"
+                  "狙う点のまわりの仰角（el）・レンズの mm（lens）・2 乗のつなぎ方・世界の座標のずらし（offset）・区間の平均と混ぜる"
+                  "狙い（follow）・区間の中だけのならし（smooth.per_shot）・絞りとピント（fstop・focus。cameras の fstop・focus_m）・"
+                  "角度を揺らす手持ちの揺れ（handheld.form orbit）も書ける。"
                   "render.passes の track と cameras にそのまま渡せる。plan.stage と同じ時刻の読み方・区間・寄りと揺れを使う。計算だけ")
 def orbit(inputs, parameters, outputs, context):
     from .. import contracts
