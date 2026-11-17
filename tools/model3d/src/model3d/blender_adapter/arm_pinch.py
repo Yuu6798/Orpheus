@@ -81,6 +81,8 @@ def main(argv=None):
         raise SystemExit(f"アーマチュアがありません{'（' + settings['armature'] + '）' if settings['armature'] else ''}")
     armature = armatures[0]
     scene = use_scene_of(bpy, armature)
+    if abs(scene.unit_settings.scale_length - 1.0) > 1e-9:          # 距離の設定（m）と Blender 単位を合わせる
+        raise SystemExit(f"1 Blender 単位 = 1 m のシーンだけを扱います（scale_length {scene.unit_settings.scale_length}）")
     body = bpy.data.objects.get(settings["body"])
     if body is None or body.type != "MESH":
         raise SystemExit(f"体のメッシュがありません: {settings['body']}")

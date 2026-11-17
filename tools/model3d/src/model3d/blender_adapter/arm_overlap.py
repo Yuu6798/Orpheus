@@ -92,6 +92,8 @@ def main(argv=None):
         raise SystemExit(f"アーマチュアがありません{'（' + s['armature'] + '）' if s['armature'] else ''}")
     armature = armatures[0]
     scene = use_scene_of(bpy, armature)
+    if abs(scene.unit_settings.scale_length - 1.0) > 1e-9:          # 距離の設定（m）と Blender 単位を合わせる
+        raise SystemExit(f"1 Blender 単位 = 1 m のシーンだけを扱います（scale_length {scene.unit_settings.scale_length}）")
     body = bpy.data.objects.get(s["body"])
     if body is None or body.type != "MESH":
         raise SystemExit(f"体のメッシュがありません: {s['body']}")
@@ -130,16 +132,22 @@ def main(argv=None):
                 sleeve[vertex.index] = t < s["sleeve_until"]
     body.data.calc_loop_triangles()
     tris = np.array([t.vertices[:] for t in body.data.loop_triangles])
+    base_loops = np.empty(len(body.data.loops), dtype=np.int64)       # 面のつながり（面ごとの頂点の並び）。変形した後と比べる
+    body.data.loops.foreach_get("vertex_index", base_loops)
+    base_faces = len(body.data.polygons)
     tri_side, tri_sleeve = triangle_sides(tris, side_of, sleeve)
     directions = [Vector(d) for d in rays()]
 
     def positions():
         evaluated = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
         mesh = evaluated.to_mesh()
-        if len(mesh.vertices) != count:              # 頂点の番号で元のメッシュと結ぶので、頂点の数を変えるモディファイアは止める
-            evaluated.to_mesh_clear()
-            raise SystemExit(f"{body.name} のモディファイアが頂点の数を変えています（{count} → 変形した後 {len(mesh.vertices)}）。"
-                             "細分化などを止めた .blend で測ってください")
+        loops = np.empty(len(mesh.loops), dtype=np.int64)
+        mesh.loops.foreach_get("vertex_index", loops)
+        verts, faces = len(mesh.vertices), len(mesh.polygons)
+        if verts != count or faces != base_faces or not np.array_equal(loops, base_loops):
+            evaluated.to_mesh_clear()                 # 頂点の番号と元のメッシュの三角形で測るので、つながりを変えるモディファイアは止める
+            raise SystemExit(f"{body.name} のモディファイアが頂点や面のつながりを変えています（頂点 {count} → {verts}、"
+                             f"面 {base_faces} → {faces}）。細分化・三角形化などを止めた .blend で測ってください")
         co = np.empty(len(mesh.vertices) * 3)
         mesh.vertices.foreach_get("co", co)
         evaluated.to_mesh_clear()
