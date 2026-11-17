@@ -487,13 +487,16 @@ def face_zoom(crop, size):
 
 
 def side_by_side(images, gap=8):
-    """高さをそろえて横に並べる（間は白）。"""
-    height = min(image.shape[0] for image in images)
+    """横に並べる（間は白）。高さは、いちばん高い絵にそろえて下を白で埋める（低い絵に合わせて切ると、高い絵の下が消える）。"""
+    height = max(image.shape[0] for image in images)
     parts = []
     for k, image in enumerate(images):
         if k:
             parts.append(np.full((height, gap, 3), 255, np.uint8))
-        parts.append(image[:height, :, :3])
+        rgb = image[:, :, :3]
+        if rgb.shape[0] < height:
+            rgb = np.concatenate([rgb, np.full((height - rgb.shape[0], rgb.shape[1], 3), 255, np.uint8)])
+        parts.append(rgb)
     return np.concatenate(parts, axis=1)
 
 

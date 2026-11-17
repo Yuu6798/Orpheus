@@ -30,6 +30,14 @@ def _view(top=20, sole=420, cords=150, hem=260, arms=110, eyes=60):
     return rgba
 
 
+
+def test_panels_of_different_heights_are_padded_not_cut():
+    """並べる絵の高さが違っても、高い絵の下を切らない（低い絵の下を白で埋める）。"""
+    low, high = np.zeros((10, 4, 3), np.uint8), np.full((20, 3, 3), 7, np.uint8)
+    sheet = checkpoint.side_by_side([low, high], gap=2)
+    assert sheet.shape == (20, 4 + 2 + 3, 3)
+    assert (sheet[10:, :4] == 255).all() and (sheet[:, 6:] == 7).all()                  # 高い絵は全部残る
+
 def test_view_rows_reads_heights_widest_row_and_marks():
     rgba = _view()
     mask = rgba[:, :, 3] > 128
