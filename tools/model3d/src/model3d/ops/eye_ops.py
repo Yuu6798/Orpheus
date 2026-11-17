@@ -2,6 +2,8 @@
 
 - check.eyes: 頭の候補の目の作り（目のまわりの部品・白目の扇かもしれない所・絵の中の場所）を、数と絵で調べる（Blender の外。numpy と
   Pillow。合否は決めない）。頭の候補を選ぶ段で、目の作り直しの前に使う。
+- model.eye_rig・model.eye_keys・vrm.look_at: 目の板と瞳を入れた頭を、目の形の値（model3d-eye-geometry/0.1）から、動かせる作りにする
+  （目の骨を球の中心へ・まばたきのキーの直しと新しいキー・VRM の視線。docs/model3d.md の「目を動かせる作りにする」）。
 """
 import math
 from pathlib import Path
@@ -263,3 +265,47 @@ def eye_keys(inputs, parameters, outputs, context):
     report["blender_version"] = record["blender_version"]
     atomic_json(outputs["report"], report)
     return StepResult(observations=[{"kind": "eye_keys", "blink": report["blink"], "new_keys": sorted(report["new_keys"])}])
+
+
+LOOK_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "eye_look.py"
+LOOK_PARAMETERS = {"slide", "input_max", "armature", "blender", "addons", "blender_extensions", "timeout"}
+
+
+@register("vrm.look_at", inputs=("blend", "geometry"), outputs=("blend", "report"), cacheable=False,
+          summary="VRM の視線を目の骨を回す作り（bone）にし、4 つの範囲（横の内・外、たての下・上）の入力の最大を input_max、出力の倍率を"
+                  " degrees(瞳が滑る量 ÷ 目の球の半径) にする（Blender の中で VRM Add-on の設定を書く）。geometry は目の形の値"
+                  "（model3d-eye-geometry/0.1。半径は左右の球の平均）。slide（{horizontal, vertical}。m）と input_max（°）に既定は無い。"
+                  "入力の .blend は変えない。Blender（VRM Add-on）が要り、再利用しない（毎回実行）")
+def look_at(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .motion_ops import _timeout
+    require(inputs, ("blend", "geometry"), "vrm.look_at")
+    blender, addons, extensions, armature = _blender_common(parameters, context, "vrm.look_at", LOOK_PARAMETERS)
+    for name in ("blend", "report"):
+        if name not in outputs:
+            raise ToolError(f"vrm.look_at には outputs の {name} が要ります")
+    slide = parameters.get("slide")
+    if not isinstance(slide, dict) or set(slide) != {"horizontal", "vertical"}:
+        raise ToolError(f"vrm.look_at には slide（{{\"horizontal\": m, \"vertical\": m}}。視線がいちばん端のときに瞳が滑る量）が要ります: {slide!r}")
+    slide = {axis: _number(slide[axis], f"slide.{axis}", positive=True) for axis in ("horizontal", "vertical")}
+    if "input_max" not in parameters:
+        raise ToolError("vrm.look_at には input_max（視線の入力のいちばん大きい角度 °）が要ります（既定は無い）")
+    input_max = _number(parameters["input_max"], "input_max", positive=True)
+    if input_max > 180:
+        raise ToolError(f"input_max は 180° 以下にしてください: {input_max}")
+    geometry = _geometry(inputs["geometry"])
+    radii = {side: float(geometry["eyes"][side]["sphere"]["radius"]) for side in ("R", "L")}
+    settings = {"radius": (radii["R"] + radii["L"]) / 2, "radii": radii, "slide": slide, "input_max": input_max, "armature": armature}
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "look_at_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, LOOK_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                "--out", str(outputs["blend"]), "--report", str(outputs["report"])],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    report["blender_version"] = record["blender_version"]
+    report["radii"] = radii
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "look_at", "type": report["after"]["type"], "radius": settings["radius"],
+                                     "degrees": report["degrees"]}])
