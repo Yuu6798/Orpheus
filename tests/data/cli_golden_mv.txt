@@ -1,0 +1,1511 @@
+==== mv
+usage: mv [-h] {init,analyze,export-brief,verify,resume,status,confirm-assets,import-storyboard,import-assets,import-alignment,apply-edits,update-lyrics,render,preview,validate,demo,run-adapter,fx,dance,gate,handoff,inspect,workflow,export,sheet,layer,overlay,deliver,audio} ...
+
+Orpheus: local reproducible music videos
+
+positional arguments:
+  {init,analyze,export-brief,verify,resume,status,confirm-assets,import-storyboard,import-assets,import-alignment,apply-edits,update-lyrics,render,preview,validate,demo,run-adapter,fx,dance,gate,handoff,inspect,workflow,export,sheet,layer,overlay,deliver,audio}
+    fx                  experimental effects engine: camera, layers, local light
+    dance               experimental dance compositor: keyed performer on a stage with vertical lyrics
+    gate                pre-export mechanical checks and the lyric line table
+    handoff             mechanical checks of work delivered by someone else (no taste judgement)
+    inspect             inspect generated video: locate, classify and link anomalies to fixes (no pass/fail)
+    workflow            purpose-based production plans and completion checks
+    export              write files for external renderers (read-only)
+    sheet               contact sheet of frames at given times, even spacing or timeline events (viewing aid, no pass/fail)
+    layer               experimental: render a transparent layer with Remotion and record it as a run
+    overlay             experimental: composite transparent layers (PNG sequences / alpha video) over a base and encode
+    deliver             experimental: join rendered segments and add the audio into a master MP4
+    audio               experimental: records made from the song audio (beat grid, hits), written beside the audio or analysis.json (estimated values), and light keys from the hits
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["init", "analyze", "export-brief", "verify", "resume", "status", "confirm-assets", "import-storyboard", "import-assets", "import-alignment", "apply-edits", "update-lyrics", "render", "preview", "validate", "demo", "run-adapter", "fx", "dance", "gate", "handoff", "inspect", "workflow", "export", "sheet", "layer", "overlay", "deliver", "audio"], "required": true, "metavar": null}
+==== mv init
+usage: mv init [-h] --audio AUDIO --lyrics LYRICS [--start START] [--duration DURATION] [--fps FPS] [--width WIDTH] [--height HEIGHT] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help           show this help message and exit
+  --audio AUDIO
+  --lyrics LYRICS
+  --start START
+  --duration DURATION
+  --fps FPS
+  --width WIDTH
+  --height HEIGHT
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--audio"], "dest": "audio", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--lyrics"], "dest": "lyrics", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 30, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 1920, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": 1080, "type": "int", "choices": null, "required": false, "metavar": null}
+==== mv analyze
+usage: mv analyze [-h] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv export-brief
+usage: mv export-brief [-h] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv verify
+usage: mv verify [-h] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv resume
+usage: mv resume [-h] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv status
+usage: mv status [-h] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv confirm-assets
+usage: mv confirm-assets [-h] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv import-storyboard
+usage: mv import-storyboard [-h] project file
+
+positional arguments:
+  project
+  file
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv import-assets
+usage: mv import-assets [-h] project file
+
+positional arguments:
+  project
+  file
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv import-alignment
+usage: mv import-alignment [-h] project file
+
+positional arguments:
+  project
+  file
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv apply-edits
+usage: mv apply-edits [-h] project file
+
+positional arguments:
+  project
+  file
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv update-lyrics
+usage: mv update-lyrics [-h] project file
+
+positional arguments:
+  project
+  file
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv render
+usage: mv render [-h] [--profile {final,preview}] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help            show this help message and exit
+  --profile {final,preview}
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--profile"], "dest": "profile", "action": "_StoreAction", "nargs": null, "const": null, "default": "final", "type": null, "choices": ["final", "preview"], "required": false, "metavar": null}
+==== mv preview
+usage: mv preview [-h] [--profile {final,preview}] [--studio] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help            show this help message and exit
+  --profile {final,preview}
+  --studio              Open the same composition in Remotion Studio
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--profile"], "dest": "profile", "action": "_StoreAction", "nargs": null, "const": null, "default": "preview", "type": null, "choices": ["final", "preview"], "required": false, "metavar": null}
+{"options": ["--studio"], "dest": "studio", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv validate
+usage: mv validate [-h] [--profile {final,preview}] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help            show this help message and exit
+  --profile {final,preview}
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--profile"], "dest": "profile", "action": "_StoreAction", "nargs": null, "const": null, "default": "final", "type": null, "choices": ["final", "preview"], "required": false, "metavar": null}
+==== mv demo
+usage: mv demo [-h] [--width WIDTH] [--height HEIGHT] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help       show this help message and exit
+  --width WIDTH
+  --height HEIGHT
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 1920, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": 1080, "type": "int", "choices": null, "required": false, "metavar": null}
+==== mv run-adapter
+usage: mv run-adapter [-h] --kind {alignment,separation} project config
+
+positional arguments:
+  project
+  config
+
+options:
+  -h, --help            show this help message and exit
+  --kind {alignment,separation}
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--kind"], "dest": "kind", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["alignment", "separation"], "required": true, "metavar": null}
+==== mv fx
+usage: mv fx [-h] {demo,render,stills,guides,compare,masks,points,clips,legacy,accept,timeline} ...
+
+positional arguments:
+  {demo,render,stills,guides,compare,masks,points,clips,legacy,accept,timeline}
+    demo                write synthetic demo assets and a spec
+    render              render variants (base, layers, light, both) and a 2x2 grid
+    stills              still sheet: rows = times, columns = variants
+    guides              draw a coordinate grid on a source image (to read positions for a spec)
+    compare             one video: a reference next to the variants of a finished render run
+    masks               make masks from a plan (external alpha, polygons, GrabCut, islands, cuts)
+    points              find repeated small objects from a few seed examples (template matching; a table of positions)
+    clips               prepare generated clips from a plan (stabilise to the first frame, match colour to a still)
+    legacy              run an external production renderer and record it as a run
+    accept              append a human decision to acceptance.jsonl
+    timeline            fx-timeline: several fx shots joined by cut, xfade, black, flash and burn
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "fx_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "render", "stills", "guides", "compare", "masks", "points", "clips", "legacy", "accept", "timeline"], "required": true, "metavar": null}
+==== mv fx demo
+usage: mv fx demo [-h] [--width WIDTH] [--height HEIGHT] [--duration DURATION] [--fps FPS] [--look] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help           show this help message and exit
+  --width WIDTH
+  --height HEIGHT
+  --duration DURATION
+  --fps FPS
+  --look               add a night look (grade, vignette, grain) to the demo spec
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 960, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": 540, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": 10.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 24, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--look"], "dest": "look", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx render
+usage: mv fx render [-h] [--variants VARIANTS] [--start START] [--duration DURATION] [--out OUT] [--scale SCALE] [--no-grid] [--force] [--no-look] [--no-overlays] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help           show this help message and exit
+  --variants VARIANTS  comma-separated: base,layers,light,both (default: all)
+  --start START
+  --duration DURATION
+  --out OUT            default: <spec dir>/fx_runs
+  --scale SCALE
+  --no-grid
+  --force              render again even if an identical run exists
+  --no-look            ignore spec.look (render without the look stage)
+  --no-overlays        ignore spec.overlays (render without lyrics and cards)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--variants"], "dest": "variants", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--scale"], "dest": "scale", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--no-grid"], "dest": "no_grid", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--no-look"], "dest": "no_look", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--no-overlays"], "dest": "no_overlays", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx stills
+usage: mv fx stills [-h] --times TIMES [TIMES ...] [--variants VARIANTS] [--out OUT] [--scale SCALE] [--no-look] [--no-overlays] [--guides [GUIDES]] [--grid-step GRID_STEP] [--reference REFERENCE] [--reference-offset REFERENCE_OFFSET] [--reference-label REFERENCE_LABEL] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help            show this help message and exit
+  --times TIMES [TIMES ...]
+  --variants VARIANTS
+  --out OUT
+  --scale SCALE
+  --no-look             ignore spec.look (render without the look stage)
+  --no-overlays         ignore spec.overlays (render without lyrics and cards)
+  --guides [GUIDES]     draw guides on each cell: comma-separated grid,lights,masks (default when given: grid,lights)
+  --grid-step GRID_STEP
+                        grid spacing in source-normalized units (default: from the visible span)
+  --reference REFERENCE
+                        video whose nearest frames become the first column
+  --reference-offset REFERENCE_OFFSET
+                        time in the reference video at shot time 0 (seconds)
+  --reference-label REFERENCE_LABEL
+                        ASCII label of the reference column
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--times"], "dest": "times", "action": "_StoreAction", "nargs": "+", "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": null}
+{"options": ["--variants"], "dest": "variants", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--scale"], "dest": "scale", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--no-look"], "dest": "no_look", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--no-overlays"], "dest": "no_overlays", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--guides"], "dest": "guides", "action": "_StoreAction", "nargs": "?", "const": "grid,lights", "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--grid-step"], "dest": "grid_step", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--reference"], "dest": "reference", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--reference-offset"], "dest": "reference_offset", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--reference-label"], "dest": "reference_label", "action": "_StoreAction", "nargs": null, "const": null, "default": "reference", "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx guides
+usage: mv fx guides [-h] --out OUT [--crop X0 Y0 X1 Y1] [--units {norm,px}] [--step STEP] [--width WIDTH] image
+
+positional arguments:
+  image
+
+options:
+  -h, --help          show this help message and exit
+  --out OUT           image to write; the extension picks the format (.png, or .jpg/.jpeg at quality 90)
+  --crop X0 Y0 X1 Y1  region to enlarge (in --units)
+  --units {norm,px}   norm: 0..1 of the image (default), px: image pixels
+  --step STEP         grid spacing in --units (default: 0.05/0.02/0.01 from the crop, or 100 px)
+  --width WIDTH       output width in pixels (default 1600)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "image", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--crop"], "dest": "crop", "action": "_StoreAction", "nargs": 4, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": ["X0", "Y0", "X1", "Y1"]}
+{"options": ["--units"], "dest": "units", "action": "_StoreAction", "nargs": null, "const": null, "default": "norm", "type": null, "choices": ["norm", "px"], "required": false, "metavar": null}
+{"options": ["--step"], "dest": "step", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 1600, "type": "int", "choices": null, "required": false, "metavar": null}
+==== mv fx compare
+usage: mv fx compare [-h] --reference REFERENCE [--reference-offset REFERENCE_OFFSET] [--reference-label REFERENCE_LABEL] [--out OUT] run_dir
+
+positional arguments:
+  run_dir
+
+options:
+  -h, --help            show this help message and exit
+  --reference REFERENCE
+                        reference video (same fps as the run)
+  --reference-offset REFERENCE_OFFSET
+                        time in the reference video at shot time 0 (seconds)
+  --reference-label REFERENCE_LABEL
+                        ASCII label of the reference tile
+  --out OUT             default: <run parent>/compare-<run_id>-<key8>.mp4
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "run_dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--reference"], "dest": "reference", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--reference-offset"], "dest": "reference_offset", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--reference-label"], "dest": "reference_label", "action": "_StoreAction", "nargs": null, "const": null, "default": "reference", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv fx masks
+usage: mv fx masks [-h] [--out OUT] [--force] plan
+
+positional arguments:
+  plan        fx-masks/0.1 plan (JSON)
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   output folder (default: the plan's folder)
+  --force     overwrite existing mask files whose content differs
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "plan", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx points
+usage: mv fx points [-h] [--out OUT] plan
+
+positional arguments:
+  plan        fx-points/0.1 plan (JSON)
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   output folder (default: the plan's folder)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "plan", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv fx clips
+usage: mv fx clips [-h] [--out OUT] [--only ONLY] [--force] plan
+
+positional arguments:
+  plan         fx-clips/0.1 plan (JSON)
+
+options:
+  -h, --help   show this help message and exit
+  --out OUT    output folder (default: the plan's folder)
+  --only ONLY  comma-separated clip ids to prepare (default: all)
+  --force      overwrite existing outputs that are not in the record
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "plan", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--only"], "dest": "only", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx legacy
+usage: mv fx legacy [-h] --renderer RENDERER --config CONFIG [--start START] [--duration DURATION] [--cuts FRAME [FRAME ...]] [--jobs JOBS] [--python PYTHON] [--python-flags PYTHON_FLAGS] [--width WIDTH] [--height HEIGHT] [--fps FPS] [--units {seconds,frames}] [--out OUT] [--timeout TIMEOUT] [--cwd CWD]
+
+options:
+  -h, --help            show this help message and exit
+  --renderer RENDERER
+  --config CONFIG
+  --start START         seconds (default 0; not with --cuts)
+  --duration DURATION   seconds (required unless --cuts is given)
+  --cuts FRAME [FRAME ...]
+                        frame numbers N0 N1 ... Nk: render [N0, N1), [N1, N2), ... as seg_<first>_<end>.mp4 in one run, several at once (needs --units frames and --fps); the run folder can be passed to mv deliver join
+  --jobs JOBS           with --cuts: how many segments run at once (default: all, up to the CPU count)
+  --python PYTHON       interpreter for the renderer (default: this one)
+  --python-flags PYTHON_FLAGS
+                        arguments for the interpreter before the renderer, e.g. --python-flags="-I -X utf8"
+  --width WIDTH
+  --height HEIGHT
+  --fps FPS
+  --units {seconds,frames}
+                        how seg START END is passed: seconds (default) or frame numbers with END excluded (needs --fps)
+  --out OUT             default: <config dir>/fx_runs
+  --timeout TIMEOUT     seconds (default: max(600, 120 x duration))
+  --cwd CWD             working directory for the renderer (default: its own directory)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--renderer"], "dest": "renderer", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--config"], "dest": "config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--cuts"], "dest": "cuts", "action": "_StoreAction", "nargs": "+", "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": "FRAME"}
+{"options": ["--jobs"], "dest": "jobs", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--python"], "dest": "python", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--python-flags"], "dest": "python_flags", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--units"], "dest": "units", "action": "_StoreAction", "nargs": null, "const": null, "default": "seconds", "type": null, "choices": ["seconds", "frames"], "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--timeout"], "dest": "timeout", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--cwd"], "dest": "cwd", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv fx accept
+usage: mv fx accept [-h] --variant VARIANT --decision {accepted,rejected,hold} --by BY [--note NOTE] run_dir
+
+positional arguments:
+  run_dir
+
+options:
+  -h, --help            show this help message and exit
+  --variant VARIANT
+  --decision {accepted,rejected,hold}
+  --by BY
+  --note NOTE
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "run_dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--variant"], "dest": "variant", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--decision"], "dest": "decision", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["accepted", "rejected", "hold"], "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx timeline
+usage: mv fx timeline [-h] {demo,render,plan} ...
+
+positional arguments:
+  {demo,render,plan}
+    demo              write three demo shot specs and an fx-timeline/0.1 timeline that uses black, xfade and flash
+    render            render timeline.mp4 and timeline.json (for mv gate check) as a run
+    plan              print the shots and transitions with their times and nearest beats
+
+options:
+  -h, --help          show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "timeline_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "render", "plan"], "required": true, "metavar": null}
+==== mv fx timeline demo
+usage: mv fx timeline demo [-h] [--width WIDTH] [--height HEIGHT] [--duration DURATION] [--fps FPS] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help           show this help message and exit
+  --width WIDTH
+  --height HEIGHT
+  --duration DURATION
+  --fps FPS
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 320, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": 180, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": 6.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 24, "type": "int", "choices": null, "required": false, "metavar": null}
+==== mv fx timeline render
+usage: mv fx timeline render [-h] [--start START] [--duration DURATION] [--out OUT] [--scale SCALE] [--force] [--quiet] [--hooks HOOKS] timeline
+
+positional arguments:
+  timeline
+
+options:
+  -h, --help           show this help message and exit
+  --start START
+  --duration DURATION
+  --out OUT            default: <timeline dir>/fx_runs
+  --scale SCALE
+  --force              render again even if an identical run exists
+  --quiet              do not report progress on stderr
+  --hooks HOOKS        effects hooks (Python: prepare, shot, final). Runs only when given here
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "timeline", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--scale"], "dest": "scale", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--hooks"], "dest": "hooks", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv fx timeline plan
+usage: mv fx timeline plan [-h] timeline
+
+positional arguments:
+  timeline
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "timeline", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv dance
+usage: mv dance [-h] {demo,render,plan,stills,passes,accept} ...
+
+positional arguments:
+  {demo,render,plan,stills,passes,accept}
+    demo                write synthetic demo assets and a spec
+    render              render dance.mp4 and timeline.json as a run
+    plan                print the resolved times as tables
+    stills              still sheet of the given times
+    passes              composite element passes from model3d render.passes into dance.mp4 as a run
+    accept              append a human decision to acceptance.jsonl
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dance_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "render", "plan", "stills", "passes", "accept"], "required": true, "metavar": null}
+==== mv dance demo
+usage: mv dance demo [-h] [--width WIDTH] [--height HEIGHT] [--duration DURATION] [--fps FPS] [--schema {0.1,0.2,0.3}] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help            show this help message and exit
+  --width WIDTH
+  --height HEIGHT
+  --duration DURATION
+  --fps FPS
+  --schema {0.1,0.2,0.3}
+                        spec version of the demo
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 540, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": 960, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": 6.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 24, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--schema"], "dest": "schema", "action": "_StoreAction", "nargs": null, "const": null, "default": "0.3", "type": null, "choices": ["0.1", "0.2", "0.3"], "required": false, "metavar": null}
+==== mv dance render
+usage: mv dance render [-h] [--start START] [--duration DURATION] [--out OUT] [--scale SCALE] [--force] [--quiet] [--hooks HOOKS] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help           show this help message and exit
+  --start START
+  --duration DURATION
+  --out OUT            default: <spec dir>/dance_runs
+  --scale SCALE
+  --force              render again even if an identical run exists
+  --quiet              do not report progress on stderr
+  --hooks HOOKS        finishing hooks (Python). Runs only when given here
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--scale"], "dest": "scale", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--hooks"], "dest": "hooks", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv dance plan
+usage: mv dance plan [-h] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv dance stills
+usage: mv dance stills [-h] --times TIMES [TIMES ...] [--out OUT] [--scale SCALE] [--guides [{visible,all}]] [--layers] [--hooks HOOKS] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help            show this help message and exit
+  --times TIMES [TIMES ...]
+  --out OUT
+  --scale SCALE
+  --guides [{visible,all}]
+                        draw the UI regions and the boxes of the visible lines (all: every line)
+  --layers              one row per time: final, stage, performer alpha, behind text, front text
+  --hooks HOOKS         finishing hooks (Python). Runs only when given here
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--times"], "dest": "times", "action": "_StoreAction", "nargs": "+", "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--scale"], "dest": "scale", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--guides"], "dest": "guides", "action": "_StoreAction", "nargs": "?", "const": "visible", "default": null, "type": null, "choices": ["visible", "all"], "required": false, "metavar": null}
+{"options": ["--layers"], "dest": "layers", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--hooks"], "dest": "hooks", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv dance passes
+usage: mv dance passes [-h] [--out OUT] [--force] [--quiet] spec
+
+positional arguments:
+  spec
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   default: <spec dir>/dance_runs
+  --force     render again even if an identical run exists
+  --quiet     do not report progress on stderr
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv dance accept
+usage: mv dance accept [-h] --decision {accepted,rejected,hold} --by BY [--note NOTE] run_dir
+
+positional arguments:
+  run_dir
+
+options:
+  -h, --help            show this help message and exit
+  --decision {accepted,rejected,hold}
+  --by BY
+  --note NOTE
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "run_dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--decision"], "dest": "decision", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["accepted", "rejected", "hold"], "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv gate
+usage: mv gate [-h] {check,lines,demo,timeline,flashes,tail,voice,notes,repeat} ...
+
+positional arguments:
+  {check,lines,demo,timeline,flashes,tail,voice,notes,repeat}
+    check               run the checks; exit code 1 when any check fails
+    lines               write the line/second table and lines_measured.json
+    demo                write synthetic test material with known answers (vocals stand-in, lyrics, timeline, beats, expected.json)
+    timeline            measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check
+    flashes             count whole-frame brightness flashes in a finished video (no timeline); exit code 1 above --max-per-s. Not a compliance judgment
+    tail                when the sound of a finished video ends and how long the picture goes on after it (no timeline); warns above --max-tail-s or when the sound is still on at the end. Numbers only
+    voice               numbers only: where the vocal stem has voice (segments and the gaps between them), to find line starts, ends and breaths
+    notes               numbers only: sung notes (pYIN, semitones), onsets and level dips in a range
+    repeat              numbers only: where the melody of --ref repeats inside --search (offset in seconds, match rate)
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "gate_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "lines", "demo", "timeline", "flashes", "tail", "voice", "notes", "repeat"], "required": true, "metavar": null}
+==== mv gate check
+usage: mv gate check [-h] [--out OUT] config
+
+positional arguments:
+  config
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   default: <config dir>/gate_report
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv gate lines
+usage: mv gate lines [-h] [--vocals VOCALS] [--window WINDOW] [--offset OFFSET] lines out
+
+positional arguments:
+  lines            .lrc or .json
+  out
+
+options:
+  -h, --help       show this help message and exit
+  --vocals VOCALS  vocal stem; measures each line start near the estimate
+  --window WINDOW
+  --offset OFFSET  seconds added to every estimate
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "lines", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--vocals"], "dest": "vocals", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--window"], "dest": "window", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.8, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--offset"], "dest": "offset", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv gate demo
+usage: mv gate demo [-h] [--duration DURATION] [--fps FPS] [--bpm BPM] [--beats-per-bar BEATS_PER_BAR] [--no-downbeats] [--shifts SHIFTS] [--flashes FLASHES] [--flash-align {beat,downbeat}] [--attack-ms ATTACK_MS] [--floor-db FLOOR_DB] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help            show this help message and exit
+  --duration DURATION
+  --fps FPS
+  --bpm BPM
+  --beats-per-bar BEATS_PER_BAR
+  --no-downbeats        omit the downbeat grid
+  --shifts SHIFTS       comma-separated seconds added to each declared line time (default 0,-0.333,0,0.15)
+  --flashes FLASHES     comma-separated flash times in seconds (default 5.5,6,6.5,7,7.5)
+  --flash-align {beat,downbeat}
+                        what the flashes should be compared with
+  --attack-ms ATTACK_MS
+                        rise time of each line's tone
+  --floor-db FLOOR_DB   background noise relative to the tone
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": 10.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 30, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--bpm"], "dest": "bpm", "action": "_StoreAction", "nargs": null, "const": null, "default": 120.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--beats-per-bar"], "dest": "beats_per_bar", "action": "_StoreAction", "nargs": null, "const": null, "default": 4, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--no-downbeats"], "dest": "no_downbeats", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--shifts"], "dest": "shifts", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--flashes"], "dest": "flashes", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--flash-align"], "dest": "flash_align", "action": "_StoreAction", "nargs": null, "const": null, "default": "beat", "type": null, "choices": ["beat", "downbeat"], "required": false, "metavar": null}
+{"options": ["--attack-ms"], "dest": "attack_ms", "action": "_StoreAction", "nargs": null, "const": null, "default": 30.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -40.0, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv gate timeline
+usage: mv gate timeline [-h] --frames FRAMES --lyrics LYRICS --layer LAYER [--hints HINTS] [--alpha-threshold ALPHA_THRESHOLD] [--flashes FLASHES] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --frames FRAMES       PNG sequence folder; 'DIR:lyric-001' binds the folder to one line. Repeatable
+  --lyrics LYRICS       props.json from mv export remotion-props (remotion-props/0.1)
+  --layer LAYER         layer name written into the timeline (e.g. band)
+  --hints HINTS         JSON {line id: normalized box} when one sequence holds several lines
+  --alpha-threshold ALPHA_THRESHOLD
+                        a pixel is visible when alpha is above this (0-254)
+  --flashes FLASHES     comma-separated flash times in seconds to write into the timeline (props have none)
+  --out OUT             timeline.json to write (plus <stem>_measured.json)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--frames"], "dest": "frames", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--lyrics"], "dest": "lyrics", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--layer"], "dest": "layer", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--hints"], "dest": "hints", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--alpha-threshold"], "dest": "alpha_threshold", "action": "_StoreAction", "nargs": null, "const": null, "default": 64, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--flashes"], "dest": "flashes", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== mv gate flashes
+usage: mv gate flashes [-h] [--out OUT] [--delta DELTA] [--max-per-s MAX_PER_S] video
+
+positional arguments:
+  video
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             default: <video stem>_flash_report next to the video
+  --delta DELTA         a change is a rise or fall of at least this from the last peak or valley (linear relative luminance 0-1)
+  --max-per-s MAX_PER_S
+                        most flashes allowed in any one-second window
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "video", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--delta"], "dest": "delta", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.1, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--max-per-s"], "dest": "max_per_s", "action": "_StoreAction", "nargs": null, "const": null, "default": 3, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv gate tail
+usage: mv gate tail [-h] [--out OUT] [--max-tail-s MAX_TAIL_S] [--window WINDOW] [--floor-db FLOOR_DB] video
+
+positional arguments:
+  video
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             default: <video stem>_tail_report next to the video
+  --max-tail-s MAX_TAIL_S
+                        warn when the picture goes on longer than this after the sound ends (default 1.0)
+  --window WINDOW       loudness window in seconds (default 0.1)
+  --floor-db FLOOR_DB   a window sounds when within this many dB of the loudest (default -60)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "video", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--max-tail-s"], "dest": "max_tail_s", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--window"], "dest": "window", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv gate voice
+usage: mv gate voice [-h] [--from START] [--to STOP] [--threshold-db THRESHOLD_DB] [--gap-s GAP_S] [--min-s MIN_S] [--out OUT] [--force] vocals
+
+positional arguments:
+  vocals
+
+options:
+  -h, --help            show this help message and exit
+  --from START          start of the range in seconds (default 0)
+  --to STOP             end of the range in seconds (default: the end)
+  --threshold-db THRESHOLD_DB
+                        voice when the level is above this, relative to the 95th percentile
+  --gap-s GAP_S         join segments closer than this
+  --min-s MIN_S         drop segments shorter than this
+  --out OUT             also write the record (JSON) here
+  --force               overwrite an --out whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "vocals", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--from"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--to"], "dest": "stop", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--threshold-db"], "dest": "threshold_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -32.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--gap-s"], "dest": "gap_s", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.14, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--min-s"], "dest": "min_s", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.08, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv gate notes
+usage: mv gate notes [-h] --from START --to STOP [--out OUT] [--force] vocals
+
+positional arguments:
+  vocals
+
+options:
+  -h, --help    show this help message and exit
+  --from START
+  --to STOP
+  --out OUT     also write the record (JSON) here
+  --force       overwrite an --out whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "vocals", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--from"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": null}
+{"options": ["--to"], "dest": "stop", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv gate repeat
+usage: mv gate repeat [-h] --ref FROM TO --search FROM TO [--top TOP] [--include-end] [--out OUT] [--force] vocals
+
+positional arguments:
+  vocals
+
+options:
+  -h, --help        show this help message and exit
+  --ref FROM TO
+  --search FROM TO
+  --top TOP         how many best offsets to list (default 3)
+  --include-end     also compare the alignment that ends exactly at the end of --search (the production script skips it)
+  --out OUT         also write the record (JSON) here
+  --force           overwrite an --out whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "vocals", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--ref"], "dest": "ref", "action": "_StoreAction", "nargs": 2, "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": ["FROM", "TO"]}
+{"options": ["--search"], "dest": "search", "action": "_StoreAction", "nargs": 2, "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": ["FROM", "TO"]}
+{"options": ["--top"], "dest": "top", "action": "_StoreAction", "nargs": null, "const": null, "default": 3, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--include-end"], "dest": "include_end", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv handoff
+usage: mv handoff [-h] {check} ...
+
+positional arguments:
+  {check}
+    check     compare a delivered image with the base: outside the allowed regions it must not change, and the size must match; exit code 1 on fail. Optionally write the image with the outside restored
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "handoff_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check"], "required": true, "metavar": null}
+==== mv handoff check
+usage: mv handoff check [-h] [--region X0,Y0,X1,Y1] [--regions-width REGIONS_WIDTH] [--tolerance TOLERANCE] [--max-changed MAX_CHANGED] [--allow-resize] [--restore OUT.png] [--feather FEATHER] [--out OUT] base delivered
+
+positional arguments:
+  base                  the image you sent (the base)
+  delivered             the image you received
+
+options:
+  -h, --help            show this help message and exit
+  --region X0,Y0,X1,Y1  allowed region in base pixels (right and bottom excluded); repeat for more regions
+  --regions-width REGIONS_WIDTH
+                        the regions are written for an image this wide (scaled to the base width)
+  --tolerance TOLERANCE
+                        a pixel counts as changed above this difference (0-255, default 8)
+  --max-changed MAX_CHANGED
+                        fail when more changed pixels than this lie outside (default 0)
+  --allow-resize        compare after shrinking a delivered image of another size (warn)
+  --restore OUT.png     write the delivered image with everything outside the regions put back to the base (PNG only: lossless)
+  --feather FEATHER     soft edge of the restored regions in region pixels (default 12)
+  --out OUT             default: <delivered stem>_handoff_report next to the delivered image
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "base", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "delivered", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--region"], "dest": "region", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": "X0,Y0,X1,Y1"}
+{"options": ["--regions-width"], "dest": "regions_width", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--tolerance"], "dest": "tolerance", "action": "_StoreAction", "nargs": null, "const": null, "default": 8.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--max-changed"], "dest": "max_changed", "action": "_StoreAction", "nargs": null, "const": null, "default": 0, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--allow-resize"], "dest": "allow_resize", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--restore"], "dest": "restore", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": "OUT.png"}
+{"options": ["--feather"], "dest": "feather", "action": "_StoreAction", "nargs": null, "const": null, "default": 12.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv inspect
+usage: mv inspect [-h] {check,demo} ...
+
+positional arguments:
+  {check,demo}
+    check       measure every frame and write the report, stills and fix plan
+    demo        write a synthetic clip with known anomalies, a design sheet and inspect.json
+
+options:
+  -h, --help    show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "inspect_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "demo"], "required": true, "metavar": null}
+==== mv inspect check
+usage: mv inspect check [-h] [--out OUT] [--vlm VLM] [--allow-send] [--vlm-packet] [--vlm-response VLM_RESPONSE] [--vlm-legacy-response] [--quiet] config
+
+positional arguments:
+  config                inspect.json (inspect/0.1)
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             default: <config dir>/inspect_report
+  --vlm VLM             VLM adapter config (tool, version, argv, sends_data). Runs only when given here
+  --allow-send          allow a VLM adapter with sends_data: true to send frames and sheets
+  --vlm-packet          write the VLM request packet only (nothing is sent)
+  --vlm-response VLM_RESPONSE
+                        import a VLM response written for this run's request packet
+  --vlm-legacy-response
+                        accept a VLM response without request_sha256 (old format; not bound to this request). Recorded in the report
+  --quiet               do not report progress on stderr
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--vlm"], "dest": "vlm", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--allow-send"], "dest": "allow_send", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--vlm-packet"], "dest": "vlm_packet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--vlm-response"], "dest": "vlm_response", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--vlm-legacy-response"], "dest": "vlm_legacy_response", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv inspect demo
+usage: mv inspect demo [-h] [--width WIDTH] [--height HEIGHT] [--fps FPS] [--duration DURATION] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help           show this help message and exit
+  --width WIDTH
+  --height HEIGHT
+  --fps FPS
+  --duration DURATION
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 216, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": 384, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 24, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": 4.0, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv workflow
+usage: mv workflow [-h] {plan,check,omit,restore} ...
+
+positional arguments:
+  {plan,check,omit,restore}
+    plan                save the required inputs, commands and handoffs for a production
+    check               check current evidence; exit 1 for missing or failed requirements
+    omit                record an intentional omission; never turns a failed check into a pass
+    restore             remove an omission and require the stage again
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "workflow_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["plan", "check", "omit", "restore"], "required": true, "metavar": null}
+==== mv workflow plan
+usage: mv workflow plan [-h] --purpose {lyric-mv,dance-edit} [--out OUT] [--lyrics | --no-lyrics] [--inspection {optional,required}] target
+
+positional arguments:
+  target                MV project directory or dance spec JSON
+
+options:
+  -h, --help            show this help message and exit
+  --purpose {lyric-mv,dance-edit}
+  --out OUT             workflow JSON path (default: beside the target)
+  --lyrics, --no-lyrics
+                        declare sung lyrics for a dance edit (otherwise inferred from an existing spec)
+  --inspection {optional,required}
+                        add the mv inspect stage (required: the plan is incomplete without a matching inspect report)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "target", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--purpose"], "dest": "purpose", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["lyric-mv", "dance-edit"], "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--lyrics", "--no-lyrics"], "dest": "lyrics", "action": "BooleanOptionalAction", "nargs": 0, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--inspection"], "dest": "inspection", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["optional", "required"], "required": false, "metavar": null}
+==== mv workflow check
+usage: mv workflow check [-h] [--run RUN] [--gate-config GATE_CONFIG] [--out OUT] [--inspect-report INSPECT_REPORT] plan
+
+positional arguments:
+  plan
+
+options:
+  -h, --help            show this help message and exit
+  --run RUN             render run directory (required for dance edits)
+  --gate-config GATE_CONFIG
+                        gate config for this dance run; checks are rerun
+  --out OUT             write the completion report JSON and Markdown here
+  --inspect-report INSPECT_REPORT
+                        mv inspect report (inspect_report.json) to record; repeatable. Matched to the final video, spec or assets by SHA-256
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "plan", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--run"], "dest": "run", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--gate-config"], "dest": "gate_config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--inspect-report"], "dest": "inspect_report", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": "Path", "choices": null, "required": false, "metavar": null}
+==== mv workflow omit
+usage: mv workflow omit [-h] --reason REASON plan {beats,lyrics}
+
+positional arguments:
+  plan
+  {beats,lyrics}
+
+options:
+  -h, --help       show this help message and exit
+  --reason REASON
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "plan", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "stage", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["beats", "lyrics"], "required": true, "metavar": null}
+{"options": ["--reason"], "dest": "reason", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+==== mv workflow restore
+usage: mv workflow restore [-h] plan {beats,lyrics}
+
+positional arguments:
+  plan
+  {beats,lyrics}
+
+options:
+  -h, --help      show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "plan", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "stage", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["beats", "lyrics"], "required": true, "metavar": null}
+==== mv export
+usage: mv export [-h] {remotion-props,subtitles} ...
+
+positional arguments:
+  {remotion-props,subtitles}
+    remotion-props      frame-based props.json (remotion-props/0.1) from analysis.json and storyboard.json
+    subtitles           subtitle files (SRT / WebVTT / LRC) and description lyrics from lyric line times
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "export_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["remotion-props", "subtitles"], "required": true, "metavar": null}
+==== mv export remotion-props
+usage: mv export remotion-props [-h] --out OUT [--beats BEATS] [--beats-per-bar BEATS_PER_BAR] [--downbeat-phase DOWNBEAT_PHASE] [--no-storyboard] project
+
+positional arguments:
+  project
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             props.json to write
+  --beats BEATS         beat grid JSON with "beats" and "downbeats" (gate / dance format)
+  --beats-per-bar BEATS_PER_BAR
+                        derive downbeats from analysis beats_s every N beats
+  --downbeat-phase DOWNBEAT_PHASE
+                        index of the first downbeat within beats_s (with --beats-per-bar)
+  --no-storyboard       do not include storyboard scenes even if storyboard.json exists
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "project", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--beats"], "dest": "beats", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--beats-per-bar"], "dest": "beats_per_bar", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--downbeat-phase"], "dest": "downbeat_phase", "action": "_StoreAction", "nargs": null, "const": null, "default": 0, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--no-storyboard"], "dest": "no_storyboard", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv export subtitles
+usage: mv export subtitles [-h] --out OUT [--name NAME] [--formats FORMATS] [--field FIELD] [--lead LEAD] [--tail TAIL] [--duration DURATION] [--vtt-settings VTT_SETTINGS] [--description-heading DESCRIPTION_HEADING] [--description-body DESCRIPTION_BODY] [--force] source
+
+positional arguments:
+  source                project folder or analysis.json, a lines JSON ([{start, end, text}]) or an LRC
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             folder to write into
+  --name NAME           file name stem (default: the project folder or the source file stem)
+  --formats FORMATS     comma-separated: srt, vtt, lrc, description (default srt,vtt,lrc)
+  --field FIELD         text field: analysis text|alignment_text; lines JSON any field such as ja
+  --lead LEAD           seconds a cue appears before the line is sung (default 0.15)
+  --tail TAIL           seconds a cue stays after the line ends, never past the next cue (default 0.40)
+  --duration DURATION   video length in seconds: cues are cut there (and an LRC's last line ends there)
+  --vtt-settings VTT_SETTINGS
+                        WebVTT cue settings, e.g. "line:8% position:50% align:center" (top of the screen)
+  --description-heading DESCRIPTION_HEADING
+                        first line of the description lyrics (empty for none)
+  --description-body DESCRIPTION_BODY
+                        description text: check that it plus the lyrics fit in 5,000 bytes
+  --force               overwrite files whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--name"], "dest": "name", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--formats"], "dest": "formats", "action": "_StoreAction", "nargs": null, "const": null, "default": "srt,vtt,lrc", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--field"], "dest": "field", "action": "_StoreAction", "nargs": null, "const": null, "default": "text", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--lead"], "dest": "lead", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.15, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--tail"], "dest": "tail", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.4, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--vtt-settings"], "dest": "vtt_settings", "action": "_StoreAction", "nargs": null, "const": null, "default": "", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--description-heading"], "dest": "description_heading", "action": "_StoreAction", "nargs": null, "const": null, "default": "■ Lyrics", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--description-body"], "dest": "description_body", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv sheet
+usage: mv sheet [-h] --out OUT [--at AT [AT ...]] [--events EVENTS] [--every S] [--count N] [--crop X0 Y0 X1 Y1] [--units {norm,px}] [--kinds KINDS] [--fps FPS] [--backgrounds BACKGROUNDS] [--cell-width CELL_WIDTH] [--columns COLUMNS] [--font FONT] [--with ALSO] [--labels LABELS] [--height HEIGHT] [--audio AUDIO] [--crf CRF] source
+
+positional arguments:
+  source                video file or PNG sequence folder
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             sheet image to write; the extension picks the format (.png, or .jpg/.jpeg at quality 90). A .json with the cells is written beside it
+  --at AT [AT ...]      times in seconds (not together with --events)
+  --events EVENTS       timeline.json; frames at line starts, flashes and seams (not together with --at)
+  --every S             add a frame every S seconds from 0 (alone, or with --at / --events / --count)
+  --count N             add the middle frame of each of N equal parts of the whole length (alone, or with --at / --events / --every)
+  --crop X0 Y0 X1 Y1    region of each frame to show (in --units), at its native size unless --cell-width is given
+  --units {norm,px}     units of --crop. norm: 0..1 of the frame (default), px: frame pixels
+  --kinds KINDS         comma-separated event kinds to take from --events
+  --fps FPS             fps of a PNG sequence (default: the timeline's fps)
+  --backgrounds BACKGROUNDS
+                        comma-separated backgrounds for transparent frames
+  --cell-width CELL_WIDTH
+                        cell width in pixels (default 320; with --crop, the region's own width)
+  --columns COLUMNS     columns for opaque sources (transparent ones use one column per background)
+  --font FONT           TTF/TTC for the labels (default: a common Japanese font if found, else ASCII labels)
+  --with ALSO           another video or opaque PNG sequence to compare (repeatable). With a sheet --out: one row per source at the same times (--at/--every/--count). With an .mp4 --out: the videos side by side
+  --labels LABELS       comma-separated names of the source and each --with (default: file names)
+  --height HEIGHT       side-by-side video: panel height (default: the lowest video)
+  --audio AUDIO         side-by-side video: take the audio of this video (1 = the first, 0 = none)
+  --crf CRF             side-by-side video: H.264 CRF
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--at"], "dest": "at", "action": "_StoreAction", "nargs": "+", "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--events"], "dest": "events", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--every"], "dest": "every", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": "S"}
+{"options": ["--count"], "dest": "count", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": "N"}
+{"options": ["--crop"], "dest": "crop", "action": "_StoreAction", "nargs": 4, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": ["X0", "Y0", "X1", "Y1"]}
+{"options": ["--units"], "dest": "units", "action": "_StoreAction", "nargs": null, "const": null, "default": "norm", "type": null, "choices": ["norm", "px"], "required": false, "metavar": null}
+{"options": ["--kinds"], "dest": "kinds", "action": "_StoreAction", "nargs": null, "const": null, "default": "lyrics,flashes,seams", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--backgrounds"], "dest": "backgrounds", "action": "_StoreAction", "nargs": null, "const": null, "default": "white,black,gray", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--cell-width"], "dest": "cell_width", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--columns"], "dest": "columns", "action": "_StoreAction", "nargs": null, "const": null, "default": 4, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--font"], "dest": "font", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--with"], "dest": "also", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--labels"], "dest": "labels", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--audio"], "dest": "audio", "action": "_StoreAction", "nargs": null, "const": null, "default": 1, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--crf"], "dest": "crf", "action": "_StoreAction", "nargs": null, "const": null, "default": 20, "type": "int", "choices": null, "required": false, "metavar": null}
+==== mv layer
+usage: mv layer [-h] {render} ...
+
+positional arguments:
+  {render}
+    render    render a composition to a PNG sequence (frames/) and record versions, hashes and timing
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "layer_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["render"], "required": true, "metavar": null}
+==== mv layer render
+usage: mv layer render [-h] --props PROPS [--entry ENTRY] [--composition COMPOSITION] [--public PUBLIC] [--out OUT] [--twice] [--force] [--renderer RENDERER] [--concurrency CONCURRENCY]
+
+options:
+  -h, --help            show this help message and exit
+  --props PROPS         props.json (remotion-props/0.1 from mv export remotion-props)
+  --entry ENTRY         Remotion entry (default: renderer/src/layer-index.tsx)
+  --composition COMPOSITION
+  --public PUBLIC       public folder (fonts etc.); every file's sha256 is recorded
+  --out OUT             runs folder (default: <props dir>/layer_runs)
+  --twice               render twice and record whether every frame hash matches
+  --force               render again even if an identical run exists
+  --renderer RENDERER   render script (default: renderer/render-frames.mjs)
+  --concurrency CONCURRENCY
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--props"], "dest": "props", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--entry"], "dest": "entry", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--composition"], "dest": "composition", "action": "_StoreAction", "nargs": null, "const": null, "default": "LyricLayer", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--public"], "dest": "public", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--twice"], "dest": "twice", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--renderer"], "dest": "renderer", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--concurrency"], "dest": "concurrency", "action": "_StoreAction", "nargs": null, "const": null, "default": 2, "type": "int", "choices": null, "required": false, "metavar": null}
+==== mv overlay
+usage: mv overlay [-h] --base BASE [--layer LAYER] [--layers LAYERS] [--frames FRAMES] [--audio AUDIO] [--out OUT] [--fps FPS] [--crf CRF] [--force] [--quiet]
+
+options:
+  -h, --help       show this help message and exit
+  --base BASE      base image or video
+  --layer LAYER    PNG sequence folder or alpha video; repeatable, bottom to top
+  --layers LAYERS  fx-overlay-layers/0.1 JSON: layers with first_frame, timed still images and style (instead of --layer)
+  --frames FRAMES  frame count when the base is an image and no layer fixes it
+  --audio AUDIO    audio file to mux from 0 s
+  --out OUT        runs folder (default: <base dir>/overlay_runs)
+  --fps FPS        required when --base is an image; must match a video base
+  --crf CRF
+  --force          render again even if an identical run exists
+  --quiet          do not report progress on stderr
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--base"], "dest": "base", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--layer"], "dest": "layer", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--layers"], "dest": "layers", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--frames"], "dest": "frames", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--audio"], "dest": "audio", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--crf"], "dest": "crf", "action": "_StoreAction", "nargs": null, "const": null, "default": 18, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv deliver
+usage: mv deliver [-h] {join,review-copy,split} ...
+
+positional arguments:
+  {join,review-copy,split}
+    join                concatenate segment videos without re-encoding, cut the audio with fades and mux a master
+    review-copy         small review copy: the master itself under the limit, else a 2-pass H.264 near the target
+    split               cut a master into parts with a Windows join script (join_master.bat) and SHA256SUMS
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "deliver_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["join", "review-copy", "split"], "required": true, "metavar": null}
+==== mv deliver join
+usage: mv deliver join [-h] --out OUT [--audio AUDIO] [--audio-start AUDIO_START] [--fade-in FADE_IN] [--fade-out FADE_OUT] [--force] segments [segments ...]
+
+positional arguments:
+  segments              segment videos in order, or one folder of seg_<first>_<end>.mp4
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             master .mp4 to write (a <name>.deliver.json record is written beside it)
+  --audio AUDIO         audio file to cut from (none: video only)
+  --audio-start AUDIO_START
+                        seconds into the audio where the video starts (default 0)
+  --fade-in FADE_IN     audio fade-in seconds (default 0.02)
+  --fade-out FADE_OUT   audio fade-out seconds (default 0.25)
+  --force               overwrite a master whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "segments", "action": "_StoreAction", "nargs": "+", "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--audio"], "dest": "audio", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--audio-start"], "dest": "audio_start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fade-in"], "dest": "fade_in", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.02, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fade-out"], "dest": "fade_out", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.25, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv deliver review-copy
+usage: mv deliver review-copy [-h] --out OUT [--limit-bytes LIMIT_BYTES] [--target-bytes TARGET_BYTES] [--maxrate MAXRATE] [--bufsize BUFSIZE] [--preset PRESET] [--threads THREADS] [--force] master
+
+positional arguments:
+  master
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             review .mp4 to write (a <name>.review.json record is written beside it)
+  --limit-bytes LIMIT_BYTES
+                        copy the master as is below this size (default 28,000,000)
+  --target-bytes TARGET_BYTES
+                        2-pass size target in bytes (default 27,000,000)
+  --maxrate MAXRATE
+  --bufsize BUFSIZE
+  --preset PRESET
+  --threads THREADS     x264 threads; 1 repeats byte for byte (default), 0 lets ffmpeg choose (faster)
+  --force               overwrite a review copy whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "master", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--limit-bytes"], "dest": "limit_bytes", "action": "_StoreAction", "nargs": null, "const": null, "default": 28000000, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--target-bytes"], "dest": "target_bytes", "action": "_StoreAction", "nargs": null, "const": null, "default": 27000000, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--maxrate"], "dest": "maxrate", "action": "_StoreAction", "nargs": null, "const": null, "default": "11M", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--bufsize"], "dest": "bufsize", "action": "_StoreAction", "nargs": null, "const": null, "default": "22M", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--preset"], "dest": "preset", "action": "_StoreAction", "nargs": null, "const": null, "default": "slow", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--threads"], "dest": "threads", "action": "_StoreAction", "nargs": null, "const": null, "default": 1, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv deliver split
+usage: mv deliver split [-h] --out OUT [--part-bytes PART_BYTES] [--name NAME] [--title TITLE] [--force] master
+
+positional arguments:
+  master
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             folder for the parts (a <folder>.split.json record is written beside it)
+  --part-bytes PART_BYTES
+                        bytes per part (default 25,000,000)
+  --name NAME           file name of the joined master (ASCII letters, digits, . _ -; default: the master's name)
+  --title TITLE         title shown in the join script (default: the name)
+  --force               overwrite parts and files of the same names
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "master", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--part-bytes"], "dest": "part_bytes", "action": "_StoreAction", "nargs": null, "const": null, "default": 25000000, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--name"], "dest": "name", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--title"], "dest": "title", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv audio
+usage: mv audio [-h] {grid,hits,keys,end} ...
+
+positional arguments:
+  {grid,hits,keys,end}
+    grid                fit a constant-tempo beat grid to the onsets: beats, downbeats and drift (estimated)
+    hits                strong hits (sparse) and band-difference onsets (dense, with strength), estimated
+    keys                light intensity keys from the hits: writes a copy of an fx-shot spec with one light's intensity keyed to the hits
+    end                 when the sound ends: the last 0.1 s window whose loudness is within --floor-db of the loudest window (measured), and the digital silence after it
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "audio_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["grid", "hits", "keys", "end"], "required": true, "metavar": null}
+==== mv audio grid
+usage: mv audio grid [-h] [--bpm-min BPM_MIN] [--bpm-max BPM_MAX] [--bpm BPM] [--phase PHASE] [--downbeat {onset,chroma}] [--beats-per-bar BEATS_PER_BAR] [--out OUT] [--fair-refine] [--force] source
+
+positional arguments:
+  source                audio file, or a project folder with analysis.json (then analysis.grid.json is written beside it)
+
+options:
+  -h, --help            show this help message and exit
+  --bpm-min BPM_MIN     lowest bpm to try (searched in 0.02 steps)
+  --bpm-max BPM_MAX     bpm to stop before
+  --bpm BPM             use this grid instead of searching (with --phase): records beats, downbeats and drift
+  --phase PHASE         time of beat 0 in seconds (with --bpm)
+  --downbeat {onset,chroma}
+                        how to pick the downbeat: onset strength per beat phase (default) or chord change on the 8th grid
+  --beats-per-bar BEATS_PER_BAR
+                        beats per bar for the downbeat phase (default 4)
+  --out OUT             record to write (default: <audio stem>.grid.json beside the audio, or <project>/analysis.grid.json)
+  --fair-refine         re-score the coarse best with the refine window before refining (default: the production way)
+  --force               overwrite a record whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--bpm-min"], "dest": "bpm_min", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--bpm-max"], "dest": "bpm_max", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--bpm"], "dest": "bpm", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--phase"], "dest": "phase", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--downbeat"], "dest": "downbeat", "action": "_StoreAction", "nargs": null, "const": null, "default": "onset", "type": null, "choices": ["onset", "chroma"], "required": false, "metavar": null}
+{"options": ["--beats-per-bar"], "dest": "beats_per_bar", "action": "_StoreAction", "nargs": null, "const": null, "default": 4, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--fair-refine"], "dest": "fair_refine", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv audio hits
+usage: mv audio hits [-h] [--grid GRID] [--strong-shift-ms STRONG_SHIFT_MS] [--onset-shift-ms ONSET_SHIFT_MS] [--out OUT] [--force] source
+
+positional arguments:
+  source                audio file, or a project folder with analysis.json (then analysis.hits.json is written beside it)
+
+options:
+  -h, --help            show this help message and exit
+  --grid GRID           mv audio grid record of the same audio: adds bar and beat positions
+  --strong-shift-ms STRONG_SHIFT_MS
+                        added to the strong hit times (default -16.7: the measured detection delay)
+  --onset-shift-ms ONSET_SHIFT_MS
+                        added to the onset times (default 18.7: the measured detection lead)
+  --out OUT             record to write (default: <audio stem>.hits.json beside the audio, or <project>/analysis.hits.json)
+  --force               overwrite a record whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--grid"], "dest": "grid", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--strong-shift-ms"], "dest": "strong_shift_ms", "action": "_StoreAction", "nargs": null, "const": null, "default": -16.7, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--onset-shift-ms"], "dest": "onset_shift_ms", "action": "_StoreAction", "nargs": null, "const": null, "default": 18.7, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv audio keys
+usage: mv audio keys [-h] --spec SPEC --light LIGHT [--start START] [--from {strong,onsets}] [--min-strength MIN_STRENGTH] [--section FROM TO] [--min-gap-s MIN_GAP_S] [--base BASE] [--gain GAIN] [--by-strength] [--out OUT] [--force] hits
+
+positional arguments:
+  hits                  mv audio hits record
+
+options:
+  -h, --help            show this help message and exit
+  --spec SPEC           fx-shot spec whose light gets the keys (not changed)
+  --light LIGHT         id of the light in the spec
+  --start START         song time of the shot's 0 s (default: spec audio.offset_s, when the spec audio is the same file as the hits record)
+  --from {strong,onsets}
+                        which hit list (default strong)
+  --min-strength MIN_STRENGTH
+                        skip hits weaker than this (not in the production rule)
+  --section FROM TO     use only hits in [FROM, TO) song seconds (repeatable; default: the whole song)
+  --min-gap-s MIN_GAP_S
+                        skip a hit within this many seconds of the last used one (default 1.6)
+  --base BASE           intensity between flashes (default 0)
+  --gain GAIN           intensity per unit of flash (the flash peaks near 1, capped at 1.2)
+  --by-strength         scale each flash by the hit strength (not in the production rule)
+  --out OUT             spec to write, in the same folder as --spec (default: <spec stem>_keys.json)
+  --force               overwrite a spec whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "hits", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--spec"], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--light"], "dest": "light", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--from"], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": "strong", "type": null, "choices": ["strong", "onsets"], "required": false, "metavar": null}
+{"options": ["--min-strength"], "dest": "min_strength", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--section"], "dest": "section", "action": "_AppendAction", "nargs": 2, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": ["FROM", "TO"]}
+{"options": ["--min-gap-s"], "dest": "min_gap_s", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.6, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--base"], "dest": "base", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--gain"], "dest": "gain", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--by-strength"], "dest": "by_strength", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv audio end
+usage: mv audio end [-h] [--window WINDOW] [--floor-db FLOOR_DB] [--out OUT] [--force] source
+
+positional arguments:
+  source               audio file, or a project folder with analysis.json (then analysis.end.json is written beside it)
+
+options:
+  -h, --help           show this help message and exit
+  --window WINDOW      window length in seconds (default 0.1)
+  --floor-db FLOOR_DB  a window sounds when within this many dB of the loudest (default -60)
+  --out OUT            record to write (default: <audio stem>.end.json beside the audio)
+  --force              overwrite a record whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--window"], "dest": "window", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.1, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -60.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}

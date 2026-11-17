@@ -1,0 +1,671 @@
+==== model3d
+usage: model3d [-h] [--version] {demo,dance-recipe,run,accept,edit,manifest,semantic,validate,check,mesh,generate,handoff,rea,blender,frames,ops} ...
+
+self-made 3D modeling tool: recipes, semantic parts, checks, run records
+
+positional arguments:
+  {demo,dance-recipe,run,accept,edit,manifest,semantic,validate,check,mesh,generate,handoff,rea,blender,frames,ops}
+    demo                write synthetic inputs, preset, semantic map and a recipe
+    dance-recipe        connect a private recovered dance worker bundle to RecipeGraph
+    run                 execute a recipe and write a run record
+    accept              record the human decision for a run
+    edit                record a manual edit (what, by whom, minutes) on a run
+    manifest            write an AssetManifest for input files
+    semantic            build or confirm a SemanticMap, and bind face regions of a mesh version to roles
+    validate            validate a file against one of the data contracts
+    check               run one check on files
+    mesh                convert between model3d-mesh JSON and OBJ, or summarize a mesh
+    generate            initial model from a setting sheet: prepare the image or inspect a generated mesh
+    handoff             write a handoff record (run, recipe and artifact sha256) for Orpheus
+    rea                 turn REA analysis outputs into recipe evidence
+    blender             run Blender in the background (unverified on this machine)
+    frames              compare two folders of rendered frames (f<T>.png) or two frames lists
+    ops                 list the registered operations
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--version"], "dest": "version", "action": "_VersionAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "dance-recipe", "run", "accept", "edit", "manifest", "semantic", "validate", "check", "mesh", "generate", "handoff", "rea", "blender", "frames", "ops"], "required": true, "metavar": null}
+==== model3d demo
+usage: model3d demo [-h] [--clearance CLEARANCE] [--resolution RESOLUTION] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help            show this help message and exit
+  --clearance CLEARANCE
+  --resolution RESOLUTION
+                        grid resolution passed to the stand-in generator
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--clearance"], "dest": "clearance", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.004, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--resolution"], "dest": "resolution", "action": "_StoreAction", "nargs": null, "const": null, "default": 64, "type": "int", "choices": null, "required": false, "metavar": null}
+==== model3d dance-recipe
+usage: model3d dance-recipe [-h] --bundle BUNDLE --preset PRESET --face-config FACE_CONFIG --python PYTHON --blender BLENDER [--frames FRAMES] [--profile PROFILE] [--threads THREADS] dir
+
+positional arguments:
+  dir
+
+options:
+  -h, --help            show this help message and exit
+  --bundle BUNDLE
+  --preset PRESET
+  --face-config FACE_CONFIG
+  --python PYTHON       isolated legacy worker Python; venv symlink is preserved
+  --blender BLENDER
+  --frames FRAMES
+  --profile PROFILE
+  --threads THREADS
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--bundle"], "dest": "bundle", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--preset"], "dest": "preset", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--face-config"], "dest": "face_config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--python"], "dest": "python", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--blender"], "dest": "blender", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--frames"], "dest": "frames", "action": "_StoreAction", "nargs": null, "const": null, "default": "1:147:3", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--profile"], "dest": "profile", "action": "_StoreAction", "nargs": null, "const": null, "default": "preview", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--threads"], "dest": "threads", "action": "_StoreAction", "nargs": null, "const": null, "default": 4, "type": "int", "choices": null, "required": false, "metavar": null}
+==== model3d run
+usage: model3d run [-h] [--out OUT] [--force] [--preset PRESET] [--tool NAME=PATH] [--quiet] recipe
+
+positional arguments:
+  recipe
+
+options:
+  -h, --help        show this help message and exit
+  --out OUT         default: <recipe dir>/model3d_runs
+  --force           run every step again even if an identical step succeeded before
+  --preset PRESET   override the recipe's preset
+  --tool NAME=PATH  external tool path (e.g. blender=/path/to/blender)
+  --quiet
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "recipe", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--preset"], "dest": "preset", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--tool"], "dest": "tool", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": "NAME=PATH"}
+{"options": ["--quiet"], "dest": "quiet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d accept
+usage: model3d accept [-h] --decision {accepted,rejected,hold} --by BY [--note NOTE] run_dir
+
+positional arguments:
+  run_dir
+
+options:
+  -h, --help            show this help message and exit
+  --decision {accepted,rejected,hold}
+  --by BY
+  --note NOTE
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "run_dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--decision"], "dest": "decision", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["accepted", "rejected", "hold"], "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d edit
+usage: model3d edit [-h] --by BY --what WHAT [--minutes MINUTES] run_dir
+
+positional arguments:
+  run_dir
+
+options:
+  -h, --help         show this help message and exit
+  --by BY
+  --what WHAT
+  --minutes MINUTES
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "run_dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--what"], "dest": "what", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--minutes"], "dest": "minutes", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+==== model3d manifest
+usage: model3d manifest [-h] --asset-id ASSET_ID --input NAME=PATH[:KIND] [--units {m,cm,mm}] [--up UP] [--forward FORWARD] [--asset-version ASSET_VERSION] [--part PART] [--notes NOTES] out
+
+positional arguments:
+  out
+
+options:
+  -h, --help            show this help message and exit
+  --asset-id ASSET_ID
+  --input NAME=PATH[:KIND]
+                        KIND: mesh, image, blend, glb, fbx, obj, json, recipe, other（省略時は拡張子と中身から決める）
+  --units {m,cm,mm}
+  --up UP
+  --forward FORWARD
+  --asset-version ASSET_VERSION
+  --part PART           part id
+  --notes NOTES
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--asset-id"], "dest": "asset_id", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--input"], "dest": "input", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": true, "metavar": "NAME=PATH[:KIND]"}
+{"options": ["--units"], "dest": "units", "action": "_StoreAction", "nargs": null, "const": null, "default": "m", "type": null, "choices": ["m", "cm", "mm"], "required": false, "metavar": null}
+{"options": ["--up"], "dest": "up", "action": "_StoreAction", "nargs": null, "const": null, "default": "+Z", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--forward"], "dest": "forward", "action": "_StoreAction", "nargs": null, "const": null, "default": "-Y", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--asset-version"], "dest": "asset_version", "action": "_StoreAction", "nargs": null, "const": null, "default": "1", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--part"], "dest": "part", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--notes"], "dest": "notes", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d semantic
+usage: model3d semantic [-h] {build,confirm,components,add-region,check,remap,preview} ...
+
+positional arguments:
+  {build,confirm,components,add-region,check,remap,preview}
+    build               map part ids and bone names to roles with a preset
+    confirm             record a human confirmation of one mapping
+    components          list the face-connected components of a mesh (material for regions)
+    add-region          bind faces of this mesh (its name and topology) to a part role (state unconfirmed)
+    check               which regions bind to this mesh version (bound / other part / stale / invalid)
+    remap               rebind regions through an exact face mapping (the mapping output of mesh.weld)
+    preview             write the mesh as OBJ with one group per region bound to it (to look at in Blender)
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "semantic_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["build", "confirm", "components", "add-region", "check", "remap", "preview"], "required": true, "metavar": null}
+==== model3d semantic build
+usage: model3d semantic build [-h] --asset-id ASSET_ID [--parts PARTS] [--bones BONES] [--rig RIG] preset out
+
+positional arguments:
+  preset
+  out
+
+options:
+  -h, --help           show this help message and exit
+  --asset-id ASSET_ID
+  --parts PARTS        comma-separated part ids
+  --bones BONES        comma-separated bone names (NAME or NAME:PARENT)
+  --rig RIG            take bone names and parents from a model3d-rig/0.1 file
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "preset", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--asset-id"], "dest": "asset_id", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--parts"], "dest": "parts", "action": "_StoreAction", "nargs": null, "const": null, "default": "", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--bones"], "dest": "bones", "action": "_StoreAction", "nargs": null, "const": null, "default": "", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--rig"], "dest": "rig", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== model3d semantic confirm
+usage: model3d semantic confirm [-h] --kind {parts,bones,regions} --key KEY --state {confirmed,rejected,unconfirmed} --by BY [--note NOTE] semantic_map
+
+positional arguments:
+  semantic_map
+
+options:
+  -h, --help            show this help message and exit
+  --kind {parts,bones,regions}
+  --key KEY
+  --state {confirmed,rejected,unconfirmed}
+  --by BY
+  --note NOTE
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "semantic_map", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--kind"], "dest": "kind", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["parts", "bones", "regions"], "required": true, "metavar": null}
+{"options": ["--key"], "dest": "key", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--state"], "dest": "state", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["confirmed", "rejected", "unconfirmed"], "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d semantic components
+usage: model3d semantic components [-h] [--out OUT] [--obj OBJ] mesh
+
+positional arguments:
+  mesh
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   also write the report as JSON
+  --obj OBJ   write the mesh as OBJ with one group per component (to look at in Blender)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--obj"], "dest": "obj", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== model3d semantic add-region
+usage: model3d semantic add-region [-h] --key KEY --role ROLE --by BY [--component COMPONENT [COMPONENT ...]] [--faces FACES] [--mesh-part MESH_PART] [--box X0 Y0 Z0 X1 Y1 Z1] [--basis {user,inferred}] [--note NOTE] [--replace] semantic_map mesh
+
+positional arguments:
+  semantic_map
+  mesh
+
+options:
+  -h, --help            show this help message and exit
+  --key KEY             region id (letters, digits, _ . -)
+  --role ROLE
+  --by BY
+  --component COMPONENT [COMPONENT ...]
+                        component numbers from `semantic components`
+  --faces FACES         JSON list of face indices, or {"faces": [...]}
+  --mesh-part MESH_PART
+                        a face set of the mesh (mesh parts / OBJ group)
+  --box X0 Y0 Z0 X1 Y1 Z1
+                        keep only faces whose centre lies in this axis-aligned box (mesh units)
+  --basis {user,inferred}
+  --note NOTE
+  --replace
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "semantic_map", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--key"], "dest": "key", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--role"], "dest": "role", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": ["--component"], "dest": "component", "action": "_StoreAction", "nargs": "+", "const": null, "default": [], "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--faces"], "dest": "faces", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--mesh-part"], "dest": "mesh_part", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--box"], "dest": "box", "action": "_StoreAction", "nargs": 6, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": ["X0", "Y0", "Z0", "X1", "Y1", "Z1"]}
+{"options": ["--basis"], "dest": "basis", "action": "_StoreAction", "nargs": null, "const": null, "default": "user", "type": null, "choices": ["user", "inferred"], "required": false, "metavar": null}
+{"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--replace"], "dest": "replace", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d semantic check
+usage: model3d semantic check [-h] semantic_map mesh
+
+positional arguments:
+  semantic_map
+  mesh
+
+options:
+  -h, --help    show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "semantic_map", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d semantic remap
+usage: model3d semantic remap [-h] --by BY semantic_map mapping out
+
+positional arguments:
+  semantic_map
+  mapping
+  out
+
+options:
+  -h, --help    show this help message and exit
+  --by BY
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "semantic_map", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "mapping", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+==== model3d semantic preview
+usage: model3d semantic preview [-h] semantic_map mesh out
+
+positional arguments:
+  semantic_map
+  mesh
+  out
+
+options:
+  -h, --help    show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "semantic_map", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d validate
+usage: model3d validate [-h] {mesh,asset-manifest,semantic-map,correspondence,recipe,observation,run,rig,preset,handoff,initial-model,stage-track,frames,stage-plan,light-keys,bone-path,passes,cameras,orbit-plan,shot-plan} file
+
+positional arguments:
+  {mesh,asset-manifest,semantic-map,correspondence,recipe,observation,run,rig,preset,handoff,initial-model,stage-track,frames,stage-plan,light-keys,bone-path,passes,cameras,orbit-plan,shot-plan}
+  file
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "kind", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["mesh", "asset-manifest", "semantic-map", "correspondence", "recipe", "observation", "run", "rig", "preset", "handoff", "initial-model", "stage-track", "frames", "stage-plan", "light-keys", "bone-path", "passes", "cameras", "orbit-plan", "shot-plan"], "required": true, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d check
+usage: model3d check [-h] {structure,penetration,continuity} ...
+
+positional arguments:
+  {structure,penetration,continuity}
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "check_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["structure", "penetration", "continuity"], "required": true, "metavar": null}
+==== model3d check structure
+usage: model3d check structure [-h] [--mesh MESH] [--semantic-map SEMANTIC_MAP] [--required REQUIRED] [--tolerance TOLERANCE] rig
+
+positional arguments:
+  rig
+
+options:
+  -h, --help            show this help message and exit
+  --mesh MESH           also verify vertex count and recorded topology against this mesh
+  --semantic-map SEMANTIC_MAP
+  --required REQUIRED   comma-separated bone roles, or 'humanoid'
+  --tolerance TOLERANCE
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "rig", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--mesh"], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--semantic-map"], "dest": "semantic_map", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--required"], "dest": "required", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--tolerance"], "dest": "tolerance", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.001, "type": "float", "choices": null, "required": false, "metavar": null}
+==== model3d check penetration
+usage: model3d check penetration [-h] mesh collider
+
+positional arguments:
+  mesh
+  collider
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "collider", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d check continuity
+usage: model3d check continuity [-h] --max-jump MAX_JUMP track
+
+positional arguments:
+  track
+
+options:
+  -h, --help           show this help message and exit
+  --max-jump MAX_JUMP
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "track", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--max-jump"], "dest": "max_jump", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": true, "metavar": null}
+==== model3d mesh
+usage: model3d mesh [-h] {convert,info,compare,parts} ...
+
+positional arguments:
+  {convert,info,compare,parts}
+    compare             same geometry up to vertex/face enumeration order?
+    parts               list the parts of a parts npz (names, co{i}, f{i}, uv{i}) and check optional normals
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "mesh_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["convert", "info", "compare", "parts"], "required": true, "metavar": null}
+==== model3d mesh convert
+usage: model3d mesh convert [-h] src dst
+
+positional arguments:
+  src
+  dst
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "src", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "dst", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d mesh info
+usage: model3d mesh info [-h] file
+
+positional arguments:
+  file
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d mesh compare
+usage: model3d mesh compare [-h] [--no-colors] left right
+
+positional arguments:
+  left
+  right
+
+options:
+  -h, --help   show this help message and exit
+  --no-colors
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "left", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "right", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--no-colors"], "dest": "no_colors", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d mesh parts
+usage: model3d mesh parts [-h] [--normals NORMALS] npz
+
+positional arguments:
+  npz
+
+options:
+  -h, --help         show this help message and exit
+  --normals NORMALS  normals npz (n{i}) to check against the parts
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "npz", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--normals"], "dest": "normals", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== model3d generate
+usage: model3d generate [-h] {prepare,inspect} ...
+
+positional arguments:
+  {prepare,inspect}
+    prepare          write the prepared RGB PNG and the preparation metadata
+    inspect          geometry and structure checks of an initial model (OBJ or JSON)
+
+options:
+  -h, --help         show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "generate_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["prepare", "inspect"], "required": true, "metavar": null}
+==== model3d generate prepare
+usage: model3d generate prepare [-h] [--foreground-ratio FOREGROUND_RATIO] image out
+
+positional arguments:
+  image
+  out
+
+options:
+  -h, --help            show this help message and exit
+  --foreground-ratio FOREGROUND_RATIO
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "image", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--foreground-ratio"], "dest": "foreground_ratio", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.85, "type": "float", "choices": null, "required": false, "metavar": null}
+==== model3d generate inspect
+usage: model3d generate inspect [-h] [--out OUT] mesh
+
+positional arguments:
+  mesh
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "mesh", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== model3d handoff
+usage: model3d handoff [-h] [--notes NOTES] run_dir artifact out
+
+positional arguments:
+  run_dir
+  artifact       <step id>/<output name> or the artifact file name
+  out
+
+options:
+  -h, --help     show this help message and exit
+  --notes NOTES
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "run_dir", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "artifact", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--notes"], "dest": "notes", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+==== model3d rea
+usage: model3d rea [-h] {report,summary,pyc} ...
+
+positional arguments:
+  {report,summary,pyc}
+    report              from an analysis_report.json
+    summary             from a rea-real-3d-tools-experiment/0.1 summary
+    pyc                 from a parsePythonPyc evidence-summary.json (REA 6.8)
+
+options:
+  -h, --help            show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "rea_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["report", "summary", "pyc"], "required": true, "metavar": null}
+==== model3d rea report
+usage: model3d rea report [-h] file out
+
+positional arguments:
+  file
+  out
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d rea summary
+usage: model3d rea summary [-h] file out
+
+positional arguments:
+  file
+  out
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d rea pyc
+usage: model3d rea pyc [-h] file out
+
+positional arguments:
+  file
+  out
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "file", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d blender
+usage: model3d blender [-h] {observe,script} ...
+
+positional arguments:
+  {observe,script}
+    observe         write an Observation3D of a .blend scene
+    script          run a Python script inside Blender
+
+options:
+  -h, --help        show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "blender_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["observe", "script"], "required": true, "metavar": null}
+==== model3d blender observe
+usage: model3d blender observe [-h] --blender BLENDER --blend BLEND --out OUT [--objects [OBJECTS ...]] [--units {m,cm,mm}] [--timeout TIMEOUT] [--addon MODULE] [--extensions EXTENSIONS]
+
+options:
+  -h, --help            show this help message and exit
+  --blender BLENDER
+  --blend BLEND
+  --out OUT
+  --objects [OBJECTS ...]
+  --units {m,cm,mm}
+  --timeout TIMEOUT
+  --addon MODULE        add-on to enable before the .blend is read (repeatable, e.g. bl_ext.user_default.vrm)
+  --extensions EXTENSIONS
+                        extensions folder for BLENDER_USER_EXTENSIONS (Blender writes .cache there)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--blender"], "dest": "blender", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--blend"], "dest": "blend", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--objects"], "dest": "objects", "action": "_StoreAction", "nargs": "*", "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--units"], "dest": "units", "action": "_StoreAction", "nargs": null, "const": null, "default": "m", "type": null, "choices": ["m", "cm", "mm"], "required": false, "metavar": null}
+{"options": ["--timeout"], "dest": "timeout", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--addon"], "dest": "addon", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": "MODULE"}
+{"options": ["--extensions"], "dest": "extensions", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== model3d blender script
+usage: model3d blender script [-h] --blender BLENDER --script SCRIPT [--blend BLEND] [--timeout TIMEOUT] [--addon MODULE] [--extensions EXTENSIONS] [args ...]
+
+positional arguments:
+  args
+
+options:
+  -h, --help            show this help message and exit
+  --blender BLENDER
+  --script SCRIPT
+  --blend BLEND
+  --timeout TIMEOUT
+  --addon MODULE        add-on to enable before the .blend is read (repeatable, e.g. bl_ext.user_default.vrm)
+  --extensions EXTENSIONS
+                        extensions folder for BLENDER_USER_EXTENSIONS (Blender writes .cache there)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--blender"], "dest": "blender", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--script"], "dest": "script", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--blend"], "dest": "blend", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--timeout"], "dest": "timeout", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "args", "action": "_StoreAction", "nargs": "*", "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--addon"], "dest": "addon", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": null, "choices": null, "required": false, "metavar": "MODULE"}
+{"options": ["--extensions"], "dest": "extensions", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+==== model3d frames
+usage: model3d frames [-h] {compare} ...
+
+positional arguments:
+  {compare}
+    compare   pixel differences of the same T in two frame sequences
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "frames_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["compare"], "required": true, "metavar": null}
+==== model3d frames compare
+usage: model3d frames compare [-h] [--out OUT] [--view VIEW] [--view-frame VIEW_FRAME] [--amplify AMPLIFY] [--top TOP] [--max-differing-pixels MAX_DIFFERING_PIXELS] [--max-channel-diff MAX_CHANNEL_DIFF] [--max-mean-abs MAX_MEAN_ABS] left right
+
+positional arguments:
+  left                  frame folder (f<T>.png) or model3d-frames/0.1 JSON
+  right                 frame folder (f<T>.png) or model3d-frames/0.1 JSON
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             write the full report (with one row per frame) here
+  --view VIEW           write [left | right | difference] of one frame as PNG
+  --view-frame VIEW_FRAME
+                        T to view (default: the frame with the most differing pixels)
+  --amplify AMPLIFY     difference brightness factor in the view (default 8)
+  --top TOP             how many worst frames to list (default 5)
+  --max-differing-pixels MAX_DIFFERING_PIXELS
+                        per-frame limit; with any limit the exit code is 1 on failure
+  --max-channel-diff MAX_CHANNEL_DIFF
+                        per-frame limit of the largest value difference (0-255)
+  --max-mean-abs MAX_MEAN_ABS
+                        per-frame limit of the mean colour difference
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "left", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "right", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--view"], "dest": "view", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--view-frame"], "dest": "view_frame", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--amplify"], "dest": "amplify", "action": "_StoreAction", "nargs": null, "const": null, "default": 8.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--top"], "dest": "top", "action": "_StoreAction", "nargs": null, "const": null, "default": 5, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--max-differing-pixels"], "dest": "max_differing_pixels", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--max-channel-diff"], "dest": "max_channel_diff", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--max-mean-abs"], "dest": "max_mean_abs", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+==== model3d ops
+usage: model3d ops [-h]
+
+options:
+  -h, --help  show this help message and exit
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
