@@ -6,7 +6,8 @@ from ..io import ToolError
 
 OPERATIONS = {}
 MODULES = ("mesh_ops", "collision_ops", "check_ops", "external_ops", "blender_ops", "generate_ops", "texture_ops",
-           "motion_ops", "look_ops", "render_ops", "plan_ops", "assemble_ops", "title_ops", "vrm_ops", "cloth_ops", "model_ops")
+           "motion_ops", "look_ops", "render_ops", "plan_ops", "assemble_ops", "title_ops", "vrm_ops", "cloth_ops", "model_ops",
+           "face_ops")
 
 
 @dataclass
