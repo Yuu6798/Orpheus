@@ -384,3 +384,109 @@ def project_reference(inputs, parameters, outputs, context):
     if note:
         unresolved.append(note)
     return StepResult(observations=[report], unresolved=unresolved, review=bool(unresolved))
+
+
+EYE_LINE_PARAMETERS = {"eyes", "end_y", "erase_rows", "erase_columns", "sag", "thickness", "outer_bias", "wing", "lashes", "color",
+                       "supersample", "close_px", "close_blur", "band_blur", "base_width"}
+
+
+def _finite(value, where, minimum=None, exclusive=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ToolError(f"{where} は有限の数にしてください: {value!r}")
+    if minimum is not None and (value <= minimum if exclusive else value < minimum):
+        raise ToolError(f"{where} は {minimum} {'より大きく' if exclusive else '以上に'}してください: {value!r}")
+    return value
+
+
+def _span(value, where):
+    if not isinstance(value, list) or len(value) != 2 or value[0] >= value[1]:
+        raise ToolError(f"{where} は [始め, 終わり]（始め < 終わり。画素）にしてください: {value!r}")
+    return [_finite(v, where) for v in value]
+
+
+def eye_line_settings(parameters):
+    """texture.closed_eye_line のパラメーターを確かめ、eye_line.draw の設定にする（省いた値は eye_line.DEFAULTS）。"""
+    from .. import eye_line
+    _refuse_unknown(parameters, sorted(EYE_LINE_PARAMETERS), "texture.closed_eye_line")
+    eyes = parameters.get("eyes")
+    if not isinstance(eyes, list) or not eyes:
+        raise ToolError(f"eyes は目ごとの [目頭の x, 目尻の x]（画素）の並びにしてください: {eyes!r}")
+    for k, eye in enumerate(eyes):
+        if not isinstance(eye, list) or len(eye) != 2 or eye[0] == eye[1]:
+            raise ToolError(f"eyes[{k}] は [目頭の x, 目尻の x]（違う 2 つの数）にしてください: {eye!r}")
+        [_finite(v, f"eyes[{k}]") for v in eye]
+    settings = {**eye_line.DEFAULTS, "eyes": eyes, "end_y": _finite(parameters.get("end_y"), "end_y"),
+                "erase_rows": _span(parameters.get("erase_rows"), "erase_rows"),
+                "erase_columns": _span(parameters.get("erase_columns"), "erase_columns")}
+    for key, minimum, exclusive in (("sag", 0.0, False), ("thickness", 0.0, True), ("close_blur", 0.0, True), ("band_blur", 0.0, True),
+                                    ("base_width", 0.0, True)):
+        if parameters.get(key) is not None:
+            settings[key] = _finite(parameters[key], key, minimum, exclusive)
+    if "outer_bias" in parameters:
+        settings["outer_bias"] = _finite(parameters["outer_bias"], "outer_bias")
+        if not -1 < settings["outer_bias"] < 1:
+            raise ToolError(f"outer_bias は −1 より大きく 1 より小さくしてください: {settings['outer_bias']!r}")
+    for key, low in (("supersample", 1), ("close_px", 1)):
+        if key in parameters:
+            settings[key] = number(parameters, key, minimum=low, integer=True)
+    if settings["supersample"] > 8:
+        raise ToolError(f"supersample は 1〜8 にしてください: {settings['supersample']}")
+    if "wing" in parameters:
+        wing = parameters["wing"]
+        if not isinstance(wing, dict):
+            raise ToolError(f"wing は {{\"length\", \"angle_deg\", \"width\"}} にしてください: {wing!r}")
+        _refuse_unknown(wing, ["angle_deg", "length", "width"], "texture.closed_eye_line の wing")
+        merged = {**eye_line.DEFAULTS["wing"], **wing}
+        settings["wing"] = {"length": _finite(merged["length"], "wing.length", 0.0), "angle_deg": _finite(merged["angle_deg"], "wing.angle_deg"),
+                            "width": _finite(merged["width"], "wing.width", 0.0)}
+    if "lashes" in parameters:
+        lashes = parameters["lashes"]
+        if not isinstance(lashes, dict):
+            raise ToolError(f"lashes は {{\"at\", \"length\", \"width\", \"lean_deg\"}} にしてください: {lashes!r}")
+        _refuse_unknown(lashes, ["at", "lean_deg", "length", "width"], "texture.closed_eye_line の lashes")
+        merged = {**eye_line.DEFAULTS["lashes"], **lashes}
+        at, length = merged["at"], merged["length"]
+        if not isinstance(at, list) or not isinstance(length, list) or len(at) != len(length):
+            raise ToolError(f"lashes.at と lashes.length は同じ長さの並びにしてください: {at!r} {length!r}")
+        settings["lashes"] = {"at": [_finite(v, "lashes.at", 0.0) for v in at], "length": [_finite(v, "lashes.length", 0.0) for v in length],
+                              "width": _finite(merged["width"], "lashes.width", 0.0), "lean_deg": _finite(merged["lean_deg"], "lashes.lean_deg")}
+    if "color" in parameters:
+        color = parameters["color"]
+        if not isinstance(color, list) or len(color) != 3 or not all(
+                not isinstance(v, bool) and isinstance(v, (int, float)) and 0 <= v <= 255 for v in color):
+            raise ToolError(f"color は線の色 [R, G, B]（0〜255）にしてください: {color!r}")
+        settings["color"] = color
+    return settings
+
+
+@register("texture.closed_eye_line", inputs=("image",), outputs=("image", "report"),
+          summary="目を閉じた顔の絵の、閉じた目の線を 2D の描き方で描き直す（Blender なし）: 消す帯（erase_rows × erase_columns）の中の元の線を"
+                  "まわりの肌の色で埋め、目ごと（eyes の [目頭の x, 目尻の x]）に、下にたわんだ太い弧（end_y・sag・thickness）・目尻のはね"
+                  "（wing）・下向きのまつ毛（lashes）を color で描く。長さと位置は幅 base_width（既定は絵の幅）の絵の画素。既定の線の形は試作の値")
+def closed_eye_line(inputs, parameters, outputs, context):
+    from PIL import Image
+    import numpy as np
+    from .. import eye_line
+    require(inputs, ("image",), "texture.closed_eye_line")
+    if "image" not in outputs:
+        raise ToolError("texture.closed_eye_line には outputs の image が要ります")
+    if Path(outputs["image"]).suffix.lower() != ".png":   # 拡張子で書き方が決まる（JPEG などは描き直していない所の画素まで変える）
+        raise ToolError(f"texture.closed_eye_line の outputs の image は .png にしてください: {Path(outputs['image']).name}")
+    settings = eye_line_settings(parameters)
+    loaded = texture.load_texture(inputs["image"])          # 透けのある絵は (H, W, 4)
+    image = loaded[..., :3]
+    try:
+        result, report = eye_line.draw(image, settings)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    pixels = np.clip(result + 0.5, 0, 255).astype(np.uint8)   # 台本と同じ丸め（+0.5 を切り捨て）
+    if loaded.shape[2] == 4:                              # 透けはそのまま残す（project_reference は参照の絵の透けを重みに使う）
+        pixels = np.dstack([pixels, loaded[..., 3].astype(np.uint8)])
+    Image.fromarray(pixels).save(outputs["image"], format="PNG")
+    report = {"kind": "closed_eye_line", "size": [int(image.shape[1]), int(image.shape[0])], **report, "alpha_kept": loaded.shape[2] == 4,
+              "settings": settings}
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    unresolved = [] if report["line_pixels"] else ["線が 1 画素も描けませんでした（eyes・end_y・base_width を確かめてください）"]
+    return StepResult(observations=[{k: report[k] for k in ("kind", "size", "changed_box", "changed_pixels", "line_pixels")}],
+                      unresolved=unresolved, review=bool(unresolved))
