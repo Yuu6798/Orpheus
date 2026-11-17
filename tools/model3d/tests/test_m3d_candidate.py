@@ -74,6 +74,18 @@ def test_legs_hidden_above_the_ankles_give_only_the_hem():
     assert by_U["hem_h"] == pytest.approx(0.09) and not {"ankle", "calf", "knee", "thigh"} & set(by_U)
 
 
+def test_portrait_views_widen_to_keep_the_arms():
+    """縦長の絵（520 × 760）では範囲が縦に合うので、腕の広い T ポーズ（幅 1.6 m・高さ 1.45 m）は、横にも合わせて広げる（腕の先を切らない）。"""
+    from model3d.blender_adapter.candidate_mesh import fit_ortho
+    V, _ = _body()
+    centre = (V.min(axis=0) + V.max(axis=0)) / 2
+    span = max(np.ptp(V[:, 2]), np.ptp(V[:, 0])) * 1.06
+    front = fit_ortho(V, centre, [1, 0, 0], span, 520 / 760)
+    assert front * 520 / 760 == pytest.approx(1.6 * 1.06)                         # 横の範囲に腕の先まで入る
+    assert fit_ortho(V, centre, [0, 1, 0], span, 520 / 760) == pytest.approx(span)  # 横から: 奥行きは入るので台本と同じ
+    assert fit_ortho(V, centre, [1, 0, 0], span, 760 / 520) == pytest.approx(span * 760 / 520)   # 横長の絵は台本と同じ
+
+
 def test_slice_rows_and_the_check_picture(tmp_path):
     V, T = _body()
     rows = mesh_slices.slice_rows(V, T, [0.3, 0.9])
