@@ -421,7 +421,7 @@ def main(argv=None):
 
     # 壁をゆるめる（_release_walls）: 当たりの形は一覧の中の番号で持つ（見張りの当たりを足すと、前に取った参照が使えなくなるため）
     colliders_at_start, groups_at_start = len(spring.colliders), len(spring.collider_groups)
-    releases, taken = [], set()
+    releases, taken, guard_groups = [], set(), set()
     for position, spec in enumerate(overrides.get("_release_walls", [])):
         label = f"_release_walls[{position}]"
         if not any(any(key in item.vrm_name for key in spec["springs"]) for item in spring.springs):
@@ -434,6 +434,8 @@ def main(argv=None):
             if not any(key in item.vrm_name for key in spec["springs"]):
                 continue
             for reference in item.collider_groups:
+                if reference.collider_group_uuid in guard_groups:   # 前の指定で足した見張りの当たりは、壁に数えない
+                    continue
                 if spec["group"] not in group_names.get(reference.collider_group_uuid, ""):
                     continue
                 for member in group_by_uuid[reference.collider_group_uuid].colliders:
@@ -474,6 +476,7 @@ def main(argv=None):
             group_index = len(spring.collider_groups) - 1
             guard_group = f"model3d_release_guard_{position}"
             spring.collider_groups[group_index].vrm_name = guard_group
+            guard_groups.add(spring.collider_groups[group_index].uuid)
             for place, base in places:
                 bpy.ops.vrm.add_spring_bone1_collider(armature_object_name=armature.name)
                 index = len(spring.colliders) - 1
