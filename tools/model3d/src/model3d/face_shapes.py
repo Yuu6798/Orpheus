@@ -282,9 +282,12 @@ def eye_shapes(head, settings, side, sign):
     return shapes, report, debug
 
 
-def mouth_smile(head, settings):
-    """口角を上げる形 (N, 3) と報告。唇の合わせ目の高さと口の端を測り、口の端のまわりだけに掛かる重みで動かす（口は開けない）。"""
-    co, n, mouth = head.co, head.n, settings["mouth"]
+def mouth_seam(head, settings, mouth):
+    """唇の合わせ目を測る（口角の形と check.mouth が使う）。mouth は window・zone・seam・visible・bins・corner_percentile・min_points。
+    戻り: {"mv": 口のまわりの肌の頂点の番号, "fd": その頂点の位置のいちばん手前の奥行き, "outer": 正面から見える頂点の印, "band": 合わせ目
+    （見える面のすぐ裏）の印, "seam0": 合わせ目の真ん中の高さ, "xc": 口の端の |x|, "seam_x"・"seam_z": 口の幅の区間ごとの合わせ目の高さ,
+    "owner"・"depth": 窓の正面の z バッファ, "report"}。見つからなければ ValueError。"""
+    co = head.co
     res = settings["resolution"]
     half, (z0, z1) = mouth["window"]["half_width"], mouth["window"]["z"]
     owner, depth = raster_front(co, head.tris, -half, half, z0, z1, res, settings["front_y"])
@@ -322,6 +325,15 @@ def mouth_smile(head, settings):
     seam_x, seam_z = np.array(seam_x), np.array(seam_z)
     report = {"seam_z_centre": round(seam0, 4), "corner_x": round(xc, 4), "seam_z_range": [round(float(seam_z.min()), 4), round(float(seam_z.max()), 4)],
               "outer_vertices": int(outer.sum()), "inner_vertices": int((~outer).sum())}
+    return {"mv": mv, "fd": fd, "outer": outer, "band": band, "seam0": seam0, "xc": xc, "seam_x": seam_x, "seam_z": seam_z, "owner": owner,
+            "depth": depth, "report": report}
+
+
+def mouth_smile(head, settings):
+    """口角を上げる形 (N, 3) と報告。唇の合わせ目の高さと口の端を測り、口の端のまわりだけに掛かる重みで動かす（口は開けない）。"""
+    co, n, mouth = head.co, head.n, settings["mouth"]
+    seam = mouth_seam(head, settings, mouth)
+    mv, fd, xc, seam_x, seam_z, report = seam["mv"], seam["fd"], seam["xc"], seam["seam_x"], seam["seam_z"], seam["report"]
     x, y, z = co[mv, 0], co[mv, 1], co[mv, 2]
     radius, reach = mouth["corner"]["radius"], mouth["corner"]["depth"]
     corner = {sign: np.exp(-(((x - sign * xc) ** 2 + (z - np.interp(sign * xc, seam_x, seam_z)) ** 2) / radius ** 2)) * (y < fd + reach)

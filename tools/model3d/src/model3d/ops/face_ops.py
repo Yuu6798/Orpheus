@@ -6,6 +6,7 @@
 - model.shape_keys: 計算した形を、メッシュの形状キーとして入れる（Blender の中で）。VRM の表情への割り当ては vrm.expressions（vrm_ops）。
 - render.face_sheet: 表情の組み合わせを、いくつかの向きから描いて一覧の絵に並べる（描くのは Blender の中、並べるのは Pillow）。
 - texture.mouth_inside: 色の絵の、口の中の面と部品が使う所だけを塗る（Blender の外。numpy と Pillow）。
+- check.mouth: 頭の候補の口の作り（上下の唇が別の面か・口の中・口の中の色）を数と絵で調べる（Blender の外。合否は決めない）。
 """
 import math
 import re
@@ -488,6 +489,21 @@ def mouth_inside_settings(parameters):
     return settings
 
 
+def _read_texture(path, keep_alpha):
+    """色の絵を 8 ビットの (H, W, 3)（keep_alpha なら透けのある絵は (H, W, 4)）の配列で読む（texture.mouth_inside と check.mouth で同じ読み方）。
+    16 ビットの灰色・整数・浮動小数の絵は止める（色に変えると 255 で切られて白くなる）。"""
+    import numpy as np
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            if im.mode.startswith("I") or im.mode == "F":
+                raise ToolError(f"色の絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は、色に変えると 255 で切られて白くなる）")
+            keep = keep_alpha and (im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info)   # 透明色キー（tRNS）も透け
+            return np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
+    except OSError as error:
+        raise ToolError(f"色の絵を読めません: {path}（{error}）") from error
+
+
 def _head_arrays(path, keys):
     """頭のメッシュの npz（model.export_mesh）の配列を読み、形と番号の範囲を確かめる。"""
     import numpy as np
@@ -518,7 +534,6 @@ def _head_arrays(path, keys):
                   " npz）を正面から描き、口のまわりの肌の三角形のうち 3 頂点とも見えないもの（唇の裏の袋）と、口の中の部品（parts の島）が uv で使う"
                   "画素を暗い赤に、舌（tongue の島）を明るい赤に塗る。外から見える面が使う画素には触らない。口のまわりの箱と部品の見つけ方に既定は無い")
 def mouth_inside(inputs, parameters, outputs, context):
-    import numpy as np
     from PIL import Image
     from .. import mouth
     require(inputs, ("mesh", "texture"), "texture.mouth_inside")
@@ -528,14 +543,7 @@ def mouth_inside(inputs, parameters, outputs, context):
     if Path(outputs["texture"]).suffix.lower() != ".png":
         raise ToolError(f"texture.mouth_inside の outputs の texture は .png にしてください: {Path(outputs['texture']).name}")
     arrays = _head_arrays(inputs["mesh"], ("co", "edges", "tris", "tri_loops", "uv"))
-    try:
-        with Image.open(inputs["texture"]) as im:
-            if im.mode.startswith("I") or im.mode == "F":    # 16 ビットの灰色・整数・浮動小数の絵は、8 ビットの色に変えると値が切られる
-                raise ToolError(f"色の絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は、色に変えると 255 で切られて白くなる）")
-            keep = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info   # 透明色キー（RGB・灰色・パレットの tRNS）も透け
-            image = np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
-    except OSError as error:
-        raise ToolError(f"色の絵を読めません: {inputs['texture']}（{error}）") from error
+    image = _read_texture(inputs["texture"], keep_alpha=True)
     try:
         painted, report = mouth.paint_inside(arrays["co"], arrays["edges"], arrays["tris"], arrays["tri_loops"], arrays["uv"], image, settings)
     except ValueError as error:
@@ -551,3 +559,67 @@ def mouth_inside(inputs, parameters, outputs, context):
     return StepResult(observations=[{key: report[key] for key in ("pocket_triangles", "part_triangles", "tongue_triangles", "painted_pixels",
                                                                   "pixels_shared_with_visible_faces_left_untouched")}],
                       unresolved=unresolved, review=bool(unresolved))
+
+
+def mouth_check_settings(parameters):
+    """check.mouth のパラメーターを確かめる（口のまわりの箱と合わせ目の帯に既定は無い。区間の数・帯の離れ方などは既定あり）。"""
+    _refuse_unknown(parameters, {"front_y", "resolution", "visible", "window", "zone", "seam", "bins", "corner_percentile", "min_points",
+                                 "seeds", "section_x", "parts", "tongue", "uv_margin"}, "check.mouth")
+    settings = mouth_window_settings(parameters, "")
+    seam = _section(parameters, "seam", "seam", ("depth", "centre", "band"))
+    settings["seam"] = {key: _real(seam[key], f"seam.{key}", 0.0, exclusive=True) for key in ("depth", "centre", "band")}
+    if "bins" in parameters:
+        settings["bins"] = _integer(parameters["bins"], "bins", 2)
+    if "corner_percentile" in parameters:
+        settings["corner_percentile"] = _real(parameters["corner_percentile"], "corner_percentile", 0.0, maximum=100.0)
+    if "min_points" in parameters:
+        settings["min_points"] = _integer(parameters["min_points"], "min_points", 1)
+    if "seeds" in parameters:
+        seeds = _span(parameters["seeds"], "seeds", 0.0)
+        settings["seeds"] = seeds
+    if "section_x" in parameters:
+        settings["section_x"] = _real(parameters["section_x"], "section_x")
+    if "uv_margin" in parameters:
+        settings["uv_margin"] = _real(parameters["uv_margin"], "uv_margin", 0.0)
+    if (parameters.get("parts") is None) != (parameters.get("tongue") is None):
+        raise ToolError("parts と tongue は、いっしょに挙げてください（口の中の部品と、そのうちの舌の見つけ方）")
+    if parameters.get("parts") is not None:
+        inside = mouth_inside_settings({key: parameters[key] for key in ("front_y", "window", "zone", "parts", "tongue")})
+        settings["parts"], settings["tongue"] = inside["parts"], inside["tongue"]
+    return settings
+
+
+@register("check.mouth", inputs=("mesh", "texture"), outputs=("report", "front", "section"),
+          summary="頭の候補の口の作りを数と絵で調べる（Blender の外。numpy と Pillow。合否は決めない）: 上下の唇が別の面か（口の幅の区間ごとに、"
+                  "見える面のすぐ裏の浅い所だけで、唇の外の面の合わせ目の上から下へ面のつながりで行けるか＝くっついている所）、口のまわりの 3 枚以上の"
+                  "面が集まる辺と穴の縁、口の中の面と部品と奥行き、色の絵（texture）があれば口の中の色と肌の色の差。front は正面の色分け、section は"
+                  "真ん中の断面の絵。口を開ける形を作る前に、頭の候補を選ぶため")
+def check_mouth(inputs, parameters, outputs, context):
+    from PIL import Image
+    from .. import mouth
+    require(inputs, ("mesh",), "check.mouth")
+    settings = mouth_check_settings(parameters)
+    if "report" not in outputs:
+        raise ToolError("check.mouth には outputs の report が要ります")
+    for key in ("front", "section"):
+        if key in outputs and Path(outputs[key]).suffix.lower() != ".png":
+            raise ToolError(f"check.mouth の outputs の {key} は .png にしてください: {Path(outputs[key]).name}")
+    keys = ("co", "edges", "tris") + (("tri_loops", "uv") if "texture" in inputs else ())
+    arrays = _head_arrays(inputs["mesh"], keys)
+    image = _read_texture(inputs["texture"], keep_alpha=False) if "texture" in inputs else None
+    try:
+        report, front, section = mouth.check_mouth(arrays["co"], arrays["edges"], arrays["tris"], settings, arrays.get("uv"),
+                                                   arrays.get("tri_loops"), image)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    if "front" in outputs:
+        Image.fromarray(front).save(outputs["front"], format="PNG")
+    if "section" in outputs:
+        Image.fromarray(section).save(outputs["section"], format="PNG")
+    report["settings"] = settings
+    atomic_json(outputs["report"], report)
+    lips = report["lips"]
+    observation = {"kind": "mouth_check", "bins_measured": lips["bins_measured"], "glued_bins": lips["glued_bins"],
+                   "separate_bins": lips["separate_bins"], "deep_path_mm": lips["deep_path_mm"], "edges": report["edges"],
+                   "pocket_triangles": report["inside"]["pocket_triangles"], "color_distance": (report["color"] or {}).get("distance")}
+    return StepResult(observations=[observation])
