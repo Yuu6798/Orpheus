@@ -73,6 +73,15 @@ def test_keys_are_chosen_by_u_and_eased_by_the_departing_key():
     assert orbit_plan.EASE["in"](0.5) == 0.125 and orbit_plan.EASE["whip"](1.0) == 1.0 and orbit_plan.EASE["smooth"](0.5) == 0.5
 
 
+def test_plan_shots_reads_times_and_keys_with_the_same_parts():
+    """plan.shots は plan.orbit と同じ部品（時刻・踊りの止め・キーの選び方・点の読み方）を使い、写しを持たない。smoothstep も 1 つ。"""
+    from model3d import motion_edit, shot_plan, stage_plan, title
+    assert issubclass(orbit_plan.Orbit, orbit_plan.Keyed) and issubclass(shot_plan.Shots, orbit_plan.Keyed)
+    assert shot_plan.read_points is orbit_plan.read_points and shot_plan.lerp is orbit_plan.lerp
+    assert orbit_plan.Orbit._u is shot_plan.Shots._u is orbit_plan.key_u
+    assert motion_edit.smoothstep is orbit_plan.smoothstep is title.smoothstep is stage_plan.smoothstep
+
+
 def _camera(shots, T=1, path=None, **extra):
     orbit = orbit_plan.Orbit(_plan(shots, **extra))
     samples = orbit_plan.read_points(path or _still_path(), orbit.names, orbit.frame0, orbit.dance_fps, 0.0, 3.0)

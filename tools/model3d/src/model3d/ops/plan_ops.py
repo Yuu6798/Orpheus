@@ -61,6 +61,19 @@ def light_keys(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
+def _camera_plan(inputs, parameters, outputs, operation, kind, table):
+    """plan.orbit と plan.shots の前置き: 入力（plan・bones）とパラメーター（無し）と出力（cameras・track）を確かめ、
+    表（契約 kind）と骨の通り道を読む。table は文言の中の表の名前（段取り表・ショット表）。"""
+    from .. import contracts
+    require(inputs, ("plan", "bones"), operation)
+    if parameters:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(parameters)}（設定は{table}に書きます）")
+    missing = [name for name in ("cameras", "track") if name not in outputs]
+    if missing:
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+    return contracts.load(kind, inputs["plan"]), contracts.load("bone-path", inputs["bones"])
+
+
 @register("plan.orbit", inputs=("plan", "bones"), outputs=("cameras", "track", "report"),
           summary="踊り手を中心にした極座標のカメラの段取り表（plan。model3d-orbit-plan/0.1。区間ごとの方位・距離・高さ・狙う点・"
                   "画角・ロールのキーとつなぎ方、手持ちの揺れと打点の揺れ、踊りの時刻の止め）と、骨から決めた点の通り道（bones。"
@@ -70,14 +83,7 @@ def light_keys(inputs, parameters, outputs, context):
 def orbit(inputs, parameters, outputs, context):
     from .. import contracts
     from ..orbit_plan import build
-    require(inputs, ("plan", "bones"), "plan.orbit")
-    if parameters:
-        raise ToolError(f"plan.orbit の知らないパラメーター: {sorted(parameters)}（設定は段取り表に書きます）")
-    missing = [name for name in ("cameras", "track") if name not in outputs]
-    if missing:
-        raise ToolError(f"plan.orbit には outputs の {', '.join(missing)} が要ります")
-    plan = contracts.load("orbit-plan", inputs["plan"])
-    bones = contracts.load("bone-path", inputs["bones"])
+    plan, bones = _camera_plan(inputs, parameters, outputs, "plan.orbit", "orbit-plan", "段取り表")
     cameras, track, report = build(plan, bones)
     atomic_json(outputs["cameras"], contracts.validate("cameras", cameras))
     atomic_json(outputs["track"], contracts.validate("stage-track", track))
@@ -100,14 +106,7 @@ def orbit(inputs, parameters, outputs, context):
 def shots(inputs, parameters, outputs, context):
     from .. import contracts
     from ..shot_plan import build
-    require(inputs, ("plan", "bones"), "plan.shots")
-    if parameters:
-        raise ToolError(f"plan.shots の知らないパラメーター: {sorted(parameters)}（設定はショット表に書きます）")
-    missing = [name for name in ("cameras", "track") if name not in outputs]
-    if missing:
-        raise ToolError(f"plan.shots には outputs の {', '.join(missing)} が要ります")
-    plan = contracts.load("shot-plan", inputs["plan"])
-    bones = contracts.load("bone-path", inputs["bones"])
+    plan, bones = _camera_plan(inputs, parameters, outputs, "plan.shots", "shot-plan", "ショット表")
     cameras, track, alt, report = build(plan, bones)
     if ("alt" in outputs or "alt_track" in outputs) and alt is None:
         raise ToolError("plan.shots の outputs の alt・alt_track（つなぎの相手のカメラとコマの並び）には、ショット表の wipes が要ります")

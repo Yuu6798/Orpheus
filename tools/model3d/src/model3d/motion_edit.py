@@ -8,6 +8,8 @@ import math
 
 import numpy as np
 
+from .stage_plan import smoothstep  # noqa: F401（区間の出入りの重み。orbit_plan・title と同じもの）
+
 HEAD = (0, 1, 2, 3, 4)                                # 鼻・両目・両耳
 EARS = (3, 4)
 SIDES = ("left", "right")
@@ -35,11 +37,6 @@ def _fist_template():
 
 
 FIST = _fist_template()
-
-
-def smoothstep(x):
-    x = min(1.0, max(0.0, x))
-    return x * x * (3 - 2 * x)
 
 
 def _unit(v):

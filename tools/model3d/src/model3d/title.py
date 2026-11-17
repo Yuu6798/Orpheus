@@ -5,13 +5,9 @@
 形の核を numpy で掛ける（model3d は OpenCV に頼らない）。重ね方の既定も試作と同じ（覆いを二度掛ける。blit の blend）。"""
 import numpy as np
 
+from .stage_plan import smoothstep  # noqa: F401（題字の出方。title_ops が読む。motion_edit・orbit_plan と同じもの）
+
 BLENDS = ("prototype", "over")      # 重ね方: 試作と同じ（既定）か、ふつうの重ね方
-
-
-def smoothstep(u):
-    """0〜1 に切ってから、なめらかに 0 → 1（3u² − 2u³）。"""
-    u = min(1.0, max(0.0, u))
-    return u * u * (3 - 2 * u)
 
 
 def gaussian_kernel(sigma):

@@ -34,10 +34,11 @@ import math
 
 import numpy as np
 
-from .blender_adapter.point_track import PathError, Samples
+from . import orbit_plan
+from .blender_adapter.point_track import PathError, Samples  # noqa: F401（以前の名前）
 from .io import ToolError
-from .orbit_plan import EASE, handheld, rotation
-from .stage_plan import EPS, Clock, find, inside, spans
+from .orbit_plan import EASE, Keyed, blend_keys, check_keys, handheld, lerp, read_points, rotation  # noqa: F401（EASE・lerp・read_points は以前の名前でもある）
+from .stage_plan import EPS, Clock, find, inside, spans  # noqa: F401（Clock・inside は以前の名前）
 
 DEFAULTS = {
     "time_offset": 0.0, "dancer": "hips",
@@ -54,14 +55,7 @@ NEXT = 1e-3            # つなぎの最中に、相手の区間を選ぶとき�
 
 
 def merged(plan):
-    out = {**DEFAULTS, **{k: v for k, v in plan.items() if k not in SECTIONS}}
-    for key in SECTIONS:
-        out[key] = {**DEFAULTS[key], **plan.get(key, {})}
-    return out
-
-
-def lerp(a, b, w):
-    return a + (b - a) * w
+    return orbit_plan.merged(plan, DEFAULTS, SECTIONS)
 
 
 def pchip(xs, ys, x):
@@ -120,14 +114,10 @@ def direction(v):
     return np.array([v[0], v[2], -v[1]])
 
 
-class Shots:
+class Shots(Keyed):
     def __init__(self, plan):
-        p = merged(plan)
-        self.p = p
-        self.fps = float(p["fps"])
-        self.frames = int(p["frames"])
-        self.offset = float(p["time_offset"])
-        self.clock = Clock(p.get("marks"), p.get("grid") or {"k0_time": 0.0, "period": 1.0})
+        self._read_timing(merged(plan))
+        p = self.p
         self.room = Room(p["room"])
         self.width, self.height = (float(v) for v in p["camera"]["resolution"])
         self.shots = p["shots"]
@@ -142,22 +132,8 @@ class Shots:
             keys = shot.get("keys") or []
             if not keys:
                 raise ToolError(f"shots[{n}] には keys（カメラのキー）か orbit（回り込み）が要ります")
-            if len(keys) > 1 and math.isinf(end):
-                raise ToolError(f"shots[{n}] はキーが 2 つ以上なので until が要ります（区間の中の割合でキーを混ぜるため）")
-            us = [self._u(key, k, len(keys)) for k, key in enumerate(keys)]
-            if any(b < a for a, b in zip(us, us[1:])) or us[0] < 0 or us[-1] > 1:
-                raise ToolError(f"shots[{n}] のキーの u は 0〜1 の昇順にしてください: {us}")
-        dance = p["dance"]
-        self.frame0, self.dance_fps = float(dance.get("frame0", 1.0)), float(dance["fps"])
-        self.holds = []
-        for n, hold in enumerate(dance.get("holds", [])):
-            start = self.clock(hold["from"], f"dance.holds[{n}].from")
-            end = self.clock(hold["until"], f"dance.holds[{n}].until") if "until" in hold else math.inf
-            if end <= start:
-                raise ToolError(f"dance.holds[{n}] の until（{end:g} 秒）が from（{start:g} 秒）より後ではありません")
-            self.holds.append((start, end, float(hold["at"])))
-        self.kicks = [(self.clock(k["at"], f"kicks[{n}].at"), float(k["deg"])) for n, k in enumerate(p.get("kicks", []))]
-        self.phases = np.random.default_rng(int(p["handheld"]["seed"])).uniform(0, 2 * np.pi, (3, 3))
+            check_keys(n, keys, end)
+        self._read_dance(p)
         self.wipes = [(self.clock(w["at"], f"wipes[{n}].at"), float(w["seconds"])) for n, w in enumerate(p.get("wipes", []))]
         names = {p["dancer"]}
         for shot in self.shots:
@@ -168,25 +144,6 @@ class Shots:
                     names.add(key["anchor"])
         self.names = sorted(names)
         self._means = {}
-
-    @staticmethod
-    def _u(key, k, count):
-        if "u" in key:
-            return float(key["u"])
-        if k == 0:
-            return 0.0
-        if k == count - 1:
-            return 1.0
-        raise ToolError("区間の中のキー（最初と最後のほか）には u（区間の中の割合 0〜1）が要ります")
-
-    def time(self, T):
-        return self.offset + (T - 1) / self.fps
-
-    def dance_time(self, t):
-        for start, end, at in self.holds:
-            if inside(t, start, end):
-                return at, True
-        return t, False
 
     def shot_at(self, t):
         n = find(self.spans, t)
@@ -203,13 +160,7 @@ class Shots:
         keys = self.shots[n]["keys"]
         if len(keys) == 1:
             return keys[0], keys[0], 0.0
-        u = self.position_in(n, t)
-        us = [self._u(key, k, len(keys)) for k, key in enumerate(keys)]
-        i = 0
-        while i < len(keys) - 2 and u > us[i + 1]:
-            i += 1
-        a, b = keys[i], keys[i + 1]
-        return a, b, EASE[a.get("ease", "smooth")]((u - us[i]) / max(1e-9, us[i + 1] - us[i]))
+        return blend_keys(keys, self.position_in(n, t))
 
     def tracked(self, n, name, t, samples):
         """追う点: ショットの中の平均から、follow の割合だけいまの点へ寄せたもの。"""
@@ -308,13 +259,6 @@ def project(matrix, focal, principal, point):
     relative = np.asarray(point, float) - matrix[:3, 3]
     depth = -float(relative @ matrix[:3, 2])
     return (principal[0] + focal * float(relative @ matrix[:3, 0]) / depth, principal[1] - focal * float(relative @ matrix[:3, 1]) / depth)
-
-
-def read_points(path, names, frame0, fps, sigma_s, reach):
-    try:
-        return Samples(path, {name: sigma_s for name in names}, frame0, fps, reach)
-    except PathError as error:
-        raise ToolError(str(error)) from error
 
 
 def build(plan, path):
