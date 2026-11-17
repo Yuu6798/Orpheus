@@ -144,7 +144,8 @@ def test_blink_brings_both_lids_to_the_closing_line(built):
         assert (blink[list(marks[side]["iris"])][:, [0, 2]] == 0).all()
         socket = [marks[side]["centre"]] + list(range(marks[side]["ring"], marks[side]["ring"] + 26))
         assert (blink[socket] == 0).all() and (blink[list(marks[side]["brow"])] == 0).all()   # 白目と眉は動かさない
-        assert blink[top, 1] != 0                                                       # 閉じた線の奥行きへ寄せる
+        assert blink[top, 1] == pytest.approx(0.0, abs=1e-12)                           # 平らな顔は上下の縁の奥行きが同じで、寄せる量は 0
+        assert blink[list(marks[side]["iris"])][:, 1].max() == SETTINGS["eyes"]["iris_back"]   # 奥行きの手当ては瞳を下げる分だけ
 
 
 def test_the_two_eyes_mirror_each_other(built):
