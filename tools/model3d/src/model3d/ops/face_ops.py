@@ -5,6 +5,7 @@
 - model.face_shapes: 頭のメッシュから、表情の形状キーの頂点の動き（まばたき・笑顔の閉じ目・眉・口角）を計算する（Blender の外。numpy だけ）。
 - model.shape_keys: 計算した形を、メッシュの形状キーとして入れる（Blender の中で）。VRM の表情への割り当ては vrm.expressions（vrm_ops）。
 - render.face_sheet: 表情の組み合わせを、いくつかの向きから描いて一覧の絵に並べる（描くのは Blender の中、並べるのは Pillow）。
+- texture.mouth_inside: 色の絵の、口の中の面と部品が使う所だけを塗る（Blender の外。numpy と Pillow）。
 """
 import math
 import re
@@ -430,3 +431,107 @@ def face_sheet(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"], "object": report.get("object"), "images": len(report.get("images") or []),
                    "sheet_size": list(size)}
     return StepResult(observations=[observation])
+
+
+def _color(value, where):
+    if not isinstance(value, list) or len(value) != 3 or not all(
+            not isinstance(v, bool) and isinstance(v, int) and 0 <= v <= 255 for v in value):
+        raise ToolError(f"{where} は色 [R, G, B]（0〜255 の整数）にしてください: {value!r}")
+    return value
+
+
+def mouth_window_settings(parameters, where):
+    """口のまわりの窓（front_y・window・zone）を確かめる（texture.mouth_inside と check.mouth で同じ書き方）。"""
+    window = _section(parameters, "window", f"{where}.window" if where else "window", ("half_width", "z"))
+    zone = _section(parameters, "zone", f"{where}.zone" if where else "zone", ("half_width",))
+    settings = {"front_y": _real(parameters.get("front_y"), "front_y"),
+                "window": {"half_width": _real(window["half_width"], "window.half_width", 0.0, exclusive=True), "z": _span(window["z"], "window.z")},
+                "zone": {"half_width": _real(zone["half_width"], "zone.half_width", 0.0, exclusive=True)}}
+    if "resolution" in parameters:
+        settings["resolution"] = _real(parameters["resolution"], "resolution", 0.0, exclusive=True)
+    if "visible" in parameters:
+        settings["visible"] = _real(parameters["visible"], "visible", 0.0)
+    _raster_size(2 * settings["window"]["half_width"], settings["window"]["z"], settings.get("resolution", 0.0001), "window")
+    return settings
+
+
+def mouth_inside_settings(parameters):
+    """texture.mouth_inside のパラメーターを確かめる（口のまわりの箱と部品の見つけ方に既定は無い。色・ふくらませ方は既定あり）。"""
+    _refuse_unknown(parameters, {"front_y", "resolution", "visible", "window", "zone", "parts", "tongue", "uv_margin", "grow", "inside_color",
+                                 "tongue_color"}, "texture.mouth_inside")
+    settings = mouth_window_settings(parameters, "")
+    parts = _section(parameters, "parts", "parts", ("half_width", "z", "front_y", "max_size", "front_limit"))
+    tongue = _section(parameters, "tongue", "tongue", ("back_y", "centre"))
+    settings["parts"] = {"half_width": _real(parts["half_width"], "parts.half_width", 0.0, exclusive=True), "z": _span(parts["z"], "parts.z"),
+                         "front_y": _real(parts["front_y"], "parts.front_y"),
+                         "max_size": _real(parts["max_size"], "parts.max_size", 0.0, exclusive=True),
+                         "front_limit": _real(parts["front_limit"], "parts.front_limit")}
+    settings["tongue"] = {"back_y": _real(tongue["back_y"], "tongue.back_y"), "centre": _real(tongue["centre"], "tongue.centre", 0.0)}
+    if "uv_margin" in parameters:
+        settings["uv_margin"] = _real(parameters["uv_margin"], "uv_margin", 0.0)
+    if "grow" in parameters:
+        settings["grow"] = _integer(parameters["grow"], "grow", 0)
+    for key in ("inside_color", "tongue_color"):
+        if key in parameters:
+            settings[key] = _color(parameters[key], key)
+    return settings
+
+
+def _head_arrays(path, keys):
+    """頭のメッシュの npz（model.export_mesh）の配列を読み、形と番号の範囲を確かめる。"""
+    import numpy as np
+    from ..mesh import _npz_arrays
+    arrays = _npz_arrays(path, "頭のメッシュの npz", list(keys))
+    co = arrays["co"]
+    if co.ndim != 2 or co.shape[1] != 3 or not np.issubdtype(co.dtype, np.floating) or not np.isfinite(co).all():
+        raise ToolError(f"co は有限の頂点の位置 (N, 3) にしてください（形 {co.shape}、{co.dtype}）")
+    for name, width, bound in (("edges", 2, len(co)), ("tris", 3, len(co)), ("tri_loops", 3, None)):
+        if name not in arrays:
+            continue
+        value = arrays[name]
+        if value.ndim != 2 or value.shape[1] != width or not np.issubdtype(value.dtype, np.integer):
+            raise ToolError(f"{name} は番号 (K, {width}) の整数にしてください（形 {value.shape}、{value.dtype}）")
+        if value.size and (value.min() < 0 or (bound is not None and value.max() >= bound)):
+            raise ToolError(f"{name} が無い頂点を指しています")
+    if "uv" in arrays:
+        uv = arrays["uv"]
+        if uv.ndim != 2 or uv.shape[1] != 2 or not np.isfinite(uv).all():
+            raise ToolError(f"uv は面の角ごとの座標 (L, 2) にしてください（形 {uv.shape}）")
+        if "tri_loops" in arrays and arrays["tri_loops"].size and arrays["tri_loops"].max() >= len(uv):
+            raise ToolError("tri_loops が uv の無い面の角を指しています")
+    return arrays
+
+
+@register("texture.mouth_inside", inputs=("mesh", "texture"), outputs=("texture", "report"),
+          summary="色の絵（texture）の、口の中の面と部品が使う所だけを塗る（Blender の外。numpy と Pillow）: 頭のメッシュ（mesh。model.export_mesh の"
+                  " npz）を正面から描き、口のまわりの肌の三角形のうち 3 頂点とも見えないもの（唇の裏の袋）と、口の中の部品（parts の島）が uv で使う"
+                  "画素を暗い赤に、舌（tongue の島）を明るい赤に塗る。外から見える面が使う画素には触らない。口のまわりの箱と部品の見つけ方に既定は無い")
+def mouth_inside(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+    from .. import mouth
+    require(inputs, ("mesh", "texture"), "texture.mouth_inside")
+    settings = mouth_inside_settings(parameters)
+    if "texture" not in outputs or "report" not in outputs:
+        raise ToolError("texture.mouth_inside には outputs の texture と report が要ります")
+    if Path(outputs["texture"]).suffix.lower() != ".png":
+        raise ToolError(f"texture.mouth_inside の outputs の texture は .png にしてください: {Path(outputs['texture']).name}")
+    arrays = _head_arrays(inputs["mesh"], ("co", "edges", "tris", "tri_loops", "uv"))
+    try:
+        with Image.open(inputs["texture"]) as im:
+            keep = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+            image = np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
+    except OSError as error:
+        raise ToolError(f"色の絵を読めません: {inputs['texture']}（{error}）") from error
+    try:
+        painted, report = mouth.paint_inside(arrays["co"], arrays["edges"], arrays["tris"], arrays["tri_loops"], arrays["uv"], image, settings)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    Image.fromarray(painted).save(outputs["texture"], format="PNG")
+    report = {"schema_version": "model3d-mouth-inside/0.1", "size": [int(image.shape[1]), int(image.shape[0])], **report,
+              "alpha_kept": image.shape[2] == 4, "settings": settings}
+    atomic_json(outputs["report"], report)
+    unresolved = [] if report["painted_pixels"] else ["塗った画素がありません（口のまわりの箱と部品の見つけ方を確かめてください）"]
+    return StepResult(observations=[{key: report[key] for key in ("pocket_triangles", "part_triangles", "tongue_triangles", "painted_pixels",
+                                                                  "pixels_shared_with_visible_faces_left_untouched")}],
+                      unresolved=unresolved, review=bool(unresolved))
