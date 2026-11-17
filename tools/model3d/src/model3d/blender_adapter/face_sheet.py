@@ -13,8 +13,10 @@
   centre（狙う点 m。省くと object の箱の中心）。カメラは狙う点から 1 m、見える奥行きはカメラの既定の範囲を m とみなす。長さはシーンの
   scale_length（1 Blender 単位が何 m か）で Blender 単位に直す（1 なら値はそのまま）。
 - EEVEE（taa の標本 samples）、色の変換は Standard、背景は background の色（世界を足す）。灯りは足さない。hide の物体は描かない。
-- .blend から引き継ぐと出てくる絵をすり替えうる描く設定は、この場で決まった値にする（RENDER_FIXED・VIEW_FIXED: シーケンサー・コンポジター・
-  描く範囲の切り取り・画素の縦横比・多視点・透ける背景・ぶれ・色の補正）。マーカーに結んだカメラも外す。.blend と違っていたものは報告の render_changes。
+- .blend から引き継ぐと出てくる絵をすり替えうる描く設定は、この場で決まった値にする（RENDER_FIXED・VIEW_FIXED・DISPLAY_FIXED・IMAGE_FIXED:
+  シーケンサー・コンポジター・描く範囲の切り取り・画素の縦横比・多視点・透ける背景・ぶれ・色の補正・表示の装置・出力の形式（PNG の RGBA 8 ビット、
+  色の管理はシーンのまま））。マーカーに結んだカメラも外す。object の描かない設定（hide_render）も外す。.blend と違っていたものは報告の render_changes。
+  object が描かれないコレクションの中にしかなければ止める（hidden_paths）。
 - 描く大きさは size × int(size × 0.9) 画素。画像に日時・ファイル名などの控え（メタデータ）を書かない（同じ入力なら同じバイト列）。
 - 報告の長さ（箱の中心）は m。
 リポジトリ外の 3 作目の VRM のダンスの台本と同じ描き方。**検証**: 本物の Blender 5.2.4 で、その台本の絵と比べた（docs/model3d.md）。
@@ -52,11 +54,28 @@ RENDER_FIXED = {                                         # scene.render: .blend 
     "use_motion_blur": False,                            # ぶれ
 }
 VIEW_FIXED = {"look": "None", "exposure": 0.0, "gamma": 1.0, "use_curve_mapping": False}   # scene.view_settings: 色の補正
+DISPLAY_FIXED = {"display_device": "sRGB"}               # scene.display_settings
+IMAGE_FIXED = {                                          # scene.render.image_settings: 出力の形式（形式を先に。色の形式は形式ごとに選べるものが違う）
+    "file_format": "PNG", "color_mode": "RGBA",          # 白黒（BW）のままだと色が消える
+    "color_depth": "8", "compression": 15,
+    "color_management": "FOLLOW_SCENE",                  # 出力だけ別の色の変換にする上書き（OVERRIDE）を使わない
+}
 
 
 def setting_changes(current, fixed):
     """current（設定の名前 → 今の値）のうち、fixed（描くときの値）と違うもの {名前: [今の値, 描くときの値]}。"""
     return {name: [current[name], value] for name, value in fixed.items() if current[name] != value}
+
+
+def hidden_paths(layer, name, chain=()):
+    """ビューレイヤーのコレクションの木（layer: name・exclude・collection（hide_render・objects）・children）をたどり、物体 name を含む
+    コレクションまでの道ごとに、道の上の描かない設定（ビューレイヤーの除外・コレクションの hide_render）のコレクションの名前の並び。
+    どれかの道が空なら描かれる。どの道にも名前があれば、物体の hide_render を外しても描かれない。"""
+    chain = chain + ((layer.name, bool(layer.exclude or layer.collection.hide_render)),)
+    paths = [[n for n, off in chain if off]] if name in layer.collection.objects else []
+    for child in layer.children:
+        paths += hidden_paths(child, name, chain)
+    return paths
 
 
 def view_in_units(view, unit=1.0):
@@ -168,19 +187,29 @@ def main(argv=None):
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE"
     scene.eevee.taa_render_samples = settings["samples"]
-    scene.view_settings.view_transform = "Standard"
-    render_changes = {"render": setting_changes({name: getattr(scene.render, name) for name in RENDER_FIXED}, RENDER_FIXED),
-                      "view": setting_changes({name: getattr(scene.view_settings, name) for name in VIEW_FIXED}, VIEW_FIXED),
-                      "marker_cameras": [marker.name for marker in scene.timeline_markers if marker.camera is not None]}
-    for name, (_, value) in render_changes["render"].items():
-        setattr(scene.render, name, value)
+    groups = (("display", scene.display_settings, DISPLAY_FIXED), ("render", scene.render, RENDER_FIXED),
+              ("image", scene.render.image_settings, IMAGE_FIXED))
+    render_changes = {key: setting_changes({name: getattr(target, name) for name in fixed}, fixed) for key, target, fixed in groups}
+    for key, target, _ in groups:
+        for name, (_, value) in render_changes[key].items():
+            setattr(target, name, value)
+    scene.view_settings.view_transform = "Standard"      # 表示の装置を決めてから（選べる変換は装置ごと）
+    render_changes["view"] = setting_changes({name: getattr(scene.view_settings, name) for name in VIEW_FIXED}, VIEW_FIXED)
     for name, (_, value) in render_changes["view"].items():
         setattr(scene.view_settings, name, value)
+    render_changes["marker_cameras"] = [marker.name for marker in scene.timeline_markers if marker.camera is not None]
     for marker in scene.timeline_markers:                # マーカーに結んだカメラは、描くときにカメラを差し替える
         marker.camera = None
+    render_changes["object_shown"] = bool(head.hide_render)
+    head.hide_render = False
+    paths = hidden_paths(bpy.context.view_layer.layer_collection, head.name)
+    if not paths:
+        raise SystemExit(f"{head.name} が描くシーン（{scene.name}）のコレクションにありません")
+    if all(paths):                                       # どの道にも描かない設定がある
+        raise SystemExit(f"{head.name} は描かないコレクションの中にしかありません（{sorted({n for path in paths for n in path})}）。"
+                         "コレクションの描かない設定（hide_render）かビューレイヤーの除外を外してください")
     size = settings["size"]
     scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = size, int(size * 0.9), 100
-    scene.render.image_settings.file_format = "PNG"
     for name in dir(scene.render):                       # 画像に日時・ファイル名などの控えを書かない（render.passes と同じ。画素は変わらない）
         if name.startswith("use_stamp") and isinstance(getattr(scene.render, name), bool):
             setattr(scene.render, name, False)

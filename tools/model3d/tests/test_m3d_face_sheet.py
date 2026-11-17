@@ -48,6 +48,22 @@ def test_render_settings_that_could_replace_the_picture_are_fixed():
     assert render_side.setting_changes(current, render_side.RENDER_FIXED) == {"use_sequencer": [True, False], "pixel_aspect_x": [2.0, 1.0]}
     assert render_side.setting_changes(dict(render_side.VIEW_FIXED), render_side.VIEW_FIXED) == {}   # 同じなら変えない
     assert {"use_sequencer", "use_compositing", "use_border", "film_transparent"} <= set(render_side.RENDER_FIXED)
+    assert render_side.IMAGE_FIXED["color_mode"] == "RGBA" and list(render_side.IMAGE_FIXED)[0] == "file_format"   # 白黒にしない。形式を先に
+
+
+class _Layer:
+    def __init__(self, name, objects=(), exclude=False, hide_render=False, children=()):
+        self.name, self.exclude, self.children = name, exclude, list(children)
+        self.collection = type("Collection", (), {"hide_render": hide_render, "objects": list(objects)})()
+
+
+def test_hidden_paths_find_the_collections_that_keep_the_head_from_rendering():
+    shown = _Layer("Scene Collection", children=[_Layer("face", ["Head"]), _Layer("props", ["Hat"], hide_render=True)])
+    assert render_side.hidden_paths(shown, "Head") == [[]]                                # 描かれる道がある
+    hidden = _Layer("Scene Collection", children=[_Layer("rig", hide_render=True, children=[_Layer("face", ["Head"])]),
+                                                  _Layer("spare", ["Head"], exclude=True)])
+    assert render_side.hidden_paths(hidden, "Head") == [["rig"], ["spare"]]                # どの道にも描かない設定がある
+    assert render_side.hidden_paths(shown, "Body") == []                                   # シーンに無い
 
 
 def test_view_lengths_in_metres_become_blender_units():
@@ -165,6 +181,7 @@ def _with(**changes):
     (_with(font="no_such_font.ttf"), "書体"),
     (_with(quality=0), "quality"),
     (_with(hide="Hair"), "hide"),
+    (_with(hide=["Hair", "Head"]), "描く頭が消える"),
 ])
 def test_face_sheet_rejects_bad_settings(tmp_path, parameters, message):
     from model3d.ops import get

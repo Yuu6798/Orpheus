@@ -378,6 +378,8 @@ def face_sheet_settings(parameters, recipe_dir=None):
               "background": [_real(v, "background", 0.0, maximum=1.0) for v in background]}
     if render["size"] > 4096:
         raise ToolError(f"size は 4096 画素までにしてください: {render['size']}")
+    if render["object"] in hide:
+        raise ToolError(f"hide に object（{render['object']}）は入れられません（描く頭が消える）")
     font = parameters.get("font")
     if font is not None:
         if not isinstance(font, str) or not font:
