@@ -340,7 +340,7 @@ def face_sheet_settings(parameters, recipe_dir=None):
         for key, value in combo[1].items():
             if not isinstance(key, str) or not key:
                 raise ToolError(f"combos[{k}] の形状キーの名前は空でない文字列にしてください: {key!r}")
-            values[key] = _real(value, f"combos[{k}].{key}")
+            values[key] = _real(value, f"combos[{k}].{key}", -10.0, maximum=10.0)   # Blender の形状キーの値の幅
         checked.append([label, values])
     if len({label for label, _ in checked}) != len(checked):
         raise ToolError("combos の札が重なっています")

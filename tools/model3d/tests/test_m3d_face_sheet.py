@@ -35,6 +35,14 @@ def test_absolute_shape_keys_are_refused():
     assert "絶対" in render_side.absolute_keys_problem("Head", False)                   # 時間で形を選ぶので、値で組み合わせを描けない
 
 
+def test_key_changes_make_the_requested_values_take_effect():
+    states = {"blink": (True, 0.0, 1.0), "smile": (False, 0.0, 1.0), "brow": (False, 0.2, 1.0), "sad": (True, 0.0, 1.0)}
+    unmute, widen = render_side.key_changes([["a", {"blink": 1.0}], ["b", {"smile": 1.5, "brow": 0.5}]], states)
+    assert unmute == ["blink"]                                         # 入れないキー（sad）は 0 にするだけなので、ミュートのまま
+    assert widen == {"smile": (0.0, 1.5), "brow": (0.0, 1.0)}          # 範囲の外の値（1.5）と、0 にできないキー（下の端 0.2）
+    assert render_side.key_changes([["n", {}]], {"x": (False, 0.0, 1.0)}) == ([], {})
+
+
 def test_view_lengths_in_metres_become_blender_units():
     view = {"name": "q30", "azimuth": 30, "elevation": 0, "scale": 0.17, "centre": [0.0, -0.05, 1.49]}
     assert render_side.view_in_units(view) == ([0.0, -0.05, 1.49], 1.0, 0.17)           # 1 Blender 単位 = 1 m なら値はそのまま
@@ -136,6 +144,7 @@ def _with(**changes):
     (_with(combos=[["a b", {}]]), "札"),
     (_with(combos=[["neutral", {}], ["neutral", {"blink_L": 1}]]), "重なって"),
     (_with(combos=[["neutral", {"blink_L": "x"}]]), "有限の数"),
+    (_with(combos=[["neutral", {"blink_L": 11}]]), "10.0 以下"),
     (_with(views=[{"name": "front", "azimuth": 0, "elevation": 95, "scale": 0.17}]), "elevation"),
     (_with(views=[{"name": "front", "azimuth": 0, "elevation": 0, "scale": 0}]), "scale"),
     (_with(views=[{"name": "front", "azimuth": 0, "elevation": 0, "scale": 0.1, "roll": 3}]), "知らない設定"),

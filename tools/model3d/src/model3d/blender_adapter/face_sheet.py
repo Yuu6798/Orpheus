@@ -3,7 +3,10 @@
     blender --background --factory-startup --python face_sheet.py -- --blend in.blend --settings settings.json --out-dir views \
         --report report.json
 
-- object の形状キーは相対だけ（絶対の形状キーは値で形を選べないので止める。absolute_keys_problem）。
+- object の形状キーは相対だけ（絶対の形状キーは値で形を選べないので止める。absolute_keys_problem）。combos に基準のキーは入れられない。
+- 入れる値が効くように、この場で（保存しない）入れる形状キーのミュートを外し、値（0 にするキーの 0 も）が範囲（slider_min〜slider_max）の外なら
+  範囲を広げ（key_changes）、形状キーを 1 つだけ見せる設定（show_only_shape_key）を切り、形状キーの値を動かすアニメーションとドライバーを外す。
+  変えたことは報告の key_changes。
 - settings の combos（[[札, {形状キー: 値}], …]）ごとに、object のほかの形状キー（基準のキーのほか）を 0 にしてから値を入れ、views の向きごとに、
   正射影のカメラで <札>_<向き>.png を描く（image_names。名前が重なる組み合わせは止める）。並べるのは Blender の外（render.face_sheet）。
 - 向き（views の 1 つ）: name、azimuth（度。0 が正面、正でカメラがキャラの左へ回る）、elevation（度。正で上から）、scale（正射影の幅 m）、
@@ -75,6 +78,26 @@ def absolute_keys_problem(name, use_relative):
             "相対の形状キーのメッシュにしてください")
 
 
+def key_changes(combos, states):
+    """入れる値が効くように、この場で変える形状キー（保存しない）。states は基準のキーのほかの形状キーの {名前: (mute, slider_min, slider_max)}。
+    組み合わせごとに、どのキーも 0 にしてから値を入れるので、どのキーも 0 と入れる値が範囲に入っていなければならない（範囲の外の値は
+    Blender が範囲の端へ切る）。ミュートしたキーは値を入れても形が変わらない。
+    戻り: (ミュートを外すキー（入れるキーだけ）, 範囲を広げるキー {名前: (新しい slider_min, 新しい slider_max)})。"""
+    ranges = {name: (0.0, 0.0) for name in states}
+    for _, values in combos:
+        for name, value in values.items():
+            low, high = ranges[name]
+            ranges[name] = (min(low, value), max(high, value))
+    requested = {name for _, values in combos for name in values}
+    unmute = [name for name in states if name in requested and states[name][0]]
+    widen = {}
+    for name, (low, high) in ranges.items():
+        _, slider_min, slider_max = states[name]
+        if low < slider_min or high > slider_max:
+            widen[name] = (min(slider_min, low), max(slider_max, high))
+    return unmute, widen
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector
@@ -105,6 +128,26 @@ def main(argv=None):
     absent = sorted({name for _, values in settings["combos"] for name in values if name not in keys})
     if absent:
         raise SystemExit(f"{head.name} に無い形状キー: {absent}")
+    reference = head.data.shape_keys.reference_key.name if head.data.shape_keys else None
+    if reference is not None and any(reference in values for _, values in settings["combos"]):
+        raise SystemExit(f"combos に基準のキー {reference} は入れられません（相対の形状キーの基準は、値を入れても形が変わらない）")
+    changes = {"unmuted": [], "widened": {}, "pin_off": False, "animation_cleared": None}
+    if head.data.shape_keys is not None:                 # 入れる値が効くように、この場で変える（保存しない）
+        states = {key.name: (key.mute, key.slider_min, key.slider_max) for key in keys if key.name != reference}
+        unmute, widen = key_changes(settings["combos"], states)
+        for name in unmute:
+            keys[name].mute = False
+        for name, (low, high) in widen.items():          # 広げるだけなので、下の端から変えても上の端を越えない
+            keys[name].slider_min, keys[name].slider_max = low, high
+        changes.update(unmuted=unmute, widened={name: [low, high] for name, (low, high) in widen.items()})
+        animation = head.data.shape_keys.animation_data
+        if animation is not None:                        # アクション・ドライバー・NLA は、描くときに入れた値を上書きする
+            changes["animation_cleared"] = {"action": animation.action.name if animation.action else None,
+                                            "drivers": len(animation.drivers), "nla_tracks": len(animation.nla_tracks)}
+            head.data.shape_keys.animation_data_clear()
+    if head.show_only_shape_key:                         # 形状キーを 1 つだけ見せる設定（ピン）は、値を見ない
+        head.show_only_shape_key = False
+        changes["pin_off"] = True
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE"
     scene.eevee.taa_render_samples = settings["samples"]
@@ -128,7 +171,6 @@ def main(argv=None):
     cam_data.clip_start, cam_data.clip_end = cam_data.clip_start / unit, cam_data.clip_end / unit   # 既定の範囲を m とみなす
     corners = [head.matrix_world @ Vector(corner) for corner in head.bound_box]
     box_centre = sum(corners, Vector()) / 8
-    reference = head.data.shape_keys.reference_key.name if head.data.shape_keys else None
     images = []
     for label, values in settings["combos"]:
         for key in keys:
@@ -148,7 +190,7 @@ def main(argv=None):
             images.append({"label": label, "view": view["name"], "file": name})
     report = {"schema_version": "model3d-face-sheet/0.1", "blender": bpy.app.version_string, "object": head.name, "images": images,
               "box_centre": [float(v) * unit for v in box_centre], "scale_length": unit, "resolution": [size, int(size * 0.9)],
-              "settings": settings}
+              "key_changes": changes, "settings": settings}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
