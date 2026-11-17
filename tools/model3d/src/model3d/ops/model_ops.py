@@ -8,6 +8,7 @@
 - model.recolor_part・model.recolor: 色の絵を、部品の uv の範囲だけ・色相の範囲だけ塗り替える。model.remove_parts: 部品を外す。
 - model.smooth_skin・model.clean_skin: 肌の島の色の絵を、頂点の色をならして塗り直す（溝と焼き込まれた明暗・外した部品の下のしみ）。
 - model.face_shape: 顔の形を参照の絵の比率へ寄せる（目より下を上げ、あごを細く）。
+- model.closed_eye_key: 目を閉じたとき用の形状キー（目の穴をふさぎ、まつ毛を引っ込める）を頭に足す。
 """
 import math
 from pathlib import Path
@@ -703,3 +704,56 @@ def face_shape(inputs, parameters, outputs, context):
                    **{key: report.get(key) for key in ("head", "vertices", "moved_over_1mm", "max_up_mm", "lowest_z_before", "lowest_z_after")}}
     unresolved = [] if report.get("moved_over_1mm") else ["1 mm 以上動いた頂点がありません（view・lift・depth を確かめてください）"]
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+CLOSED_EYE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "closed_eye_key.py"
+
+
+@register("model.closed_eye_key", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="目を閉じたとき用の形状キー（key。既定 eyes_closed、値 0）を頭（head）に足す（Blender の中で）: 目のまわりの箱"
+                  "（|x| が eye_x、高さ eye_z、y が front_y より手前）の眼球の面を、目の穴の縁に張った膜の位置まで手前に出し（穴をふさぐ）、"
+                  "まつ毛の板などの小さな部品は頭の中へ tuck 引っ込める。閉じた目の線は絵で描く（render.passes の expressions で、閉じた目の"
+                  "絵の間だけ 1 にする）。元のファイルは変えない")
+def closed_eye_key(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "model.closed_eye_key")
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"head", "key", "eye_x", "eye_z", "front_y", "eyeball", "rim_min_verts", "membrane",
+                                                         "tuck"}, "model.closed_eye_key")
+    settings = {"head": _name(parameters.get("head"), "head"), "key": _name(parameters.get("key", "eyes_closed"), "key"),
+                "eye_x": _range(parameters.get("eye_x"), "eye_x", 0.0), "eye_z": _range(parameters.get("eye_z"), "eye_z"),
+                "front_y": _real(parameters.get("front_y"), "front_y")}
+    if settings["eye_x"][0] >= settings["eye_x"][1] or settings["eye_z"][0] >= settings["eye_z"][1]:
+        raise ToolError("eye_x・eye_z は [下, 上]（下 < 上）にしてください")
+    eyeball = parameters.get("eyeball")
+    if eyeball is not None:
+        if not isinstance(eyeball, dict):
+            raise ToolError(f"eyeball は {{\"min_verts\": …, \"min_height\": …}} にしてください: {eyeball!r}")
+        _refuse_unknown(eyeball, ("min_verts", "min_height"), "eyeball")
+        checked = {}
+        if "min_verts" in eyeball:
+            checked["min_verts"] = number(eyeball, "min_verts", minimum=1, integer=True)
+        if "min_height" in eyeball:
+            checked["min_height"] = _real(eyeball["min_height"], "eyeball.min_height", 0.0)
+        settings["eyeball"] = checked
+    if "rim_min_verts" in parameters:
+        settings["rim_min_verts"] = number(parameters, "rim_min_verts", minimum=3, integer=True)
+    for key in ("membrane", "tuck"):
+        if key in parameters:
+            settings[key] = _real(parameters[key], key, 0.0)
+    _outputs(outputs, ("blend", "report"), "model.closed_eye_key")
+    blender = _blender(parameters, context, "model.closed_eye_key")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "closed_eye_key_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, CLOSED_EYE_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                     "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "closed_eye_key", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "head": report.get("head"), "key": report.get("key"),
+                   "sides": {side: {"rim_verts": value.get("rim_verts"), "parts": [p.get("kind") for p in value.get("parts", [])]}
+                             for side, value in (report.get("sides") or {}).items()}}
+    return StepResult(observations=[observation])

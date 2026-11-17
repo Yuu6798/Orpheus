@@ -17,6 +17,8 @@
   メッシュでない人物の物体は描かない）。
   背景は黒。形はそのコマのカメラを向く。fx.during の時刻のコマだけ描く
 - pool: 床の光のたまり（中心が明るく、外へ暗くなる円盤。頂点の色）を平らな光で。背景は黒。pool.during の時刻のコマだけ描く
+表情（expressions。どの要素にも効く）: コマの時刻 (T − 1) / fps の表情（times の、その時刻までで最後の名前）の絵（images）を、objects の物体の
+材質の画像ノードに差し替える（絵の無い表情は元の絵）。shape_keys の表情の間だけ、その形状キーを 1 にする（ほかは 0。閉じた目の形など）。
 - r<要素>（mirror.passes に挙げた char・shade・fx）: 同じ要素を、カメラを床の面（高さ mirror.height）で反転して描いたもの（床への映り込み）。
   反転したカメラの行列は、入れた行列（記録のカメラなら記録の行列、トラックのカメラなら Blender の行列）に左から鏡の行列を掛けたもの
 - ph<i>（phantoms.items の i 番目の分身）: 人物の骨組みを offset（m。世界の座標。骨組みに親があっても）だけずらし、踊りの時刻を delay 秒遅らせて、shade と同じ白い人物と
@@ -38,6 +40,7 @@ settings.json（render.passes が書く。DEFAULTS に重ねる）:
   進み方。数か時刻のキー。0 で筋が伸びない）、during、frame0・fps（動きのコマ → 踊りの時刻）、sigmas（点ごとのならし σ 秒）・reach。
   点は --bones の骨の通り道（point_track）から読む
 - pool: centre・radii・segments・falloff・floor・floor_falloff・height（m）、during
+- expressions: objects（物体の名前の並び）、images（{表情: 絵の絶対パス}）、times（[[秒, 表情], …]。秒の小さい順）、shape_keys（{表情: 形状キー}）
 
 カメラ（コマ T ごと）:
 - 入力 cameras（model3d-cameras/0.1）にあれば、その行列（matrix_world に入れる。回転の持ち方は物体の既定の XYZ のオイラー角のまま）と、
@@ -86,6 +89,7 @@ DEFAULTS = {
            "reach": 3.0},
     "pool": {"centre": [0.0, 0.0], "radii": [0.0, 0.5, 1.0, 1.6, 2.4, 3.5, 5.0, 7.0, 10.0, 15.0, 24.0, 45.0], "segments": 72,
              "falloff": 4.5, "floor": 0.09, "floor_falloff": 25.0, "height": 0.002, "during": None},
+    "expressions": None,
 }
 SECTIONS = ("camera", "dancer", "disc", "room", "shade", "mirror", "phantoms", "fx", "pool")
 FX_NAME, POOL_NAME, FX_BLACK = "model3d_passes_fx", "model3d_passes_pool", "model3d_fx_black"
@@ -112,6 +116,22 @@ def merged(settings):
     for key in SECTIONS:
         out[key] = {**DEFAULTS[key], **settings.get(key, {})}
     return out
+
+
+def expression_at(times, t):
+    """時刻 t（秒）の表情: times（[[秒, 表情], …]。秒の小さい順）の、t 以前で最後の名前（最初の秒より前は最初の名前。試作と同じ）。"""
+    name = times[0][1]
+    for start, value in times:
+        if t >= start:
+            name = value
+    return name
+
+
+def shape_key_values(shape_keys, name):
+    """表情 name のときの形状キーの値 {キー: 1 か 0}。同じキーを分け合う表情があっても、キーごとに 1 回だけ決める（ループのあとの
+    表情でそのキーを 0 に戻さない）。"""
+    active = shape_keys.get(name)
+    return {key: 1.0 if key == active else 0.0 for key in sorted(set(shape_keys.values()))}
 
 
 def phantom_index(kind):
@@ -422,6 +442,59 @@ def main(argv=None):
     absent = sorted(heads - {o.name for o in character})
     if "head" in kinds and absent:
         raise SystemExit(f"顔の物体が、描画に出る人物の物体にありません: {absent}")
+    expressions = settings["expressions"]
+    face_nodes, face_images, face_objects = [], {}, []
+    if expressions:                                     # 表情の絵を読み、差し替える画像ノードを集める（試作と同じ）
+        names = {o.name for o in character}
+        absent = sorted(set(expressions["objects"]) - names)
+        if absent:
+            raise SystemExit(f"expressions の物体が、描画に出る人物の物体にありません: {absent}")
+        for name, path in expressions["images"].items():
+            face_images[name] = bpy.data.images.load(path)
+        for name in expressions["objects"]:
+            obj = bpy.data.objects[name]
+            face_objects.append(obj)
+            for material in [slot.material for slot in obj.material_slots] if obj.type == "MESH" else []:   # 実際に描く材質
+                if material is None or material.node_tree is None:
+                    continue
+                for node in material.node_tree.nodes:
+                    if node.type == "TEX_IMAGE" and node.image:
+                        face_nodes.append((node, node.image))
+                        for image in face_images.values():
+                            image.colorspace_settings.name = node.image.colorspace_settings.name
+        if face_images and not face_nodes:
+            raise SystemExit(f"expressions の物体 {expressions['objects']} に、差し替える画像ノードがありません")
+        shared = sorted({f"{material.name}（{other.name}）" for obj in face_objects if obj.type == "MESH"
+                         for material in [slot.material for slot in obj.material_slots] if material is not None for other in bpy.data.objects
+                         if other.type == "MESH" and other.name not in expressions["objects"]
+                         and material in [slot.material for slot in other.material_slots]})
+        if face_images and shared:                       # 材質の画像ノードを差し替えるので、分け合う物体の絵まで変わる
+            raise SystemExit("expressions の物体の材質を、ほかの物体も使っています（絵を差し替えると、その物体の絵も変わる。材質を"
+                             f"その物体だけのものにしてください）: {shared}")
+        for key in expressions["shape_keys"].values():
+            if not any(o.type == "MESH" and o.data.shape_keys is not None and key in o.data.shape_keys.key_blocks for o in face_objects):
+                raise SystemExit(f"expressions の形状キー {key} が、objects の物体にありません")
+        absolute = sorted(o.name for o in face_objects if o.type == "MESH" and o.data.shape_keys is not None
+                          and not o.data.shape_keys.use_relative and any(k in o.data.shape_keys.key_blocks for k in expressions["shape_keys"].values()))
+        if absolute:                                     # 絶対の形状キーは時間で形を選ぶので、値で入り切りできない
+            raise SystemExit(f"expressions の形状キーを持つ {absolute} の形状キーは絶対（Relative のチェックなし）です。表情の形状キーは値で"
+                             "入り切りするので、相対の形状キーにしてください")
+
+    def set_expression(t):
+        """時刻 t の表情の絵と形状キーにする。戻り: 表情の名前。"""
+        name = expression_at(expressions["times"], t)
+        for node, base in face_nodes:
+            node.image = face_images.get(name, base)
+        values = shape_key_values(expressions["shape_keys"], name)
+        for obj in face_objects:
+            keys = obj.data.shape_keys if obj.type == "MESH" else None
+            if keys is None:
+                continue
+            for key, value in values.items():
+                if key in keys.key_blocks:
+                    keys.key_blocks[key].value = value
+        return name
+
     disc = None
     if "disc" in kinds:
         bpy.ops.mesh.primitive_circle_add(vertices=int(settings["disc"]["vertices"]), radius=settings["disc"]["radius"] / unit,
@@ -521,6 +594,7 @@ def main(argv=None):
     for kind in kinds:
         os.makedirs(os.path.join(a.passes_dir, kind), exist_ok=True)
     rendered, existing = {k: [] for k in kinds}, {k: [] for k in kinds}
+    shown = {}                                           # 描いたコマの表情（T → 名前）
     fps = settings["fps"] or track.get("fps") or sc.render.fps / sc.render.fps_base
     ghosts = settings["phantoms"]
     ghost_kinds = set(phantom_kinds(settings))
@@ -539,6 +613,8 @@ def main(argv=None):
             continue
         t0 = time.time()
         stage_render.set_frame(sc, f)
+        if expressions:
+            shown[T] = set_expression((T - 1) / fps)
         assigned = place(T, f, spec)[3]
         bpy.context.view_layer.update()
         main = assigned if assigned is not None else cam.matrix_world.copy()   # 反転と分身は、このコマの入れた行列から
@@ -611,7 +687,9 @@ def main(argv=None):
                          "from_track": sum(1 for T, _, _ in plan if T not in by_record),
                          "unused_record": sorted(set(by_record) - {T for T, _, _ in plan})},
               "seconds": round(seconds, 1), "seconds_per_pass": round(seconds / count, 3) if count else None, "settings": settings,
-              "phantoms": {"count": len(ghosts["items"]), "dance_fps": dance_fps}}
+              "phantoms": {"count": len(ghosts["items"]), "dance_fps": dance_fps},
+              "expressions": None if not expressions else {"shown": {str(T): name for T, name in sorted(shown.items())},
+                                                           "counts": {name: list(shown.values()).count(name) for name in sorted(set(shown.values()))}}}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
     print(json.dumps({"planned": len(plan), "rendered": count, "skipped_existing": sum(len(v) for v in existing.values())}))
