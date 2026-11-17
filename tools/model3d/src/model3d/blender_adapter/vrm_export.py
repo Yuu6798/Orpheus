@@ -9,16 +9,22 @@
   残らないことがあるので、元の VRM から写すために使う（利用条件などほかのメタは .blend のまま）。
 - --jpeg-quality が 0 より大きければ、材質が使う画像を JPEG（その品質）にして --textures に書き、.blend に埋め込み直す
   （色の絵を PNG のまま埋めると大きくなる。2 作目の VRM のダンスでは 4 枚で 68 MB → 14 MB）。透過の要る画像には使わない。
-- 入れないもの: 動き（VRM には入らない）。表情・布の計算・骨の拘束は、そもそも VRM の仕組みに無いか、アプリによって効かない。
+- 入れないもの: 動き（VRM には入らない）。布の計算は VRM の仕組みに無い。表情は形状キーを VRM の表情に割り当てたものだけが入る。
+- 骨の拘束: VRM Add-on は、VRM 1.0 の拘束（VRMC_node_constraint の aim・roll・rotation）の形の拘束だけを書き出す（骨 1 本に 1 つ。
+  ミュートした拘束は書き出さない）。報告の bone_constraints に、.blend の骨の拘束（骨・拘束の名前・種類・ミュート）を並べる。
+  書き出した拘束は check.vrm の作りの一覧（structure の node_constraints）にあるので、工程（vrm.export）が left_out で突き合わせ、
+  書き出されなかった拘束を観測に載せる。
 
-**検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスの衣装のアセットと同じ VRM になることを確かめた
-（docs/model3d.md）。CI には Blender が無い。
+**検証**: Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で、2 作目の VRM のダンスの衣装のアセットと同じ VRM になることを確かめた。
+3 作目の VRM のダンスの腕のねじれの骨の拘束 6 個も突き合わせた（docs/model3d.md）。CI には Blender が無い（突き合わせ方はテストする）。
 """
 import argparse
 import json
 import os
 import re
 import sys
+
+BLENDER_KIND = {"roll": "COPY_ROTATION", "rotation": "COPY_ROTATION", "aim": "DAMPED_TRACK"}   # VRM の拘束の種類 → Blender の拘束
 
 
 def parse_args(argv):
@@ -32,6 +38,20 @@ def parse_args(argv):
     ap.add_argument("--textures", default="", help="JPEG にした絵の書き先のフォルダ（--jpeg-quality のとき）")
     ap.add_argument("--armature", default="", help="アーマチュアの名前（1 つだけなら省ける）")
     return ap.parse_args(argv)
+
+
+def left_out(bone_constraints, exported):
+    """.blend の骨の拘束（[{"bone", "constraint", "type", "mute"}]、骨ごとに拘束の並びの順）のうち、VRM に書き出されなかったもの。
+    exported は書き出した VRM の拘束（check.vrm の structure の node_constraints: [{"node", "kind", ...}]）。
+    VRM Add-on は骨 1 本に 1 つだけ書き出すので、書き出した骨では、その種類に当たる最初のミュートしていない拘束だけを書き出したものとみなす。"""
+    kinds = {row["node"]: BLENDER_KIND.get(row["kind"]) for row in exported}
+    out, taken = [], set()
+    for row in bone_constraints:
+        if row["bone"] in kinds and row["bone"] not in taken and not row["mute"] and row["type"] == kinds[row["bone"]]:
+            taken.add(row["bone"])
+            continue
+        out.append(row)
+    return out
 
 
 def texture_name(image_name, taken):
@@ -158,6 +178,9 @@ def main(argv=None):
     if result != {"FINISHED"} or not os.path.exists(out_vrm):
         raise SystemExit(f"VRM の書き出しに失敗しました: {result}")
     report["vrm_bytes"] = os.path.getsize(out_vrm)
+    report["bone_constraints"] = [{"bone": pose_bone.name, "constraint": constraint.name, "type": constraint.type,
+                                   "mute": bool(constraint.mute)}
+                                  for pose_bone in armature.pose.bones for constraint in pose_bone.constraints]
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

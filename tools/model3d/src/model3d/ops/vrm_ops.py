@@ -270,6 +270,7 @@ EXPORT_PARAMETERS = {"blender", "addons", "blender_extensions", "jpeg_quality", 
                   "材質の画像を JPEG にして埋め込み直す。書き出した VRM は check.vrm と同じ検査にかけ、check に残す。元のファイルは変えない")
 def export(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
+    from ..blender_adapter.vrm_export import left_out
     from ..io import atomic_json
     from .. import vrm
     require(inputs, ("blend",), "vrm.export")
@@ -301,6 +302,10 @@ def export(inputs, parameters, outputs, context):
                    "textures": len(report.get("textures") or []), "check_pass": checked["pass"],
                    "human_bones": checked["human_bones"], "springs": len(checked["springs"]),
                    "alpha_dropped": report.get("alpha_dropped", [])}
+    # 骨の拘束: 書き出した数と、.blend の骨の拘束のうち書き出されなかったもの（合否には使わない。IK など VRM に要らない拘束もある）
+    exported = (checked.get("structure") or {}).get("node_constraints") or []
+    observation["constraints_exported"] = len(exported)
+    observation["constraints_not_exported"] = left_out(report.get("bone_constraints") or [], exported)
     # 透過を使う材質の絵を JPEG にしたもの（透過が消える）は、検査の不合格と同じく要確認にする
     problems = [f"VRM の検査: {f}" for f in checked["failures"]]
     problems += [f"透過を使う材質の絵を JPEG にしました（透過が消える）: {name}" for name in observation["alpha_dropped"]]

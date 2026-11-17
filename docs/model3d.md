@@ -1123,6 +1123,11 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
 - `jpeg_quality`（1〜100。既定 0 は変えない）で、材質が使う画像を JPEG にして埋め込み直す（色の絵を PNG のまま埋めると大きい。
   2 作目の VRM のダンスでは 4 枚で 68 MB → JPEG 品質 95 で 14 MB）。透過の要る画像には使わない。
 - 書き出した VRM を `check.vrm` と同じ検査にかけ、出力 `check` に残す。不合格なら needs_review（`strict` なら失敗）。
+- 骨の拘束: VRM Add-on は、VRM 1.0 の拘束（`VRMC_node_constraint` の aim・roll・rotation）の形の拘束だけを、骨 1 本に 1 つ書き出す
+  （ミュートした拘束は書かない。形は [ねじれを分ける補助の骨](#ねじれを分ける補助の骨modeltwist_bones)）。報告 `report` の `bone_constraints` に
+  .blend の骨の拘束（骨・拘束の名前・種類・ミュート）を並べ、書き出した拘束（`check` の `structure` の `node_constraints`）と突き合わせて、
+  観測に、書き出した数（`constraints_exported`）と書き出されなかった拘束（`constraints_not_exported`）を載せる。合否には使わない
+  （IK など、VRM に要らない拘束もあるため）。
 - `check.vrm`（Blender なし。GLB を読むだけ）: メタ（名前・作者・利用条件）、人型の骨の数と必須の骨、メッシュ、材質の数と MToon の数、画像（種類と大きさ）、
   揺れもの（名前と関節の数）・当たり判定・組の数、形の割り当てのある表情（`expressions_bound`）。合否は、VRM 1.0 の拡張があるか・人型の必須の骨（VRM 1.0 の 15 本）・
   メタの名前と作者とライセンスの URL（VRM 1.0 で必須）・番号の参照が範囲の中か（人型の骨・揺れものの関節と center・当たり判定と組・
@@ -1177,6 +1182,10 @@ VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model
   人型の骨の位置だけは違う: 台本は親の平行移動だけを足していた（回転のある node があるので目安、と台本自身が書いていた）。model3d は回転と拡大を入れて
   求め、Blender 5.2.4 の glTF の読み込みで読んだ骨の付け根の位置と 6.4×10⁻⁷ m の中で同じ（アセット。人型の骨 54）。
   元の VRM（関節 131・骨の拘束 0）と、腕のねじれの骨を足したあとの VRM（関節 137・骨の拘束 6: 前腕の roll 2・aim 4）の違いも一覧で読める。
+- 骨の拘束（2026-11-18。実測）: 3 作目の VRM のダンスの、腕のねじれの骨を足したモデル（`model.twist_bones`）から書き出すと、
+  `constraints_exported` 6（上腕と前腕の左右の aim 4・前腕の左右の roll 2）・`constraints_not_exported` 0。roll を焼いて拘束を止めた踊りの .blend
+  （`motion.bake_roll`）からは、書き出した拘束 4（aim）・書き出されなかった拘束 2（止めた roll）。骨の拘束を並べる前と、書き出した VRM のバイト列は
+  同じ（SHA-256 が同じ）。CI では、書き出されなかった拘束の見分け方（骨 1 本に 2 つ目の拘束・ミュート・VRM の拘束でない種類）を確かめた。
 
 **限界**: VRM 0.x は読まない（`meta_from` も VRM 1.0 だけ）。ほかのアプリ（VRChat など）で読めるかは確かめない。
 
