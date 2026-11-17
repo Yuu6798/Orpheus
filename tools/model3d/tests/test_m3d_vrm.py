@@ -263,6 +263,64 @@ def test_spring_overrides_are_checked():
     assert vrm_bake_springs.keys_of(" skirt, ,sleeve") == ["skirt", "sleeve"]
 
 
+def _release(**changes):
+    spec = {"springs": ["front"], "group": "Hem/wall", "bones": ["thigh.L", "thigh.R"], "on_deg": 70, "off_deg": 40,
+            "radius_to": 0.1, "guard_bone": "pelvis"}
+    spec.update(changes)
+    return {key: value for key, value in spec.items() if value is not None}
+
+
+def test_release_walls_are_checked():
+    good = {"_note": "メモ", "_release_walls": [_release(), _release(bones=None, on_deg=None, off_deg=None, frames=[10, 20]),
+                                                _release(ease_in_s=0, ease_out_s=1.5, reference="spine", guard_radius_from=0.02,
+                                                         guard_radius_scale=0.5)]}
+    assert vrm_bake_springs.check_overrides(good) is good
+    for bad, message in (
+            ([], "1 つ以上"), ("x", "1 つ以上"), (["x"], "辞書"),
+            ([_release(wobble=1)], "知らない鍵"), ([_release(springs=[])], "springs"), ([_release(springs="front")], "springs"),
+            ([_release(group="")], "group"), ([_release(frames=[1, 2])], "どちらか 1 つ"),
+            ([_release(bones=None, on_deg=None, off_deg=None)], "どちらか 1 つ"), ([_release(bones=["thigh.L", ""])], "bones"),
+            ([_release(on_deg=30, off_deg=40)], "off_deg ≤ on_deg"), ([_release(on_deg=190)], "≤ 180"),
+            ([_release(off_deg=None)], "on_deg と off_deg"), ([_release(on_deg=float("nan"))], "on_deg と off_deg"),
+            ([_release(reference="")], "reference"),
+            ([_release(bones=None, on_deg=None, off_deg=None, frames=[20, 10])], "frames"),
+            ([_release(bones=None, frames=[1, 2])], "bones（見張る骨）と一緒"),
+            ([_release(radius_to=0)], "radius_to"), ([_release(radius_to=None)], "radius_to"),
+            ([_release(ease_in_s=-1)], "ease_in_s"), ([_release(guard_bone="")], "guard_bone"),
+            ([_release(guard_bone=None, guard_radius_from=0.02)], "guard_bone（見張りの当たり）と一緒"),
+            ([_release(guard_radius_scale=0)], "guard_radius_scale")):
+        with pytest.raises(ValueError, match=message):
+            vrm_bake_springs.check_overrides({"_release_walls": bad})
+
+
+def test_release_switch_holds_between_the_two_angles():
+    # 両方の角度の間では今の状態を続ける（行ったり来たりしない）
+    states, on = [], False
+    for angle in (10, 50, 71, 60, 45, 41, 40, 55, 70):
+        on = vrm_bake_springs.release_switch(on, angle, 70, 40)
+        states.append(on)
+    assert states == [False, False, True, True, True, True, False, False, True]
+
+
+def test_release_amount_eases_toward_the_target_and_smoothstep_is_flat_at_the_ends():
+    dt = 1.0 / 60.0
+    amount, path = 0.0, []
+    for _ in range(14):                                                    # 0.2 秒で 0 → 1（12 刻み）、そこで止まる
+        amount = vrm_bake_springs.release_amount(amount, 1.0, dt, 0.2, 0.3)
+        path.append(amount)
+    assert path[0] == pytest.approx(1 / 12) and path[11] == pytest.approx(1.0) and path[12] == path[13] == path[11]
+    down = vrm_bake_springs.release_amount(1.0, 0.0, dt, 0.2, 0.3)          # 戻すのは 0.3 秒で 1 → 0
+    assert down == pytest.approx(1 - 1 / 18)
+    assert vrm_bake_springs.release_amount(0.4, 1.0, None, 0.2, 0.3) == 1.0     # 落ち着かせ直すときは一度に合わせる
+    assert vrm_bake_springs.release_amount(0.0, 1.0, dt, 0.0, 0.3) == 1.0       # 0 秒は一刻みで動き切る
+    # 試作の台本と同じ式（dt ÷ ease だけ動かし、行き過ぎない）
+    assert vrm_bake_springs.release_amount(0.25, 1.0, 0.05, 0.2, 0.3) == 0.25 + 0.05 / 0.2
+    assert [vrm_bake_springs.smoothstep(x) for x in (0.0, 0.5, 1.0)] == [0.0, 0.5, 1.0]
+    assert vrm_bake_springs.smoothstep(0.25) == 0.25 * 0.25 * (3.0 - 2.0 * 0.25)
+    assert vrm_bake_springs.released_spans([]) == []
+    assert vrm_bake_springs.released_spans([5, 6, 7, 10, 12, 13]) == [[5, 7], [10, 10], [12, 13]]
+
+
 def test_cut_frames_are_read_and_must_lie_after_the_first_frame():
     assert vrm_bake_springs.cut_list("") == [] and vrm_bake_springs.cut_list(" 240, 120 ") == [120, 240]
     for bad, message in (("12,a", "整数"), ("1.5", "整数"), ("30,30", "2 回")):
@@ -319,6 +377,9 @@ if script.endswith("vrm_apply_motion.py"):
     report.update(curves=10, curves_renamed=8, fps=24.0)
 else:
     report.update(joints=5, still_joints=2, steps=4, overridden={"sleeve": {"stiffness": 0.2}})
+    overrides = json.load(open(value("--overrides"), encoding="utf-8")) if "--overrides" in args else {}
+    report["released_walls"] = [{"springs": spec["springs"], "walls": 2, "guards": 2, "frames_released": 5, "spans": [[10, 14]],
+                                 "largest_amount": 1.0} for spec in overrides.get("_release_walls", [])]
 json.dump(report, open(value("--report"), "w"))
 '''
 
@@ -420,6 +481,20 @@ def test_bake_springs_passes_the_carry_spans_to_blender(tmp_path):
     assert "--carry-skip" not in tail
 
 
+def test_bake_springs_passes_the_wall_release_in_the_overrides(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN_MOTION))
+    recipe = _motion_recipe(tmp_path, {"blender": blender}, {"blender": blender})
+    atomic_json(tmp_path / "overrides.json", {"sleeve": {"stiffness": 0.2}, "_release_walls": [_release()]})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    observation = result["steps"]["springs"]["observations"][0]
+    assert observation["released_walls"] == [{"springs": ["front"], "walls": 2, "guards": 2, "frames_released": 5, "spans": [[10, 14]]}]
+    atomic_json(tmp_path / "overrides.json", {"sleeve": {"stiffness": 0.2}})          # 壁の指定が無ければ、観測にも出さない
+    observation = executor.run_recipe(recipe, tmp_path / "runs")["steps"]["springs"]["observations"][0]
+    assert "released_walls" not in observation
+
+
 @pytest.mark.parametrize("parameters, joined, message", [
     ({"cuts": "120"}, None, "切り替えのコマ"),
     ({"cuts": [120, 120]}, None, "重ならない"),
@@ -440,6 +515,7 @@ def test_bake_springs_passes_the_carry_spans_to_blender(tmp_path):
     ({"carry": [[1, 3]], "carry_skip": "front"}, None, "carry_skip"),
     ({"carry_bone": "hips"}, None, "carry（運ぶ区間）と一緒"),
     ({"carry_skip": ["front"]}, None, "carry（運ぶ区間）と一緒"),
+    ({"overrides": {"_release_walls": [{"springs": ["front"]}]}}, None, "overrides: _release_walls"),
 ])
 def test_bake_springs_rejects_bad_cut_settings(tmp_path, parameters, joined, message):
     from model3d.ops import get
@@ -449,6 +525,9 @@ def test_bake_springs_rejects_bad_cut_settings(tmp_path, parameters, joined, mes
     if joined is not None:
         atomic_json(tmp_path / "join.json", joined)
         inputs["joined"] = tmp_path / "join.json"
+    if "overrides" in parameters:                                           # 上書きの JSON は Blender を起動する前に確かめる
+        atomic_json(tmp_path / "overrides.json", parameters.pop("overrides"))
+        inputs["overrides"] = tmp_path / "overrides.json"
 
     class Context:
         tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
