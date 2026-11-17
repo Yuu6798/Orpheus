@@ -232,6 +232,9 @@ class Plan:
 
     def __init__(self, plan, keys=None):
         self.keys = keys
+        for band in ("low", "mid", "high") if keys is not None else ():   # 数がそろわないと、後のコマの帯が黙って止まるか読めない
+            if len(keys[band]) != keys["frames"]:                          # （plan.stage と同じ確かめ）
+                raise ToolError(f"光のキーの {band} の数（{len(keys[band])}）が frames（{keys['frames']}）と違います")
         grid = (keys or {}).get("grid") or plan.get("grid")
         if grid is None:
             raise ToolError("光の段取り表の拍の格子（grid）が要ります（光のキー keys を渡すか、段取り表に grid を書く）")

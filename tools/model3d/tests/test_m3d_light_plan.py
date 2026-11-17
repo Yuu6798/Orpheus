@@ -161,6 +161,14 @@ def test_hit_is_one_on_the_frame_of_the_beat():
     assert p.at(7)[0]["pulse"] == math.exp(-((0.6 - 0.2) % 0.5) / 0.13)                          # 拍の前のコマは前の拍から
 
 
+@pytest.mark.parametrize("band, values", [("low", [0.0]), ("mid", [0.1, 0.5]), ("high", [0.1, 0.5, 0.9, 0.2])])
+def test_light_keys_with_bands_of_another_length_are_refused(band, values):
+    """帯の数が frames と違う光のキー（契約は数のそろいまでは見ない）は、黙って値を止めたり読めなくなったりせず、止める。"""
+    keys = {**_keys(3), band: values}
+    with pytest.raises(ToolError, match=f"光のキーの {band} の数（{len(values)}）が frames（3）と違います"):
+        light_plan.Plan(_plan(), keys)
+
+
 def test_the_grid_fps_and_frames_come_from_the_keys_or_the_plan():
     keys = _keys(25)
     p = light_plan.Plan({**_plan(), "frames": None, "fps": None, "grid": None}, keys)
