@@ -664,8 +664,12 @@ def test_fault_pins_keep_the_clean_motion_outside():
               {"frames": [20, 20], "kind": "local"}]
     keys = {("hips", "rotation_quaternion"): list(range(1, 21)), ("hips", "location"): [1, 10]}
     assert fault_inject.fault_pins(faults, ["hips", "hips", "hips", "head"], keys, 1, 20) == [
-        (0, "rotation_quaternion", 4), (1, "rotation_quaternion", 4), (1, "location", 4), (1, "location", 10),
-        (2, "rotation_quaternion", 10), (3, "rotation_quaternion", 19)]
+        (0, "rotation_quaternion", 4), (1, "rotation_quaternion", 4), *[(1, "location", f) for f in (1, 2, 3, 4, 7, 8, 9, 10)],
+        (2, "rotation_quaternion", 10), (3, "rotation_quaternion", 19)]                 # 回りだけの破綻の区間の中でも、位置は留める
+    # 元はキーの無い位置: shift のすぐ後ろに回りだけの破綻があっても、位置は区間の後ろ 1 コマで留める
+    assert fault_inject.fault_pins([{"frames": [5, 6], "kind": "shift"}, {"frames": [7, 9], "kind": "local"}], ["hips", "hips"],
+                                   {("hips", "rotation_quaternion"): list(range(1, 21))}, 1, 20) == [
+        (0, "rotation_quaternion", 4), (0, "location", 4), (0, "location", 7), (1, "rotation_quaternion", 10)]
     assert fault_inject.keyed_props({"kind": "shift"}) == ("rotation_quaternion", "location")
     assert fault_inject.fault_pins([{"frames": [1000, 1010], "kind": "local"}], ["head"], {("head", "rotation_quaternion"): list(range(1, 355))},
                                    1, 354) == []                                  # シーンに重ならない破綻は留めない

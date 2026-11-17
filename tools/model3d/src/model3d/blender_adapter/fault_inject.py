@@ -15,7 +15,7 @@ faults（並び。上から順に入れる）。破綻ごとに:
 - 破綻を入れる前に、触る骨の元の値（回り・位置・大きさ）を読んでおき、入れるコマではその値から始める（前のコマで打ったキーが混ざらない。
   キーの少ない動きや、元はキーの無い位置でも、量が積み重ならない）。区間の外は、キーを打つ値ごとに元の値のキーで留める（区間の外へ破綻が
   伸びない）: 元のキーがあれば、区間の前は前の元のキーから、後ろは次の元のキーまで、全部のコマ（間引いたキーの間の形を変えない）。元のキーが
-  無ければ前後 1 コマ。ほかの破綻の区間の中のコマには打たない。
+  無ければ前後 1 コマ。同じ値にキーを打つほかの破綻の区間の中のコマには打たない。
 - world は骨の行列を入れるので、位置と大きさに小さなずれが出る。キーを打たない位置と大きさは、終わりに元の値へ戻す（キーが無いと全部の
   コマに効くため。試作はずれを残していた）。
 - world の軸と shift の向きは世界の座標。アーマチュアの物体が回っていれば、その向きをアーマチュアの中へ直し、shift は親の今の姿勢を通して
@@ -85,18 +85,19 @@ def pin_range(first, last, keys, start, end):
 
 
 def fault_pins(faults, names, keys, start, end):
-    """区間の外を留める (破綻の番号, 値, コマ) の並び。keys は {(骨, 値): 元のキーのコマ}。同じ骨のほかの破綻の区間の中のコマと、
-    シーンに重ならない破綻は除く。"""
+    """区間の外を留める (破綻の番号, 値, コマ) の並び。keys は {(骨, 値): 元のキーのコマ}。同じ骨の同じ値にキーを打つほかの破綻の区間の中の
+    コマと、シーンに重ならない破綻は除く（回りだけの破綻の区間の中でも、位置は留める）。"""
     inside = {}
     for fault, name in zip(faults, names):
-        inside.setdefault(name, set()).update(range(fault["frames"][0], fault["frames"][1] + 1))
+        for prop in keyed_props(fault):
+            inside.setdefault((name, prop), set()).update(range(fault["frames"][0], fault["frames"][1] + 1))
     out = []
     for k, (fault, name) in enumerate(zip(faults, names)):
         if fault["frames"][1] < start or fault["frames"][0] > end:        # シーンに重ならない破綻は入らないので、留めない
             continue
         for prop in keyed_props(fault):
             for f in pin_range(fault["frames"][0], fault["frames"][1], keys.get((name, prop), []), start, end):
-                if f not in inside[name] and (k, prop, f) not in out:
+                if f not in inside[(name, prop)] and (k, prop, f) not in out:
                     out.append((k, prop, f))
     return out
 
