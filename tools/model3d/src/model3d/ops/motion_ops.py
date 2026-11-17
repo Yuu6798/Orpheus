@@ -262,6 +262,55 @@ def retarget(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
+JOIN_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "join_clips.py"
+JOIN_PARAMETERS = {"blender", "segments", "fps", "align", "bone_prefix", "armature", "timeout"}
+
+
+@register("motion.join_clips", outputs=("blend", "report"), cacheable=False,
+          summary="別々に骨へ載せた何本かの動き（motion.retarget などの .blend。入力の名前は自由）を、切り替えのコマの表つきで 1 本の並びに"
+                  "組む（Blender の中で）。segments の区間ごとに、使う本（clip。入力の名前）と、その本の 0 秒目を出力の何秒目に置くか"
+                  "（offset_s）を決める。範囲の外のコマは最初か最後の姿勢で止まる。align が mean なら、本ごとに使うコマの腰の位置の"
+                  "平均を原点（左右・前後）へずらす。最初の区間の本の .blend に全部のコマのキー（直線）を打ち直す。report の cuts は"
+                  "切り替えのコマ。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def join_clips(inputs, parameters, outputs, context):
+    from ..blender_adapter import join_clips as joiner, launcher
+    from ..io import read_json
+    unknown = set(parameters) - JOIN_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.join_clips の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(JOIN_PARAMETERS)}）")
+    missing = [name for name in ("blend", "report") if name not in outputs]
+    if missing:
+        raise ToolError(f"motion.join_clips には outputs の {', '.join(missing)} が要ります")
+    if not inputs:
+        raise ToolError("motion.join_clips には、組む動きの .blend を入力に 1 つ以上挙げてください（名前は自由。segments の clip で指す）")
+    try:
+        segments = joiner.check_segments(parameters.get("segments"), set(inputs))
+    except ValueError as error:
+        raise ToolError(f"motion.join_clips: {error}") from error
+    fps = None if parameters.get("fps") is None else float(number(parameters, "fps", minimum=0, exclusive=True))
+    align = parameters.get("align", "mean")
+    if align not in joiner.ALIGNS:
+        raise ToolError(f"align は {joiner.ALIGNS} のどれか: {align!r}")
+    armature = parameters.get("armature", "")
+    if not isinstance(armature, str):
+        raise ToolError(f"armature はアーマチュアの名前（文字列）にしてください: {armature!r}")
+    blender = _blender(parameters, context, "motion.join_clips")
+    settings = {"clips": {name: str(Path(path)) for name, path in sorted(inputs.items())}, "segments": segments, "fps": fps,
+                "align": align, "hips": _bone_prefix(parameters) + "Hips", "armature": armature}
+    settings_path = Path(context.step_dir) / "join_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, JOIN_SCRIPT, None, ["--settings", str(settings_path), "--out-blend", outputs["blend"],
+                                                               "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters))
+    report = read_json(outputs["report"])
+    observation = {"kind": "join_clips", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"], "frames": report.get("frames"), "fps": report.get("fps"),
+                   "clips": [clip.get("name") for clip in report.get("clips") or []], "cuts": report.get("cuts"),
+                   "held": [[item.get("held_start"), item.get("held_end")] for item in report.get("segments") or []],
+                   "points_frames_removed": report.get("points_frames_removed")}
+    return StepResult(observations=[observation])
+
+
 TWIST_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "twist_split.py"
 TWIST_PARAMETERS = {"blender", "frames", "bone_prefix", "timeout"}
 # 直した後も変わってはいけない量の許容。単精度の誤差（実測で 0.0004 mm・0.00004° ほど）より十分大きく、目に見える差より十分小さい
