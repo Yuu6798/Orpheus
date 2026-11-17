@@ -3,7 +3,7 @@
     blender --background --factory-startup --python-expr <VRM Add-on を有効にする前置き> \
         --python vrm_bake_springs.py -- --blend dance.blend --out-blend out.blend --report report.json \
         [--overrides overrides.json] [--settle 2.0] [--rate 60] [--no-spring skirt] [--addon-module bl_ext.user_default.vrm] \
-        [--cuts 120,240 [--cut-settle 2.0]]
+        [--cuts 120,240 [--cut-settle 2.0]] [--carry 300:308 [--carry-bone hips] [--carry-skip skirt_08]]
 
 - VRM Add-on の揺れものの計算を 1/rate 秒（既定 1/60 秒）刻みで進め、コマごとに揺れものの骨の回転をキーとして打つ。
   最初のコマの姿勢で settle 秒ぶん進めて落ち着かせてから始める。刻みはシーンの fps（fps / fps_base）とコマの範囲から決める。
@@ -11,6 +11,11 @@
   初期に戻し、そのコマの姿勢で --cut-settle 秒（既定は --settle と同じ）ぶん進めて落ち着かせ直してから、キーを打つ。
   切り替えのコマでは姿勢が飛ぶので、そのまま続けて計算すると、切り替えの直後に裾と髪が大きく跳ね上がる。刻みの数は、
   切り替えのコマから数え直す。
+- --carry に挙げた区間（a:b。b を含む。カンマ区切りで何区間でも）のコマでは、計算を進める前に、揺れものの節が覚えている位置
+  （VRM Add-on は、節ごとに animation_state の previous_world_translation と current_world_translation に世界の座標で持つ）を、
+  --carry-bone（既定は VRM の人型の hips の骨）の前のコマからこのコマへの動きで写す。揺れものから見ると腰が止まっていたことになり、
+  体が急に落ちる・上がる勢いが揺れものに伝わらない（脚の当たりや硬さはそのまま効く）。--carry-skip に挙げた文字を名前に含む揺れものは
+  運ばない（勢いをそのまま伝える）。切り替えのコマでは運ばない（落ち着かせ直すので）。
 - 動きの側に揺れものの骨のキーがあれば、先に消す（残すとコマを進めるたびに計算の結果が打ち消される）。
 - アドオン自身のコマ送りの計算は、焼く間だけ止める（自分で刻みを進めるので、二重に進まないように）。
 - --overrides の JSON で、揺れものの設定をこの .blend の中だけ上書きする（元の VRM は変えない）:
@@ -48,7 +53,42 @@ def parse_args(argv):
     ap.add_argument("--cuts", default="", help="揺れものを落ち着かせ直す切り替えのコマ（Blender のコマ番号。カンマ区切り）")
     ap.add_argument("--cut-settle", type=float, default=None, help="切り替えのコマで落ち着かせる秒数（既定は --settle と同じ）")
     ap.add_argument("--joined-frames", default="", help="切り替えのコマを読んだ、組んだ動きのコマの範囲（a:b。シーンの範囲と同じかを確かめる）")
+    ap.add_argument("--carry", default="", help="揺れものの節を --carry-bone の動きで運ぶ区間（a:b。b を含む。カンマ区切り）")
+    ap.add_argument("--carry-bone", default="", help="運ぶ骨（既定は VRM の人型の hips の骨）")
+    ap.add_argument("--carry-skip", default="", help="運ばない揺れもの（名前に含まれる文字。カンマ区切り）")
     return ap.parse_args(argv)
+
+
+def carry_frames(text):
+    """--carry の「300:308,410:412」を、運ぶコマ（両端を含む）の小さい順の並びにする。おかしければ ValueError。"""
+    frames = set()
+    for part in (part.strip() for part in text.split(",")):
+        if not part:
+            continue
+        bounds = part.split(":")
+        if len(bounds) != 2 or not all(bound.strip().lstrip("-").isdigit() for bound in bounds):
+            raise ValueError(f"--carry は a:b（コマの番号。b を含む）のカンマ区切りにしてください: {text!r}")
+        first, last = (int(bound) for bound in bounds)
+        if first > last:
+            raise ValueError(f"--carry の区間は a ≤ b にしてください: {part!r}")
+        frames.update(range(first, last + 1))
+    return sorted(frames)
+
+
+def check_carry(frames, first, last):
+    """運ぶコマが、シーンのコマの範囲の中にあるか。"""
+    outside = [frame for frame in frames if not first <= frame <= last]
+    if outside:
+        raise ValueError(f"運ぶコマ {outside[:4]}{'…' if len(outside) > 4 else ''} が、シーンのコマの範囲（{first}〜{last}）の外にあります")
+    return frames
+
+
+def humanoid_bone(armature, role):
+    """VRM Add-on の人型の骨の割り当て（VRM 1.0）で、役割 role（hips など）に割り当てた骨の名前。無ければ ""。"""
+    extension = getattr(armature.data, "vrm_addon_extension", None)
+    human_bones = getattr(getattr(getattr(extension, "vrm1", None), "humanoid", None), "human_bones", None)
+    node = getattr(getattr(human_bones, role, None), "node", None)
+    return getattr(node, "bone_name", "") or ""
 
 
 def cut_list(text):
@@ -168,6 +208,7 @@ def fcurve_bags(action):
 
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
+    from mathutils import Vector
 
     if argv is None:
         argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
@@ -179,8 +220,11 @@ def main(argv=None):
         raise SystemExit(f"--cut-settle は 0 以上にしてください: {cut_settle}")
     try:
         cuts = cut_list(a.cuts)
+        carried_frames = carry_frames(a.carry)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    if (a.carry_bone or a.carry_skip) and not carried_frames:
+        raise SystemExit("--carry-bone・--carry-skip は --carry（運ぶ区間）と一緒に使ってください")
     overrides = {}
     if a.overrides:
         with open(a.overrides, encoding="utf-8") as stream:
@@ -203,8 +247,16 @@ def main(argv=None):
     scene = use_scene_of(bpy, armature)
     try:
         check_cuts(cuts, scene.frame_start, scene.frame_end, a.joined_frames)
+        check_carry(carried_frames, scene.frame_start, scene.frame_end)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    carry_bone = ""
+    if carried_frames:
+        carry_bone = a.carry_bone or humanoid_bone(armature, "hips")
+        if not carry_bone:
+            raise SystemExit("運ぶ骨が決まりません（VRM の人型の hips の割り当てがありません。--carry-bone で選んでください）")
+        if carry_bone not in armature.pose.bones:
+            raise SystemExit(f"運ぶ骨がありません: {carry_bone}")
     action = armature.animation_data.action if armature.animation_data else None
     if action is None:
         raise SystemExit(f"{armature.name} に動き（アクション）がありません")
@@ -271,6 +323,10 @@ def main(argv=None):
     if unused:
         raise SystemExit(f"--no-spring の {unused} を名前に含む揺れものがありません（あるもの: {names}）")
     joints = [armature.pose.bones[name] for name in joint_names]
+    carry_skip = keys_of(a.carry_skip)
+    unused = [key for key in carry_skip if not any(key in item.vrm_name for item in spring.springs)]
+    if unused:
+        raise SystemExit(f"--carry-skip の {unused} を名前に含む揺れものがありません（あるもの: {names}）")
 
     # 動きの側の揺れものの骨のキーを消す（残すと、コマを進めるたびに計算の結果が打ち消される）
     removed_curves = 0
@@ -314,13 +370,40 @@ def main(argv=None):
         for _ in range(int(round(cut_settle / step))):
             handler.update_pose_bone_rotations(bpy.context, step)
 
+    carry_set, carried = set(carried_frames), []
+
+    def carrier_matrix():
+        """運ぶ骨の世界の行列（今のコマ）。"""
+        return (armature.matrix_world @ armature.pose.bones[carry_bone].matrix).copy()
+
+    def carry(move):
+        """揺れものの節が覚えている位置（今と 1 つ前。世界の座標）を、move（運ぶ骨の、前のコマからこのコマへの動き）で写す。
+        揺れものから見ると、運ぶ骨は止まっていたことになる。当たりの形や硬さの計算はそのまま。"""
+        for item in spring.springs:
+            if any(key in item.vrm_name for key in carry_skip):
+                continue
+            for joint in item.joints:
+                state = joint.animation_state
+                if state.initialized_as_tail:
+                    state.previous_world_translation = list(move @ Vector(state.previous_world_translation))
+                    state.current_world_translation = list(move @ Vector(state.current_world_translation))
+
+    carrier_before = carrier_matrix() if carry_set else None
     steps_done, base_frame, total_steps = 0, first, 0
     for frame in range(first, last + 1):
         if frame in cuts:                                 # 新しい本が始まるコマ: 落ち着かせ直し、刻みはここから数え直す
             settle_again(frame)
             steps_done, base_frame = 0, frame
+            if carry_set:
+                carrier_before = carrier_matrix()
         else:
             scene.frame_set(frame)
+            if carry_set:                                 # 運ぶ区間: 運ぶ骨の前のコマからの動きで、節の位置を写してから進める
+                carrier_now = carrier_matrix()
+                if frame in carry_set:
+                    carry(carrier_now @ carrier_before.inverted())
+                    carried.append(frame)
+                carrier_before = carrier_now
             goal = target_steps(frame, base_frame, fps, step)
             while steps_done < goal:
                 handler.update_pose_bone_rotations(bpy.context, step)
@@ -343,7 +426,9 @@ def main(argv=None):
               "action": action.name, "frames": [first, last], "fps": fps, "rate": a.rate, "settle_s": a.settle,
               "springs": names, "joints": len(joints), "still_joints": len(still_names), "steps": total_steps,
               "removed_curves": removed_curves, "overridden": overridden, "cuts": cuts,
-              "cut_settle_s": cut_settle if cuts else None, "bake_seconds": round(time.time() - started, 1)}
+              "cut_settle_s": cut_settle if cuts else None,
+              "carried_frames": [carried[0], carried[-1], len(carried)] if carried else [], "carry_bone": carry_bone or None,
+              "carry_skip": carry_skip, "bake_seconds": round(time.time() - started, 1)}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)

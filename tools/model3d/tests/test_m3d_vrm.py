@@ -279,6 +279,28 @@ def test_cut_frames_are_read_and_must_lie_after_the_first_frame():
             vrm_bake_springs.check_cuts(cuts, 1, 240)
     args = vrm_bake_springs.parse_args(["--blend", "b", "--out-blend", "o", "--report", "r"])
     assert args.cuts == "" and args.cut_settle is None                     # 既定は切り替えなし（今までと同じ）
+    assert args.carry == "" and args.carry_bone == "" and args.carry_skip == ""   # 既定は運ばない（今までと同じ）
+
+
+def test_carry_spans_are_read_and_must_lie_in_the_scene():
+    assert vrm_bake_springs.carry_frames("") == []
+    assert vrm_bake_springs.carry_frames("100:103, 200:200") == [100, 101, 102, 103, 200]
+    assert vrm_bake_springs.carry_frames("5:7,6:8") == [5, 6, 7, 8]                # 重なる区間はまとめる
+    for bad, message in (("100", "a:b"), ("1:2:3", "a:b"), ("a:3", "a:b"), ("9:3", "a ≤ b")):
+        with pytest.raises(ValueError, match=message):
+            vrm_bake_springs.carry_frames(bad)
+    assert vrm_bake_springs.check_carry([1, 2, 240], 1, 240) == [1, 2, 240]
+    with pytest.raises(ValueError, match="範囲.*外"):
+        vrm_bake_springs.check_carry([239, 240, 241], 1, 240)
+
+
+def test_humanoid_bone_reads_the_vrm_assignment():
+    from types import SimpleNamespace as N
+    bones = N(hips=N(node=N(bone_name="J_Bip_C_Hips")), spine=N(node=N(bone_name="")))
+    rig = N(data=N(vrm_addon_extension=N(vrm1=N(humanoid=N(human_bones=bones)))))
+    assert vrm_bake_springs.humanoid_bone(rig, "hips") == "J_Bip_C_Hips"
+    assert vrm_bake_springs.humanoid_bone(rig, "spine") == "" and vrm_bake_springs.humanoid_bone(rig, "chest") == ""
+    assert vrm_bake_springs.humanoid_bone(N(data=N()), "hips") == ""          # VRM の設定の無いアーマチュア
 
 
 # 代役の Blender: 台本の名前で出力を書き分け、受け取った argv を報告に残す
@@ -376,6 +398,26 @@ def test_bake_springs_takes_the_cut_frames_from_the_parameters_or_the_join_repor
     assert tail[tail.index("--cuts") + 1] == "31,61" and tail[tail.index("--cut-settle") + 1] == "0.5"
     assert tail[tail.index("--joined-frames") + 1] == "1:72"                   # 台本が、焼く .blend のシーンの範囲と同じかを確かめる
     assert tail[tail.index("--settle") + 1] == "2.0"
+    assert "--carry" not in tail and "--carry-bone" not in tail and "--carry-skip" not in tail
+
+
+def test_bake_springs_passes_the_carry_spans_to_blender(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN_MOTION))
+    recipe = _motion_recipe(tmp_path, {"blender": blender},
+                            {"blender": blender, "carry": [[100, 104], [200, 200]], "carry_skip": ["front_l", "front_r"]})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    tail = json.loads(Path(result["steps"]["springs"]["artifacts"]["report"]).read_text(encoding="utf-8"))["argv"]
+    tail = tail[tail.index("--") + 1:]
+    assert tail[tail.index("--carry") + 1] == "100:104,200:200" and tail[tail.index("--carry-skip") + 1] == "front_l,front_r"
+    assert "--carry-bone" not in tail and "--cuts" not in tail                  # 運ぶ骨の既定は台本が人型の hips から決める
+    recipe = _motion_recipe(tmp_path, {"blender": blender}, {"blender": blender, "carry": [[3, 9]], "carry_bone": "pelvis"})
+    tail = json.loads(Path(executor.run_recipe(recipe, tmp_path / "runs")["steps"]["springs"]["artifacts"]["report"])
+                      .read_text(encoding="utf-8"))["argv"]
+    tail = tail[tail.index("--") + 1:]
+    assert tail[tail.index("--carry") + 1] == "3:9" and tail[tail.index("--carry-bone") + 1] == "pelvis"
+    assert "--carry-skip" not in tail
 
 
 @pytest.mark.parametrize("parameters, joined, message", [
@@ -390,6 +432,14 @@ def test_bake_springs_takes_the_cut_frames_from_the_parameters_or_the_join_repor
     ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": ["31"], "frames": [1, 72]}, "joined の cuts"),
     ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": [31]}, "joined の frames"),
     ({}, {"schema_version": "model3d-motion-join/0.1", "cuts": [31], "frames": [72, 1]}, "joined の frames"),
+    ({"carry": [100, 104]}, None, "運ぶ区間"),
+    ({"carry": [[104, 100]]}, None, "最初 ≤ 最後"),
+    ({"carry": [[0, 3]]}, None, "1 以上"),
+    ({"carry": "100:104"}, None, "運ぶ区間"),
+    ({"carry": [[1, 3]], "carry_bone": 3}, None, "carry_bone"),
+    ({"carry": [[1, 3]], "carry_skip": "front"}, None, "carry_skip"),
+    ({"carry_bone": "hips"}, None, "carry（運ぶ区間）と一緒"),
+    ({"carry_skip": ["front"]}, None, "carry（運ぶ区間）と一緒"),
 ])
 def test_bake_springs_rejects_bad_cut_settings(tmp_path, parameters, joined, message):
     from model3d.ops import get
