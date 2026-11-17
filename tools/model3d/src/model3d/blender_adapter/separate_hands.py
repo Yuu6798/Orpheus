@@ -118,6 +118,21 @@ def gaussian(sigma):
     return kernel / kernel.sum(), radius
 
 
+def wrist_acceleration(w, fps, frames, cuts):
+    """手首の加速度（m/s²）の要約: 99% 点・最大・最大のコマ。w は手首の位置 (コマ, 3)。切り替えのコマ（範囲の中のもの）の前後 3 コマは 0 にする
+    （つなぎ目の跳びを数えない。台本と同じ）。コマが 3 つ未満なら 2 階の差が取れないので None（測れない）。"""
+    if len(w) < 3:
+        return None
+    values = np.linalg.norm(np.diff(w, 2, axis=0), axis=1) * fps * fps
+    for c in cuts:
+        if not frames[0] < c <= frames[-1]:
+            continue
+        k = c - frames[0] - 1
+        values[max(0, k - 3):k + 3] = 0
+    return {"p99": round(float(np.percentile(values, 99)), 1), "max": round(float(values.max()), 1),
+            "max_at_frame": frames[int(np.argmax(values)) + 1]}
+
+
 class Separator:
     """腕どうしの重なりの測り方と直し方（Blender なしで計算できる所）。pos は {(骨, "head"|"tail") か ("forearm", 側, t): (コマ, 3)}。"""
 
@@ -597,12 +612,7 @@ def main(argv=None):
     for side in names.sides:                             # 手首の加速度（m/s²）。直す前と後。切り替えの前後 3 コマは除く
         row = {}
         for label, w in (("before", start_wrist[side]), ("after", pos[(names.hand(side), "head")])):
-            values = np.linalg.norm(np.diff(w, 2, axis=0), axis=1) * fps * fps
-            for c in s["cuts"]:
-                k = c - frames[0] - 1
-                values[max(0, k - 3):k + 3] = 0
-            row[label] = {"p99": round(float(np.percentile(values, 99)), 1), "max": round(float(values.max()), 1),
-                          "max_at_frame": frames[int(np.argmax(values)) + 1]}
+            row[label] = wrist_acceleration(w, fps, frames, s["cuts"])
         acc[side] = row
     report["wrist_acceleration"] = acc
     for obj, state in hidden:

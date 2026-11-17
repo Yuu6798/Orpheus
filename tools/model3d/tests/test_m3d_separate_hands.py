@@ -128,6 +128,16 @@ def test_detour_finds_a_way_past_a_short_crossing():
     assert plan.measure(planned)[0][8:12].max() <= plan.s["gap"] + 1e-9
 
 
+def test_wrist_acceleration_skips_short_clips_and_cuts_outside_the_range():
+    assert sh.wrist_acceleration(np.zeros((2, 3)), 30.0, [1, 2], []) is None          # 2 コマでは 2 階の差が取れない（止めない）
+    w = np.zeros((20, 3))
+    w[10, 0] = 0.01                                                                   # 11 コマ目だけ 1 cm 跳ぶ
+    plain = sh.wrist_acceleration(w, 30.0, list(range(1, 21)), [])
+    assert plain["max"] == round(0.02 * 900, 1) and plain["max_at_frame"] == 11
+    assert sh.wrist_acceleration(w, 30.0, list(range(1, 21)), [12])["max"] == 0.0     # 切り替えの前後 3 コマは数えない
+    assert sh.wrist_acceleration(w, 30.0, list(range(1, 21)), [-5, 40]) == plain       # 範囲の外の切り替えは何もしない
+
+
 def test_detour_runs_are_split_at_cuts():
     # 切り替えのコマ（11）をまたいで手が通り抜ける区間は、切り替えの前と後で別の区間として手当てする（後ろを捨てない）
     plan = separator(bones={**BONES, "fingers": ["thumb", "index"], "parts": ["proximal"]}, detour_max=0.2, threshold=0.003, cuts=[11])
