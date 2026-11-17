@@ -89,6 +89,23 @@ def test_the_inside_of_the_mouth_is_painted_and_the_face_is_not():
     assert report["painted_pixels"] == int((painted != 200).any(axis=2).sum())
     custom, _ = mouth.paint_inside(co, edges, tris, tri_loops, uv, image, {**SETTINGS, "inside_color": [10, 0, 0], "grow": 0})
     assert custom[pixel(pocket, 0.5, 0.5)].tolist() == [10, 0, 0]
+    assert report["uv_outside_triangles"] == 0 and report["alpha_raised_pixels"] == 0
+
+
+def _tongue_uv_shifted():
+    """舌の 2 つの三角形（最後の 2 つ）の uv を、絵の外（u + 1）へずらしたもの。"""
+    co, edges, tris, tri_loops, uv, boxes = synthetic_mouth()
+    shifted = uv.copy()
+    shifted[tri_loops[-2:].ravel(), 0] += 1.0
+    return co, edges, tris, tri_loops, shifted, boxes
+
+
+def test_uv_outside_the_picture_is_not_painted_and_is_counted():
+    co, edges, tris, tri_loops, uv, boxes = _tongue_uv_shifted()
+    image = np.full((SIZE, SIZE, 3), 200, dtype=np.uint8)
+    painted, report = mouth.paint_inside(co, edges, tris, tri_loops, uv, image, SETTINGS)
+    assert report["tongue_triangles"] == 2 and report["uv_outside_triangles"] == 2
+    assert painted[pixel(boxes[3], 0.5, 0.5)].tolist() == [200, 200, 200]               # 絵の外の所は塗らない（繰り返しの uv は確かめる）
 
 
 # ---------- 工程 ----------
@@ -110,9 +127,12 @@ def test_mouth_inside_operation_writes_a_png_and_keeps_alpha(tmp_path):
     assert result["status"] == "succeeded", result
     step = result["steps"]["mouth"]
     painted = np.asarray(Image.open(step["artifacts"]["texture"]))
-    assert painted.shape == (SIZE, SIZE, 4) and (painted[..., 3] == 128).all()            # 透けはそのまま
+    changed = (painted[..., :3] != 200).any(axis=2)
+    assert painted.shape == (SIZE, SIZE, 4) and changed.any()
+    assert (painted[~changed, 3] == 128).all() and (painted[changed, 3] == 255).all()     # 透けは残し、塗った画素だけ不透明に
     report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
     assert report["alpha_kept"] is True and report["painted_pixels"] > 0 and report["schema_version"] == "model3d-mouth-inside/0.1"
+    assert report["alpha_raised_pixels"] == int(changed.sum()) and step["unresolved"] == []
     assert executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")["steps"]["mouth"].get("reused_from")   # 同じ入力なら再利用
 
 
@@ -159,3 +179,21 @@ def test_mouth_inside_needs_uv_and_triangle_corners(tmp_path):
     np.savez(tmp_path / "short_uv.npz", co=co, edges=edges, tris=tris, tri_loops=tri_loops, uv=uv[:5])
     with pytest.raises(ToolError, match="面の角"):
         run({"mesh": tmp_path / "short_uv.npz", "texture": tmp_path / "head.png"}, SETTINGS, outputs, Context())
+
+
+def test_mouth_inside_refuses_16_bit_textures_and_flags_uv_outside(tmp_path):
+    from model3d.ops import get
+
+    class Context:
+        tools, step_dir, recipe_dir = {}, tmp_path, tmp_path
+
+    run = get("texture.mouth_inside").function
+    outputs = {"texture": tmp_path / "m.png", "report": tmp_path / "r.json"}
+    _write_inputs(tmp_path)
+    Image.fromarray(np.full((SIZE, SIZE), 50000, dtype=np.uint16)).save(tmp_path / "gray16.png")
+    with pytest.raises(ToolError, match="8 ビット"):                                       # 色に変えると 255 で切られて白くなる
+        run({"mesh": tmp_path / "head_mesh.npz", "texture": tmp_path / "gray16.png"}, SETTINGS, outputs, Context())
+    co, edges, tris, tri_loops, uv, _ = _tongue_uv_shifted()
+    np.savez(tmp_path / "shifted.npz", co=co, edges=edges, tris=tris, tri_loops=tri_loops, uv=uv)
+    result = run({"mesh": tmp_path / "shifted.npz", "texture": tmp_path / "head.png"}, SETTINGS, outputs, Context())
+    assert result.review and "0〜1 の外" in result.unresolved[0]                             # 塗った画素はあるが、要確認

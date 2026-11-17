@@ -519,6 +519,8 @@ def mouth_inside(inputs, parameters, outputs, context):
     arrays = _head_arrays(inputs["mesh"], ("co", "edges", "tris", "tri_loops", "uv"))
     try:
         with Image.open(inputs["texture"]) as im:
+            if im.mode.startswith("I") or im.mode == "F":    # 16 ビットの灰色・整数・浮動小数の絵は、8 ビットの色に変えると値が切られる
+                raise ToolError(f"色の絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は、色に変えると 255 で切られて白くなる）")
             keep = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
             image = np.asarray(im.convert("RGBA" if keep else "RGB")).copy()
     except OSError as error:
@@ -532,6 +534,9 @@ def mouth_inside(inputs, parameters, outputs, context):
               "alpha_kept": image.shape[2] == 4, "settings": settings}
     atomic_json(outputs["report"], report)
     unresolved = [] if report["painted_pixels"] else ["塗った画素がありません（口のまわりの箱と部品の見つけ方を確かめてください）"]
+    if report["uv_outside_triangles"]:
+        unresolved.append(f"uv が 0〜1 の外にかかる口の中の三角形が {report['uv_outside_triangles']} 個あります（外の所は塗っていません。"
+                          "絵を繰り返して使う uv なら、塗れていない所を確かめてください）")
     return StepResult(observations=[{key: report[key] for key in ("pocket_triangles", "part_triangles", "tongue_triangles", "painted_pixels",
                                                                   "pixels_shared_with_visible_faces_left_untouched")}],
                       unresolved=unresolved, review=bool(unresolved))

@@ -79,7 +79,8 @@ def hidden_vertices(head, settings):
 
 def paint_inside(co, edges, tris, tri_loops, uv, image, settings):
     """色の絵 image（uint8 の (H, W, 3) か (H, W, 4)）の、口の中の面と部品が使う所だけを塗った絵と報告。外から見える面が使う画素には触らない。
-    口の中の面は、肌（いちばん大きい島）の三角形のうち 3 頂点とも正面から見えないもの（唇のふちをまたぐ面は塗らない）。"""
+    口の中の面は、肌（いちばん大きい島）の三角形のうち 3 頂点とも正面から見えないもの（唇のふちをまたぐ面は塗らない）。
+    透けのある絵は、塗る画素だけ不透明にする（透けたままだと塗った色が見えない）。uv が 0〜1 の外の所は絵の外として塗らない（数を報告する）。"""
     settings = merged(settings)
     head = Head(co, edges, tris)
     height, width = image.shape[:2]
@@ -98,8 +99,16 @@ def paint_inside(co, edges, tris, tri_loops, uv, image, settings):
     out = image.copy()
     out[paint, :3] = settings["inside_color"]
     out[paint_tongue, :3] = settings["tongue_color"]
+    raised = 0
+    if out.shape[2] == 4:                                # 透けのある絵は、塗る画素を不透明にする
+        painted = paint | paint_tongue
+        raised = int((painted & (out[..., 3] < 255)).sum())
+        out[painted, 3] = 255
+    corners = uv[tri_loops[pocket | inner | tongue]]     # 塗る三角形の角の uv
+    outside = int(((corners < 0) | (corners > 1)).any(axis=(1, 2)).sum())
     report = {"pocket_triangles": int(pocket.sum()), "part_triangles": int(inner.sum()), "tongue_triangles": int(tongue.sum()),
               "parts": [int((head.island_of == k).sum()) for k in parts], "tongue_parts": [int((head.island_of == k).sum()) for k in tongue_parts],
               "painted_pixels": int(paint.sum() + paint_tongue.sum()), "pixels_shared_with_visible_faces_left_untouched": overlap,
+              "alpha_raised_pixels": raised, "uv_outside_triangles": outside,
               "inside_color": list(settings["inside_color"]), "tongue_color": list(settings["tongue_color"])}
     return out, report
