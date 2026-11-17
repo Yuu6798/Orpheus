@@ -922,6 +922,58 @@ def contact_sheets(report, folder, columns=6, rows=5, cell=300):
     return sheets
 
 
+# ---------------------------------------------------------------- わざと入れた破綻との照らし合わせ（検-7）
+def expected_faults(expected):
+    """わざと入れた破綻の一覧（motion.inject_faults の expected。{"faults": [{name, frames: [最初, 最後], signals: [...], part: [...]}]}）を
+    確かめて、faults の並びを返す。"""
+    faults = expected.get("faults") if isinstance(expected, dict) else None
+    if not isinstance(faults, list) or not faults:
+        raise SettingsError("expected は {\"faults\": [...]} の形にしてください（入れた破綻の並び）")
+    for k, fault in enumerate(faults):
+        frames = fault.get("frames") if isinstance(fault, dict) else None
+        if (not isinstance(fault, dict) or not isinstance(fault.get("name"), str) or not isinstance(frames, list) or len(frames) != 2
+                or not all(isinstance(v, int) and not isinstance(v, bool) for v in frames) or frames[0] > frames[1]
+                or not isinstance(fault.get("signals"), list) or not fault["signals"] or not all(s in LABEL for s in fault["signals"])
+                or not isinstance(fault.get("part", []), list) or not all(isinstance(p, str) for p in fault.get("part", []))):
+            raise SettingsError(f"expected の faults[{k}] は name・frames（[最初, 最後]）・signals（信号の名前）・part（場所の言葉）にしてください: "
+                                f"{fault!r}")
+    return faults
+
+
+def match_expected(events, faults):
+    """入れた破綻ごとに、見つけた出来事を照らし合わせる（試作と同じ決め方）: 信号が signals のどれかで、コマが前後 1 コマの余裕で重なり、
+    場所の言葉に part のどれかを含む出来事。返す: {faults: [{name, frames, signals, found: [出来事の id]}], found, total, others: [id]}。"""
+    rows, used, found = [], set(), 0
+    for fault in faults:
+        match = [e for e in events if e["signal"] in fault["signals"] and e["frames"][0] <= fault["frames"][1] + 1
+                 and e["frames"][1] >= fault["frames"][0] - 1 and (not fault.get("part") or any(k in e["part"] for k in fault["part"]))]
+        used.update(e["id"] for e in match)
+        found += bool(match)
+        rows.append({"name": fault["name"], "frames": list(fault["frames"]), "signals": list(fault["signals"]),
+                     "part": list(fault.get("part", [])), "found": [e["id"] for e in match]})
+    return {"faults": rows, "found": found, "total": len(rows), "others": [e["id"] for e in events if e["id"] not in used]}
+
+
+def expected_markdown(report):
+    """わざと入れた破綻と、見つけた出来事の照らし合わせの表（Markdown。試作の表と同じ形）。"""
+    events = {e["id"]: e for e in report["events"]}
+    matched = report["expected"]
+    out = ["# わざと入れた破綻と、見つけた出来事の照らし合わせ", "", "| 入れた破綻 | 入れたコマ | 期待する種類 | 見つけたか | 見つけた出来事 |",
+           "|---|---|---|---|---|"]
+    for row in matched["faults"]:
+        found = [events[i] for i in row["found"]]
+        out.append("| %s | %d〜%d | %s | %s | %s |" % (
+            row["name"], row["frames"][0], row["frames"][1], "・".join(row["signals"]), "見つけた" if found else "**見落とし**",
+            "、".join("#%d %s %s %.1f%s（%d〜%d）" % (e["id"], e["title"], e["part"], e["peak_value"], e["unit"], *e["frames"]) for e in found)
+            or "—"))
+    rest = [events[i] for i in matched["others"]]
+    out += ["", "入れた %d 件のうち、見つけたのは %d 件。" % (matched["total"], matched["found"]), "",
+            "## 入れていない所で挙がった出来事（%d 件）" % len(rest), ""]
+    out += ["- #%d %.2f 秒（コマ %d〜%d） %s／%s %.1f%s" % (e["id"], e["seconds"][0], e["frames"][0], e["frames"][1], e["title"], e["part"],
+                                                    e["peak_value"], e["unit"]) for e in rest]
+    return "\n".join(out) + "\n"
+
+
 def check(sample, cfg, skip_bones=(), foot_lowest="world"):
     """全コマを調べて報告（model3d-animation-check/0.1 の中身）を返す。"""
     if foot_lowest not in FOOT_LOWEST:

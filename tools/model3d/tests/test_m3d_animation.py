@@ -12,6 +12,7 @@ from m3d_helpers import stand_in_executable
 from model3d import animation_check as ac
 from model3d.blender_adapter import animation_evidence as evidence
 from model3d.blender_adapter import animation_sample as sampler
+from model3d.blender_adapter import fault_inject
 from model3d.io import atomic_json
 
 FPS = 30
@@ -606,6 +607,76 @@ def test_evidence_camera_and_shots():
     assert place.v[2] == pytest.approx(evidence.CAMERA_LOWEST_M)
 
 
+EXPECTED = {"faults": [
+    {"name": "左手首を 95° 曲げる", "frames": [6, 16], "signals": ["joint.wrist_bend"], "part": ["左"]},
+    {"name": "垂らした左腕を体の中へ振る", "frames": [20, 34], "signals": ["penetration.arm_body"], "part": ["左"]},
+    {"name": "右手を 1 コマだけ 120° ねじる", "frames": [40, 40], "signals": ["motion.pop"], "part": ["右の手"]},
+    {"name": "腰を 5 cm 下げる", "frames": [50, 56], "signals": ["penetration.floor"], "part": ["足"]},
+    {"name": "頭を 1 コマおきに ±5° 揺らす", "frames": [62, 75], "signals": ["motion.jitter"], "part": ["頭"]},
+    {"name": "左脚を内へ振って右脚に重ねる", "frames": [82, 94], "signals": ["penetration.leg_leg"], "part": ["左"]},
+    {"name": "左の前腕を 1 コマだけ 40° 振る", "frames": [100, 100], "signals": ["motion.position_pop", "motion.pop"], "part": ["左"]},
+    {"name": "入れていない破綻", "frames": [110, 112], "signals": ["joint.neck"], "part": []}]}
+
+
+def test_expected_faults_are_matched_with_events():
+    report = ac.check(make_sample(_faulty), ac.settings({}))
+    matched = ac.match_expected(report["events"], ac.expected_faults(EXPECTED))
+    assert matched["total"] == 8 and matched["found"] == 7
+    assert [bool(row["found"]) for row in matched["faults"]] == [True] * 7 + [False]
+    ids = {i for row in matched["faults"] for i in row["found"]}
+    assert sorted(ids | set(matched["others"])) == [e["id"] for e in report["events"]] and not ids & set(matched["others"])
+    report["expected"] = matched
+    lines = ac.expected_markdown(report).splitlines()
+    assert lines[0] == "# わざと入れた破綻と、見つけた出来事の照らし合わせ" and lines[2].startswith("| 入れた破綻 | 入れたコマ |")
+    assert lines[4].startswith("| 左手首を 95° 曲げる | 6〜16 | joint.wrist_bend | 見つけた | #")
+    assert lines[11] == "| 入れていない破綻 | 110〜112 | joint.neck | **見落とし** | — |"
+    assert "入れた 8 件のうち、見つけたのは 7 件。" in lines and f"## 入れていない所で挙がった出来事（{len(matched['others'])} 件）" in lines
+    for bad in ({}, {"faults": []}, {"faults": [{"name": "x", "frames": [3, 1], "signals": ["joint.neck"]}]},
+                {"faults": [{"name": "x", "frames": [1, 3], "signals": ["joint.elbow"]}]},
+                {"faults": [{"name": "x", "frames": [1, 3], "signals": ["joint.neck"], "part": "左"}]}):
+        with pytest.raises(ac.SettingsError, match="expected"):
+            ac.expected_faults(bad)
+
+
+def test_fault_amounts():
+    assert fault_inject.envelope(5, 6, 16) == 0.0 and fault_inject.envelope(17, 6, 16) == 0.0
+    assert fault_inject.envelope(6, 6, 16) == pytest.approx((1 / 3) ** 2 * (3 - 2 / 3))     # 3 コマでなめらかに入る
+    assert fault_inject.envelope(8, 6, 16) == 1.0 and fault_inject.envelope(16, 6, 16) == fault_inject.envelope(6, 6, 16)
+    assert fault_inject.envelope(270, 270, 282, 6) == pytest.approx((1 / 6) ** 2 * (3 - 2 / 6))
+    ramp = {"frames": [6, 16]}
+    assert fault_inject.amount(ramp, 11) == 1.0 and fault_inject.amount({**ramp, "ramp": 6}, 7) < 1.0
+    assert fault_inject.amount({"frames": [160, 160], "shape": "constant"}, 160) == 1.0
+    assert [fault_inject.amount({"frames": [1, 4], "shape": "alternate"}, f) for f in (1, 2, 3, 4)] == [1.0, -1.0, 1.0, -1.0]
+    assert fault_inject.resolve_bones([{"role": "left_hand"}, {"bone": "hips"}], {"left_hand": "hand.L"}, {"hand.L", "hips"}) == ["hand.L", "hips"]
+    with pytest.raises(SystemExit, match="faults\\[0\\]"):
+        fault_inject.resolve_bones([{"role": "left_toes"}], {}, {"hips"})
+
+
+def test_fault_pins_keep_the_clean_motion_outside():
+    """区間の外は、元のキーの間を全部のコマで留める（間引いたキーの間の形を変えない）。元のキーが無ければ前後 1 コマ。シーンの外と、
+    同じ骨のほかの破綻の区間の中は留めない。"""
+    sparse = list(range(1, 355, 30))                                            # 1, 31, 61, 91, 121, …
+    assert fault_inject.pin_range(100, 110, sparse, 1, 354) == list(range(91, 100)) + list(range(111, 122))
+    assert fault_inject.pin_range(100, 110, [], 1, 354) == [99, 111]
+    assert fault_inject.pin_range(100, 110, list(range(1, 355)), 1, 354) == [99, 111]   # どのコマにもキー: 前後 1 コマ
+    assert fault_inject.pin_range(1, 3, list(range(1, 21)), 1, 20) == [4]
+    faults = [{"frames": [1, 3], "kind": "local"}, {"frames": [5, 6], "kind": "shift"}, {"frames": [7, 9], "kind": "world"},
+              {"frames": [20, 20], "kind": "local"}]
+    keys = {("hips", "rotation_quaternion"): list(range(1, 21)), ("hips", "location"): [1, 10]}
+    assert fault_inject.fault_pins(faults, ["hips", "hips", "hips", "head"], keys, 1, 20) == [
+        (0, "rotation_quaternion", 4), (1, "rotation_quaternion", 4), *[(1, "location", f) for f in (1, 2, 3, 4, 7, 8, 9, 10)],
+        (2, "rotation_quaternion", 10), (3, "rotation_quaternion", 19)]                 # 回りだけの破綻の区間の中でも、位置は留める
+    # 元はキーの無い位置: shift のすぐ後ろに回りだけの破綻があっても、位置は区間の後ろ 1 コマで留める
+    assert fault_inject.fault_pins([{"frames": [5, 6], "kind": "shift"}, {"frames": [7, 9], "kind": "local"}], ["hips", "hips"],
+                                   {("hips", "rotation_quaternion"): list(range(1, 21))}, 1, 20) == [
+        (0, "rotation_quaternion", 4), (0, "location", 4), (0, "location", 7), (1, "rotation_quaternion", 10)]
+    assert fault_inject.keyed_props({"kind": "shift"}) == ("rotation_quaternion", "location")
+    assert fault_inject.fault_pins([{"frames": [1000, 1010], "kind": "local"}], ["head"], {("head", "rotation_quaternion"): list(range(1, 355))},
+                                   1, 354) == []                                  # シーンに重ならない破綻は留めない
+    # シーンの範囲の外に置いた破綻だけの骨は、元に戻す骨にしない（読んだコマが無い）
+    assert fault_inject.first_frames({"hips": {12, 9, 30}, "head": set()}) == {"hips": 9}
+
+
 # ---------------------------------------------------------------- 測る所（Blender の中の台本の小さな関数）
 def test_sampler_helpers():
     names = {0: "hips", 1: "skirt_01", 2: "head"}
@@ -760,6 +831,13 @@ def value(flag):
     return args[args.index(flag) + 1]
 settings = json.load(open(value("--settings"), encoding="utf-8"))
 script = sys.argv[sys.argv.index("--python") + 1]
+if script.endswith("fault_inject.py"):                           # わざと入れる破綻: 入力を写し、入れたコマを報告に書く
+    shutil.copyfile(value("--blend"), value("--out"))
+    faults = [{"name": f["name"], "bone": f.get("bone") or "hand.L",
+               "keyed_frames": [k for k in range(f["frames"][0], f["frames"][1] + 1) if k <= 120]} for f in settings["faults"]]
+    json.dump({"blender": "5.2.4", "armature": "Rig", "faults": faults, "x_settings": settings},
+              open(value("--report"), "w", encoding="utf-8"))
+    sys.exit(0)
 if script.endswith("animation_evidence.py"):                     # 証拠の絵: 出来事ごとに、描くコマの絵を書く
     import os
     from PIL import Image
@@ -875,6 +953,73 @@ def test_check_animation_draws_evidence_and_writes_the_table(tmp_path):
     for outputs, message in (({"table": "report.txt"}, ".md"), ({"sheet": "events.png"}, ".jpg")):
         failed = executor.run_recipe(_recipe(tmp_path, {"blender": blender}, outputs=outputs), tmp_path / "runs")
         assert failed["status"] == "failed" and message in failed["steps"]["check"]["error"]
+
+
+FAULTS = [{"name": "左手首を曲げる", "role": "left_hand", "frames": [6, 16], "kind": "local", "axis": [1, 0, 0], "degrees": 95,
+           "expect": {"signals": ["joint.wrist_bend"], "part": ["左"]}},
+          {"name": "腰を下げる", "bone": "hips", "frames": [130, 135], "kind": "shift", "delta": [0, 0, -0.05], "ramp": 2,
+           "expect": {"signals": ["penetration.floor"], "part": ["足"]}}]
+
+
+def _inject_recipe(tmp_path, parameters):
+    (tmp_path / "clean.blend").write_bytes(b"blend")
+    step = {"id": "inject", "operation": "motion.inject_faults", "inputs": {"blend": "$inputs.clean"}, "parameters": parameters,
+            "outputs": {"blend": "faulty.blend", "expected": "expected.json", "report": "inject.json"}}
+    atomic_json(tmp_path / "inject.json", {"schema_version": "model3d-recipe/0.1", "name": "inject",
+                                           "inputs": {"clean": {"path": "clean.blend"}}, "steps": [step]})
+    return tmp_path / "inject.json"
+
+
+def test_inject_faults_writes_the_blend_and_the_expected_list(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    result = executor.run_recipe(_inject_recipe(tmp_path, {"blender": blender, "faults": FAULTS}), tmp_path / "runs")
+    assert result["status"] == "needs_review", result                      # 2 つ目はシーンのコマの外で入らない（代役は 120 コマまで）
+    artifacts = result["steps"]["inject"]["artifacts"]
+    expected = json.loads(Path(artifacts["expected"]).read_text(encoding="utf-8"))
+    assert expected["source"].endswith("clean.blend")
+    assert expected["faults"] == [{"name": "左手首を曲げる", "frames": [6, 16], "signals": ["joint.wrist_bend"], "part": ["左"]},
+                                  {"name": "腰を下げる", "frames": [130, 135], "signals": ["penetration.floor"], "part": ["足"]}]
+    report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))
+    assert report["blender_version"] == "5.2.4" and "expect" not in report["x_settings"]["faults"][0]
+    assert report["x_settings"]["faults"][0]["role"] == "left_hand" and Path(artifacts["blend"]).read_bytes() == b"blend"
+    result = executor.run_recipe(_inject_recipe(tmp_path, {"blender": blender, "faults": FAULTS[:1]}), tmp_path / "runs")
+    assert result["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"kind": "twist"}, "kind"), ({"bone": "hand.L"}, "どちらか 1 つ"), ({"frames": [16, 6]}, "frames"), ({"axis": "X"}, "local の axis"),
+    ({"kind": "world", "axis": [1, 0, 0]}, "world の axis"), ({"degrees": None}, "degrees"), ({"shape": "wave"}, "shape"), ({"ramp": 0}, "ramp"),
+    ({"expect": {"signals": ["joint.elbow"]}}, "expect"), ({"name": ""}, "name"), ({"spin": 1}, "知らない鍵"),
+    ({"kind": "shift", "delta": [0, 0, 0.1]}, "shift は delta")])
+def test_inject_faults_refuses_bad_faults(tmp_path, change, message):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    fault = {key: value for key, value in {**FAULTS[0], **change}.items() if value is not None}
+    result = executor.run_recipe(_inject_recipe(tmp_path, {"blender": blender, "faults": [fault]}), tmp_path / "runs")
+    assert result["status"] == "failed" and message in result["steps"]["inject"]["error"]
+    twice = executor.run_recipe(_inject_recipe(tmp_path, {"blender": blender, "faults": [FAULTS[0], FAULTS[0]]}), tmp_path / "runs")
+    assert twice["status"] == "failed" and "重なっています" in twice["steps"]["inject"]["error"]
+
+
+def test_check_animation_matches_the_expected_faults(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    _write_sample(make_sample(_faulty), tmp_path)
+    atomic_json(tmp_path / "expected.json", EXPECTED)
+    recipe = _recipe(tmp_path, {"blender": blender}, outputs={"expected_table": "check.md"})
+    data = json.loads(recipe.read_text(encoding="utf-8"))
+    data["inputs"]["expected"] = {"path": "expected.json"}
+    data["steps"][0]["inputs"]["expected"] = "$inputs.expected"
+    atomic_json(recipe, data)
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    artifacts = result["steps"]["check"]["artifacts"]
+    report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))
+    assert report["expected"]["found"] == 7 and report["expected"]["total"] == 8
+    assert result["steps"]["check"]["observations"][0]["expected"] == {"found": 7, "total": 8}
+    assert Path(artifacts["expected_table"]).read_text(encoding="utf-8").startswith("# わざと入れた破綻と、見つけた出来事の照らし合わせ")
+    alone = executor.run_recipe(_recipe(tmp_path, {"blender": blender}, outputs={"expected_table": "check.md"}), tmp_path / "runs")
+    assert alone["status"] == "failed" and "expected" in alone["steps"]["check"]["error"]
 
 
 @pytest.mark.parametrize("parameters, message", [
