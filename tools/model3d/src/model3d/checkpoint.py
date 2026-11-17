@@ -673,3 +673,106 @@ def shorten_face(rgba, eye_y, chin_y, d, k, start=0.10, above_band="resample"):
     elif above_band != "resample":
         raise ToolError(f"above_band は {' か '.join(ABOVE_BAND)} にしてください: {above_band!r}")
     return out, {"band_y": [y0, chin_y], "k": k, "start": start, "shift_px": shift, "chin_y_after": y0 + Lk, "above_band": above_band}
+
+
+# ---------- 組み立ての絵（check.assembly） ----------
+
+ASSEMBLY_COLOURS = {"hair top": (255, 60, 60), "chin": (255, 60, 60), "nose": (255, 170, 0), "body top": (40, 120, 255),
+                    "head bottom": (0, 170, 90), "waist": (170, 60, 255), "floor": (90, 90, 90)}
+SHEET_FONT = 24                                   # 組み立ての絵の字の大きさ（画素。縮める前）
+ILLUSTRATION_BACKGROUND = (140, 140, 148, 255)    # 透けのある元絵を置く地の色
+ILLUSTRATION_MARKS = (("hair top", "top"), ("chin", "chin"), ("waist", "waist"), ("floor", "sole"))
+
+
+def _shrink(image, scale):
+    from PIL import Image
+    if scale == 1:
+        return image
+    return image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
+
+
+def _stack(strips, gap=8):
+    """横に並べた段を、幅を白でそろえて縦に重ねる。"""
+    width = max(strip.shape[1] for strip in strips)
+    parts = []
+    for k, strip in enumerate(strips):
+        if k:
+            parts.append(np.full((gap, width, 3), 255, np.uint8))
+        parts.append(np.pad(strip, ((0, 0), (0, width - strip.shape[1]), (0, 0)), constant_values=255))
+    return np.concatenate(parts)
+
+
+def landmark_lines(image, view, marks, font):
+    """描いた絵（PIL の RGB）に、目印の高さ（marks: 名前 → z）の横線と、名前と高さ（m）を描く。"""
+    from PIL import ImageDraw
+
+    from .blender_adapter.assembly_measure import view_row
+    draw = ImageDraw.Draw(image)
+    for k, (label, z) in enumerate(marks.items()):
+        y = view_row(view, z)
+        if 0 <= y < image.height:
+            colour = ASSEMBLY_COLOURS[label]
+            draw.line([(0, y), (image.width, y)], fill=colour, width=2)
+            text = "%s %.3f" % (label, z)
+            x = 6 if k % 2 == 0 else image.width - 6 - draw.textlength(text, font=font)
+            draw.text((x, y - 4 - SHEET_FONT), text, fill=colour, font=font)
+    return image
+
+
+def assembly_sheet(folder, views, rows, path, scale=0.5):
+    """組み立ての絵に目印の線を引いて段ごとに横に並べ、段を縦に重ねて scale 倍で書く。rows は [(見出し, 絵の名前の並び, 測った値)]、
+    views は絵の名前 → 描き方（file・centre・res・ppm）。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    from .blender_adapter.assembly_measure import landmarks
+    font = ImageFont.load_default(size=SHEET_FONT)
+    strips = []
+    for title, names, m in rows:
+        marks = landmarks(m)
+        panels = []
+        for name in names:
+            with Image.open(Path(folder) / views[name]["file"]) as im:
+                image = im.convert("RGB")
+            panels.append(np.asarray(landmark_lines(image, views[name], marks, font)))
+        strip = side_by_side(panels)
+        header = Image.new("RGB", (strip.shape[1], SHEET_FONT + 16), (255, 255, 255))
+        ImageDraw.Draw(header).text((8, 6), title, fill=(0, 0, 0), font=font)
+        strips.append(np.concatenate([np.asarray(header), strip]))
+    save_picture(_shrink(Image.fromarray(_stack(strips)), scale), path)
+
+
+def illustration_sheet(folder, views, illustration, rows, pairs, path, scale=0.5):
+    """元絵を、モデルの正面の絵の足の裏とくびれの行にそろうよう拡大・縮小して、モデルの左に並べた絵。illustration は PIL の絵、rows は
+    元絵の足の裏・くびれ・髪のてっぺん・あごの行（sole・waist・top・chin）、pairs は [(見出し, 正面の絵の名前, 測った値)]。元絵の側の
+    線は元絵の行、モデルの側の線は測った高さ。組ごとの元絵の倍率と上下のずれを返す。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    from .blender_adapter.assembly_measure import landmarks, view_row
+    font = ImageFont.load_default(size=SHEET_FONT)
+    ref = Image.alpha_composite(Image.new("RGBA", illustration.size, ILLUSTRATION_BACKGROUND), illustration.convert("RGBA")).convert("RGB")
+    panels, placed = [], []
+    for title, name, m in pairs:
+        view = views[name]
+        with Image.open(Path(folder) / view["file"]) as im:
+            model = im.convert("RGB")
+        y_sole, y_waist = view_row(view, m["body"]["floor_z"]), view_row(view, m["body"]["waist_z"])
+        s = (y_sole - y_waist) / (rows["sole"] - rows["waist"])
+        scaled = ref.resize((max(1, round(ref.width * s)), max(1, round(ref.height * s))), Image.Resampling.LANCZOS)
+        dy = round(y_sole - rows["sole"] * s)
+        width = model.width + scaled.width + 30
+        panel = Image.new("RGB", (width, model.height + 60), (255, 255, 255))
+        panel.paste(scaled, (10, 50 + dy))
+        panel.paste(model, (scaled.width + 20, 50))
+        draw = ImageDraw.Draw(panel)
+        draw.text((10, 8), title, fill=(0, 0, 0), font=font)
+        marks = landmarks(m)
+        for label, key in ILLUSTRATION_MARKS:
+            colour = ASSEMBLY_COLOURS[label]
+            y = 50 + dy + rows[key] * s
+            draw.line([(0, y), (scaled.width + 14, y)], fill=colour, width=2)
+            ym = 50 + view_row(view, marks[label])
+            draw.line([(scaled.width + 16, ym), (width, ym)], fill=colour, width=2)
+        panels.append(np.asarray(panel))
+        placed.append({"view": name, "scale": s, "dy": dy, "size": [scaled.width, scaled.height]})
+    save_picture(_shrink(Image.fromarray(side_by_side(panels, gap=16)), scale), path)
+    return placed
