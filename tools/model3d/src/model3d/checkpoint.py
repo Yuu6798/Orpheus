@@ -39,13 +39,24 @@ def color_rule(rgb, rule):
     return out
 
 
+def _deep(im):
+    """開いたばかりの絵の読み方（tile の raw mode）が、1 色 16 ビットか（Pillow は 16 ビットの色の PNG を RGB・RGBA として開き、
+    8 ビットに直して読む。灰色の 16 ビットは I;16 の mode になる）。"""
+    for tile in im.tile or []:
+        args = tile[3] if len(tile) > 3 else None
+        raw = args[0] if isinstance(args, tuple) and args else args
+        if isinstance(raw, str) and ";16" in raw:
+            return True
+    return False
+
+
 def read_image(path):
-    """絵を 8 ビットの (H, W, 3) の RGB と、透けの (H, W)（透けの無い絵は None）で読む。16 ビット・浮動小数の絵は止める
-    （8 ビットに直すと値が切られる）。透明色キー（tRNS）の絵も透けのある絵として読む。"""
+    """絵を 8 ビットの (H, W, 3) の RGB と、透けの (H, W)（透けの無い絵は None）で読む。16 ビット（色の絵も）・浮動小数の絵は止める
+    （8 ビットに直すと値が丸められ、色の決まりの範囲が元の絵と合わなくなる）。透明色キー（tRNS）の絵も透けのある絵として読む。"""
     from PIL import Image
     try:
         with Image.open(path) as im:
-            if im.mode.startswith("I") or im.mode == "F":
+            if im.mode.startswith("I") or im.mode == "F" or _deep(im):
                 raise ToolError(f"絵は 8 ビットの絵にしてください（{im.mode}。16 ビットや浮動小数の絵は読みません）: {path}")
             keep = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info
             data = np.asarray(im.convert("RGBA" if keep else "RGB")).copy()

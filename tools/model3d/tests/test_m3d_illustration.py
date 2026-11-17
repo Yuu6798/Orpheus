@@ -162,3 +162,24 @@ def test_pictures_that_cannot_be_measured_are_refused(tmp_path):
     Image.fromarray(np.zeros((8, 8), dtype=np.uint16)).save(deep)
     with pytest.raises(ToolError, match="8 ビット"):
         checkpoint.read_image(deep)
+    for colour_type, channels in ((2, 3), (6, 4)):                     # 16 ビットの RGB・RGBA の PNG（Pillow は RGB・RGBA として開く）
+        deep = tmp_path / f"deep_{channels}.png"
+        deep.write_bytes(_png16(np.full((6, 5, channels), 40000, np.uint16), colour_type))
+        with Image.open(deep) as im:
+            assert im.mode == ("RGB" if channels == 3 else "RGBA")
+        with pytest.raises(ToolError, match="8 ビット"):
+            checkpoint.read_image(deep)
+
+
+def _png16(samples, colour_type):
+    """16 ビットの PNG のバイト列（Pillow では書けないので、チャンクを直に組む）。samples は (H, W, C) の uint16。"""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    h, w = samples.shape[:2]
+    raw = b"".join(b"\x00" + samples[y].astype(">u2").tobytes() for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, colour_type, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
