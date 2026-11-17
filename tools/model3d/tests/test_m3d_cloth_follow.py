@@ -37,6 +37,17 @@ def test_over_summary_counts_frames_runs_and_means():
     judged = over_summary(raw, max_mean_verts=5)
     assert judged["pass"] is False and "平均" in judged["failures"][0]
     assert over_summary(raw, max_frames=3, max_mean_verts=20)["pass"] is True
+    assert report["rest_caches_off"] == [] and report["modifiers_synced"] == []
+
+
+def test_over_summary_judges_the_mean_before_rounding():
+    # 100 コマに 1 頂点だけ入る: 平均 0.01 は表示では 0.0 だが、しきい値 0 は超えている
+    raw = {"rows": [{"frame": f, "verts": 1 if f == 50 else 0, "max_mm": 2.0 if f == 50 else 0.0} for f in range(1, 101)],
+           "rest_caches_off": ["Skirt:baked_motion"]}
+    judged = over_summary(raw, max_mean_verts=0)
+    assert judged["mean_verts_per_frame"] == 0.0 and judged["pass"] is False and "0.01" in judged["failures"][0]
+    assert judged["rest_caches_off"] == ["Skirt:baked_motion"]
+    assert over_summary(raw, max_mean_verts=0.01)["pass"] is True
 
 
 STAND_IN = r'''

@@ -401,11 +401,13 @@ def over_summary(raw, min_verts=3, max_frames=None, max_mean_verts=None):
             runs[-1][3] = max(runs[-1][3], row["max_mm"])
         else:
             runs.append([row["frame"], row["frame"], row["verts"], row["max_mm"]])
+    mean = float(verts.mean()) if len(verts) else 0.0     # 合否は丸める前の値で比べる（表示は小数 1 桁。台本と同じ）
     report = {"check": "cloth_over", "over": raw.get("over"), "under": raw.get("under"), "frames_checked": len(rows),
-              "over_verts": raw.get("over_verts"), "ignored_at_rest": raw.get("ignored_at_rest"), "frames_inside": len(bad),
+              "over_verts": raw.get("over_verts"), "ignored_at_rest": raw.get("ignored_at_rest"),
+              "rest_caches_off": raw.get("rest_caches_off", []), "modifiers_synced": raw.get("modifiers_synced", []), "frames_inside": len(bad),
               "frames_inside_10_verts_or_more": int((verts >= 10).sum()), "frames_inside_30_verts_or_more": int((verts >= 30).sum()),
               "max_verts": int(verts.max()) if len(verts) else 0, "max_depth_mm": max((row["max_mm"] for row in rows), default=0.0),
-              "mean_verts_per_frame": round(float(verts.mean()), 1) if len(verts) else 0.0,
+              "mean_verts_per_frame": round(mean, 1),
               "runs": [{"frames": [a, b], "max_verts": n, "max_mm": d} for a, b, n, d in runs],
               "thresholds": {k: v for k, v in (("max_frames", max_frames), ("max_mean_verts", max_mean_verts)) if v is not None}}
     if max_frames is None and max_mean_verts is None:
@@ -414,8 +416,8 @@ def over_summary(raw, min_verts=3, max_frames=None, max_mean_verts=None):
     failures = []
     if max_frames is not None and len(bad) > max_frames:
         failures.append(f"上の布が下の布の内側に {min_verts} 頂点以上入ったコマが {len(bad)}（しきい値 {max_frames}）")
-    if max_mean_verts is not None and report["mean_verts_per_frame"] > max_mean_verts:
-        failures.append(f"下の布の内側にある頂点が 1 コマ平均 {report['mean_verts_per_frame']}（しきい値 {max_mean_verts}）")
+    if max_mean_verts is not None and mean > max_mean_verts:
+        failures.append(f"下の布の内側にある頂点が 1 コマ平均 {mean:.4g}（しきい値 {max_mean_verts}）")
     report.update({"pass": not failures, "failures": failures})
     return report
 

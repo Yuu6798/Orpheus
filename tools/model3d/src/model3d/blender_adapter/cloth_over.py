@@ -11,6 +11,8 @@
   - 外向きは、縦の軸の骨（axis_bone）の軸から離れる向き（そのコマの姿勢で）。
   - 上の布（over）の頂点（変形した後）から外向きに depth（m）まで線を伸ばし、下の布（under）の面（変形した後。当て布 patch_group の面は数えない）に
     当たったら「入り込み」。深さは、当たるまでの距離。初期姿勢でも同じ判定をして、もともと下の布の内側にある頂点（付け根など）は数から除く。
+  - 初期姿勢は、アーマチュアを REST にして評価する。ファイルから動きを読む変形（MESH_CACHE・MESH_SEQUENCE_CACHE。cloth.smooth が置き換えた
+    変形など）は、REST にしても開いたコマの形を読むので、初期姿勢の判定の間だけ外す（外した物は報告の rest_caches_off）。
   - tol より浅い入り込みは数えない。
   - 上の布・下の布と、それらのモディファイアの相手のほかのメッシュは評価しない（速くする）。
 
@@ -35,6 +37,8 @@ except ImportError:   # Blender が台本として動かすとき
 
 DEFAULTS = {"over": None, "under": None, "armature": None, "axis_bone": None, "patch_group": "lining_patch", "depth": 0.06, "tol": 0.001,
             "frames": None}
+# ファイルから動きを読む変形。アーマチュアを REST にしても、開いたコマの形を読む（初期姿勢の形にならない）
+CACHE_READERS = {"MESH_CACHE", "MESH_SEQUENCE_CACHE"}
 
 
 def parse_args(argv):
@@ -123,11 +127,19 @@ def main(argv=None):
                 depth[i] = hit[3]
         return depth
 
+    # 初期姿勢の形: アーマチュアを REST にして評価する。ファイルから動きを読む変形（cloth.smooth が置き換えた MESH_CACHE など）は、REST にしても
+    # 開いたコマの形を読む（その形の入り込みを全部のコマから除いてしまう）ので、初期姿勢の判定の間だけ外す
+    caches = [m for name in sorted(needed) if bpy.data.objects[name].type == "MESH"
+              for m in bpy.data.objects[name].modifiers if m.type in CACHE_READERS and m.show_viewport]
+    for m in caches:
+        m.show_viewport = False
     saved = armature.data.pose_position
     armature.data.pose_position = "REST"
     bpy.context.view_layer.update()
     rest = covered() > s["tol"]
     armature.data.pose_position = saved
+    for m in caches:
+        m.show_viewport = True
     bpy.context.view_layer.update()
     first, last = s["frames"] or (scene.frame_start, scene.frame_end)
     rows = []
@@ -140,7 +152,8 @@ def main(argv=None):
                      "mean_mm": round(float(depth[hit].mean()) * 1000, 1) if hit.any() else 0.0})
     report = {"schema_version": "model3d-cloth-over/0.1", "blender": bpy.app.version_string, "scene": scene.name, "armature": armature.name,
               "over": over.name, "under": under.name, "over_verts": int(len(rest)), "ignored_at_rest": int(rest.sum()),
-              "under_patch_verts": len(under_patch), "modifiers_synced": synced, "rows": rows}
+              "under_patch_verts": len(under_patch), "modifiers_synced": synced,
+              "rest_caches_off": [f"{m.id_data.name}:{m.name}" for m in caches], "rows": rows}
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False)
