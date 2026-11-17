@@ -82,7 +82,8 @@ def front_raster(co, tris, window, scale, front_y, colors=None, tri_uv=None, ima
 
 
 def cut(co, tris, axis, value):
-    """三角形を axis = value の面で切った線分（両端の 3D の点）と、その三角形の番号。"""
+    """三角形を axis = value の面で切った線分（両端の 3D の点）と、その三角形の番号。面にちょうど乗る辺（両端が面の上）は、
+    面の両側をまたぐ三角形が無くても切り口なので足す。隣り合う三角形で同じ辺は 1 本にまとめる（番号の小さい三角形のもの）。"""
     p = co[tris]
     s = p[:, :, axis] - value
     segments, owners = [], []
@@ -95,6 +96,16 @@ def cut(co, tris, axis, value):
         if len(points) == 2:
             segments.append(points)
             owners.append(int(t))
+    on = s == 0
+    seen = set()
+    for t in np.where(on.sum(axis=1) >= 2)[0]:                      # 面の両側をまたがないので、上では切り口にならない
+        for i in range(3):
+            j = (i + 1) % 3
+            edge = tuple(sorted((int(tris[t, i]), int(tris[t, j]))))
+            if on[t, i] and on[t, j] and edge not in seen:
+                seen.add(edge)
+                segments.append([p[t, i], p[t, j]])
+                owners.append(int(t))
     return segments, owners
 
 
@@ -209,7 +220,7 @@ def section_sheet(material, settings, report, font):
             lo, hi = entry["ring_x"][0] - margin, entry["ring_x"][1] + margin
             image, draw = panel(hi - lo, y1 - y0)
             for (a, b), t in zip(segments, owners):
-                if lo <= a[0] <= hi or lo <= b[0] <= hi:
+                if min(a[0], b[0]) <= hi and max(a[0], b[0]) >= lo:      # こまの幅に重なる線分（両端がこまの外でも。外は絵の端で切れる）
                     draw.line([((a[0] - lo) * scale, (y1 - a[1]) * scale), ((b[0] - lo) * scale, (y1 - b[1]) * scale)],
                               fill=tuple(colors[t]), width=2)
             draw.text((6, 4), "%s eye, z = %.1f mm (bottom is the front)" % (side, z * 1000), fill=(255, 255, 0), font=font)

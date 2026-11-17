@@ -125,6 +125,37 @@ def test_images_have_the_window_size():
     assert (boned != plain).any()                                                   # 目の骨の軸を描く
 
 
+def test_cut_keeps_edges_that_lie_on_the_plane():
+    """面にちょうど乗る辺も切り口にする: ひし形の瞳（中心 + 輪 4）を、中心と向かい合う 2 つの輪の頂点を通る面で切ると、直径の 2 本。"""
+    co = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])
+    tris = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]])
+    segments, owners = eye_check.cut(co, tris, 2, 0.0)
+    assert owners == [0, 1]                                                         # 隣り合う三角形の同じ辺は 1 本
+    assert sorted(float(p[0]) for segment in segments for p in segment) == [-1.0, 0.0, 0.0, 1.0]
+    segments, owners = eye_check.cut(co, tris, 2, 0.5)                              # 面の両側をまたぐ三角形は、これまでどおり
+    assert owners == [0, 1] and all(p[2] == pytest.approx(0.5) for segment in segments for p in segment)
+    segments, owners = eye_check.cut(co, tris, 1, 0.0)                              # 面の上にある三角形は、辺を重ねずに全部
+    assert len(segments) == 8 and owners == [0, 0, 0, 1, 1, 2, 2, 3]
+
+
+def test_sections_draw_edges_on_the_plane_and_segments_across_the_eye_panel():
+    """目の高さの面には瞳の直径がちょうど乗る（上から見た断面に瞳が出る）。横の断面の目のこまは、両端がこまの外でも、こまをまたぐ線分を描く。"""
+    report, material = eye_check.survey(CO, EDGES, TRIS, SETTINGS)
+    colors = eye_check.class_colors(material["head"], material["fan_tri"])
+    iris = int(np.where((CO[TRIS][:, :, 1] == -0.004).all(axis=1))[0][0])           # 瞳の三角形
+    top = np.asarray(eye_check.images(material, SETTINGS, report)["top"])
+    assert (top == colors[iris]).all(axis=-1).any()
+    n = len(CO)                                                                     # 目の高さを、左目のこまより左右に広い板（別の部品）がまたぐ
+    wide = np.array([[-0.2, 0.002, EYE_Z - 0.001], [0.2, 0.002, EYE_Z - 0.001], [0.2, 0.002, EYE_Z + 0.001]])
+    co, tris = np.vstack([CO, wide]), np.vstack([TRIS, [[n, n + 1, n + 2]]])
+    edges = np.vstack([EDGES, [[n, n + 1], [n + 1, n + 2], [n, n + 2]]])
+    settings = {**SETTINGS, "sections": {"x": [-0.3], "z": [EYE_Z]}}                 # 縦の断面は何も切らない所で
+    report, material = eye_check.survey(co, edges, tris, settings)
+    colors = eye_check.class_colors(material["head"], material["fan_tri"])
+    sheet = np.asarray(eye_check.images(material, settings, report)["sections"])
+    assert (sheet == colors[len(tris) - 1]).all(axis=-1).any()                      # 板の切り口は x = 0〜0.2（左目のこまは 0.015〜0.055）
+
+
 def _recipe(tmp_path, parameters, outputs=None, texture=True):
     np.savez(tmp_path / "head.npz", co=CO, edges=EDGES, tris=TRIS, tri_loops=TRI_LOOPS, uv=UV)
     Image.fromarray(IMAGE).save(tmp_path / "head.png")
