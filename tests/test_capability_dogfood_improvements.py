@@ -89,3 +89,17 @@ def test_model3d_ffmpeg_resolution_matches_assemble_operation():
     assert ffmpeg["required_on_path"] is False
     assert ffmpeg["bundled_by"] == "imageio-ffmpeg"
     assert "environment" not in ffmpeg
+
+
+def test_all_synthetic_starters_install_their_optional_extras():
+    catalog = build_catalog()
+    expected = {
+        "workflow.dance_edit": "fx",
+        "workflow.inspect_and_repair": "fx",
+        "workflow.character_3d": "model3d",
+    }
+    for workflow_id, extra in expected.items():
+        starter = get_item(catalog, workflow_id)["starters"][0]
+        assert starter["commands"][0] == ["uv", "sync", "--locked", "--extra", extra]
+        assert all("--no-sync" in command for command in starter["commands"][1:])
+    
