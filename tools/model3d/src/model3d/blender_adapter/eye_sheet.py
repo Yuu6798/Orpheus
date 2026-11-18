@@ -18,6 +18,7 @@ settings.json（render.eye_sheet が書く）:
 形状キーのミュートを外し、範囲（slider_min・slider_max）を 0 と入れる値が入るまで広げ、形状キーの動き（アクション・ドライバー）を外し、
 1 つだけ見せる設定（ピン）を外す。シーケンサー・コンポジター・切り取り・色の補正などは face_sheet の RENDER_FIXED・VIEW_FIXED・
 DISPLAY_FIXED・IMAGE_FIXED の値にし、マーカーに結んだカメラを外す。頭の描かない設定を外す（描かないコレクションの中にしか無ければ止める）。
+アーマチュアを姿勢の位置（POSE）にする（静止の姿勢のままだと目の骨を回しても動かない）。カメラはセンサーを横で合わせる（span は横の幅）。
 """
 import argparse
 import json
@@ -150,12 +151,15 @@ def main(argv=None):
         setattr(scene.render, flag, False)
     cam_data = bpy.data.cameras.new("eye_camera")
     cam_data.clip_start, cam_data.clip_end = 0.02, 50
+    cam_data.sensor_fit = "HORIZONTAL"                                  # span は画面の横に入る幅（縦長の絵でも、横で合わせる）
     cam = bpy.data.objects.new("eye_camera", cam_data)
     scene.collection.objects.link(cam)
     scene.camera = cam
     for obj in bpy.data.objects:                                       # 骨は描かない
         if obj.type == "ARMATURE" or obj.name in settings.get("hide", []):
             obj.hide_render = True
+    prepared["pose_position"] = armature.data.pose_position             # 静止の姿勢（REST）のままだと、目の骨を回しても頭が動かない
+    armature.data.pose_position = "POSE"
     prepared["object_shown"] = bool(head.hide_render)                  # 頭の描かない設定を外す（face_sheet と同じ）
     head.hide_render = False
     paths = hidden_paths(bpy.context.view_layer.layer_collection, head.name)
