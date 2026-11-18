@@ -1,0 +1,209 @@
+name: Dogfood Capability Catalog
+
+on:
+  push:
+    branches: [codex/dogfood-capability-20261118]
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.13.5"
+
+concurrency:
+  group: dogfood-capability-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dogfood:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      UV_PYTHON: "3.13"
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install locked dependencies
+        run: |
+          set -euo pipefail
+          corepack enable
+          uv sync --locked --extra analysis --extra fx --extra model3d
+          pnpm install --frozen-lockfile
+
+      - name: Search the catalog before touching production tools
+        run: |
+          set -euo pipefail
+          mkdir -p projects/dogfood/report
+          uv run --no-sync orpheus search "既存の資産で短い歌詞MVを作り、検証まで通したい" --limit 8 \
+            > projects/dogfood/report/01-search.json
+          uv run --no-sync orpheus show workflow.lyric_mv \
+            > projects/dogfood/report/02-selected-workflow.json
+          uv run --no-sync orpheus show mv.render \
+            > projects/dogfood/report/03-render-capability.json
+          uv run --no-sync orpheus show mv.workflow.check \
+            > projects/dogfood/report/04-completion-check-capability.json
+          uv run --no-sync orpheus validate \
+            > projects/dogfood/report/05-catalog-validation.json
+          uv run --no-sync python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("projects/dogfood/report")
+          search = json.loads((root / "01-search.json").read_text(encoding="utf-8"))
+          rows = search["result"]["results"]
+          ids = [row["item"]["id"] for row in rows]
+          assert "workflow.lyric_mv" in ids[:3], ids
+          selected = json.loads((root / "02-selected-workflow.json").read_text(encoding="utf-8"))
+          assert selected["result"]["id"] == "workflow.lyric_mv"
+          validation = json.loads((root / "05-catalog-validation.json").read_text(encoding="utf-8"))
+          assert validation["result"]["valid"] is True, validation
+          PY
+
+      - name: Produce an existing end-to-end lyric MV example
+        id: produce
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          uv run --no-sync python examples/workflow/run.py projects/dogfood/mv \
+            > projects/dogfood/report/06-run-result.json
+          end=$(date +%s)
+          echo $((end - start)) > projects/dogfood/report/07-elapsed-seconds.txt
+          video=$(uv run --no-sync python - <<'PY'
+          import json
+          print(json.load(open("projects/dogfood/report/06-run-result.json", encoding="utf-8"))["video"])
+          PY
+          )
+          test -f "$video"
+          cp "$video" projects/dogfood/report/dogfood-lyric-mv.mp4
+          echo "video=$video" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect the produced video with existing tools
+        run: |
+          set -euo pipefail
+          video='${{ steps.produce.outputs.video }}'
+          uv run --no-sync mv sheet "$video" \
+            --out projects/dogfood/report/contact-sheet.png --count 6
+          ffprobe -v error -show_format -show_streams -of json "$video" \
+            > projects/dogfood/report/08-ffprobe.json
+          cp projects/dogfood/mv/work/workflow-check/workflow_report.json \
+            projects/dogfood/report/09-workflow-report.json
+          cp projects/dogfood/mv/work/workflow-check/workflow_report.md \
+            projects/dogfood/report/10-workflow-report.md
+          cp projects/dogfood/mv/work/example/commands.json \
+            projects/dogfood/report/11-commands.json
+          cp projects/dogfood/mv/work/example/direction.json \
+            projects/dogfood/report/12-direction.json
+          cp projects/dogfood/mv/work/example/storyboard-proposal.json \
+            projects/dogfood/report/13-storyboard-proposal.json
+
+      - name: Write an evidence-based usage report
+        run: |
+          set -euo pipefail
+          uv run --no-sync python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("projects/dogfood/report")
+          search = json.loads((root / "01-search.json").read_text(encoding="utf-8"))
+          workflow = json.loads((root / "02-selected-workflow.json").read_text(encoding="utf-8"))["result"]
+          render = json.loads((root / "03-render-capability.json").read_text(encoding="utf-8"))["result"]
+          result = json.loads((root / "06-run-result.json").read_text(encoding="utf-8"))
+          probe = json.loads((root / "08-ffprobe.json").read_text(encoding="utf-8"))
+          completion = json.loads((root / "09-workflow-report.json").read_text(encoding="utf-8"))
+          elapsed = int((root / "07-elapsed-seconds.txt").read_text().strip())
+          rows = search["result"]["results"]
+          ranking = "\n".join(
+              f"{index}. `{row['item']['id']}` — score {row['score']}"
+              for index, row in enumerate(rows[:5], 1)
+          )
+          video_stream = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
+          audio_stream = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
+          effects = render.get("effects", {})
+          report = f"""# Orpheus capability-catalog dogfood report
+
+## 実施内容
+
+能力目録を最初の入口にし、リポジトリ既存の `examples/workflow/run.py` を使って、8秒の小型歌詞MVを制作・検証した。
+新しい映像機能や作品固有スクリプトは追加していない。
+
+## 目録からの選択
+
+検索文: `既存の資産で短い歌詞MVを作り、検証まで通したい`
+
+上位候補:
+
+{ranking}
+
+採用: `{workflow['id']}`
+
+- 必要入力: {', '.join(workflow['required_inputs'])}
+- 人が決める箇所: {', '.join(workflow['human_decisions'])}
+- workflow availability: `{workflow['availability']['available']}`
+
+## 実行結果
+
+- workflow: `{result['workflow']}`
+- accepted: `{result['accepted']}`
+- 実行時間: {elapsed}秒
+- 映像: {video_stream['width']}×{video_stream['height']} / {video_stream['codec_name']} / {video_stream.get('r_frame_rate')}
+- 音声: {audio_stream['codec_name']} / {audio_stream.get('sample_rate')} Hz / {audio_stream.get('channels')} ch
+- 工程検査 overall: `{completion['overall']}`
+- カタログ検査: valid
+
+`accepted` は自動で true にせず、技術的完了と作品採用が分離されたままだった。
+
+## 実行前に目録から読めたこと
+
+- `mv.render` availability: `{render['availability']['available']}`
+- optional extras: `{render['requires'].get('extras')}`
+- external process: `{effects.get('external_process')}`
+- network: `{effects.get('network')}`
+- parameter source: `{render['parameters']['status']}`
+
+## 成果物
+
+- `dogfood-lyric-mv.mp4`: 完成動画
+- `contact-sheet.png`: 6時点の確認シート
+- `01-search.json`: 目的検索結果
+- `02-selected-workflow.json`: 選択した工程
+- `09-workflow-report.json`: 完了証跡
+- `11-commands.json`: 実際に通ったコマンド列
+- `12-direction.json`: 拍と切替の選択根拠
+- `13-storyboard-proposal.json`: 絵コンテ
+
+## この実行だけでは確認していないこと
+
+- 実曲の歌唱同期精度
+- 実画像の一貫性
+- 長尺・高解像度での操作感
+- 作品としての採用判断
+"""
+          (root / "USAGE_REPORT.md").write_text(report, encoding="utf-8", newline="\n")
+          PY
+          find projects/dogfood/report -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum \
+            > projects/dogfood/report/SHA256SUMS
+
+      - name: Upload dogfood result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: orpheus-capability-dogfood
+          path: projects/dogfood/report
+          if-no-files-found: error
+          retention-days: 7
