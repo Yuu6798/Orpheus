@@ -1,4 +1,5 @@
 """登録済みの操作。工程は `execute(operation, inputs, parameters, context)` の形で呼ばれ、生成物・観測値・未解決事項を返す。"""
+import copy
 import importlib
 from dataclasses import dataclass, field
 
@@ -27,11 +28,22 @@ class Operation:
     inputs: tuple = ()
     cacheable: bool = True   # False: 隠れた入力（実行ファイル・設定が参照する素材）を知らないので毎回実行する
     selectable: tuple = ()   # 工程の select（役割の面領域だけを対象にする）を受け付ける入力
+    capability: dict = field(default_factory=dict, repr=False, compare=False)  # AI向け目録。実行契約の正典にはしない
 
 
-def register(name, *, outputs=(), inputs=(), summary="", cacheable=True, selectable=()):
+def register(name, *, outputs=(), inputs=(), summary="", cacheable=True, selectable=(), capability=None):
+    """操作を登録する。
+
+    capability は目的検索用の補助情報（aliases / tags / maturity / docs / tools /
+    parameters）で、操作の実行契約を置き換えない。値を持たない既存操作の
+    describe() 出力は変えない。
+    """
+    if capability is not None and not isinstance(capability, dict):
+        raise TypeError("capability は辞書か None にしてください")
+
     def wrap(function):
-        OPERATIONS[name] = Operation(name, function, tuple(outputs), summary, tuple(inputs), cacheable, tuple(selectable))
+        OPERATIONS[name] = Operation(name, function, tuple(outputs), summary, tuple(inputs), cacheable, tuple(selectable),
+                                     copy.deepcopy(capability or {}))
         return function
     return wrap
 
@@ -51,8 +63,14 @@ def get(name):
 
 def describe():
     load_all()
-    return [{"operation": op.name, "inputs": list(op.inputs), "outputs": list(op.outputs), "summary": op.summary,
-             "cacheable": op.cacheable, "selectable": list(op.selectable)} for op in sorted(OPERATIONS.values(), key=lambda o: o.name)]
+    rows = []
+    for op in sorted(OPERATIONS.values(), key=lambda o: o.name):
+        row = {"operation": op.name, "inputs": list(op.inputs), "outputs": list(op.outputs), "summary": op.summary,
+               "cacheable": op.cacheable, "selectable": list(op.selectable)}
+        if op.capability:
+            row["capability"] = copy.deepcopy(op.capability)
+        rows.append(row)
+    return rows
 
 
 def selected(context, name, parameters=None, operation=""):
