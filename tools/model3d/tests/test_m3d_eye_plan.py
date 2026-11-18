@@ -107,6 +107,10 @@ def test_key_ranges_widen_the_sliders_only_where_needed():
     assert action == "stop" and "24" in message and "30" in message and "set" in message and "keep" in message and "0.8 倍" in message
     assert eye_motion.fps_action(24.0, 30, "set") == ("set", None) and eye_motion.fps_action(24.0, 30, "keep") == ("keep", None)
     assert eye_motion.fps_setting(30) == (30, 1.0) and eye_motion.fps_setting(29.97) == (30, pytest.approx(30 / 29.97))
+    # 静止の姿勢（REST）は止める。シーンの範囲は打つコマが入るまで広げる（もとの範囲は残す）
+    assert eye_motion.rest_problem("Armature", "POSE") is None and "REST" in eye_motion.rest_problem("Armature", "REST")
+    assert eye_motion.frame_range(1, 250, 1, 725) == (1, 725) and eye_motion.frame_range(1, 2000, 101, 300) == (1, 2000)
+    assert eye_motion.frame_range(50, 120, 10, 60) == (10, 120)
 
 
 def _geometry():

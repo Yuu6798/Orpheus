@@ -14,6 +14,9 @@ settings.json（motion.eye_plan が書く）: object（頭のメッシュ）、r
   上書きする）。
 - 台本の値が形状キーの範囲（slider_min・slider_max）を出るなら、範囲を広げる（行きすぎ・瞳の伸びで 1 を超えたり負になったりする。広げないと
   Blender が値を範囲に収めてしまう）。
+- シーンのコマの範囲を、打つコマが入るまで広げる（もとの範囲は残す。再生や描画が範囲で止まらないように）。
+- キーを打っても動かない .blend は書かない: 絶対の形状キー・打つキーを上書きするドライバー・目の骨の拘束・打つキーのミュート・ピン・静止の
+  姿勢（REST）は止める（保存するので、この工程では外さない）。
 入力の .blend は変えない（別のファイルに書く）。
 """
 import argparse
@@ -80,6 +83,19 @@ def fps_setting(plan_fps):
     return int(whole), whole / plan_fps
 
 
+def rest_problem(armature_name, pose_position):
+    """アーマチュアが静止の姿勢（REST）なら、目の骨の回りのキーが形に出ないので、止めるときの説明。POSE なら None。"""
+    if pose_position == "POSE":
+        return None
+    return (f"{armature_name} は静止の姿勢（REST）になっていて、目の骨の回りのキーが形に出ません。姿勢の位置（POSE）にしてください"
+            "（.blend は保存するので、この工程では変えない）")
+
+
+def frame_range(start, end, first, last):
+    """シーンのコマの範囲 [start, end] を、打つコマ [first, last] が入るまで広げる（もとの範囲は残す。狭めない）。"""
+    return min(start, first), max(end, last)
+
+
 def key_state_problem(head_name, muted, pinned):
     """打つ形状キーのうちミュートされている物（muted）や、形状キーを 1 つだけ見せる設定（ピン。pinned）があれば、キーを打っても形が
     変わらないので、止めるときの説明。無ければ None（.blend は保存するので、この工程では外さない）。"""
@@ -127,6 +143,9 @@ def main(argv=None):
     problem = key_state_problem(head.name, [name for name in key_ranges(frames, names) if blocks[name].mute], head.show_only_shape_key)
     if problem:
         raise SystemExit(problem)
+    problem = rest_problem(armature.name, armature.data.pose_position)   # 静止の姿勢のままだと、目の骨のキーが形に出ない
+    if problem:
+        raise SystemExit(problem)
     scene = use_scene_of(bpy, armature)                                 # 描くのはアーマチュアのあるシーン
     scene_fps = scene.render.fps / scene.render.fps_base
     action, message = fps_action(scene_fps, settings["plan_fps"], settings.get("fps_mode", "check"))
@@ -159,11 +178,17 @@ def main(argv=None):
         for bone in pose_bones:
             bone.rotation_euler = rotation
             bone.keyframe_insert("rotation_euler", frame=frame, group=bone.name)
+    range_report = None
+    if frames:                                                          # 再生や描画がシーンの範囲で止まらないように（もとの範囲は残す）
+        before = [scene.frame_start, scene.frame_end]
+        after = list(frame_range(scene.frame_start, scene.frame_end, frames[0]["frame"], frames[-1]["frame"]))
+        scene.frame_start, scene.frame_end = after                      # 広げるだけなので、先に始めを変えても終わりを越えない
+        range_report = {"before": before, "after": after}
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out), copy=True)
     report = {"blender": bpy.app.version_string, "object": head.name, "armature": armature.name, "bones": bones,
               "frames": [frames[0]["frame"], frames[-1]["frame"]] if frames else [], "count": len(frames), "keyed": sorted(keyed),
-              "unknown_keys": sorted(unknown), "widened": widened, "scene_fps": fps_report}
+              "unknown_keys": sorted(unknown), "widened": widened, "scene_fps": fps_report, "scene_frames": range_report}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
         stream.write("\n")
