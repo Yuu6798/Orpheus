@@ -19,8 +19,14 @@ def _model3d_imports(path):
 
 
 def test_catalog_is_a_neutral_package_not_an_mv_execution_import():
-    assert _model3d_imports(Path("src/orpheus_catalog/capability_catalog.py")) == []
-    assert _model3d_imports(Path("src/orpheus_catalog/_capability_catalog_impl.py")) == ["model3d.ops"]
+    # 中立のcatalog packageだけが、登録表を読むためにmodel3d.opsを参照してよい。
+    catalog_imports = []
+    for path in Path("src/orpheus_catalog").rglob("*.py"):
+        catalog_imports.extend(_model3d_imports(path))
+    assert catalog_imports
+    assert set(catalog_imports) == {"model3d.ops"}
+
+    # 制作実行層どうしは従来どおり直接importしない。
     for path in Path("src/mv_pipeline").rglob("*.py"):
         assert _model3d_imports(path) == [], path
 
