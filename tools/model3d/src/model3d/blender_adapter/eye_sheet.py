@@ -18,7 +18,8 @@ settings.json（render.eye_sheet が書く）:
 形状キーのミュートを外し、範囲（slider_min・slider_max）を 0 と入れる値が入るまで広げ、形状キーの動き（アクション・ドライバー）を外し、
 1 つだけ見せる設定（ピン）を外す。シーケンサー・コンポジター・切り取り・色の補正などは face_sheet の RENDER_FIXED・VIEW_FIXED・
 DISPLAY_FIXED・IMAGE_FIXED の値にし、マーカーに結んだカメラを外す。頭の描かない設定を外す（描かないコレクションの中にしか無ければ止める）。
-アーマチュアを姿勢の位置（POSE）にする（静止の姿勢のままだと目の骨を回しても動かない）。カメラはセンサーを横で合わせる（span は横の幅）。
+アーマチュアを姿勢の位置（POSE）にする（静止の姿勢のままだと目の骨を回しても動かない）。アーマチュアの動き（アクション・ドライバー・NLA）を
+外し（今の姿勢のまま止まる）、目の骨の拘束を止める（どちらも入れた視線を上書きする）。カメラはセンサーを横で合わせる（span は横の幅）。
 """
 import argparse
 import json
@@ -160,6 +161,18 @@ def main(argv=None):
             obj.hide_render = True
     prepared["pose_position"] = armature.data.pose_position             # 静止の姿勢（REST）のままだと、目の骨を回しても頭が動かない
     armature.data.pose_position = "POSE"
+    motion = armature.animation_data                                    # アクション・ドライバー・NLA は、描くときに入れた視線を上書きする
+    prepared["armature_animation_cleared"] = None
+    if motion is not None:                                              # 外すと、今の姿勢のまま止まる（保存しない）
+        prepared["armature_animation_cleared"] = {"action": motion.action.name if motion.action else None,
+                                                  "drivers": len(motion.drivers), "nla_tracks": len(motion.nla_tracks)}
+        armature.animation_data_clear()
+    prepared["eye_constraints_muted"] = []
+    for side in ("L", "R"):                                             # 目の骨の拘束（見る向きを決める物など）も、入れた視線を上書きする
+        for constraint in armature.pose.bones[bones[side]].constraints:
+            if not constraint.mute:
+                constraint.mute = True
+                prepared["eye_constraints_muted"].append(f"{bones[side]}: {constraint.name}")
     prepared["object_shown"] = bool(head.hide_render)                  # 頭の描かない設定を外す（face_sheet と同じ）
     head.hide_render = False
     paths = hidden_paths(bpy.context.view_layer.layer_collection, head.name)
