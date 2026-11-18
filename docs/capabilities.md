@@ -7,6 +7,9 @@ uv run orpheus search "目の破綻を確認して直したい"
 uv run orpheus show workflow.eye_rebuild
 uv run orpheus capabilities --domain model3d --available-only
 uv run orpheus workflows --query "朗読動画"
+uv run orpheus capabilities --parameter-status undocumented
+uv run orpheus workflows --machine-readable-only
+uv run orpheus schema catalog
 uv run orpheus validate
 ```
 
@@ -29,13 +32,17 @@ uv run orpheus validate
 - `mv` は既存の `argparse` 定義からコマンド・必須引数・選択肢・既定値を実行時に収集する。
 - `model3d` が導入されていれば、`model3d ops` と同じ登録済み操作を実行時に読み取る。
 - よく使う目的は `workflow.*` として、道具の順番、人が決める箇所、必要入力をまとめる。
+- workflow の `asset_expectations` は必要な資産の種類と出所、`starters` は既存の合成例のコマンド・期待出力・限界を示す。
 - optional extra が無いときもworkflowが参照する重要操作は索引に残し、`availability.available: false` と理由を返す。
+- `orpheus schema catalog|search|response` で、消費側がフィールド位置を推測せずに使える公開JSON Schemaを返す。
 
 カタログのコードは `src/orpheus_catalog/` に置く。これは `mv_pipeline` と `model3d` のどちらにも属さない読み取り専用の統合層で、両方の登録情報を参照する。制作実行層どうしは互いにimportせず、動画・3Dの接続は従来どおりファイルとRunRecordで行う。
 
 ## `availability` とコンポーネント状態
 
-`availability` が確かめるのは、現在のPython環境でコマンドとoptional extraを発見できるかまでです。Blender・FFmpeg・Nodeなど外部実行ファイルの存在や、素材・設定の成立は自動で確定しません。`requires.tools` と対応する資料を確認します。
+`availability` が確かめるのは、現在のPython環境でコマンドとoptional extraを発見できるかまでです。Blender・FFmpeg・Nodeなど外部実行ファイルの存在や、素材・設定の成立は自動で確定しません。
+
+`requires.tools` は互換用の名前一覧です。実際の解決方法は `requires.tool_requirements` を読みます。MV側のFFmpegは `ORPHEUS_FFMPEG → PATH → imageio-ffmpeg同梱版`、ffprobeは `ORPHEUS_FFPROBE → PATH → Remotion同梱版` の順で解決するため、PATHに無くても直ちに利用不能ではありません。Nodeは `ORPHEUS_NODE` またはPATH、Blenderや外部adapterは設定で実行ファイルを渡します。`model3d render.assemble` のFFmpegは別の実装で、recipeの`ffmpeg`パラメーター → `model3d run --tool ffmpeg=PATH` → imageio-ffmpeg同梱版 → PATHの順です。`required_on_path`は文字どおりPATH上の実行ファイルが必須かを表し、環境変数・recipe・設定で明示できる場合は`false`です。
 
 コンポーネントには次の `state` があります。
 
@@ -57,10 +64,12 @@ uv run orpheus validate
 | `opt-in` | 明示したフラグや設定のときだけ行う。既定は無効 |
 | `always` | 通常の実行で行う |
 | `recipe-defined` | adapter・renderer・recipeなど、ユーザーが渡した設定と外部実装次第 |
+| `environment-dependent` | キャッシュ・環境変数・初回取得の状態で変わる。`note`とtool解決情報を確認する |
 | `unknown` | 操作は登録済みだが、実行効果のmetadataがまだ公開されていない。`never`とは扱わず実装・資料を確認する |
 
 例:
 
+- `mv render`・`mv preview`・`mv resume`・`mv layer render` のネットワークは `environment-dependent`。`ORPHEUS_BROWSER`を指定せず管理ブラウザーも未取得の初回は、RemotionがChrome Headless Shellを取得し得る。
 - `mv inspect check` のネットワークは `opt-in`。`--vlm`と`--allow-send`を明示し、設定が送信型の場合だけ外部送信できる。
 - `mv run-adapter`、`mv fx legacy`、`model3d external.run` のネットワークは `recipe-defined`。呼び出す外部プログラムを確認する。
 - `mv gate check` は設定に動画検査の材料がある場合だけFFmpegを起動するため、外部processは`opt-in`。
@@ -83,9 +92,25 @@ uv run orpheus validate
 
 ## workflowの位置づけ
 
-workflowは自動実行器ではなく、目的から既存の道具へ到達するための目録です。
+workflowは自動実行器ではなく、目的から既存の道具へ到達するための目録です。各workflowには次の補助情報があります。
 
-例として `workflow.eye_rebuild` は、次を順に示します。
+- `asset_expectations`: 必須・任意の資産、MIME相当の種類、想定する出所、用途。
+- `starters`: 既存の合成例を実行するargv、期待する出力、評価していない範囲。空なら汎用スターターはまだ無い。
+- `parameter_readiness`: 必須工程と全工程について、`schema / cli / docs / undocumented`の件数と、機械可読な引数仕様が揃っているか。
+
+`--parameter-status undocumented`で未整備の道具・workflowを抽出でき、`--machine-readable-only`で必須工程の引数がすべて`schema`または`cli`のworkflowだけに絞れます。これは`undocumented`を推測で埋めず、実装・資料を確認すべき場所を明示するためのものです。
+
+例えば `workflow.lyric_mv` の `starter.synthetic_lyric_mv` は、次の既存例へ直接案内します。
+
+```sh
+uv sync --locked --extra analysis
+pnpm install --frozen-lockfile
+uv run --no-sync python examples/workflow/run.py PROJECT_DIR
+```
+
+この例は合成音・架空歌詞・幾何学画像を生成し、描画・verify・workflow checkまで通します。実曲の歌唱同期や作品採用を評価する例ではありません。
+
+`workflow.eye_rebuild` は、次を順に示します。
 
 1. `model3d.check.eyes` でBlenderを起動せず現在の目を調べる。
 2. `model3d.model.eye_rig` で目の骨と瞳ウェイトを整える。
@@ -107,4 +132,5 @@ workflowは自動実行器ではなく、目的から既存の道具へ到達す
 - `mv`の用途語・資料・成熟度・実行効果は `src/orpheus_catalog/capability_catalog.py` の `MV_OVERRIDES`と`MV_RUNTIME`で補う。引数仕様は既存parserを正典とする。
 - `model3d`の操作は登録表から自動収集される。検索語を補う必要がある重要操作だけ `MODEL3D_OVERRIDES` に別名と説明を置く。
 - 操作は `model3d.ops.register(..., capability={...})` で任意の検索語、資料、必要ツール、parameter schema、通信・外部プロセスのmodeを公開できる。仕様が無い間は `undocumented` のままにする。
-- `uv run orpheus validate` と能力カタログのテストで、IDの重複、workflowの参照切れ、コンポーネント破損、実行効果のmodeを確認する。
+- 公開schemaは `src/orpheus_catalog/schemas/` に置き、`uv run orpheus schema NAME`で返す。
+- `uv run orpheus validate` と能力カタログのテストで、JSON Schema、IDの重複、workflowの参照切れ、スターターのargv、tool解決情報、コンポーネント破損、実行効果のmodeを確認する。

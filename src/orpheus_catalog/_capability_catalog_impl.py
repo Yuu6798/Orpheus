@@ -14,13 +14,31 @@ from typing import Any
 
 from .capability_workflows import WORKFLOWS
 
-CATALOG_SCHEMA = "orpheus-capability-catalog/0.2"
-SEARCH_SCHEMA = "orpheus-capability-search/0.2"
+CATALOG_SCHEMA = "orpheus-capability-catalog/0.3"
+SEARCH_SCHEMA = "orpheus-capability-search/0.3"
 VALID_MATURITY = {"stable", "experimental", "external"}
 VALID_PARAMETER_STATUS = {"schema", "cli", "docs", "undocumented"}
 VALID_COMPONENT_STATES = {"available", "missing", "broken"}
-VALID_EFFECT_MODES = {"never", "opt-in", "always", "recipe-defined"}
+VALID_EFFECT_MODES = {"never", "opt-in", "always", "recipe-defined", "environment-dependent", "unknown"}
 EXTRA_IMPORTS = {"analysis": "librosa", "fx": "cv2"}
+MACHINE_READABLE_PARAMETER_STATUS = {"schema", "cli"}
+TOOL_RESOLUTION = {
+    "ffmpeg": {"resolution": "env-or-path-or-bundled", "environment": "ORPHEUS_FFMPEG",
+               "required_on_path": False, "bundled_by": "imageio-ffmpeg"},
+    "ffprobe": {"resolution": "env-or-path-or-bundled", "environment": "ORPHEUS_FFPROBE",
+                "required_on_path": False, "bundled_by": "remotion"},
+    "node": {"resolution": "env-or-path", "environment": "ORPHEUS_NODE", "required_on_path": False},
+    "remotion": {"resolution": "project-dependency", "required_on_path": False},
+    "browser": {"resolution": "env-or-managed-download", "environment": "ORPHEUS_BROWSER",
+                "required_on_path": False, "network_on_first_use": True},
+    "blender": {"resolution": "configured-path", "required_on_path": False},
+    "configured-adapter": {"resolution": "configured-argv", "required_on_path": False},
+    "configured-renderer": {"resolution": "configured-argv", "required_on_path": False},
+    "configured-process": {"resolution": "configured-argv", "required_on_path": False},
+    "optional-vlm-adapter": {"resolution": "configured-argv", "required_on_path": False},
+    "recipe-defined": {"resolution": "recipe-defined", "required_on_path": None},
+}
+
 
 
 class CatalogError(ValueError):
@@ -146,9 +164,16 @@ def _effect(mode: str = "never", note: str | None = None) -> dict[str, Any]:
     return result
 
 
+def _tool_requirement(name: str) -> dict[str, Any]:
+    detail = copy.deepcopy(TOOL_RESOLUTION.get(name, {"resolution": "unknown", "required_on_path": None}))
+    return {"name": name, **detail}
+
+
 def _requirements(extras=(), tools=(), *, network="never", external_process="never",
                   network_note=None, external_process_note=None) -> dict[str, Any]:
-    return {"extras": list(extras), "tools": list(tools),
+    names = list(dict.fromkeys(tools))
+    return {"extras": list(extras), "tools": names,
+            "tool_requirements": [_tool_requirement(name) for name in names],
             "network": _effect(network, network_note),
             "external_process": _effect(external_process, external_process_note)}
 
@@ -375,6 +400,20 @@ def _workflow_availability(workflow: dict[str, Any], by_id: dict[str, dict[str, 
             "unavailable": unavailable}
 
 
+def _workflow_parameter_readiness(workflow: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def summarize(steps):
+        ids = [step["capability"] for step in steps]
+        statuses = Counter(by_id[id]["parameters"]["status"] for id in ids)
+        machine = [id for id in ids if by_id[id]["parameters"]["status"] in MACHINE_READABLE_PARAMETER_STATUS]
+        documented = [id for id in ids if by_id[id]["parameters"]["status"] != "undocumented"]
+        return {"total": len(ids), "machine_readable": len(machine), "documented": len(documented),
+                "machine_readable_complete": len(machine) == len(ids),
+                "undocumented": [id for id in ids if by_id[id]["parameters"]["status"] == "undocumented"],
+                "statuses": {key: statuses.get(key, 0) for key in sorted(VALID_PARAMETER_STATUS)}}
+    required = [step for step in workflow["steps"] if step.get("required", True)]
+    return {"required": summarize(required), "all": summarize(workflow["steps"])}
+
+
 def build_catalog() -> dict[str, Any]:
     mv_component, capabilities = _mv_capabilities()
     model3d_component, model3d = _model3d_capabilities()
@@ -393,12 +432,14 @@ def build_catalog() -> dict[str, Any]:
     for raw in WORKFLOWS:
         item = copy.deepcopy(raw)
         item["availability"] = _workflow_availability(item, by_id)
+        item["parameter_readiness"] = _workflow_parameter_readiness(item, by_id)
         workflows.append(item)
     workflows.sort(key=lambda item: item["id"])
     counts = Counter(item["parameters"]["status"] for item in capabilities)
     return {"schema_version": CATALOG_SCHEMA, "components": components,
             "coverage": {"capabilities": len(capabilities), "workflows": len(workflows),
-                         "parameters": {key: counts.get(key, 0) for key in sorted(VALID_PARAMETER_STATUS)}},
+                         "parameters": {key: counts.get(key, 0) for key in sorted(VALID_PARAMETER_STATUS)},
+                         "machine_readable_parameters": sum(counts.get(key, 0) for key in MACHINE_READABLE_PARAMETER_STATUS)},
             "capabilities": capabilities, "workflows": workflows}
 
 
@@ -432,7 +473,24 @@ def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
                 mode = requires.get(effect, {}).get("mode") if isinstance(requires.get(effect), dict) else None
                 if mode not in VALID_EFFECT_MODES:
                     errors.append({"code": "BAD_EFFECT_MODE", "id": id, "effect": effect, "mode": mode})
+            names = requires.get("tools", [])
+            details = requires.get("tool_requirements", [])
+            if [tool.get("name") for tool in details if isinstance(tool, dict)] != names:
+                errors.append({"code": "TOOL_REQUIREMENTS_MISMATCH", "id": id})
+    starter_ids = set()
     for workflow in data.get("workflows", []):
+        if not isinstance(workflow.get("asset_expectations"), list):
+            errors.append({"code": "BAD_ASSET_EXPECTATIONS", "id": workflow.get("id")})
+        if not isinstance(workflow.get("starters"), list):
+            errors.append({"code": "BAD_STARTERS", "id": workflow.get("id")})
+        for starter in workflow.get("starters", []):
+            starter_id = starter.get("id") if isinstance(starter, dict) else None
+            if not starter_id or starter_id in starter_ids:
+                errors.append({"code": "BAD_STARTER_ID", "id": workflow.get("id"), "starter": starter_id})
+            starter_ids.add(starter_id)
+            commands = starter.get("commands") if isinstance(starter, dict) else None
+            if not isinstance(commands, list) or not commands or not all(isinstance(argv, list) and argv and all(isinstance(v, str) and v for v in argv) for argv in commands):
+                errors.append({"code": "BAD_STARTER_COMMANDS", "id": workflow.get("id"), "starter": starter_id})
         for step in workflow.get("steps", []):
             if step.get("capability") not in capability_ids:
                 errors.append({"code": "UNKNOWN_CAPABILITY", "id": workflow.get("id"), "capability": step.get("capability")})
@@ -440,7 +498,15 @@ def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
             "coverage": data.get("coverage", {})}
 
 
-def filter_items(catalog: dict[str, Any], *, domain=None, kind=None, maturity=None, available_only=False):
+def _parameter_statuses(item: dict[str, Any]) -> set[str]:
+    if item.get("kind") != "workflow":
+        return {item.get("parameters", {}).get("status")}
+    statuses = item.get("parameter_readiness", {}).get("all", {}).get("statuses", {})
+    return {status for status, count in statuses.items() if count}
+
+
+def filter_items(catalog: dict[str, Any], *, domain=None, kind=None, maturity=None, available_only=False,
+                 parameter_status=None, machine_readable_only=False):
     result = []
     for item in [*catalog["capabilities"], *catalog["workflows"]]:
         if domain and item.get("domain") != domain:
@@ -451,6 +517,14 @@ def filter_items(catalog: dict[str, Any], *, domain=None, kind=None, maturity=No
             continue
         if available_only and not item["availability"]["available"]:
             continue
+        if parameter_status and parameter_status not in _parameter_statuses(item):
+            continue
+        if machine_readable_only:
+            if item.get("kind") == "workflow":
+                if not item.get("parameter_readiness", {}).get("required", {}).get("machine_readable_complete"):
+                    continue
+            elif item.get("parameters", {}).get("status") not in MACHINE_READABLE_PARAMETER_STATUS:
+                continue
         result.append(item)
     return result
 
@@ -473,17 +547,23 @@ def _score(query: str, item: dict[str, Any]) -> tuple[float, list[str]]:
               "aliases": " ".join(_normal(v) for v in item.get("aliases", [])),
               "tags": " ".join(_normal(v) for v in item.get("tags", [])),
               "inputs": " ".join(_normal(v) for v in item.get("inputs", item.get("required_inputs", []))),
-              "steps": " ".join(_normal(v.get("purpose", "")) for v in item.get("steps", []))}
+              "steps": " ".join(_normal(v.get("purpose", "")) for v in item.get("steps", [])),
+              "starters": " ".join(_normal(v) for starter in item.get("starters", [])
+                                    for v in [starter.get("id", ""), starter.get("summary", ""), starter.get("docs", "")]),
+              "assets": " ".join(_normal(v) for asset in item.get("asset_expectations", [])
+                                  for v in [asset.get("name", ""), asset.get("purpose", ""), asset.get("source", "")])}
     if fields["id"] == q:
         score += 1000; reasons.append("id が完全一致")
     elif q in fields["id"]:
         score += 180; reasons.append("id に一致")
-    for field, weight in (("aliases", 180), ("summary", 140), ("tags", 90), ("inputs", 45), ("steps", 75)):
+    for field, weight in (("aliases", 180), ("summary", 140), ("tags", 90), ("inputs", 45), ("steps", 75),
+                          ("starters", 95), ("assets", 55)):
         if q and q in fields[field]:
             score += weight; reasons.append(f"{field} に問い合わせ全体が一致")
     terms = [term for term in re.split(r"[\s、。,.!?！？/]+", q) if len(term) >= 2]
     for term in terms:
-        for field, weight in (("aliases", 42), ("summary", 32), ("tags", 24), ("id", 20), ("steps", 18)):
+        for field, weight in (("aliases", 42), ("summary", 32), ("tags", 24), ("id", 20), ("steps", 18),
+                              ("starters", 26), ("assets", 16)):
             if term in fields[field]:
                 score += weight
     aliases, qgrams = [_normal(v) for v in item.get("aliases", [])], _ngrams(q)
@@ -511,12 +591,13 @@ def _score(query: str, item: dict[str, Any]) -> tuple[float, list[str]]:
 
 
 def search_catalog(catalog: dict[str, Any], query: str, *, domain=None, kind=None, maturity=None,
-                   available_only=False, limit=10) -> dict[str, Any]:
+                   available_only=False, parameter_status=None, machine_readable_only=False, limit=10) -> dict[str, Any]:
     if not query.strip():
         raise CatalogError("EMPTY_QUERY", "検索する目的を空にできません")
     if not 1 <= limit <= 100:
         raise CatalogError("BAD_LIMIT", "limit は 1〜100 にしてください", limit=limit)
-    candidates = filter_items(catalog, domain=domain, kind=kind, maturity=maturity, available_only=available_only)
+    candidates = filter_items(catalog, domain=domain, kind=kind, maturity=maturity, available_only=available_only,
+                              parameter_status=parameter_status, machine_readable_only=machine_readable_only)
     ranked = []
     for item in candidates:
         score, reasons = _score(query, item)
@@ -524,5 +605,6 @@ def search_catalog(catalog: dict[str, Any], query: str, *, domain=None, kind=Non
             ranked.append({"score": round(score, 3), "reasons": reasons, "item": item})
     ranked.sort(key=lambda row: (-row["score"], row["item"]["id"]))
     return {"schema_version": SEARCH_SCHEMA, "query": query,
-            "filters": {"domain": domain, "kind": kind, "maturity": maturity, "available_only": available_only},
+            "filters": {"domain": domain, "kind": kind, "maturity": maturity, "available_only": available_only,
+                        "parameter_status": parameter_status, "machine_readable_only": machine_readable_only},
             "results": ranked[:limit], "searched": len(candidates)}

@@ -13,8 +13,8 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 ## 特徴
 
 - **再現できる**: 入力は SHA-256 で記録し、同じ入力なら再描画しない。出力ごとに入力の写しと検証結果を残す。
-- **目的から探せる**: `orpheus search "目的"` で、既存の workflow と道具を実行前に逆引きする。
-- **ネットワークを呼ばない**: 生成 AI の API、クラウドへの送信、公開は行わない。外部プログラムはユーザーが明示した設定だけを実行する。
+- **目的から始められる**: `orpheus search "目的"` で workflow を逆引きし、`starters` から既存の合成例をそのまま試せる。
+- **勝手に送信しない**: 生成 AI の API、クラウドへの送信、公開は行わない。初回のブラウザー取得など環境依存の通信と、明示した外部プログラムの副作用は能力目録に表示する。
 - **採点しない**: 自動で出すのは構造の検査（`technical_pass`）だけ。作品としての採否（`accepted`）は人が記録する。
 - **契約を守る**: MV の入出力の形は `contracts/` の JSON Schema が正典。実験的な機能の設定はその外に置く。
 
@@ -22,7 +22,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 
 | 入口 | できること | 状態 | 詳細 |
 |---|---|---|---|
-| `orpheus search "目的"` | 制作目的から、現在の環境で見える workflow と道具を検索し、必要入力・成熟度・可用性・人が決める箇所を JSON で読む | 本体 | [capabilities](docs/capabilities.md) |
+| `orpheus search "目的"` | 制作目的から workflow と道具を検索し、必要資産、既存スターター、依存の解決方法、通信可能性、パラメータ整備率を JSON で読む | 本体 | [capabilities](docs/capabilities.md) |
 | `mv init … render verify` | 音源・歌詞時刻・静止画・演出 JSON から、パン・ズーム・クロスフェードと歌詞テロップつきの MP4 を描く | 本体 | [runbook](docs/runbook.md) |
 | `mv workflow` | 用途別（歌詞つき MV / ダンス編集）に必要な工程を並べ、現在のファイルから完了を確認する | 本体 | [workflow](docs/workflow.md) |
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
@@ -66,7 +66,23 @@ ffprobe は PATH のもの、無ければ Remotion 同梱版を使います（`O
 
 ## 5 分で試す
 
-リポジトリのルートで実行します。合成音・幾何学画像・架空の歌詞から 6 秒のテスト動画を作ります。
+まず目的から既存のスターターを確認できます。
+
+```sh
+uv run orpheus search "既存の資産で短い歌詞MVを作りたい"
+uv run orpheus show workflow.lyric_mv
+uv run orpheus schema catalog
+```
+
+`workflow.lyric_mv.starters` が示す既存例は、合成音・架空歌詞・幾何学画像を自動で用意し、描画・検証・workflow checkまで通します。
+
+```sh
+uv sync --locked --extra analysis
+pnpm install --frozen-lockfile
+uv run --no-sync python examples/workflow/run.py projects/workflow-example
+```
+
+標準の小さなMVデモを個別コマンドで試す場合は、リポジトリのルートで次を実行します。
 
 ```sh
 uv sync --locked --extra analysis
@@ -76,7 +92,7 @@ uv run mv render projects/demo
 uv run mv verify projects/demo
 ```
 
-動画は `projects/demo/runs/<run_id>/video.mp4`、検証結果は同じフォルダーの `verification.json` に出ます。
+動画は `projects/demo/runs/<run_id>/video.mp4`、検証結果は同じフォルダーの `verification.json` に出ます。検証記録には凍結入力と現在入力のSHA-256、および `current_inputs_match` が含まれます。
 実験的な機能も同じ形で合成素材のデモを持っています（`--extra fx` が要ります）。
 
 ```sh
@@ -113,7 +129,7 @@ uv run mv workflow check projects/song-a/workflow.json --out projects/song-a/wor
 - 時刻の 0 秒は切り出した音源の先頭です。元曲の開始秒と元ファイルのハッシュは別に残ります。
 - 歌詞時刻やサビの区間は推測して確定扱いにしません。モデルの推定は `unreviewed` のまま取り込み、確認した行だけが本番描画に使えます。
 - 拍や歌詞同期を意図して省くときは `mv workflow omit PLAN beats --reason "…"` で理由を記録します。省略は検査の合格には変わりません。
-- 合成素材で全工程を通す実行例: `uv run python examples/workflow/run.py projects/workflow-example`（[examples/workflow](examples/workflow/README.md)）。
+- 合成素材で全工程を通す実行例: `uv sync --locked --extra analysis` と `pnpm install --frozen-lockfile` の後、`uv run --no-sync python examples/workflow/run.py projects/workflow-example`（[examples/workflow](examples/workflow/README.md)）。
 
 ## リポジトリの構成
 

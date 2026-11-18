@@ -20,17 +20,25 @@ VALID_MATURITY = _impl.VALID_MATURITY
 VALID_PARAMETER_STATUS = _impl.VALID_PARAMETER_STATUS
 VALID_COMPONENT_STATES = _impl.VALID_COMPONENT_STATES
 VALID_EFFECT_MODES = _impl.VALID_EFFECT_MODES
-VALID_EFFECT_MODES.add("unknown")
 EXTRA_IMPORTS = _impl.EXTRA_IMPORTS
+MACHINE_READABLE_PARAMETER_STATUS = _impl.MACHINE_READABLE_PARAMETER_STATUS
+TOOL_RESOLUTION = _impl.TOOL_RESOLUTION
 MV_OVERRIDES = _impl.MV_OVERRIDES
 MV_RUNTIME = _impl.MV_RUNTIME
 MV_RUNTIME.update({
     ("demo",): {"external_process": "always", "tools": ["ffmpeg"],
                 "external_process_note": "合成素材の音源を正規化してprojectを初期化する"},
-    ("render",): {"external_process": "always", "tools": ["node", "remotion", "ffmpeg", "ffprobe"]},
-    ("preview",): {"external_process": "always", "tools": ["node", "remotion", "browser", "ffmpeg", "ffprobe"],
+    ("render",): {"network": "environment-dependent", "external_process": "always",
+                  "tools": ["node", "remotion", "browser", "ffmpeg", "ffprobe"],
+                  "network_note": "Chrome Headless Shellが未取得でORPHEUS_BROWSERも未指定の初回はRemotionがブラウザーを取得し得る",
+                  "external_process_note": "Node/Remotionで描画し、FFmpeg/FFprobeで動画と音声を検証する"},
+    ("preview",): {"network": "environment-dependent", "external_process": "always",
+                   "tools": ["node", "remotion", "browser", "ffmpeg", "ffprobe"],
+                   "network_note": "管理ブラウザーが未取得でORPHEUS_BROWSERも未指定の初回はRemotionがブラウザーを取得し得る",
                    "external_process_note": "--studioではRemotion Studioとbrowser、通常previewでは描画とFFmpeg/FFprobe検証を使う"},
-    ("resume",): {"external_process": "opt-in", "tools": ["node", "remotion", "ffmpeg", "ffprobe"],
+    ("resume",): {"network": "environment-dependent", "external_process": "opt-in",
+                  "tools": ["node", "remotion", "browser", "ffmpeg", "ffprobe"],
+                  "network_note": "再描画が必要で管理ブラウザーが未取得の場合はRemotionがブラウザーを取得し得る",
                   "external_process_note": "必要入力が揃い、同一renderのcacheが無いか無効な場合に描画と検証を再開する"},
     ("run-adapter",): {"network": "recipe-defined", "external_process": "always",
                        "tools": ["configured-adapter", "ffprobe"],
@@ -52,6 +60,9 @@ MV_RUNTIME.update({
     ("deliver", "join"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("deliver", "review-copy"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("deliver", "split"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("layer", "render"): {"network": "environment-dependent", "external_process": "always",
+                          "tools": ["node", "remotion", "browser"],
+                          "network_note": "管理ブラウザーが未取得でORPHEUS_BROWSERも未指定の初回はRemotionがブラウザーを取得し得る"},
 })
 MODEL3D_OVERRIDES = _impl.MODEL3D_OVERRIDES
 MODEL3D_OVERRIDES["check.eyes"].update(network_mode="never", external_process_mode="never")
@@ -63,7 +74,13 @@ MODEL3D_OVERRIDES.setdefault("blender.run_script", {
     "external_process_note": "指定したBlenderをbackgroundまたは対話モードで毎回起動する",
 })
 MODEL3D_OVERRIDES.setdefault("render.assemble", {
-    "tools": ["ffmpeg"], "network_mode": "never", "external_process_mode": "always",
+    "tools": ["ffmpeg"],
+    "tool_requirements": [{
+        "name": "ffmpeg", "resolution": "parameter-or-context-or-bundled-or-path",
+        "parameter": "ffmpeg", "context_tool": "ffmpeg", "required_on_path": False,
+        "bundled_by": "imageio-ffmpeg",
+    }],
+    "network_mode": "never", "external_process_mode": "always",
     "external_process_note": "PNG連番と任意の音声をH.264/AACへまとめ、出力をFFmpegで読み戻す",
 })
 importlib = _impl.importlib
@@ -73,6 +90,7 @@ importlib_util = _impl.importlib_util
 _normal = _impl._normal
 _json_value = _impl._json_value
 _effect = _impl._effect
+_tool_requirement = _impl._tool_requirement
 _requirements = _impl._requirements
 _mode = _impl._mode
 _argument = _impl._argument
@@ -82,6 +100,8 @@ _mv_extras = _impl._mv_extras
 _availability_for_extras = _impl._availability_for_extras
 _placeholder = _impl._placeholder
 _workflow_availability = _impl._workflow_availability
+_workflow_parameter_readiness = _impl._workflow_parameter_readiness
+_parameter_statuses = _impl._parameter_statuses
 _ngrams = _impl._ngrams
 _score = _impl._score
 
@@ -171,6 +191,12 @@ def _model3d_capabilities() -> tuple[dict[str, Any], list[dict[str, Any]]]:
             external = "always"
         else:
             external = "unknown"
+        requirements = _requirements(["model3d"], tools, network=network, external_process=external,
+                                     network_note=metadata.get("network_note") or override.get("network_note"),
+                                     external_process_note=metadata.get("external_process_note") or override.get("external_process_note"))
+        declared_tools = metadata.get("tool_requirements") or override.get("tool_requirements")
+        if declared_tools is not None:
+            requirements["tool_requirements"] = copy.deepcopy(declared_tools)
         capabilities.append({
             "id": f"model3d.{name}", "kind": "operation", "domain": "model3d",
             "maturity": metadata.get("maturity", "experimental"),
@@ -180,9 +206,7 @@ def _model3d_capabilities() -> tuple[dict[str, Any], list[dict[str, Any]]]:
             "entrypoint": {"argv": ["model3d", "run", "RECIPE"], "recipe_operation": name,
                            "docs": metadata.get("docs", "docs/model3d.md")},
             "inputs": list(raw.get("inputs") or []), "outputs": list(raw.get("outputs") or []), "parameters": parameters,
-            "requires": _requirements(["model3d"], tools, network=network, external_process=external,
-                                      network_note=metadata.get("network_note") or override.get("network_note"),
-                                      external_process_note=metadata.get("external_process_note") or override.get("external_process_note")),
+            "requires": requirements,
             "cacheable": bool(raw.get("cacheable", True)), "selectable": list(raw.get("selectable") or []),
             "availability": {"available": True, "reason": None},
         })
@@ -209,12 +233,14 @@ def build_catalog() -> dict[str, Any]:
     for raw in WORKFLOWS:
         item = copy.deepcopy(raw)
         item["availability"] = _workflow_availability(item, by_id)
+        item["parameter_readiness"] = _workflow_parameter_readiness(item, by_id)
         workflows.append(item)
     workflows.sort(key=lambda item: item["id"])
     counts = Counter(item["parameters"]["status"] for item in capabilities)
     return {"schema_version": CATALOG_SCHEMA, "components": components,
             "coverage": {"capabilities": len(capabilities), "workflows": len(workflows),
-                         "parameters": {key: counts.get(key, 0) for key in sorted(VALID_PARAMETER_STATUS)}},
+                         "parameters": {key: counts.get(key, 0) for key in sorted(VALID_PARAMETER_STATUS)},
+                         "machine_readable_parameters": sum(counts.get(key, 0) for key in MACHINE_READABLE_PARAMETER_STATUS)},
             "capabilities": capabilities, "workflows": workflows}
 
 
@@ -229,6 +255,7 @@ search_catalog = _impl.search_catalog
 __all__ = [
     "CatalogError", "CATALOG_SCHEMA", "SEARCH_SCHEMA", "VALID_MATURITY",
     "VALID_PARAMETER_STATUS", "VALID_COMPONENT_STATES", "VALID_EFFECT_MODES",
+    "MACHINE_READABLE_PARAMETER_STATUS", "TOOL_RESOLUTION",
     "MV_OVERRIDES", "MV_RUNTIME", "MODEL3D_OVERRIDES", "build_catalog",
     "validate_catalog", "filter_items", "get_item", "search_catalog",
 ]

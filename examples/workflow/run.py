@@ -182,10 +182,14 @@ def main(argv=None):
         root, plan = Path(result["project"]), Path(result["plan"])
         if not args.prepare_only:
             video = step(root, result["commands"], "render", ["mv", "render", root], lambda: pipeline.render(root))
+            initial_verification = read_json(Path(video).parent / "verification.json")
+            if initial_verification.get("technical_pass") is not True or initial_verification.get("current_inputs_match") is not True:
+                raise PipelineError("Initial verification record is not self-contained for the current inputs")
             verified = step(root, result["commands"], "verify", ["mv", "verify", root], lambda: pipeline.verify(root))
             if verified.get("technical_pass") is not True or verified.get("current_inputs_match") is not True:
                 raise PipelineError("Rendered example did not verify against current inputs")
             result["video"] = str(video)
+            result["initial_verification"] = str(Path(video).parent / "verification.json")
         report_dir = root / "work/workflow-check"
         report = step(root, result["commands"], "workflow-check", ["mv", "workflow", "check", plan, "--out", report_dir],
                       lambda: workflow.check(plan, out=report_dir))

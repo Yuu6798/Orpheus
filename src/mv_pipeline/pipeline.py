@@ -271,6 +271,9 @@ def render(root, profile="final", studio=False):
         report["warnings"] = warnings
         report["profile"] = profile
         report["input_hashes"] = {k: sha256(root / f"{k}.json") for k in ["analysis", "storyboard", "assets"]}
+        report.update(_current_input_status(root, folder, profile))
+        report["verified_run_id"] = folder.name
+        report["verification_stage"] = "render"
         os.replace(temp, folder / "video.mp4")
         atomic_json(folder / "verification.json", report)
         # Cache validity includes every frozen input, not only the output video.
@@ -281,19 +284,32 @@ def render(root, profile="final", studio=False):
     return root / paths[0]
 
 
+def _current_input_status(root, folder, profile=None):
+    """描画runの凍結入力が、現在のprojectと一致するかを自己完結した記録にする。"""
+    result = {"current_inputs_match": False}
+    try:
+        if profile is None:
+            profile = read_json(folder / "manifest.json")["profile"]
+        validate.bundle(root, profile)
+        hashes = {name: {"current": sha256(root / f"{name}.json"),
+                         "run": sha256(folder / f"{name}.json")}
+                  for name in ["analysis", "storyboard", "assets"]}
+        result["current_input_hashes"] = hashes
+        result["current_inputs_match"] = all(row["current"] == row["run"] for row in hashes.values())
+    except (PipelineError, OSError, KeyError) as error:
+        result["current_input_error"] = str(error)
+    return result
+
+
 def verify(root):
     runner = Runner(root)
     validate.require(bool(runner.job["current_run_id"]), "No render exists")
     folder = safe_path(root, "runs/" + runner.job["current_run_id"])
     s = read_json(folder / "storyboard.json")
     report = media.verify_video(folder / "video.mp4", folder / "public/audio.wav", s["render"])
-    try:
-        validate.bundle(root, read_json(folder / "manifest.json")["profile"])
-        report["current_inputs_match"] = all(sha256(root / f"{name}.json") == sha256(folder / f"{name}.json") for name in ["analysis", "storyboard", "assets"])
-    except (PipelineError, OSError) as error:
-        report["current_inputs_match"] = False
-        report["current_input_error"] = str(error)
+    report.update(_current_input_status(root, folder))
     report["verified_run_id"] = folder.name
+    report["verification_stage"] = "recheck"
     # Preserve the original result and its warnings, and do not invalidate cache.
     atomic_json(folder / "recheck.json", report)
     return report

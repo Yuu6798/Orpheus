@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orpheus-capability-search/0.3",
+  "title": "Orpheus capability search result",
+  "type": "object",
+  "required": ["schema_version", "query", "filters", "results", "searched"],
+  "properties": {
+    "schema_version": {"const": "orpheus-capability-search/0.3"},
+    "query": {"type": "string"},
+    "filters": {
+      "type": "object",
+      "required": ["domain", "kind", "maturity", "available_only", "parameter_status", "machine_readable_only"],
+      "properties": {
+        "domain": {"type": ["string", "null"]},
+        "kind": {"type": ["string", "null"]},
+        "maturity": {"type": ["string", "null"]},
+        "available_only": {"type": "boolean"},
+        "parameter_status": {"type": ["string", "null"]},
+        "machine_readable_only": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["score", "reasons", "item"],
+        "properties": {
+          "score": {"type": "number"},
+          "reasons": {"type": "array", "items": {"type": "string"}},
+          "item": {"type": "object", "required": ["id", "kind", "summary", "availability"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "searched": {"type": "integer", "minimum": 0}
+  },
+  "additionalProperties": false
+}

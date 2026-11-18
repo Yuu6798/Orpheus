@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orpheus-capability-catalog/0.3",
+  "title": "Orpheus capability catalog",
+  "type": "object",
+  "required": ["schema_version", "components", "coverage", "capabilities", "workflows"],
+  "properties": {
+    "schema_version": {"const": "orpheus-capability-catalog/0.3"},
+    "components": {"type": "object", "additionalProperties": {"$ref": "#/$defs/component"}},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "capabilities": {"type": "array", "items": {"$ref": "#/$defs/capability"}},
+    "workflows": {"type": "array", "items": {"$ref": "#/$defs/workflow"}}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "component": {
+      "type": "object",
+      "required": ["available", "state"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "state": {"enum": ["available", "missing", "broken"]},
+        "reason": {"type": ["string", "null"]},
+        "commands": {"type": "integer", "minimum": 0},
+        "operations": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["capabilities", "workflows", "parameters", "machine_readable_parameters"],
+      "properties": {
+        "capabilities": {"type": "integer", "minimum": 0},
+        "workflows": {"type": "integer", "minimum": 0},
+        "parameters": {
+          "type": "object",
+          "required": ["schema", "cli", "docs", "undocumented"],
+          "properties": {
+            "schema": {"type": "integer", "minimum": 0},
+            "cli": {"type": "integer", "minimum": 0},
+            "docs": {"type": "integer", "minimum": 0},
+            "undocumented": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "machine_readable_parameters": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "effect": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["never", "opt-in", "always", "recipe-defined", "environment-dependent", "unknown"]},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "toolRequirement": {
+      "type": "object",
+      "required": ["name", "resolution", "required_on_path"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "resolution": {"type": "string", "minLength": 1},
+        "required_on_path": {"type": ["boolean", "null"]},
+        "environment": {"type": "string"},
+        "bundled_by": {"type": "string"},
+        "network_on_first_use": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "requirements": {
+      "type": "object",
+      "required": ["extras", "tools", "tool_requirements", "network", "external_process"],
+      "properties": {
+        "extras": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "tools": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "tool_requirements": {"type": "array", "items": {"$ref": "#/$defs/toolRequirement"}},
+        "network": {"$ref": "#/$defs/effect"},
+        "external_process": {"$ref": "#/$defs/effect"}
+      },
+      "additionalProperties": false
+    },
+    "availability": {
+      "type": "object",
+      "required": ["available"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]},
+        "missing_extras": {"type": "array", "items": {"type": "object"}},
+        "component": {"type": "string"},
+        "component_state": {"type": ["string", "null"]},
+        "missing_from_registered_component": {"type": "boolean"},
+        "unavailable": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "parameters": {
+      "type": "object",
+      "required": ["status", "schema"],
+      "properties": {
+        "status": {"enum": ["schema", "cli", "docs", "undocumented"]},
+        "schema": {"type": ["object", "null"]},
+        "arguments": {"type": "array", "items": {"type": "object"}}
+      },
+      "additionalProperties": true
+    },
+    "entrypoint": {
+      "type": "object",
+      "required": ["argv", "docs"],
+      "properties": {
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "docs": {"type": ["string", "null"]},
+        "recipe_operation": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "capability": {
+      "type": "object",
+      "required": ["id", "kind", "domain", "maturity", "summary", "aliases", "tags", "entrypoint", "inputs", "outputs", "parameters", "requires", "availability"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["command", "command-group", "operation"]},
+        "domain": {"type": "string", "minLength": 1},
+        "maturity": {"enum": ["stable", "experimental", "external"]},
+        "summary": {"type": "string", "minLength": 1},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "entrypoint": {"$ref": "#/$defs/entrypoint"},
+        "inputs": {"type": "array", "items": {"type": "string"}},
+        "outputs": {"type": "array", "items": {"type": "string"}},
+        "parameters": {"$ref": "#/$defs/parameters"},
+        "requires": {"$ref": "#/$defs/requirements"},
+        "availability": {"$ref": "#/$defs/availability"},
+        "cacheable": {"type": "boolean"},
+        "selectable": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
+    "step": {
+      "type": "object",
+      "required": ["capability", "purpose", "required"],
+      "properties": {
+        "capability": {"type": "string", "minLength": 1},
+        "purpose": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "assetExpectation": {
+      "type": "object",
+      "required": ["name", "required", "kinds", "source", "purpose"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "kinds": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "source": {"type": "string", "minLength": 1},
+        "purpose": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "starter": {
+      "type": "object",
+      "required": ["id", "kind", "summary", "commands", "docs", "assets", "expected_outputs", "limitations"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "commands": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}},
+        "docs": {"type": "string", "minLength": 1},
+        "assets": {"type": "string", "minLength": 1},
+        "expected_outputs": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "parameterSummary": {
+      "type": "object",
+      "required": ["total", "machine_readable", "documented", "machine_readable_complete", "undocumented", "statuses"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "machine_readable": {"type": "integer", "minimum": 0},
+        "documented": {"type": "integer", "minimum": 0},
+        "machine_readable_complete": {"type": "boolean"},
+        "undocumented": {"type": "array", "items": {"type": "string"}},
+        "statuses": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      },
+      "additionalProperties": false
+    },
+    "parameterReadiness": {
+      "type": "object",
+      "required": ["required", "all"],
+      "properties": {
+        "required": {"$ref": "#/$defs/parameterSummary"},
+        "all": {"$ref": "#/$defs/parameterSummary"}
+      },
+      "additionalProperties": false
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["id", "kind", "domain", "maturity", "summary", "aliases", "tags", "required_inputs", "steps", "human_decisions", "docs", "asset_expectations", "starters", "parameter_readiness", "availability"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"const": "workflow"},
+        "domain": {"type": "string", "minLength": 1},
+        "maturity": {"enum": ["stable", "experimental", "external"]},
+        "summary": {"type": "string", "minLength": 1},
+        "aliases": {"type": "array", "items": {"type": "string"}},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "required_inputs": {"type": "array", "items": {"type": "string"}},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}},
+        "human_decisions": {"type": "array", "items": {"type": "string"}},
+        "docs": {"type": "string"},
+        "asset_expectations": {"type": "array", "items": {"$ref": "#/$defs/assetExpectation"}},
+        "starters": {"type": "array", "items": {"$ref": "#/$defs/starter"}},
+        "parameter_readiness": {"$ref": "#/$defs/parameterReadiness"},
+        "availability": {"$ref": "#/$defs/availability"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

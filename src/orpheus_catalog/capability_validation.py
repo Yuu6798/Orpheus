@@ -1,17 +1,21 @@
-"""能力カタログの実環境に対する厳密な参照検査。"""
+"""能力カタログのJSON Schemaと実環境に対する厳密な参照検査。"""
 from __future__ import annotations
 
 from typing import Any
 
 from .capability_catalog import build_catalog, validate_catalog as validate_shape
+from .schemas import validation_errors
 
 
 def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
-    """未導入、読込み破損、登録済み領域の参照切れを別の状態として検査する。"""
+    """公開schema、未導入、読込み破損、登録済み領域の参照切れを別の状態として検査する。"""
     data = catalog or build_catalog()
     report = validate_shape(data)
     errors = list(report["errors"])
     seen = {(error.get("code"), error.get("id"), error.get("component")) for error in errors}
+
+    for failure in validation_errors("catalog", data):
+        errors.append({"code": "SCHEMA_VALIDATION", **failure})
 
     for name, component in data.get("components", {}).items():
         if component.get("state") == "broken":
@@ -31,4 +35,5 @@ def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
                 errors.append(error)
                 seen.add(key)
 
-    return {**report, "valid": not errors, "errors": errors}
+    return {**report, "schema_version": "orpheus-capability-validation/0.3",
+            "valid": not errors, "errors": errors}
