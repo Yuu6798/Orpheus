@@ -27,7 +27,7 @@ TOOL_RESOLUTION = {
                "required_on_path": False, "bundled_by": "imageio-ffmpeg"},
     "ffprobe": {"resolution": "env-or-path-or-bundled", "environment": "ORPHEUS_FFPROBE",
                 "required_on_path": False, "bundled_by": "remotion"},
-    "node": {"resolution": "env-or-path", "environment": "ORPHEUS_NODE", "required_on_path": True},
+    "node": {"resolution": "env-or-path", "environment": "ORPHEUS_NODE", "required_on_path": False},
     "remotion": {"resolution": "project-dependency", "required_on_path": False},
     "browser": {"resolution": "env-or-managed-download", "environment": "ORPHEUS_BROWSER",
                 "required_on_path": False, "network_on_first_use": True},

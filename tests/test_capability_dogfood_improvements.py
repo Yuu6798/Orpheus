@@ -29,7 +29,11 @@ def test_lyric_workflow_points_to_a_runnable_existing_starter():
     assert workflow["asset_expectations"]
     starter = workflow["starters"][0]
     assert starter["id"] == "starter.synthetic_lyric_mv"
-    assert starter["commands"] == [["uv", "run", "python", "examples/workflow/run.py", "PROJECT_DIR"]]
+    assert starter["commands"] == [
+        ["uv", "sync", "--locked", "--extra", "analysis"],
+        ["pnpm", "install", "--frozen-lockfile"],
+        ["uv", "run", "--no-sync", "python", "examples/workflow/run.py", "PROJECT_DIR"],
+    ]
     assert "verification.json" in " ".join(starter["expected_outputs"])
     result = search_catalog(build_catalog(), "既存の資産で短い歌詞MVを作る", limit=3)
     assert result["results"][0]["item"]["id"] == "workflow.lyric_mv"
@@ -43,7 +47,7 @@ def test_tool_resolution_distinguishes_path_and_bundled_fallbacks():
                                 "bundled_by": "imageio-ffmpeg"}
     assert tools["ffprobe"]["required_on_path"] is False
     assert tools["ffprobe"]["bundled_by"] == "remotion"
-    assert tools["node"]["required_on_path"] is True
+    assert tools["node"]["required_on_path"] is False
     assert tools["browser"]["network_on_first_use"] is True
     assert render["requires"]["network"]["mode"] == "environment-dependent"
 
@@ -71,3 +75,17 @@ def test_catalog_validation_includes_public_json_schema():
     report = validate_catalog(broken)
     assert report["valid"] is False
     assert any(error["code"] == "SCHEMA_VALIDATION" for error in report["errors"])
+
+
+def test_model3d_ffmpeg_resolution_matches_assemble_operation():
+    catalog = build_catalog()
+    if not catalog["components"]["model3d"]["available"]:
+        return
+    assemble = get_item(catalog, "model3d.render.assemble")
+    ffmpeg = {row["name"]: row for row in assemble["requires"]["tool_requirements"]}["ffmpeg"]
+    assert ffmpeg["resolution"] == "parameter-or-context-or-bundled-or-path"
+    assert ffmpeg["parameter"] == "ffmpeg"
+    assert ffmpeg["context_tool"] == "ffmpeg"
+    assert ffmpeg["required_on_path"] is False
+    assert ffmpeg["bundled_by"] == "imageio-ffmpeg"
+    assert "environment" not in ffmpeg

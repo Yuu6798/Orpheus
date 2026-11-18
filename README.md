@@ -77,7 +77,9 @@ uv run orpheus schema catalog
 `workflow.lyric_mv.starters` が示す既存例は、合成音・架空歌詞・幾何学画像を自動で用意し、描画・検証・workflow checkまで通します。
 
 ```sh
-uv run python examples/workflow/run.py projects/workflow-example
+uv sync --locked --extra analysis
+pnpm install --frozen-lockfile
+uv run --no-sync python examples/workflow/run.py projects/workflow-example
 ```
 
 標準の小さなMVデモを個別コマンドで試す場合は、リポジトリのルートで次を実行します。
@@ -127,7 +129,7 @@ uv run mv workflow check projects/song-a/workflow.json --out projects/song-a/wor
 - 時刻の 0 秒は切り出した音源の先頭です。元曲の開始秒と元ファイルのハッシュは別に残ります。
 - 歌詞時刻やサビの区間は推測して確定扱いにしません。モデルの推定は `unreviewed` のまま取り込み、確認した行だけが本番描画に使えます。
 - 拍や歌詞同期を意図して省くときは `mv workflow omit PLAN beats --reason "…"` で理由を記録します。省略は検査の合格には変わりません。
-- 合成素材で全工程を通す実行例: `uv run python examples/workflow/run.py projects/workflow-example`（[examples/workflow](examples/workflow/README.md)）。
+- 合成素材で全工程を通す実行例: `uv sync --locked --extra analysis` と `pnpm install --frozen-lockfile` の後、`uv run --no-sync python examples/workflow/run.py projects/workflow-example`（[examples/workflow](examples/workflow/README.md)）。
 
 ## リポジトリの構成
 

@@ -42,7 +42,7 @@ uv run orpheus validate
 
 `availability` が確かめるのは、現在のPython環境でコマンドとoptional extraを発見できるかまでです。Blender・FFmpeg・Nodeなど外部実行ファイルの存在や、素材・設定の成立は自動で確定しません。
 
-`requires.tools` は互換用の名前一覧です。実際の解決方法は `requires.tool_requirements` を読みます。例えばFFmpegは `ORPHEUS_FFMPEG → PATH → imageio-ffmpeg同梱版`、ffprobeは `ORPHEUS_FFPROBE → PATH → Remotion同梱版` の順で解決するため、PATHに無くても直ちに利用不能ではありません。Nodeは `ORPHEUS_NODE` またはPATHが必要で、Blenderや外部adapterは設定で実行ファイルを渡します。
+`requires.tools` は互換用の名前一覧です。実際の解決方法は `requires.tool_requirements` を読みます。MV側のFFmpegは `ORPHEUS_FFMPEG → PATH → imageio-ffmpeg同梱版`、ffprobeは `ORPHEUS_FFPROBE → PATH → Remotion同梱版` の順で解決するため、PATHに無くても直ちに利用不能ではありません。Nodeは `ORPHEUS_NODE` またはPATH、Blenderや外部adapterは設定で実行ファイルを渡します。`model3d render.assemble` のFFmpegは別の実装で、recipeの`ffmpeg`パラメーター → `model3d run --tool ffmpeg=PATH` → imageio-ffmpeg同梱版 → PATHの順です。`required_on_path`は文字どおりPATH上の実行ファイルが必須かを表し、環境変数・recipe・設定で明示できる場合は`false`です。
 
 コンポーネントには次の `state` があります。
 
@@ -103,7 +103,9 @@ workflowは自動実行器ではなく、目的から既存の道具へ到達す
 例えば `workflow.lyric_mv` の `starter.synthetic_lyric_mv` は、次の既存例へ直接案内します。
 
 ```sh
-uv run python examples/workflow/run.py PROJECT_DIR
+uv sync --locked --extra analysis
+pnpm install --frozen-lockfile
+uv run --no-sync python examples/workflow/run.py PROJECT_DIR
 ```
 
 この例は合成音・架空歌詞・幾何学画像を生成し、描画・verify・workflow checkまで通します。実曲の歌唱同期や作品採用を評価する例ではありません。

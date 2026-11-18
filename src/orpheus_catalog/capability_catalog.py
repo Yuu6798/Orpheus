@@ -74,7 +74,13 @@ MODEL3D_OVERRIDES.setdefault("blender.run_script", {
     "external_process_note": "指定したBlenderをbackgroundまたは対話モードで毎回起動する",
 })
 MODEL3D_OVERRIDES.setdefault("render.assemble", {
-    "tools": ["ffmpeg"], "network_mode": "never", "external_process_mode": "always",
+    "tools": ["ffmpeg"],
+    "tool_requirements": [{
+        "name": "ffmpeg", "resolution": "parameter-or-context-or-bundled-or-path",
+        "parameter": "ffmpeg", "context_tool": "ffmpeg", "required_on_path": False,
+        "bundled_by": "imageio-ffmpeg",
+    }],
+    "network_mode": "never", "external_process_mode": "always",
     "external_process_note": "PNG連番と任意の音声をH.264/AACへまとめ、出力をFFmpegで読み戻す",
 })
 importlib = _impl.importlib
@@ -185,6 +191,12 @@ def _model3d_capabilities() -> tuple[dict[str, Any], list[dict[str, Any]]]:
             external = "always"
         else:
             external = "unknown"
+        requirements = _requirements(["model3d"], tools, network=network, external_process=external,
+                                     network_note=metadata.get("network_note") or override.get("network_note"),
+                                     external_process_note=metadata.get("external_process_note") or override.get("external_process_note"))
+        declared_tools = metadata.get("tool_requirements") or override.get("tool_requirements")
+        if declared_tools is not None:
+            requirements["tool_requirements"] = copy.deepcopy(declared_tools)
         capabilities.append({
             "id": f"model3d.{name}", "kind": "operation", "domain": "model3d",
             "maturity": metadata.get("maturity", "experimental"),
@@ -194,9 +206,7 @@ def _model3d_capabilities() -> tuple[dict[str, Any], list[dict[str, Any]]]:
             "entrypoint": {"argv": ["model3d", "run", "RECIPE"], "recipe_operation": name,
                            "docs": metadata.get("docs", "docs/model3d.md")},
             "inputs": list(raw.get("inputs") or []), "outputs": list(raw.get("outputs") or []), "parameters": parameters,
-            "requires": _requirements(["model3d"], tools, network=network, external_process=external,
-                                      network_note=metadata.get("network_note") or override.get("network_note"),
-                                      external_process_note=metadata.get("external_process_note") or override.get("external_process_note")),
+            "requires": requirements,
             "cacheable": bool(raw.get("cacheable", True)), "selectable": list(raw.get("selectable") or []),
             "availability": {"available": True, "reason": None},
         })
