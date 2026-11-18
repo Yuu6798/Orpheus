@@ -155,7 +155,7 @@ def test_channels_that_would_not_play_the_keys_are_refused():
     assert "ミュート" in message and f"{blink}[0]" in message and f"{eye}[0]" in message
     assert "ロック" in eye_motion.channel_problem([_curve(blink, lock=True)], paths)
     assert "修飾子" in eye_motion.channel_problem([_curve(eye, 1, modifiers=[True, False])], paths)
-    # 目の骨の回りが XYZ でなく回りのキーがあると、XYZ に替えたとき、もとのキーが台本の外のコマでも効かなくなる
+    # 目の骨の回りが XYZ でなく回りのキーかドライバーがあると、XYZ に替えたとき、もとのキーやドライバーが台本の外のコマでも効かなくなる
     assert eye_motion.rotation_mode_problem({"eye.L": "XYZ", "eye.R": "QUATERNION"}, {"eye.L"}) is None
     assert eye_motion.rotation_mode_problem({"eye.L": "QUATERNION", "eye.R": "QUATERNION"}, set()) is None   # キーが無ければ替えてよい
     message = eye_motion.rotation_mode_problem({"eye.L": "QUATERNION", "eye.R": "YXZ"}, {"eye.L", "eye.R"})

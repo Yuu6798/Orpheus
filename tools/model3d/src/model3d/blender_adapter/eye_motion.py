@@ -17,8 +17,8 @@ settings.json（motion.eye_plan が書く）: object（頭のメッシュ）、r
 - シーンのコマの範囲を、打つコマが入るまで広げる（もとの範囲は残す。再生や描画が範囲で止まらないように）。
 - キーを打っても動かない .blend は書かない: 絶対の形状キー・打つキーを上書きするドライバー・目の骨の拘束・打つキーのミュート・ピン・静止の
   姿勢（REST）は止める（保存するので、この工程では外さない）。打つ F カーブのミュート・ロック・修飾子、NLA の層（帯を編集する状態・層が
-  打つ値を動かしている）、目の骨の回りが XYZ でなく回りのキーがある（XYZ に替えると、もとのキーが台本の外のコマでも効かなくなる）、打てない
-  キー（keyframe_insert が False）のときも止める。
+  打つ値を動かしている）、目の骨の回りが XYZ でなく回りのキーかドライバーがある（XYZ に替えると、もとのキーやドライバーが台本の外の
+  コマでも効かなくなる）、打てないキー（keyframe_insert が False）のときも止める。
 入力の .blend は変えない（別のファイルに書く）。
 """
 import argparse
@@ -153,13 +153,15 @@ def channel_problem(curves, paths):
 
 
 def rotation_mode_problem(modes, animated):
-    """目の骨の回りの表し方（modes: {骨: rotation_mode}）が XYZ でなく、その骨の回りにキーがある（animated: キーのある骨）なら、止めるときの
-    説明（無ければ None）。この工程は回りを XYZ にしてキーを打つので、替えると、もとのキー（クォータニオンなど）は台本の外のコマでも効かなくなる。"""
+    """目の骨の回りの表し方（modes: {骨: rotation_mode}）が XYZ でなく、その骨の回りにキーかドライバーがある（animated: キーかドライバーの
+    ある骨）なら、止めるときの説明（無ければ None）。この工程は回りを XYZ にしてキーを打つので、替えると、もとのキーやドライバー（クォータ
+    ニオンなど）は台本の外のコマでも効かなくなる。"""
     clash = [f"{bone}（{mode}）" for bone, mode in sorted(modes.items()) if mode != "XYZ" and bone in animated]
     if not clash:
         return None
-    return (f"目の骨の回りが XYZ でなく、回りのキーがあります: {clash}。この工程は回りを XYZ にしてキーを打つので、もとのキーは台本の外の"
-            "コマでも効かなくなります。回りのキーを XYZ のキーにしてから（または回りのキーの無い頭に）かけてください")
+    return (f"目の骨の回りが XYZ でなく、回りのキーかドライバーがあります: {clash}。この工程は回りを XYZ にしてキーを打つので、もとのキーや"
+            "ドライバーは台本の外のコマでも効かなくなります。回りのキーやドライバーを XYZ の回りに直してから（または回りのキーやドライバーの"
+            "無い頭に）かけてください")
 
 
 def nla_problem(owner, tweak, nla_paths, paths):
@@ -223,7 +225,8 @@ def main(argv=None):
                                  (armature.name, bone_motion, set().union(*rotation_paths.values()))):
         if motion is not None:
             problems.append(nla_problem(owner, motion.use_tweak_mode, [curve.data_path for curve in nla_curves(motion)], paths))
-    rotation_keyed = {curve.data_path for curve in played_curves(bone_motion) + nla_curves(bone_motion)}
+    rotation_keyed = ({curve.data_path for curve in played_curves(bone_motion) + nla_curves(bone_motion)}
+                      | {driver.data_path for driver in (bone_motion.drivers if bone_motion else [])})   # キーとドライバー
     problems.append(rotation_mode_problem({bones[side]: armature.pose.bones[bones[side]].rotation_mode for side in ("L", "R")},
                                           {bone for bone, paths in rotation_paths.items() if paths & rotation_keyed}))
     problem = next((p for p in problems if p), None)
