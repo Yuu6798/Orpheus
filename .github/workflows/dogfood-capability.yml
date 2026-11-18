@@ -51,24 +51,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p projects/dogfood/report
-          uv run --no-sync orpheus search "既存の資産で短い歌詞MVを作り、検証まで通したい" --limit 8 \
-            > projects/dogfood/report/01-search.json
-          uv run --no-sync orpheus show workflow.lyric_mv \
-            > projects/dogfood/report/02-selected-workflow.json
-          uv run --no-sync orpheus show mv.render \
-            > projects/dogfood/report/03-render-capability.json
-          uv run --no-sync orpheus show mv.workflow.check \
-            > projects/dogfood/report/04-completion-check-capability.json
-          uv run --no-sync orpheus validate \
-            > projects/dogfood/report/05-catalog-validation.json
+          uv run --no-sync orpheus search "既存の資産で短い歌詞MVを作り、検証まで通したい" --limit 8 > projects/dogfood/report/01-search.json
+          uv run --no-sync orpheus show workflow.lyric_mv > projects/dogfood/report/02-selected-workflow.json
+          uv run --no-sync orpheus show mv.render > projects/dogfood/report/03-render-capability.json
+          uv run --no-sync orpheus show mv.workflow.check > projects/dogfood/report/04-completion-check-capability.json
+          uv run --no-sync orpheus validate > projects/dogfood/report/05-catalog-validation.json
           uv run --no-sync python - <<'PY'
           import json
           from pathlib import Path
-
           root = Path("projects/dogfood/report")
           search = json.loads((root / "01-search.json").read_text(encoding="utf-8"))
-          rows = search["result"]["results"]
-          ids = [row["item"]["id"] for row in rows]
+          ids = [row["item"]["id"] for row in search["result"]["results"]]
           assert "workflow.lyric_mv" in ids[:3], ids
           selected = json.loads((root / "02-selected-workflow.json").read_text(encoding="utf-8"))
           assert selected["result"]["id"] == "workflow.lyric_mv"
@@ -81,8 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           start=$(date +%s)
-          uv run --no-sync python examples/workflow/run.py projects/dogfood/mv \
-            > projects/dogfood/report/06-run-result.json
+          uv run --no-sync python examples/workflow/run.py projects/dogfood/mv > projects/dogfood/report/06-run-result.json
           end=$(date +%s)
           echo $((end - start)) > projects/dogfood/report/07-elapsed-seconds.txt
           video=$(uv run --no-sync python - <<'PY'
@@ -94,24 +86,28 @@ jobs:
           cp "$video" projects/dogfood/report/dogfood-lyric-mv.mp4
           echo "video=$video" >> "$GITHUB_OUTPUT"
 
-      - name: Inspect the produced video with existing tools
+      - name: Inspect the produced video with Orpheus tools
         run: |
           set -euo pipefail
           video='${{ steps.produce.outputs.video }}'
-          uv run --no-sync mv sheet "$video" \
-            --out projects/dogfood/report/contact-sheet.png --count 6
-          ffprobe -v error -show_format -show_streams -of json "$video" \
-            > projects/dogfood/report/08-ffprobe.json
-          cp projects/dogfood/mv/work/workflow-check/workflow_report.json \
-            projects/dogfood/report/09-workflow-report.json
-          cp projects/dogfood/mv/work/workflow-check/workflow_report.md \
-            projects/dogfood/report/10-workflow-report.md
-          cp projects/dogfood/mv/work/example/commands.json \
-            projects/dogfood/report/11-commands.json
-          cp projects/dogfood/mv/work/example/direction.json \
-            projects/dogfood/report/12-direction.json
-          cp projects/dogfood/mv/work/example/storyboard-proposal.json \
-            projects/dogfood/report/13-storyboard-proposal.json
+          uv run --no-sync mv sheet "$video" --out projects/dogfood/report/contact-sheet.png --count 6
+          uv run --no-sync python - "$video" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          from mv_pipeline.inspection.video import describe
+          data = describe(Path(sys.argv[1]))
+          Path("projects/dogfood/report/08-video-description.json").write_text(
+              json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+          run_dir=$(dirname "$video")
+          test -f "$run_dir/verification.json"
+          cp "$run_dir/verification.json" projects/dogfood/report/09-verification.json
+          cp projects/dogfood/mv/work/workflow-check/workflow_report.json projects/dogfood/report/10-workflow-report.json
+          cp projects/dogfood/mv/work/workflow-check/workflow_report.md projects/dogfood/report/11-workflow-report.md
+          cp projects/dogfood/mv/work/example/commands.json projects/dogfood/report/12-commands.json
+          cp projects/dogfood/mv/work/example/direction.json projects/dogfood/report/13-direction.json
+          cp projects/dogfood/mv/work/example/storyboard-proposal.json projects/dogfood/report/14-storyboard-proposal.json
 
       - name: Write an evidence-based usage report
         run: |
@@ -125,16 +121,14 @@ jobs:
           workflow = json.loads((root / "02-selected-workflow.json").read_text(encoding="utf-8"))["result"]
           render = json.loads((root / "03-render-capability.json").read_text(encoding="utf-8"))["result"]
           result = json.loads((root / "06-run-result.json").read_text(encoding="utf-8"))
-          probe = json.loads((root / "08-ffprobe.json").read_text(encoding="utf-8"))
-          completion = json.loads((root / "09-workflow-report.json").read_text(encoding="utf-8"))
+          video = json.loads((root / "08-video-description.json").read_text(encoding="utf-8"))
+          verification = json.loads((root / "09-verification.json").read_text(encoding="utf-8"))
+          completion = json.loads((root / "10-workflow-report.json").read_text(encoding="utf-8"))
           elapsed = int((root / "07-elapsed-seconds.txt").read_text().strip())
-          rows = search["result"]["results"]
           ranking = [
               f"{index}. `{row['item']['id']}` — score {row['score']}"
-              for index, row in enumerate(rows[:5], 1)
+              for index, row in enumerate(search["result"]["results"][:5], 1)
           ]
-          video_stream = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
-          audio_stream = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
           effects = render.get("effects", {})
           lines = [
               "# Orpheus capability-catalog dogfood report",
@@ -163,8 +157,9 @@ jobs:
               f"- workflow: `{result['workflow']}`",
               f"- accepted: `{result['accepted']}`",
               f"- 実行時間: {elapsed}秒",
-              f"- 映像: {video_stream['width']}×{video_stream['height']} / {video_stream['codec_name']} / {video_stream.get('r_frame_rate')}",
-              f"- 音声: {audio_stream['codec_name']} / {audio_stream.get('sample_rate')} Hz / {audio_stream.get('channels')} ch",
+              f"- 映像: {video['width']}×{video['height']} / {video['codec']} / {video['fps']} fps",
+              f"- technical_pass: `{verification.get('technical_pass')}`",
+              f"- current_inputs_match: `{verification.get('current_inputs_match')}`",
               f"- 工程検査 overall: `{completion['overall']}`",
               "- カタログ検査: valid",
               "",
@@ -184,10 +179,11 @@ jobs:
               "- `contact-sheet.png`: 6時点の確認シート",
               "- `01-search.json`: 目的検索結果",
               "- `02-selected-workflow.json`: 選択した工程",
-              "- `09-workflow-report.json`: 完了証跡",
-              "- `11-commands.json`: 実際に通ったコマンド列",
-              "- `12-direction.json`: 拍と切替の選択根拠",
-              "- `13-storyboard-proposal.json`: 絵コンテ",
+              "- `09-verification.json`: 動画の技術検証",
+              "- `10-workflow-report.json`: 完了証跡",
+              "- `12-commands.json`: 実際に通ったコマンド列",
+              "- `13-direction.json`: 拍と切替の選択根拠",
+              "- `14-storyboard-proposal.json`: 絵コンテ",
               "",
               "## この実行だけでは確認していないこと",
               "",
@@ -199,10 +195,10 @@ jobs:
           ]
           (root / "USAGE_REPORT.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
           PY
-          find projects/dogfood/report -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum \
-            > projects/dogfood/report/SHA256SUMS
+          find projects/dogfood/report -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > projects/dogfood/report/SHA256SUMS
 
       - name: Upload dogfood result
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: orpheus-capability-dogfood
