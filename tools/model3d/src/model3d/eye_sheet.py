@@ -24,6 +24,8 @@ def join(folder, poses, views, out, cell=480, quality=90, font=None, font_size=1
         raise ValueError(f"確かめの絵がありません: {missing[:3]}")
     with Image.open(folder / names[(poses[0], views[0])]) as first:
         ch = int(cell * first.height / first.width)
+    if ch < 3 or cell < 3:                                             # こまの絵は枠の 2 画素を引いた大きさ
+        raise ValueError(f"並べるこまの縦が {ch} 画素で、枠（2 画素）を引くと絵が入りません（cell {cell}、絵 {first.width}×{first.height}）")
     face = load_font(font, font_size)
     sheet = Image.new("RGB", (cell * len(views), (ch + STRIP) * len(poses)), BACKGROUND)
     draw = ImageDraw.Draw(sheet)

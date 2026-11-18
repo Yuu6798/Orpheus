@@ -442,6 +442,11 @@ def sheet_settings(parameters, geometry, recipe_dir=None):
             "quality": _whole(parameters.get("quality", SHEET_DEFAULTS["quality"]), "quality", 1, 100),
             "font": str(font) if font is not None else None,
             "font_size": _whole(parameters.get("font_size", SHEET_DEFAULTS["font_size"]), "font_size", 4)}
+    width, height = render["size"]
+    cell_height = int(join["cell"] * height / width)                    # 並べるこまの縦（絵と同じ比。join と同じ計算）
+    if cell_height < 3:                                                 # こまの絵は枠の 2 画素を引いた大きさ
+        raise ToolError(f"size {render['size']} と cell {join['cell']} では、並べるこまの縦が {cell_height} 画素になり、枠（2 画素）を"
+                        "引くと絵が入りません。cell を大きくするか、絵の縦を大きくしてください")
     return render, join
 
 

@@ -56,6 +56,11 @@ def test_join_keeps_the_picture_ratio(tmp_path):
     assert sheet.getpixel((48 + 20, eye_sheet.STRIP + 10)) != eye_sheet.BACKGROUND           # 2 列目の絵が入っている
     with pytest.raises(ValueError, match="ありません"):
         eye_sheet.join(tmp_path, ["rest", "wide"], ["front"], tmp_path / "x.png", cell=48)
+    flat = tmp_path / "flat"                                                                # とても横長の絵: こまの縦が枠より小さい
+    flat.mkdir()
+    _images(flat, ["rest"], ["front"], size=(960, 16))
+    with pytest.raises(ValueError, match="こまの縦"):
+        eye_sheet.join(flat, ["rest"], ["front"], flat / "x.png", cell=48)
 
 
 def _geometry(plate=True):
@@ -139,6 +144,7 @@ def test_eye_sheet_step_draws_and_joins(tmp_path):
     ({"poses": POSES, "views": VIEWS, "paint": True}, _geometry(plate=False), "sheet.jpg", "plate_vertices"),
     ({"poses": POSES, "views": VIEWS, "paint": {"plate": [1, 0, 1]}}, None, "sheet.jpg", "paint"),
     ({"poses": POSES, "views": VIEWS, "size": [8, 8]}, None, "sheet.jpg", "size"), ({"poses": POSES, "views": VIEWS, "aa": "4"}, None, "sheet.jpg", "aa"),
+    ({"poses": POSES, "views": VIEWS, "size": [960, 16], "cell": 48}, None, "sheet.jpg", "こまの縦"),
     ({"poses": POSES, "views": VIEWS, "hide": ["Head"]}, None, "sheet.jpg", "hide"),
     ({"poses": POSES, "views": VIEWS, "spin": 1}, None, "sheet.jpg", "知らないパラメーター"),
     ({"poses": POSES, "views": VIEWS}, None, "sheet.gif", ".jpg か .png")])
