@@ -129,73 +129,75 @@ jobs:
           completion = json.loads((root / "09-workflow-report.json").read_text(encoding="utf-8"))
           elapsed = int((root / "07-elapsed-seconds.txt").read_text().strip())
           rows = search["result"]["results"]
-          ranking = "\n".join(
+          ranking = [
               f"{index}. `{row['item']['id']}` — score {row['score']}"
               for index, row in enumerate(rows[:5], 1)
-          )
+          ]
           video_stream = next(stream for stream in probe["streams"] if stream["codec_type"] == "video")
           audio_stream = next(stream for stream in probe["streams"] if stream["codec_type"] == "audio")
           effects = render.get("effects", {})
-          report = f"""# Orpheus capability-catalog dogfood report
-
-## 実施内容
-
-能力目録を最初の入口にし、リポジトリ既存の `examples/workflow/run.py` を使って、8秒の小型歌詞MVを制作・検証した。
-新しい映像機能や作品固有スクリプトは追加していない。
-
-## 目録からの選択
-
-検索文: `既存の資産で短い歌詞MVを作り、検証まで通したい`
-
-上位候補:
-
-{ranking}
-
-採用: `{workflow['id']}`
-
-- 必要入力: {', '.join(workflow['required_inputs'])}
-- 人が決める箇所: {', '.join(workflow['human_decisions'])}
-- workflow availability: `{workflow['availability']['available']}`
-
-## 実行結果
-
-- workflow: `{result['workflow']}`
-- accepted: `{result['accepted']}`
-- 実行時間: {elapsed}秒
-- 映像: {video_stream['width']}×{video_stream['height']} / {video_stream['codec_name']} / {video_stream.get('r_frame_rate')}
-- 音声: {audio_stream['codec_name']} / {audio_stream.get('sample_rate')} Hz / {audio_stream.get('channels')} ch
-- 工程検査 overall: `{completion['overall']}`
-- カタログ検査: valid
-
-`accepted` は自動で true にせず、技術的完了と作品採用が分離されたままだった。
-
-## 実行前に目録から読めたこと
-
-- `mv.render` availability: `{render['availability']['available']}`
-- optional extras: `{render['requires'].get('extras')}`
-- external process: `{effects.get('external_process')}`
-- network: `{effects.get('network')}`
-- parameter source: `{render['parameters']['status']}`
-
-## 成果物
-
-- `dogfood-lyric-mv.mp4`: 完成動画
-- `contact-sheet.png`: 6時点の確認シート
-- `01-search.json`: 目的検索結果
-- `02-selected-workflow.json`: 選択した工程
-- `09-workflow-report.json`: 完了証跡
-- `11-commands.json`: 実際に通ったコマンド列
-- `12-direction.json`: 拍と切替の選択根拠
-- `13-storyboard-proposal.json`: 絵コンテ
-
-## この実行だけでは確認していないこと
-
-- 実曲の歌唱同期精度
-- 実画像の一貫性
-- 長尺・高解像度での操作感
-- 作品としての採用判断
-"""
-          (root / "USAGE_REPORT.md").write_text(report, encoding="utf-8", newline="\n")
+          lines = [
+              "# Orpheus capability-catalog dogfood report",
+              "",
+              "## 実施内容",
+              "",
+              "能力目録を最初の入口にし、リポジトリ既存の `examples/workflow/run.py` を使って、8秒の小型歌詞MVを制作・検証した。",
+              "新しい映像機能や作品固有スクリプトは追加していない。",
+              "",
+              "## 目録からの選択",
+              "",
+              "検索文: `既存の資産で短い歌詞MVを作り、検証まで通したい`",
+              "",
+              "上位候補:",
+              "",
+              *ranking,
+              "",
+              f"採用: `{workflow['id']}`",
+              "",
+              f"- 必要入力: {', '.join(workflow['required_inputs'])}",
+              f"- 人が決める箇所: {', '.join(workflow['human_decisions'])}",
+              f"- workflow availability: `{workflow['availability']['available']}`",
+              "",
+              "## 実行結果",
+              "",
+              f"- workflow: `{result['workflow']}`",
+              f"- accepted: `{result['accepted']}`",
+              f"- 実行時間: {elapsed}秒",
+              f"- 映像: {video_stream['width']}×{video_stream['height']} / {video_stream['codec_name']} / {video_stream.get('r_frame_rate')}",
+              f"- 音声: {audio_stream['codec_name']} / {audio_stream.get('sample_rate')} Hz / {audio_stream.get('channels')} ch",
+              f"- 工程検査 overall: `{completion['overall']}`",
+              "- カタログ検査: valid",
+              "",
+              "`accepted` は自動で true にせず、技術的完了と作品採用が分離されたままだった。",
+              "",
+              "## 実行前に目録から読めたこと",
+              "",
+              f"- `mv.render` availability: `{render['availability']['available']}`",
+              f"- optional extras: `{render['requires'].get('extras')}`",
+              f"- external process: `{effects.get('external_process')}`",
+              f"- network: `{effects.get('network')}`",
+              f"- parameter source: `{render['parameters']['status']}`",
+              "",
+              "## 成果物",
+              "",
+              "- `dogfood-lyric-mv.mp4`: 完成動画",
+              "- `contact-sheet.png`: 6時点の確認シート",
+              "- `01-search.json`: 目的検索結果",
+              "- `02-selected-workflow.json`: 選択した工程",
+              "- `09-workflow-report.json`: 完了証跡",
+              "- `11-commands.json`: 実際に通ったコマンド列",
+              "- `12-direction.json`: 拍と切替の選択根拠",
+              "- `13-storyboard-proposal.json`: 絵コンテ",
+              "",
+              "## この実行だけでは確認していないこと",
+              "",
+              "- 実曲の歌唱同期精度",
+              "- 実画像の一貫性",
+              "- 長尺・高解像度での操作感",
+              "- 作品としての採用判断",
+              "",
+          ]
+          (root / "USAGE_REPORT.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
           PY
           find projects/dogfood/report -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum \
             > projects/dogfood/report/SHA256SUMS
