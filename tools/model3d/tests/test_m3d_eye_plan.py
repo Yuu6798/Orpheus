@@ -134,6 +134,49 @@ def test_key_ranges_widen_the_sliders_only_where_needed():
     assert eye_motion.frame_range(50, 120, 10, 60) == (10, 120)
 
 
+def _curve(path, index=0, mute=False, group_mute=None, lock=False, modifiers=()):
+    """F カーブの代わり（Blender なし）。group_mute が None なら組に入っていない。modifiers は修飾子ごとのミュート。"""
+    from types import SimpleNamespace
+    group = None if group_mute is None else SimpleNamespace(mute=group_mute)
+    return SimpleNamespace(data_path=path, array_index=index, mute=mute, group=group, lock=lock,
+                           modifiers=[SimpleNamespace(mute=m) for m in modifiers])
+
+
+def test_channels_that_would_not_play_the_keys_are_refused():
+    """打つ F カーブのミュート・ロック・止めていない修飾子、NLA の層、XYZ でない目の骨の回りのキーは止める（打ったキーのとおりに動かない
+    .blend を書かない）。"""
+    from types import SimpleNamespace
+    blink, eye = 'key_blocks["blink_L"].value', 'pose.bones["eye.L"].rotation_euler'
+    paths = {blink, eye}
+    assert eye_motion.channel_problem([_curve(blink), _curve(eye, 2, group_mute=False), _curve(eye, 1, modifiers=[True])], paths) is None
+    assert eye_motion.channel_problem([_curve('key_blocks["mouth"].value', mute=True, lock=True, modifiers=[False])], paths) is None  # 打たない値
+    assert eye_motion.channel_problem([_curve(eye, 0, group_mute=True)], paths) is None   # 組のミュートだけでは再生される（5.2.4 で実測）
+    message = eye_motion.channel_problem([_curve(blink, mute=True), _curve(eye, 0, mute=True)], paths)
+    assert "ミュート" in message and f"{blink}[0]" in message and f"{eye}[0]" in message
+    assert "ロック" in eye_motion.channel_problem([_curve(blink, lock=True)], paths)
+    assert "修飾子" in eye_motion.channel_problem([_curve(eye, 1, modifiers=[True, False])], paths)
+    # 目の骨の回りが XYZ でなく回りのキーがあると、XYZ に替えたとき、もとのキーが台本の外のコマでも効かなくなる
+    assert eye_motion.rotation_mode_problem({"eye.L": "XYZ", "eye.R": "QUATERNION"}, {"eye.L"}) is None
+    assert eye_motion.rotation_mode_problem({"eye.L": "QUATERNION", "eye.R": "QUATERNION"}, set()) is None   # キーが無ければ替えてよい
+    message = eye_motion.rotation_mode_problem({"eye.L": "QUATERNION", "eye.R": "YXZ"}, {"eye.L", "eye.R"})
+    assert "eye.L（QUATERNION）" in message and "eye.R（YXZ）" in message
+    # NLA の層: 帯を編集する状態と、層が打つ値を動かしている（上のアクションのキーが、台本の外のコマでも層の動きを上書きする）
+    assert eye_motion.nla_problem("Head", False, [], paths) is None
+    assert "tweak" in eye_motion.nla_problem("Head", True, [], paths)
+    assert eye_motion.nla_problem("Head", False, ['key_blocks["mouth"].value'], paths) is None
+    assert blink in eye_motion.nla_problem("Head", False, [blink], paths)
+    # 再生するアクションの F カーブは、再生するスロットの入れ物の物だけ（層つきのアクション）。NLA はミュートしていない層と帯だけ
+    slot, other = object(), object()
+    bags = [SimpleNamespace(slot=slot, fcurves=[_curve(blink)]), SimpleNamespace(slot=other, fcurves=[_curve(eye)])]
+    action = SimpleNamespace(layers=[SimpleNamespace(strips=[SimpleNamespace(channelbags=bags)])])
+    assert [c.data_path for c in eye_motion.played_curves(SimpleNamespace(action=action, action_slot=slot))] == [blink]
+    assert eye_motion.played_curves(SimpleNamespace(action=None, action_slot=None)) == [] and eye_motion.played_curves(None) == []
+    tracks = [SimpleNamespace(mute=False, strips=[SimpleNamespace(mute=False, action=action), SimpleNamespace(mute=True, action=action)]),
+              SimpleNamespace(mute=True, strips=[SimpleNamespace(mute=False, action=action)])]
+    assert len(eye_motion.nla_curves(SimpleNamespace(use_nla=True, nla_tracks=tracks))) == 2       # 1 本の帯の、両方のスロットの物
+    assert eye_motion.nla_curves(SimpleNamespace(use_nla=False, nla_tracks=tracks)) == []
+
+
 def _geometry():
     def eye(sign):
         return {"sphere": {"centre": [0.04 * sign, 0.1, 1.3], "radius": 0.1, "normal": [0.0, -1.0, 0.0]}, "pupil": [0.04 * sign, 1.3],

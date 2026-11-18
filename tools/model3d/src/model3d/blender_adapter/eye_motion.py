@@ -16,7 +16,9 @@ settings.json（motion.eye_plan が書く）: object（頭のメッシュ）、r
   Blender が値を範囲に収めてしまう）。
 - シーンのコマの範囲を、打つコマが入るまで広げる（もとの範囲は残す。再生や描画が範囲で止まらないように）。
 - キーを打っても動かない .blend は書かない: 絶対の形状キー・打つキーを上書きするドライバー・目の骨の拘束・打つキーのミュート・ピン・静止の
-  姿勢（REST）は止める（保存するので、この工程では外さない）。
+  姿勢（REST）は止める（保存するので、この工程では外さない）。打つ F カーブのミュート・ロック・修飾子、NLA の層（帯を編集する状態・層が
+  打つ値を動かしている）、目の骨の回りが XYZ でなく回りのキーがある（XYZ に替えると、もとのキーが台本の外のコマでも効かなくなる）、打てない
+  キー（keyframe_insert が False）のときも止める。
 入力の .blend は変えない（別のファイルに書く）。
 """
 import argparse
@@ -30,6 +32,7 @@ try:   # パッケージとして読むとき（テスト）
     from .eye_rig import eye_bones
     from .eye_sheet import gaze_rotation, key_targets
     from .vrm_apply_motion import use_scene_of
+    from .vrm_bake_springs import fcurve_bags
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from animation_sample import humanoid_map, pick_armature
@@ -37,6 +40,9 @@ except ImportError:   # Blender が台本として動かすとき
     from eye_rig import eye_bones
     from eye_sheet import gaze_rotation, key_targets
     from vrm_apply_motion import use_scene_of
+    from vrm_bake_springs import fcurve_bags
+
+ROTATION_CHANNELS = ("rotation_quaternion", "rotation_axis_angle", "rotation_euler")   # 骨の回りの表し方ごとの値
 
 
 def parse_args(argv):
@@ -106,6 +112,70 @@ def key_state_problem(head_name, muted, pinned):
     return None
 
 
+def played_curves(animation):
+    """animation（animation_data）が再生するアクションの F カーブ（層つきのアクションなら、再生するスロットの入れ物の物）。無ければ []。"""
+    if animation is None or animation.action is None:
+        return []
+    slot = getattr(animation, "action_slot", None)
+    bags = [bag for bag in fcurve_bags(animation.action) if slot is None or getattr(bag, "slot", slot) == slot]
+    return [curve for bag in bags for curve in bag.fcurves]
+
+
+def nla_curves(animation):
+    """animation の NLA の層（ミュートしていない層の、ミュートしていない帯）のアクションの F カーブ。NLA を評価しない設定なら []。"""
+    if animation is None or not animation.use_nla:
+        return []
+    return [curve for track in animation.nla_tracks if not track.mute for strip in track.strips if not strip.mute and strip.action
+            for bag in fcurve_bags(strip.action) for curve in bag.fcurves]
+
+
+def channel_problem(curves, paths):
+    """打つキーの F カーブ（curves のうち data_path が paths の物）が打った値のとおりに動かないなら、止めるときの説明（無ければ None）:
+    ミュート（再生では使われない）・ロック（キーを打てない）・止めていない修飾子（ノイズなど。値を変える）。組のミュートだけでは、
+    Blender 5.2.4 は中の F カーブを再生した（実測）ので止めない。"""
+    muted, locked, modified = set(), set(), set()
+    for curve in curves:
+        if curve.data_path not in paths:
+            continue
+        name = f"{curve.data_path}[{curve.array_index}]"
+        if curve.mute:
+            muted.add(name)
+        if curve.lock:
+            locked.add(name)
+        if any(not modifier.mute for modifier in curve.modifiers):
+            modified.add(name)
+    parts = [f"{what}: {sorted(names)[:4]}" for what, names in (("ミュートされていて再生では使われない", muted),
+                                                                 ("ロックされていてキーを打てない", locked),
+                                                                 ("修飾子（ノイズなど）が値を変える", modified)) if names]
+    if not parts:
+        return None
+    return "打つキーの F カーブが、打った値のとおりに動きません。" + "。".join(parts) + "。外してからかけてください（.blend は保存するので、この工程では変えない）"
+
+
+def rotation_mode_problem(modes, animated):
+    """目の骨の回りの表し方（modes: {骨: rotation_mode}）が XYZ でなく、その骨の回りにキーがある（animated: キーのある骨）なら、止めるときの
+    説明（無ければ None）。この工程は回りを XYZ にしてキーを打つので、替えると、もとのキー（クォータニオンなど）は台本の外のコマでも効かなくなる。"""
+    clash = [f"{bone}（{mode}）" for bone, mode in sorted(modes.items()) if mode != "XYZ" and bone in animated]
+    if not clash:
+        return None
+    return (f"目の骨の回りが XYZ でなく、回りのキーがあります: {clash}。この工程は回りを XYZ にしてキーを打つので、もとのキーは台本の外の"
+            "コマでも効かなくなります。回りのキーを XYZ のキーにしてから（または回りのキーの無い頭に）かけてください")
+
+
+def nla_problem(owner, tweak, nla_paths, paths):
+    """NLA の層で、打ったキーのとおりに動かないなら、止めるときの説明（無ければ None）。tweak は帯を編集する状態（キーは帯のアクションに
+    入る）、nla_paths は層が動かす値（打つ値 paths と重なると、上のアクションのキーが台本の外のコマでも層の動きを上書きする）。層の上の
+    アクションの混ぜ方と影響は止めない（Blender 5.2.4 は、打つ値を割り戻してキーにし、割り戻せない混ぜ方ではキーを打たない。打てないキーは
+    main で止める。実測）。"""
+    if tweak:
+        return f"{owner} は NLA の帯を編集する状態（tweak）になっています。抜けてからかけてください"
+    clash = sorted(set(nla_paths) & set(paths))
+    if clash:
+        return (f"{owner} の NLA の層が、打つ値を動かしています: {clash[:4]}。打ったキーはその上のアクションに入るので、台本の外のコマでも"
+                "層の動きが効かなくなります。層をアクションにまとめて（ベイクして）からかけてください")
+    return None
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -146,6 +216,19 @@ def main(argv=None):
     problem = rest_problem(armature.name, armature.data.pose_position)   # 静止の姿勢のままだと、目の骨のキーが形に出ない
     if problem:
         raise SystemExit(problem)
+    # 打つ F カーブ（ミュート・ロック・修飾子）・NLA の層・目の骨の回りの表し方で、打ったキーのとおりに動かないなら止める
+    rotation_paths = {bones[side]: {f'pose.bones["{bones[side]}"].{channel}' for channel in ROTATION_CHANNELS} for side in ("L", "R")}
+    problems = [channel_problem(played_curves(key_motion), key_paths), channel_problem(played_curves(bone_motion), bone_paths)]
+    for owner, motion, paths in ((f"{head.name} の形状キー", key_motion, key_paths),
+                                 (armature.name, bone_motion, set().union(*rotation_paths.values()))):
+        if motion is not None:
+            problems.append(nla_problem(owner, motion.use_tweak_mode, [curve.data_path for curve in nla_curves(motion)], paths))
+    rotation_keyed = {curve.data_path for curve in played_curves(bone_motion) + nla_curves(bone_motion)}
+    problems.append(rotation_mode_problem({bones[side]: armature.pose.bones[bones[side]].rotation_mode for side in ("L", "R")},
+                                          {bone for bone, paths in rotation_paths.items() if paths & rotation_keyed}))
+    problem = next((p for p in problems if p), None)
+    if problem:
+        raise SystemExit(problem)
     scene = use_scene_of(bpy, armature)                                 # 描くのはアーマチュアのあるシーン
     scene_fps = scene.render.fps / scene.render.fps_base
     action, message = fps_action(scene_fps, settings["plan_fps"], settings.get("fps_mode", "check"))
@@ -172,12 +255,16 @@ def main(argv=None):
         unknown |= {name for name in row["keys"] if not any(t == name or t.startswith(name + "_") for t in targets)}
         for name, value in targets.items():
             blocks[name].value = value
-            blocks[name].keyframe_insert("value", frame=frame)
+            if not blocks[name].keyframe_insert("value", frame=frame):   # NLA の層の上で割り戻せない混ぜ方など（黙って打たないまま進まない）
+                raise SystemExit(f"{name} のキーを打てませんでした（コマ {frame}。NLA の層の上のアクションの混ぜ方や影響で、打つ値を割り戻せない"
+                                 "ときなど）")
             keyed.add(name)
         rotation = gaze_rotation(row["gaze"], settings["radius"])
         for bone in pose_bones:
             bone.rotation_euler = rotation
-            bone.keyframe_insert("rotation_euler", frame=frame, group=bone.name)
+            if not bone.keyframe_insert("rotation_euler", frame=frame, group=bone.name):
+                raise SystemExit(f"{bone.name} の回りのキーを打てませんでした（コマ {frame}。NLA の層の上のアクションの混ぜ方や影響で、打つ値を"
+                                 "割り戻せないときなど）")
     range_report = None
     if frames:                                                          # 再生や描画がシーンの範囲で止まらないように（もとの範囲は残す）
         before = [scene.frame_start, scene.frame_end]
