@@ -2427,7 +2427,8 @@ y は手前が −、z は上が +）。`object`（頭のメッシュの物体�
 **台本**（`model3d-eye-plan/0.1`。JSON。時刻・速さ・量はどれも書く。既定は無い。頭と演技に合わせて決める値だから。ユウの事前の指示で、親が
 推奨で決めた。2026-11-18）:
 - `fps`。`gaze`: `events`（`[τ, 横 m, たて m]` の並び。τ の順。横 + はキャラの左、たて + は上）、`saccade`（`base_s`・`per_m_s`・`overshoot`・
-  `settle_s`・`settle_decay`）、`circle`（なめらかに回す。`start`・`end`・`h_m`・`v_m`・`ramp_s`。無くてよい）、`tremor`（驚いた直後の小さな
+  `settle_s`・`settle_decay`）、`circle`（なめらかに回す。`start`・`end`・`h_m`・`v_m`・`ramp_s`、`vertical_ramp`（`"once"` 既定・`"squared"`）。
+  無くてよい）、`tremor`（驚いた直後の小さな
   震え。驚きの始めからの `start_s`・`end_s`、`h_m`・`v_m`・`h_hz`・`v_hz`・`phase`。無くてよい）。
 - `blink`: `starts`（まばたきの始まりの τ）、`close_s`・`hold_s`・`open_s`・`squash_open_s`・`length_s`、`stretch`（開くときに瞳がたてに伸びて
   戻る。`start_s`・`length_s`・`amount`・`taper`）、`overopen`（まぶたが少し開きすぎて戻る。`start_s`・`length_s`・`amount`）。
@@ -2441,6 +2442,10 @@ y は手前が −、z は上が +）。`object`（頭のメッシュの物体�
   `mouth_smile`・`brow_up`・`eye_wide`・`iris_small`・`iris_wide`・`iris_squash`（名前 + `_L`・`_R` があれば両方に入れる）。瞳のつぶれの戻りは、
   まぶたの開き（`open_s`）と別に `squash_open_s` の間続く（試しは開き終わった所で打ち切り、`squash_open_s` が長いと瞳が急に元の形へ戻った。
   照合の台本は `squash_open_s` が `open_s` 以下なので、試しと同じ値）。
+- なめらかに回す目の入りと出のゆるめ（`ramp_s`）は、既定では横にもたてにも 1 回掛ける。試しの式は、横に 1 回、たてには 2 回掛けていた（たて
+  だけゆるめの二乗。ゆるめの間は円が横に押しつぶれる。そうする理由は書かれておらず、誤りに見える）。ユウの答え（2026-11-18）で、直した式を既定に
+  し、試しの式は `vertical_ramp: "squared"` で残した。既定と `squared` で違うのは、ゆるめの間のたての視線（と、それにつられるまぶたの見開きの
+  キー）だけ。照合は `squared` で取った（照合の台本を既定で計算し直すと、変わるのはゆるめの間のコマのたての視線と見開きだけだった。実測）。
 
 **`motion.eye_plan`**:
 - 入力 `blend`（目を動かせる作りにした頭）・`geometry`（目の形の値。半径は左右の球の平均）・`plan`。`start`（台本の最初のコマを置くシーンの

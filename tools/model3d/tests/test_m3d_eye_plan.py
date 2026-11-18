@@ -38,6 +38,21 @@ def test_gaze_jumps_overshoots_and_settles():
     assert x == pytest.approx(-0.004, abs=1e-6) and z == pytest.approx(0.001, abs=1e-6)
 
 
+def test_circle_ramps_both_axes_once_unless_the_trial_form_is_chosen():
+    """なめらかに回す目のゆるめは、横にもたてにも 1 回（既定）。vertical_ramp: "squared" は試しの式（たてだけ 2 回。ユウの答え 2026-11-18）。"""
+    circle = {"start": 0.0, "end": 4.0, "h_m": 0.01, "v_m": 0.01, "ramp_s": 1.0}
+    base = eye_plan.validate({**PLAN, "gaze": {"events": [], "saccade": PLAN["gaze"]["saccade"], "circle": circle}})
+    squared = eye_plan.validate({**PLAN, "gaze": {"events": [], "saccade": PLAN["gaze"]["saccade"], "circle": {**circle, "vertical_ramp": "squared"}}})
+    assert base["gaze"]["circle"]["vertical_ramp"] == "once" and squared["gaze"]["circle"]["vertical_ramp"] == "squared"
+    x, z = eye_plan.gaze(0.5, base)                                                    # 角 45°、ゆるめ 0.5 の所
+    assert x == pytest.approx(0.01 * 0.5 * math.sin(math.pi / 4)) and z == pytest.approx(x)   # 横とたてが同じ
+    xs, zs = eye_plan.gaze(0.5, squared)
+    assert xs == pytest.approx(x) and zs == pytest.approx(z * 0.5)                     # 試しの式は、たてだけもう一度ゆるめを掛ける
+    assert eye_plan.gaze(2.0, base) == pytest.approx(eye_plan.gaze(2.0, squared))      # ゆるめの外は同じ
+    with pytest.raises(eye_plan.PlanError, match="vertical_ramp"):
+        eye_plan.validate({**PLAN, "gaze": {"events": [], "saccade": PLAN["gaze"]["saccade"], "circle": {**circle, "vertical_ramp": "cubic"}}})
+
+
 def test_blink_closes_holds_opens_and_stretches_the_iris():
     assert eye_plan.blink_parts(1.9, P) == (0.0, 0.0, 0.0)
     b, sq, _ = eye_plan.blink_parts(2.05, P)

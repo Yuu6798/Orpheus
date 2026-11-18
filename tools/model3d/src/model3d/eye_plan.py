@@ -6,7 +6,9 @@
 
 - 視線の飛び（gaze.events の [τ, 横 m, たて m]。横 + はキャラの左、たて + は上）: 前の位置から、かかる時間 base_s + per_m_s × 距離で、
   1 − (1 − u)³ に (1 + overshoot) を掛けて行きすぎ、settle_s ごとに exp(−settle_decay × v)・cos(π v) で戻って止まる。
-- なめらかに回す（gaze.circle）: start〜end を 1 周、横 h_m・たて v_m。始めと終わりは ramp_s かけて出入りする。
+- なめらかに回す（gaze.circle）: start〜end を 1 周、横 h_m・たて v_m。始めと終わりは ramp_s かけて出入りする（ゆるめ env を横にもたてにも
+  1 回掛ける。vertical_ramp: "squared" なら、試しの式のとおりたてだけ 2 回掛ける。試しの式は誤りに見え、違うのはゆるめの間のたての値だけ。
+  ユウの答え 2026-11-18）。
 - 驚いた直後の小さな震え（gaze.tremor。驚きの始めから start_s〜end_s、だんだん小さく）: 横 h_m × sin(2π h_hz u)、たて v_m × sin(2π v_hz u + phase)。
 - まばたき（blink.starts の τ から length_s の間）: close_s で閉じ、hold_s 閉じたまま、open_s で開く。瞳のつぶれは閉じと同じで、開くときは
   squash_open_s で戻り、stretch（start_s〜length_s）でたてに amount 伸びて戻る（taper で後ろほど弱く）。まぶたは overopen で少し開きすぎて戻る。
@@ -23,6 +25,7 @@ import math
 
 SCHEMA = "model3d-eye-plan/0.1"
 KEY_NAMES = ("blink", "blink_smile", "mouth_smile", "brow_up", "eye_wide", "iris_small", "iris_wide", "iris_squash")
+VERTICAL_RAMPS = ("once", "squared")   # gaze.circle のたてのゆるめ: 既定は once（横と同じ）、squared は試しの式
 
 
 class PlanError(ValueError):
@@ -71,14 +74,22 @@ def validate(plan):
     events = [[_number(v, f"gaze.events[{k}]") for v in e] for k, e in enumerate(events)]
     if any(b[0] < a[0] for a, b in zip(events, events[1:])):
         raise PlanError("gaze.events は τ の順に並べてください")
+    raw_circle, vertical_ramp = gaze.get("circle"), "once"
+    if isinstance(raw_circle, dict) and "vertical_ramp" in raw_circle:   # たてのゆるめの掛け方（ユウの答え 2026-11-18。既定は once）
+        vertical_ramp = raw_circle["vertical_ramp"]
+        if vertical_ramp not in VERTICAL_RAMPS:
+            raise PlanError(f"gaze.circle.vertical_ramp は {list(VERTICAL_RAMPS)} のどれかにしてください: {vertical_ramp!r}")
+        raw_circle = {key: value for key, value in raw_circle.items() if key != "vertical_ramp"}
     out["gaze"] = {"events": events,
                    "saccade": _table(gaze.get("saccade"), "gaze.saccade", ("base_s", "per_m_s", "overshoot", "settle_s", "settle_decay"),
                                      positive=("base_s", "settle_s")),
-                   "circle": _table(gaze.get("circle"), "gaze.circle", ("start", "end", "h_m", "v_m", "ramp_s"), positive=("ramp_s",), optional=True),
+                   "circle": _table(raw_circle, "gaze.circle", ("start", "end", "h_m", "v_m", "ramp_s"), positive=("ramp_s",), optional=True),
                    "tremor": _table(gaze.get("tremor"), "gaze.tremor", ("start_s", "end_s", "h_m", "v_m", "h_hz", "v_hz", "phase"), optional=True)}
     circle = out["gaze"]["circle"]
     if circle and circle["end"] <= circle["start"]:
         raise PlanError("gaze.circle の end は start より後にしてください")
+    if circle:
+        circle["vertical_ramp"] = vertical_ramp
     tremor = out["gaze"]["tremor"]
     if tremor and tremor["end_s"] <= tremor["start_s"]:
         raise PlanError("gaze.tremor の end_s は start_s より後にしてください")
@@ -155,7 +166,11 @@ def gaze(t, plan):
     if circle and circle["start"] <= t <= circle["end"]:
         a = 2 * math.pi * (t - circle["start"]) / (circle["end"] - circle["start"])
         env = smooth((t - circle["start"]) / circle["ramp_s"]) * smooth((circle["end"] - t) / circle["ramp_s"])
-        x, z = x + circle["h_m"] * env * math.sin(a), z + circle["v_m"] * env * math.sin(a + math.pi / 2) * env
+        if circle.get("vertical_ramp") == "squared":                   # 試しの式: たてだけ env を 2 回（誤りに見える。照合のときに選ぶ）
+            dz = circle["v_m"] * env * math.sin(a + math.pi / 2) * env
+        else:                                                           # 既定: 横と同じく 1 回
+            dz = circle["v_m"] * env * math.sin(a + math.pi / 2)
+        x, z = x + circle["h_m"] * env * math.sin(a), z + dz
     tremor, surprise = g["tremor"], plan["surprise"]
     if tremor and surprise:
         u = t - surprise["start"]
