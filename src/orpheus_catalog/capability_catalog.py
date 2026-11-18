@@ -32,6 +32,12 @@ MV_RUNTIME.update({
                    "external_process_note": "--studioではRemotion Studioとbrowser、通常previewでは描画とFFmpeg/FFprobe検証を使う"},
     ("resume",): {"external_process": "opt-in", "tools": ["node", "remotion", "ffmpeg", "ffprobe"],
                   "external_process_note": "必要入力が揃い、同一renderのcacheが無いか無効な場合に描画と検証を再開する"},
+    ("run-adapter",): {"network": "recipe-defined", "external_process": "always",
+                       "tools": ["configured-adapter", "ffprobe"],
+                       "network_note": "argvで指定した同期器・分離器の実装と設定次第。未キャッシュ重みを取得する実装もあり得る",
+                       "external_process_note": "外部adapterを起動し、separationでは出力音声をFFprobeで確認する"},
+    ("workflow", "check"): {"external_process": "opt-in", "tools": ["ffmpeg"],
+                            "external_process_note": "gate設定など動画検査の材料を渡した場合にFFmpegを使う"},
     ("audio", "end"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("audio", "lows"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("dance", "demo"): {"external_process": "always", "tools": ["ffmpeg"],
@@ -41,8 +47,16 @@ MV_RUNTIME.update({
     ("gate", "check"): {"external_process": "opt-in", "tools": ["ffmpeg"],
                          "external_process_note": "gate設定にvideo・master・flash・tailなど動画検査の材料がある場合に起動する"},
     ("gate", "tail"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("sheet",): {"external_process": "opt-in", "tools": ["ffmpeg"],
+                 "external_process_note": "動画入力または並べた動画の出力でFFmpegを使う"},
+    ("deliver", "join"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("deliver", "review-copy"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("deliver", "split"): {"external_process": "always", "tools": ["ffmpeg"]},
 })
 MODEL3D_OVERRIDES = _impl.MODEL3D_OVERRIDES
+MODEL3D_OVERRIDES["check.eyes"].update(network_mode="never", external_process_mode="never")
+for _name in ("model.eye_rig", "model.eye_keys", "vrm.look_at", "render.eye_sheet"):
+    MODEL3D_OVERRIDES[_name].update(network_mode="never", external_process_mode="always")
 MODEL3D_OVERRIDES.setdefault("blender.run_script", {
     "tools": ["blender"], "network_mode": "recipe-defined", "external_process_mode": "always",
     "network_note": "指定したBlender Python scriptと有効化するadd-onの実装次第",
@@ -72,7 +86,6 @@ _ngrams = _impl._ngrams
 _score = _impl._score
 
 _ORIGINAL_MV_CAPABILITIES = _impl._mv_capabilities
-_ORIGINAL_MODEL3D_CAPABILITIES = _impl._model3d_capabilities
 
 
 def _component_failure(error: Exception, missing_modules: set[str]) -> tuple[str, str]:
@@ -94,9 +107,9 @@ _impl._component_failure = _component_failure
 def _unknown_effects(item, *, domain):
     """明示metadataの無い実行可能な項目を、副作用なしと推測せずunknownにする。"""
     requires = item["requires"]
-    if (not requires["tools"] and requires["network"]["mode"] == "never"
-            and requires["external_process"]["mode"] == "never"):
+    if not requires["tools"] and requires["network"]["mode"] == "never":
         requires["network"] = {"mode": "unknown", "note": f"この{domain}は通信可否のmetadataをまだ公開していません"}
+    if not requires["tools"] and requires["external_process"]["mode"] == "never":
         requires["external_process"] = {"mode": "unknown", "note": f"この{domain}は外部process起動のmetadataをまだ公開していません"}
 
 
@@ -111,16 +124,69 @@ def _mv_capabilities():
     return component, capabilities
 
 
-def _model3d_capabilities():
-    component, capabilities = _ORIGINAL_MODEL3D_CAPABILITIES()
-    # 実行効果を公開していない操作を「何もしない」とは扱わない。既知の純粋操作や
-    # 明示metadata/overrideだけを確定し、残りはunknownとして利用者に確認を促す。
-    for item in capabilities:
-        if item["id"] == "model3d.run":
-            continue
-        name = item["id"].removeprefix("model3d.")
-        if name not in MODEL3D_OVERRIDES:
-            _unknown_effects(item, domain="operation")
+def _declared(mapping, *keys):
+    return any(key in mapping for key in keys)
+
+
+def _model3d_capabilities() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """model3d登録表を1回読み、効果ごとの明示宣言だけを確定値として扱う。"""
+    component = {"available": False, "state": "missing", "reason": None, "operations": 0}
+    try:
+        ops = importlib.import_module("model3d.ops")
+        descriptions = ops.describe()
+    except Exception as error:
+        state, reason = _component_failure(error, {"model3d", "model3d.ops"})
+        component.update(state=state, reason=reason)
+        return component, []
+    capabilities = [{
+        "id": "model3d.run", "kind": "command", "domain": "model3d", "maturity": "experimental",
+        "summary": "RecipeGraphを依存順に実行し、生成物・観測・未解決・再利用元をRunRecordへ残す。",
+        "aliases": ["3Dレシピ", "3Dモデルを加工", "VRM", "Blender"], "tags": ["recipe", "run"],
+        "entrypoint": {"argv": ["model3d", "run", "RECIPE"], "docs": "docs/model3d.md"},
+        "inputs": ["recipe"], "outputs": ["RunRecord", "工程ごとの生成物"],
+        "parameters": {"status": "schema", "schema": {"$ref": "tools/model3d/src/model3d/schemas/recipe.schema.json"}},
+        "requires": _requirements(["model3d"], ["recipe-defined"], network="recipe-defined",
+                                  external_process="recipe-defined",
+                                  network_note="recipe内のexternal.runなど、選んだ操作と設定次第",
+                                  external_process_note="recipe内の操作がBlenderや任意CLIを起動する場合がある"),
+        "availability": {"available": True, "reason": None},
+    }]
+    for raw in descriptions:
+        name = raw["operation"]
+        metadata = raw.get("capability") if isinstance(raw.get("capability"), dict) else {}
+        override = MODEL3D_OVERRIDES.get(name, {})
+        parameters = (metadata.get("parameters") if isinstance(metadata.get("parameters"), dict)
+                      else {"status": "undocumented", "schema": None})
+        tools = list(metadata.get("tools") or override.get("tools") or [])
+        network_declared = _declared(metadata, "network", "network_mode") or _declared(override, "network", "network_mode")
+        external_declared = (_declared(metadata, "external_process", "external_process_mode", "tools")
+                             or _declared(override, "external_process", "external_process_mode", "tools"))
+        network_value = metadata.get("network_mode", metadata.get("network", override.get("network_mode", override.get("network"))))
+        external_value = metadata.get("external_process_mode", metadata.get("external_process",
+                                      override.get("external_process_mode", override.get("external_process"))))
+        network = _mode(network_value) if network_declared else "unknown"
+        if _declared(metadata, "external_process", "external_process_mode") or _declared(override, "external_process", "external_process_mode"):
+            external = _mode(external_value)
+        elif external_declared and tools:
+            external = "always"
+        else:
+            external = "unknown"
+        capabilities.append({
+            "id": f"model3d.{name}", "kind": "operation", "domain": "model3d",
+            "maturity": metadata.get("maturity", "experimental"),
+            "summary": override.get("summary") or metadata.get("summary") or raw.get("summary") or name,
+            "aliases": list(dict.fromkeys([*(metadata.get("aliases") or []), *(override.get("aliases") or [])])),
+            "tags": list(dict.fromkeys([name.split(".", 1)[0], *(metadata.get("tags") or [])])),
+            "entrypoint": {"argv": ["model3d", "run", "RECIPE"], "recipe_operation": name,
+                           "docs": metadata.get("docs", "docs/model3d.md")},
+            "inputs": list(raw.get("inputs") or []), "outputs": list(raw.get("outputs") or []), "parameters": parameters,
+            "requires": _requirements(["model3d"], tools, network=network, external_process=external,
+                                      network_note=metadata.get("network_note") or override.get("network_note"),
+                                      external_process_note=metadata.get("external_process_note") or override.get("external_process_note")),
+            "cacheable": bool(raw.get("cacheable", True)), "selectable": list(raw.get("selectable") or []),
+            "availability": {"available": True, "reason": None},
+        })
+    component.update(available=True, state="available", reason=None, operations=len(descriptions))
     return component, capabilities
 
 

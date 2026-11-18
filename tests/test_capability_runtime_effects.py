@@ -17,6 +17,12 @@ def _fake_model3d(monkeypatch):
          "summary": "assemble", "cacheable": False, "selectable": []},
         {"operation": "check.unannotated", "inputs": ["track"], "outputs": ["report"],
          "summary": "unannotated", "cacheable": True, "selectable": []},
+        {"operation": "check.explicit_pure", "inputs": ["track"], "outputs": ["report"],
+         "summary": "explicit pure", "cacheable": True, "selectable": [],
+         "capability": {"network_mode": "never", "external_process_mode": "never"}},
+        {"operation": "check.partial", "inputs": ["track"], "outputs": ["report"],
+         "summary": "partial", "cacheable": True, "selectable": [],
+         "capability": {"network_mode": "never"}},
     ]
     package.ops = ops
     monkeypatch.setitem(sys.modules, "model3d", package)
@@ -48,22 +54,28 @@ def test_demo_resume_audio_and_tail_runtime_effects_are_explicit():
     assert catalog.MV_RUNTIME[("gate", "tail")]["tools"] == ["ffmpeg"]
 
 
+def test_delivery_and_sheet_do_not_require_ffprobe():
+    for path in (("deliver", "join"), ("deliver", "review-copy"), ("deliver", "split"), ("sheet",)):
+        assert catalog.MV_RUNTIME[path]["tools"] == ["ffmpeg"]
+    assert catalog.MV_RUNTIME[("run-adapter",)]["tools"] == ["configured-adapter", "ffprobe"]
+
+
 def test_unannotated_mv_command_is_unknown_not_never(monkeypatch):
-    component = {"available": True, "state": "available", "reason": None, "commands": 2}
-    rows = [_command("mv.unannotated", ("unannotated",)), _command("mv.demo", ("demo",))]
+    component = {"available": True, "state": "available", "reason": None, "commands": 1}
+    rows = [_command("mv.unannotated", ("unannotated",))]
     monkeypatch.setattr(catalog, "_ORIGINAL_MV_CAPABILITIES", lambda: (component, rows))
 
     _, capabilities = catalog._mv_capabilities()
-    by_id = {item["id"]: item for item in capabilities}
-    assert by_id["mv.unannotated"]["requires"]["network"]["mode"] == "unknown"
-    assert by_id["mv.unannotated"]["requires"]["external_process"]["mode"] == "unknown"
-    assert by_id["mv.demo"]["requires"]["external_process"]["mode"] == "never"  # stand-in collector did not apply MV_RUNTIME
+    item = capabilities[0]
+    assert item["requires"]["network"]["mode"] == "unknown"
+    assert item["requires"]["external_process"]["mode"] == "unknown"
 
 
-def test_model3d_subprocesses_are_explicit_and_unknown_is_not_never(monkeypatch):
+def test_model3d_effect_declarations_are_preserved_per_effect(monkeypatch):
     _fake_model3d(monkeypatch)
     component, capabilities = catalog._model3d_capabilities()
     assert component["state"] == "available"
+    assert component["operations"] == 5
     by_id = {item["id"]: item for item in capabilities}
 
     blender = by_id["model3d.blender.run_script"]["requires"]
@@ -79,6 +91,14 @@ def test_model3d_subprocesses_are_explicit_and_unknown_is_not_never(monkeypatch)
     unannotated = by_id["model3d.check.unannotated"]["requires"]
     assert unannotated["network"]["mode"] == "unknown"
     assert unannotated["external_process"]["mode"] == "unknown"
+
+    pure = by_id["model3d.check.explicit_pure"]["requires"]
+    assert pure["network"]["mode"] == "never"
+    assert pure["external_process"]["mode"] == "never"
+
+    partial = by_id["model3d.check.partial"]["requires"]
+    assert partial["network"]["mode"] == "never"
+    assert partial["external_process"]["mode"] == "unknown"
     assert "unknown" in catalog.VALID_EFFECT_MODES
 
 
@@ -95,6 +115,8 @@ def test_real_mv_registry_marks_review_examples_when_available():
     assert by_id["mv.resume"]["requires"]["external_process"]["mode"] == "opt-in"
     assert by_id["mv.gate.check"]["requires"]["external_process"]["mode"] == "opt-in"
     assert by_id["mv.gate.tail"]["requires"]["tools"] == ["ffmpeg"]
+    assert by_id["mv.audio.end"]["requires"]["external_process"]["mode"] == "always"
+    assert by_id["mv.deliver.join"]["requires"]["tools"] == ["ffmpeg"]
 
 
 def test_real_model3d_registry_marks_review_examples_when_available():
@@ -106,5 +128,6 @@ def test_real_model3d_registry_marks_review_examples_when_available():
     if not component["available"]:
         pytest.skip(component["reason"] or "model3d registryを読み込めない")
     by_id = {item["id"]: item for item in capabilities}
+    assert by_id["model3d.check.eyes"]["requires"]["external_process"]["mode"] == "never"
     assert by_id["model3d.blender.run_script"]["requires"]["external_process"]["mode"] == "always"
     assert by_id["model3d.render.assemble"]["requires"]["tools"] == ["ffmpeg"]

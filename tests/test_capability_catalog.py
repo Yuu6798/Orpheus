@@ -206,7 +206,8 @@ def test_runtime_effects_distinguish_send_and_configured_tools():
     assert catalog_module.MV_RUNTIME[("inspect", "check")]["network"] == "opt-in"
     assert catalog_module.MV_RUNTIME[("run-adapter",)]["network"] == "recipe-defined"
     assert catalog_module.MV_RUNTIME[("fx", "legacy")]["external_process"] == "always"
-    assert ("audio", "end") not in catalog_module.MV_RUNTIME
+    assert catalog_module.MV_RUNTIME[("audio", "end")]["external_process"] == "always"
+    assert catalog_module.MV_RUNTIME[("audio", "end")]["tools"] == ["ffmpeg"]
 
 
 def test_real_mv_parser_exposes_workflow_commands():
