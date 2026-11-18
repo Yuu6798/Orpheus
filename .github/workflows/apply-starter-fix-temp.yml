@@ -1,0 +1,31 @@
+name: Apply Starter Fix Temp
+
+on:
+  push:
+    branches: [codex/capability-dogfood-improvements]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Apply starter fixes
+        run: |
+          set -euo pipefail
+          base64 --decode .github/starter-fix-temp/patch.b64 | gzip -dc > /tmp/starter-fix.patch
+          git apply --check /tmp/starter-fix.patch
+          git apply /tmp/starter-fix.patch
+          rm -rf .github/starter-fix-temp
+          rm -f .github/workflows/apply-starter-fix-temp.yml
+          git config user.name "Yuu6798"
+          git config user.email "kkoo6798@gmail.com"
+          git add -A
+          git commit -m "fix(tooling): make all synthetic starters self-contained"
+          git push origin HEAD:codex/capability-dogfood-improvements
