@@ -32,6 +32,17 @@ def test_drawing_uses_the_armature_scene_and_relative_keys():
     assert drawer.absolute_keys_problem is eye_keys.absolute_keys_problem      # 絶対の形状キーは値で姿勢を作れないので止める（目のキーと同じ）
 
 
+def test_drawing_prepares_keys_and_render_settings_like_face_sheet():
+    from model3d.blender_adapter import face_sheet
+    for name in ("key_changes", "setting_changes", "hidden_paths", "RENDER_FIXED", "VIEW_FIXED", "DISPLAY_FIXED", "IMAGE_FIXED"):
+        assert getattr(drawer, name) is getattr(face_sheet, name)             # 入れる値が効くように・絵がすり替わらないように（顔の絵と同じ）
+    assert drawer.RENDER_FIXED["use_sequencer"] is False and drawer.RENDER_FIXED["use_compositing"] is False
+    # 範囲の外の値（1.5）と 0 に戻すことが効くように範囲を広げ、ミュートしたキーは外す
+    combos = [("wide", drawer.key_targets({"eye_wide": 1.5}, {"eye_wide_L", "eye_wide_R"}))]
+    unmute, widen = drawer.key_changes(combos, {"eye_wide_L": (True, 0.0, 1.0), "eye_wide_R": (False, 0.2, 1.0)})
+    assert unmute == ["eye_wide_L"] and widen == {"eye_wide_L": (0.0, 1.5), "eye_wide_R": (0.0, 1.5)}
+
+
 def _images(folder, poses, views, size=(96, 54)):
     for (pose, view), name in image_names(poses, views).items():
         Image.new("RGB", size, (40 * len(pose) % 255, 30 * len(view) % 255, 90)).save(folder / name)
