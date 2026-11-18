@@ -584,6 +584,8 @@ def eye_captions(inputs, parameters, outputs, context):
     name = parameters.get("name", "f{frame:04d}.png")
     if not isinstance(name, str) or "{frame" not in name or Path(name).suffix.lower() != ".png":
         raise ToolError(f"name はコマのファイルの名前の形（{{frame}} を含む .png。既定 f{{frame:04d}}.png）にしてください: {name!r}")
+    if "/" in name or "\\" in name or Path(name).name != name:         # フォルダを含むと、out_dir の同じ名前が元のコマに重なりうる
+        raise ToolError(f"name はファイルの名前だけにしてください（フォルダは frames_dir で指す。元のコマを書き換えない）: {name!r}")
     fonts = {key: path(key) for key in ("font", "title_font")}
     for key, value in fonts.items():
         if value is not None and not value.is_file():

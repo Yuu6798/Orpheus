@@ -57,6 +57,13 @@ def test_captions_refuse_frames_too_short_for_the_bar_and_text(tmp_path):
     assert not (tmp_path / "out").exists()
 
 
+def test_captions_never_write_over_the_source_frames(tmp_path):
+    _frames(tmp_path / "raw")                                                          # 書く所が元のコマと同じなら、書く前に止める
+    with pytest.raises(ValueError, match="元のコマと同じ"):
+        eye_captions.caption_frames(TIMELINE, tmp_path / "raw", tmp_path / "raw", "f{frame:04d}.png", eye_captions.STYLE)
+    assert np.asarray(Image.open(tmp_path / "raw" / "f0001.png")).max() == 120             # 元のコマはそのまま
+
+
 def _recipe(tmp_path, parameters):
     atomic_json(tmp_path / "timeline.json", TIMELINE)
     step = {"id": "cap", "operation": "render.eye_captions", "inputs": {"timeline": "$inputs.timeline"}, "parameters": parameters,
@@ -79,6 +86,7 @@ def test_eye_captions_step_writes_to_another_folder(tmp_path):
 
 @pytest.mark.parametrize("change, message", [
     ({"frames_dir": "nowhere"}, "frames_dir"), ({"out_dir": "RAW"}, "別のフォルダ"), ({"name": "frame.png"}, "name"),
+    ({"name": "raw/f{frame:04d}.png"}, "ファイルの名前だけ"),
     ({"font": "missing.ttf"}, "font"), ({"bar_alpha": 300}, "bar_alpha"), ({"caption_at": [1]}, "caption_at"), ({"spin": 1}, "知らないパラメーター")])
 def test_eye_captions_refuses_bad_settings(tmp_path, change, message):
     from model3d import executor

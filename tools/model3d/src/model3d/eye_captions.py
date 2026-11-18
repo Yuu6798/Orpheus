@@ -62,6 +62,10 @@ def caption_frames(timeline, frames_dir, out_dir, name, style, title=None, font=
             sizes.add(image.size)
     for width, height in sorted(sizes):
         layout(style, width, height)
+    sources = {path.resolve() for _, path in paths}                  # 書く所が元のコマと同じファイルなら書かない（元のコマを書き換えない）
+    same = [path.name for _, path in paths if (out_dir / path.name).resolve() in sources]
+    if same:
+        raise ValueError(f"書く所が元のコマと同じファイルになります: {same[:3]}（out_dir を frames_dir と別のフォルダにしてください）")
     out_dir.mkdir(parents=True, exist_ok=True)
     written, cache = [], {}
     for row, path in paths:
