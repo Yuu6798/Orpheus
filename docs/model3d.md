@@ -2438,7 +2438,9 @@ y は手前が −、z は上が +）。`object`（頭のメッシュの物体�
   速さ 0.5 なら、同じ動きを半分の速さで見せ直す。向きと説明は、描く側と字を入れる側が使う。
 - 計算の式は `model3d/eye_plan.py` の頭に書いた（視線の飛びは速く動いて少し行きすぎてから止まる、まばたきは閉じて・閉じたまま・開き、瞳は
   つぶれてから開くときにたてへ少し伸びて戻る、驚きは一瞬すくんでから見開き瞳が縮む、など）。返すキーは `blink`・`blink_smile`・
-  `mouth_smile`・`brow_up`・`eye_wide`・`iris_small`・`iris_wide`・`iris_squash`（名前 + `_L`・`_R` があれば両方に入れる）。
+  `mouth_smile`・`brow_up`・`eye_wide`・`iris_small`・`iris_wide`・`iris_squash`（名前 + `_L`・`_R` があれば両方に入れる）。瞳のつぶれの戻りは、
+  まぶたの開き（`open_s`）と別に `squash_open_s` の間続く（試しは開き終わった所で打ち切り、`squash_open_s` が長いと瞳が急に元の形へ戻った。
+  照合の台本は `squash_open_s` が `open_s` 以下なので、試しと同じ値）。
 
 **`motion.eye_plan`**:
 - 入力 `blend`（目を動かせる作りにした頭）・`geometry`（目の形の値。半径は左右の球の平均）・`plan`。`start`（台本の最初のコマを置くシーンの

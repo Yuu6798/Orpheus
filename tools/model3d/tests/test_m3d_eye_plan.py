@@ -45,6 +45,12 @@ def test_blink_closes_holds_opens_and_stretches_the_iris():
     assert eye_plan.blink_parts(2.07, P)[0] == 1.0                                    # hold_s の間は閉じたまま
     b, sq, wide = eye_plan.blink_parts(2.25, P)                                       # 開いたあと: 瞳はたてに伸び、まぶたは少し開きすぎる
     assert b == pytest.approx(0.0) and sq < 0 and wide > 0
+    # 瞳のつぶれの戻りが、まぶたが開くより長くても、途中で打ち切らずに戻る（開き終わった所で 0 へ飛ばない）
+    slow = eye_plan.validate({**PLAN, "blink": {**PLAN["blink"], "starts": [0.0], "close_s": 0.05, "hold_s": 0.05, "open_s": 0.1,
+                                                "squash_open_s": 0.4, "stretch": {**PLAN["blink"]["stretch"], "amount": 0.0}}})
+    before, at = eye_plan.blink_parts(0.199, slow)[1], eye_plan.blink_parts(0.2, slow)[1]
+    assert at == pytest.approx(1 - eye_plan.smooth(0.1 / 0.4)) and abs(before - at) < 0.01
+    assert 0 < eye_plan.blink_parts(0.44, slow)[1] < at and eye_plan.blink_parts(0.5, slow)[1] == 0.0
 
 
 def test_surprise_smile_lids_and_iris_stretch():

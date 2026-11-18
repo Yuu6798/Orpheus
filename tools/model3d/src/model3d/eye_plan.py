@@ -10,6 +10,8 @@
 - 驚いた直後の小さな震え（gaze.tremor。驚きの始めから start_s〜end_s、だんだん小さく）: 横 h_m × sin(2π h_hz u)、たて v_m × sin(2π v_hz u + phase)。
 - まばたき（blink.starts の τ から length_s の間）: close_s で閉じ、hold_s 閉じたまま、open_s で開く。瞳のつぶれは閉じと同じで、開くときは
   squash_open_s で戻り、stretch（start_s〜length_s）でたてに amount 伸びて戻る（taper で後ろほど弱く）。まぶたは overopen で少し開きすぎて戻る。
+  瞳のつぶれの戻りは、まぶたの開き（open_s）と別に squash_open_s の間続く（試しは開き終わった所で打ち切っていた。squash_open_s が open_s
+  以下なら同じ）。
 - 驚き（surprise の start〜end。release から end でゆるめる）: squint（length_s の間、軽く閉じる）→ 見開き（wide）・瞳が縮む（small）は
   [始め, 立ち上がり, 行きすぎ, 戻り] で少し行きすぎてから止まる。眉（brow）は [始め, 立ち上がり] で上がる。
 - 笑顔（smile.start から ramp_s で）: 笑顔の閉じ目と口の笑顔を上げ、まばたきと見開きを消し、眉を brow だけ上げる。
@@ -178,9 +180,11 @@ def blink_parts(t, plan):
             sq = b
         elif u < closed:
             b, sq = 1.0, 1.0
-        elif u < opened:
-            b = 1 - smooth((u - closed) / c["open_s"])
-            sq = 1 - smooth((u - closed) / c["squash_open_s"])
+        else:                                                         # まぶたの開きと瞳のつぶれの戻りは、それぞれの長さで別に
+            if u < opened:
+                b = 1 - smooth((u - closed) / c["open_s"])
+            if u < closed + c["squash_open_s"]:                       # squash_open_s が open_s より長くても、途中で戻り切らない
+                sq = 1 - smooth((u - closed) / c["squash_open_s"])
         stretch = c["stretch"]
         v = (u - stretch["start_s"]) / stretch["length_s"]
         if 0 <= v <= 1:
