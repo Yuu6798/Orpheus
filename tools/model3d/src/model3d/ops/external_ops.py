@@ -6,7 +6,16 @@ from . import StepResult, register
 
 @register("external.run", cacheable=False,
           summary="設定 JSON の argv で別プロセスを呼ぶ。{入力名}・{出力名}・{work} を置き換える。版・ライセンス・重みを記録する。"
-                  "任意の review_note は unresolved に残して needs_review にする。再利用しない（毎回実行）")
+                  "任意の review_note は unresolved に残して needs_review にする。再利用しない（毎回実行）",
+          capability={
+              "aliases": ["外部プロセス", "生成器を呼ぶ", "外部リギング", "任意CLI接続"],
+              "tags": ["external", "process", "adapter"],
+              "tools": ["configured-process"],
+              "network_mode": "recipe-defined",
+              "external_process_mode": "always",
+              "network_note": "configのargvで指定した外部プログラムの実装と設定次第",
+              "external_process_note": "configのargvで指定した外部プログラムを毎回起動する",
+          })
 def external_run(inputs, parameters, outputs, context):
     note = parameters.get("review_note")
     if note is not None and (not isinstance(note, str) or not note.strip()):
