@@ -7,6 +7,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+__all__ = ("SCHEMA_FILES", "names", "load_schema", "validation_errors")
+
 SCHEMA_FILES = {
     "catalog": "catalog.schema.json",
     "search": "search.schema.json",
