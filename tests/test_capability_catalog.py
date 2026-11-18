@@ -11,10 +11,8 @@ from orpheus_catalog.capability_workflows import WORKFLOWS
 
 
 def _without_model3d(monkeypatch):
-    package = ModuleType("model3d")
-    package.__path__ = []
-    monkeypatch.setitem(sys.modules, "model3d", package)
-    monkeypatch.delitem(sys.modules, "model3d.ops", raising=False)
+    component = {"available": False, "state": "missing", "reason": "ModuleNotFoundError: model3d", "operations": 0}
+    monkeypatch.setattr(catalog_module, "_model3d_capabilities", lambda: (component, []))
 
 
 def _fake_requirements():
@@ -173,6 +171,20 @@ def test_missing_optional_extra_is_reported(monkeypatch):
     assert availability == {"available": False,
                             "reason": "optional extra が現在のPython環境にありません",
                             "missing_extras": [{"extra": "fx", "import": "cv2"}]}
+
+
+def test_component_failure_treats_missing_submodule_as_broken():
+    top = ModuleNotFoundError("No module named 'model3d'")
+    top.name = "model3d"
+    sub = ModuleNotFoundError("No module named 'model3d.ops'")
+    sub.name = "model3d.ops"
+    dependency = ModuleNotFoundError("No module named 'numpy'")
+    dependency.name = "numpy"
+
+    known = {"model3d", "model3d.ops"}
+    assert catalog_module._component_failure(top, known)[0] == "missing"
+    assert catalog_module._component_failure(sub, known)[0] == "broken"
+    assert catalog_module._component_failure(dependency, known)[0] == "broken"
 
 
 def test_optional_extras_follow_the_actual_subcommand():

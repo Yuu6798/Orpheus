@@ -19,7 +19,8 @@ def _model3d_imports(path):
 
 
 def test_catalog_is_a_neutral_package_not_an_mv_execution_import():
-    assert _model3d_imports(Path("src/orpheus_catalog/capability_catalog.py")) == ["model3d.ops"]
+    assert _model3d_imports(Path("src/orpheus_catalog/capability_catalog.py")) == []
+    assert _model3d_imports(Path("src/orpheus_catalog/_capability_catalog_impl.py")) == ["model3d.ops"]
     for path in Path("src/mv_pipeline").rglob("*.py"):
         assert _model3d_imports(path) == [], path
 
