@@ -19,9 +19,52 @@ jobs:
       - name: Apply starter fixes
         run: |
           set -euo pipefail
-          base64 --decode .github/starter-fix-temp/patch.b64 | gzip -dc > /tmp/starter-fix.patch
-          git apply --check /tmp/starter-fix.patch
-          git apply /tmp/starter-fix.patch
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/orpheus_catalog/capability_workflows.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              """                'commands': [['uv', 'run', 'mv', 'dance', 'demo', 'PROJECT_DIR'],
+                                       ['uv', 'run', 'mv', 'dance', 'render', 'PROJECT_DIR/spec.json']],""":
+              """                'commands': [['uv', 'sync', '--locked', '--extra', 'fx'],
+                                       ['uv', 'run', '--no-sync', 'mv', 'dance', 'demo', 'PROJECT_DIR'],
+                                       ['uv', 'run', '--no-sync', 'mv', 'dance', 'render', 'PROJECT_DIR/spec.json']],""",
+              """                'commands': [['uv', 'run', 'model3d', 'demo', 'PROJECT_DIR'],
+                                       ['uv', 'run', 'model3d', 'run', 'PROJECT_DIR/recipe.json']],""":
+              """                'commands': [['uv', 'sync', '--locked', '--extra', 'model3d'],
+                                       ['uv', 'run', '--no-sync', 'model3d', 'demo', 'PROJECT_DIR'],
+                                       ['uv', 'run', '--no-sync', 'model3d', 'run', 'PROJECT_DIR/recipe.json']],""",
+              """                'commands': [['uv', 'run', 'mv', 'inspect', 'demo', 'PROJECT_DIR'],
+                                       ['uv', 'run', 'mv', 'inspect', 'check', 'PROJECT_DIR/inspect.json']],""":
+              """                'commands': [['uv', 'sync', '--locked', '--extra', 'fx'],
+                                       ['uv', 'run', '--no-sync', 'mv', 'inspect', 'demo', 'PROJECT_DIR'],
+                                       ['uv', 'run', '--no-sync', 'mv', 'inspect', 'check', 'PROJECT_DIR/inspect.json']],""",
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"starter replacement target missing: {old.splitlines()[0]}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8", newline="\n")
+
+          path = Path("tests/test_capability_dogfood_improvements.py")
+          text = path.read_text(encoding="utf-8")
+          name = "test_all_synthetic_starters_install_their_optional_extras"
+          if name not in text:
+              text += '''\n\ndef test_all_synthetic_starters_install_their_optional_extras():
+              catalog = build_catalog()
+              expected = {
+                  "workflow.dance_edit": "fx",
+                  "workflow.inspect_and_repair": "fx",
+                  "workflow.character_3d": "model3d",
+              }
+              for workflow_id, extra in expected.items():
+                  starter = get_item(catalog, workflow_id)["starters"][0]
+                  assert starter["commands"][0] == ["uv", "sync", "--locked", "--extra", extra]
+                  assert all("--no-sync" in command for command in starter["commands"][1:])
+              '''
+          path.write_text(text, encoding="utf-8", newline="\n")
+          PY
           rm -rf .github/starter-fix-temp
           rm -f .github/workflows/apply-starter-fix-temp.yml
           git config user.name "Yuu6798"
