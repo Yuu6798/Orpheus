@@ -21,9 +21,23 @@ VALID_EFFECT_MODES.add("unknown")
 EXTRA_IMPORTS = _impl.EXTRA_IMPORTS
 MV_OVERRIDES = _impl.MV_OVERRIDES
 MV_RUNTIME = _impl.MV_RUNTIME
-MV_RUNTIME.setdefault(("gate", "check"), {
-    "external_process": "opt-in", "tools": ["ffmpeg"],
-    "external_process_note": "gate設定にvideo・master・flash・tailなど動画検査の材料がある場合に起動する",
+MV_RUNTIME.update({
+    ("demo",): {"external_process": "always", "tools": ["ffmpeg"],
+                "external_process_note": "合成素材の音源を正規化してprojectを初期化する"},
+    ("render",): {"external_process": "always", "tools": ["node", "remotion", "ffmpeg", "ffprobe"]},
+    ("preview",): {"external_process": "always", "tools": ["node", "remotion", "browser", "ffmpeg", "ffprobe"],
+                   "external_process_note": "--studioではRemotion Studioとbrowser、通常previewでは描画とFFmpeg/FFprobe検証を使う"},
+    ("resume",): {"external_process": "opt-in", "tools": ["node", "remotion", "ffmpeg", "ffprobe"],
+                  "external_process_note": "必要入力が揃い、同一renderのcacheが無いか無効な場合に描画と検証を再開する"},
+    ("audio", "end"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("audio", "lows"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("dance", "demo"): {"external_process": "always", "tools": ["ffmpeg"],
+                         "external_process_note": "合成の人物動画を書き出す"},
+    ("inspect", "demo"): {"external_process": "always", "tools": ["ffmpeg"],
+                           "external_process_note": "既知の異常を入れた合成動画を書き出す"},
+    ("gate", "check"): {"external_process": "opt-in", "tools": ["ffmpeg"],
+                         "external_process_note": "gate設定にvideo・master・flash・tailなど動画検査の材料がある場合に起動する"},
+    ("gate", "tail"): {"external_process": "always", "tools": ["ffmpeg"]},
 })
 MODEL3D_OVERRIDES = _impl.MODEL3D_OVERRIDES
 MODEL3D_OVERRIDES.setdefault("blender.run_script", {
@@ -78,8 +92,24 @@ def _call_collector(function):
         _impl._component_failure = previous
 
 
+def _unknown_effects(item, *, domain):
+    """明示metadataの無い実行可能な項目を、副作用なしと推測せずunknownにする。"""
+    requires = item["requires"]
+    if (not requires["tools"] and requires["network"]["mode"] == "never"
+            and requires["external_process"]["mode"] == "never"):
+        requires["network"] = {"mode": "unknown", "note": f"この{domain}は通信可否のmetadataをまだ公開していません"}
+        requires["external_process"] = {"mode": "unknown", "note": f"この{domain}は外部process起動のmetadataをまだ公開していません"}
+
+
 def _mv_capabilities():
-    return _call_collector(_ORIGINAL_MV_CAPABILITIES)
+    component, capabilities = _call_collector(_ORIGINAL_MV_CAPABILITIES)
+    for item in capabilities:
+        if item["kind"] == "command-group":
+            continue
+        path = tuple(item["entrypoint"]["argv"][1:])
+        if path not in MV_RUNTIME:
+            _unknown_effects(item, domain="command")
+    return component, capabilities
 
 
 def _model3d_capabilities():
@@ -90,12 +120,8 @@ def _model3d_capabilities():
         if item["id"] == "model3d.run":
             continue
         name = item["id"].removeprefix("model3d.")
-        requires = item["requires"]
-        if (name not in MODEL3D_OVERRIDES and not requires["tools"]
-                and requires["network"]["mode"] == "never"
-                and requires["external_process"]["mode"] == "never"):
-            requires["network"] = {"mode": "unknown", "note": "この操作は通信可否のmetadataをまだ公開していません"}
-            requires["external_process"] = {"mode": "unknown", "note": "この操作は外部process起動のmetadataをまだ公開していません"}
+        if name not in MODEL3D_OVERRIDES:
+            _unknown_effects(item, domain="operation")
     return component, capabilities
 
 
