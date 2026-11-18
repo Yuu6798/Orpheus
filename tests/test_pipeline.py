@@ -152,3 +152,26 @@ def test_run_adapter_alignment_imports_model_timings_and_caches(project, tmp_pat
     assert calls.read_text() == "x"
     with pytest.raises(PipelineError, match="Unsupported adapter kind"):
         pipeline.run_adapter(project, config, "vocals")
+
+
+def test_current_input_status_is_self_contained(project):
+    """verification.json向けの状態は、現在値とrunのhashを同じ記録で説明する。"""
+    import shutil
+
+    folder = project / "runs/frozen"
+    folder.mkdir(parents=True)
+    for name in ("analysis", "storyboard", "assets"):
+        shutil.copyfile(project / f"{name}.json", folder / f"{name}.json")
+    atomic_json(folder / "manifest.json", {"profile": "final"})
+
+    current = pipeline._current_input_status(project, folder)
+    assert current["current_inputs_match"] is True
+    assert set(current["current_input_hashes"]) == {"analysis", "storyboard", "assets"}
+    assert all(row["current"] == row["run"] for row in current["current_input_hashes"].values())
+
+    frozen = read_json(folder / "analysis.json")
+    frozen["bpm"] = 77
+    atomic_json(folder / "analysis.json", frozen)
+    changed = pipeline._current_input_status(project, folder)
+    assert changed["current_inputs_match"] is False
+    assert changed["current_input_hashes"]["analysis"]["current"] != changed["current_input_hashes"]["analysis"]["run"]

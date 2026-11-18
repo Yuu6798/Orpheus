@@ -8,6 +8,7 @@ from typing import Any
 
 from .capability_catalog import CatalogError, build_catalog, filter_items, get_item, search_catalog
 from .capability_validation import validate_catalog
+from .schemas import load_schema, names as schema_names
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -41,9 +42,15 @@ def parser() -> argparse.ArgumentParser:
     workflows.add_argument("--domain")
     workflows.add_argument("--maturity", choices=["stable", "experimental", "external"])
     workflows.add_argument("--available-only", action="store_true")
+    workflows.add_argument("--parameter-status", choices=["schema", "cli", "docs", "undocumented"])
+    workflows.add_argument("--machine-readable-only", action="store_true",
+                           help="必須工程のパラメーターがすべてschemaまたはCLIで読めるworkflowだけ")
     workflows.add_argument("--limit", type=int, default=20)
 
-    commands.add_parser("validate", help="カタログの内部参照と必須欄を検査する")
+    schema = commands.add_parser("schema", help="カタログ・検索結果・CLI応答の公開JSON Schema")
+    schema.add_argument("name", choices=schema_names())
+
+    commands.add_parser("validate", help="カタログのJSON Schemaと内部参照を検査する")
     return p
 
 
@@ -54,6 +61,8 @@ def _filters(command: argparse.ArgumentParser, *, include_workflow: bool = True)
     command.add_argument("--kind", choices=kinds)
     command.add_argument("--maturity", choices=["stable", "experimental", "external"])
     command.add_argument("--available-only", action="store_true")
+    command.add_argument("--parameter-status", choices=["schema", "cli", "docs", "undocumented"])
+    command.add_argument("--machine-readable-only", action="store_true")
 
 
 def _success(command: str, result: Any) -> dict[str, Any]:
@@ -61,6 +70,9 @@ def _success(command: str, result: Any) -> dict[str, Any]:
 
 
 def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command == "schema":
+        return _success(args.command, {"name": args.name, "schema": load_schema(args.name)})
+
     catalog = build_catalog()
     if args.command == "capabilities":
         items = filter_items(
@@ -69,8 +81,9 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
             kind=args.kind,
             maturity=args.maturity,
             available_only=args.available_only,
+            parameter_status=args.parameter_status,
+            machine_readable_only=args.machine_readable_only,
         )
-        # capabilities コマンドでは workflow を混ぜない。workflow は専用入口か search で返す。
         items = [item for item in items if item["kind"] != "workflow"]
         return _success(
             args.command,
@@ -93,6 +106,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 kind=args.kind,
                 maturity=args.maturity,
                 available_only=args.available_only,
+                parameter_status=args.parameter_status,
+                machine_readable_only=args.machine_readable_only,
                 limit=args.limit,
             ),
         )
@@ -107,6 +122,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 kind="workflow",
                 maturity=args.maturity,
                 available_only=args.available_only,
+                parameter_status=args.parameter_status,
+                machine_readable_only=args.machine_readable_only,
                 limit=args.limit,
             )
         else:
@@ -116,6 +133,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 kind="workflow",
                 maturity=args.maturity,
                 available_only=args.available_only,
+                parameter_status=args.parameter_status,
+                machine_readable_only=args.machine_readable_only,
             )
             if args.limit < 1 or args.limit > 100:
                 raise CatalogError("BAD_LIMIT", "limit は 1〜100 にしてください", limit=args.limit)
@@ -131,7 +150,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _write(payload: dict[str, Any], *, compact: bool, stream: Any) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=None if compact else 2, separators=(",", ":") if compact else None), file=stream)
+    print(json.dumps(payload, ensure_ascii=False, indent=None if compact else 2,
+                     separators=(",", ":") if compact else None), file=stream)
 
 
 def main(argv: list[str] | None = None) -> int:
