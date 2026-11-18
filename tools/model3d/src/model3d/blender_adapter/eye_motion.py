@@ -4,8 +4,11 @@
         --blend in.blend --settings settings.json --out out.blend --report report.json
 
 settings.json（motion.eye_plan が書く）: object（頭のメッシュ）、radius（目の球の半径 m）、bones（{"R", "L"}。省くと VRM の人型の骨の
-割り当て）、armature、frames（[{"frame", "gaze": [横 m, たて m], "keys": {名前: 値}}]。eye_plan.timeline の frames）。
+割り当て）、armature、plan_fps（台本の fps）、fps_mode（"check"・"set"・"keep"）、frames（[{"frame", "gaze": [横 m, たて m],
+"keys": {名前: 値}}]。eye_plan.timeline の frames）。
 すること:
+- アーマチュアのあるシーンの fps が台本の fps と違うとき（キーは台本の fps でコマに置くので、違う速さで再生される）: check なら止める、
+  set ならシーンを台本の fps にしてから打つ（シーンのほかの動きの速さも変わる）、keep ならシーンのまま打つ（ユウの答え 2026-11-18）。
 - コマごとに、頭の形状キー（名前 + "_L"・"_R" があれば両方、無ければその名前）の値と、目の骨の回転（XYZ。たて ÷ 半径, 0, 横 ÷ 半径）に
   キーを打つ（形状キーは頭の形状キーの動き、目の骨はアーマチュアの動きに入る。アーマチュアにもう動きがあれば、そのコマの目の骨のキーを
   上書きする）。
@@ -23,12 +26,14 @@ try:   # パッケージとして読むとき（テスト）
     from .eye_keys import absolute_keys_problem
     from .eye_rig import eye_bones
     from .eye_sheet import gaze_rotation, key_targets
+    from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from animation_sample import humanoid_map, pick_armature
     from eye_keys import absolute_keys_problem
     from eye_rig import eye_bones
     from eye_sheet import gaze_rotation, key_targets
+    from vrm_apply_motion import use_scene_of
 
 
 def parse_args(argv):
@@ -53,6 +58,26 @@ def key_ranges(frames, names):
 def overridden(driver_paths, keyed_paths):
     """キーを打つ値（keyed_paths。data_path）のうち、ドライバー（driver_paths）が上書きする物（ドライバーは F カーブのキーより強い）。"""
     return sorted(set(driver_paths) & set(keyed_paths))
+
+
+def fps_action(scene_fps, plan_fps, mode):
+    """シーンの fps と台本の fps と、違うときの扱い（mode: "check"・"set"・"keep"）から (すること, 止めるときの説明)。すること は
+    "same"（同じ）・"stop"・"set"・"keep"。キーは台本の fps でコマに置くので、違う fps のシーンでは scene ÷ plan 倍の速さで再生される。"""
+    if abs(scene_fps - plan_fps) < 1e-6:
+        return "same", None
+    if mode in ("set", "keep"):
+        return mode, None
+    return "stop", (f"シーンの fps {scene_fps:g} と台本の fps {plan_fps:g} が違います（このまま打つと、目の動きが {scene_fps / plan_fps:.3g} 倍の"
+                    f"速さで再生されます）。fps: \"set\" ならシーンを台本の fps {plan_fps:g} にしてから打ちます（シーンのほかの動きの速さも"
+                    "変わる）。fps: \"keep\" ならシーンの fps のまま打ちます（コマを 1 枚ずつ描いて、台本の fps でまとめるとき）")
+
+
+def fps_setting(plan_fps):
+    """台本の fps を Blender のシーンの (fps, fps_base) に（整数ならそのまま、そうでなければ四捨五入した fps と、それで割る数）。"""
+    whole = round(plan_fps)
+    if abs(whole - plan_fps) < 1e-9:
+        return int(whole), 1.0
+    return int(whole), whole / plan_fps
 
 
 def key_state_problem(head_name, muted, pinned):
@@ -102,6 +127,15 @@ def main(argv=None):
     problem = key_state_problem(head.name, [name for name in key_ranges(frames, names) if blocks[name].mute], head.show_only_shape_key)
     if problem:
         raise SystemExit(problem)
+    scene = use_scene_of(bpy, armature)                                 # 描くのはアーマチュアのあるシーン
+    scene_fps = scene.render.fps / scene.render.fps_base
+    action, message = fps_action(scene_fps, settings["plan_fps"], settings.get("fps_mode", "check"))
+    if action == "stop":
+        raise SystemExit(message)
+    fps_report = {"scene": round(scene_fps, 6), "plan": settings["plan_fps"], "action": action}
+    if action == "set":                                                 # シーンを台本の fps に（保存する。シーンのほかの動きの速さも変わる）
+        scene.render.fps, scene.render.fps_base = fps_setting(settings["plan_fps"])
+        fps_report["scene_after"] = round(scene.render.fps / scene.render.fps_base, 6)
     widened = {}
     for name, (low, high) in key_ranges(frames, names).items():
         block = blocks[name]
@@ -129,7 +163,7 @@ def main(argv=None):
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out), copy=True)
     report = {"blender": bpy.app.version_string, "object": head.name, "armature": armature.name, "bones": bones,
               "frames": [frames[0]["frame"], frames[-1]["frame"]] if frames else [], "count": len(frames), "keyed": sorted(keyed),
-              "unknown_keys": sorted(unknown), "widened": widened}
+              "unknown_keys": sorted(unknown), "widened": widened, "scene_fps": fps_report}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
         stream.write("\n")

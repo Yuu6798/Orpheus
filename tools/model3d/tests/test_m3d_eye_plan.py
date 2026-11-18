@@ -101,6 +101,12 @@ def test_key_ranges_widen_the_sliders_only_where_needed():
     assert eye_motion.key_state_problem("Head", [], False) is None
     assert "blink_L" in eye_motion.key_state_problem("Head", ["blink_L"], False)
     assert "ピン" in eye_motion.key_state_problem("Head", [], True)
+    # シーンと台本の fps（ユウの答え 2026-11-18）: 既定は止める（2 つの fps と set・keep の意味を言う）。set はシーンを台本に、keep はそのまま
+    assert eye_motion.fps_action(24.0, 24, "check") == ("same", None)
+    action, message = eye_motion.fps_action(24.0, 30, "check")
+    assert action == "stop" and "24" in message and "30" in message and "set" in message and "keep" in message and "0.8 倍" in message
+    assert eye_motion.fps_action(24.0, 30, "set") == ("set", None) and eye_motion.fps_action(24.0, 30, "keep") == ("keep", None)
+    assert eye_motion.fps_setting(30) == (30, 1.0) and eye_motion.fps_setting(29.97) == (30, pytest.approx(30 / 29.97))
 
 
 def _geometry():
@@ -151,7 +157,7 @@ def test_eye_plan_step_writes_the_timeline_and_keys(tmp_path):
     assert timeline["schema_version"] == "model3d-eye-timeline/0.1" and timeline["count"] == 154 and timeline["frames"][0]["frame"] == 10
     assert timeline["sections"][1]["caption"] == "blink slow" and timeline["sections"][1]["frames"] == [70, 103]
     report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
-    assert report["x_settings"] == {"object": "Head", "radius": 0.1, "bones": None, "armature": None}
+    assert report["x_settings"] == {"object": "Head", "radius": 0.1, "bones": None, "armature": None, "plan_fps": 24, "fps_mode": "check"}
     assert report["x_first"] == {"frame": 10, "gaze": [0.0, 0.0], "keys": eye_plan.state(0.0, P)["keys"]}
     assert report["sections"][2] == {"frames": [104, 163], "speed": 1.0, "view": "front", "caption": "surprise and smile"}
     assert step["observations"][0]["count"] == 154 and step["observations"][0]["sections"] == 3
@@ -159,6 +165,7 @@ def test_eye_plan_step_writes_the_timeline_and_keys(tmp_path):
 
 @pytest.mark.parametrize("parameters, plan, outputs, message", [
     ({"start": 1.5}, None, None, "start"), ({"bones": {"R": "eye"}}, None, None, "bones"), ({"spin": 1}, None, None, "知らないパラメーター"),
+    ({"fps": "auto"}, None, None, "fps は"),
     ({}, {"schema_version": "other"}, None, "目の動きの台本"),
     ({}, {**PLAN, "sections": [[0.0, 0.01, 1.0, "front", "x"]]}, None, "コマが 1 つも"),
     ({}, None, {"blend": "m.blend", "report": "m.json"}, "timeline")])

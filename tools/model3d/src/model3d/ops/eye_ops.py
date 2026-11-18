@@ -489,7 +489,8 @@ def eye_sheet(inputs, parameters, outputs, context):
 
 
 MOTION_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "eye_motion.py"
-MOTION_PARAMETERS = {"start", "bones", "armature", "blender", "addons", "blender_extensions", "timeout"}
+MOTION_PARAMETERS = {"start", "bones", "armature", "fps", "blender", "addons", "blender_extensions", "timeout"}
+FPS_MODES = ("set", "keep")      # シーンと台本の fps が違うとき。省くと止める（ユウの答え 2026-11-18）
 
 
 @register("motion.eye_plan", inputs=("blend", "geometry", "plan"), outputs=("blend", "timeline", "report"), cacheable=False,
@@ -515,6 +516,10 @@ def motion_eye_plan(inputs, parameters, outputs, context):
     if bones is not None and (not isinstance(bones, dict) or set(bones) != {"R", "L"}
                               or not all(isinstance(v, str) and v for v in bones.values()) or bones["R"] == bones["L"]):
         raise ToolError(f"bones は {{\"R\": 右目の骨, \"L\": 左目の骨}}（別の名前）にしてください: {bones!r}")
+    fps_mode = parameters.get("fps")
+    if fps_mode is not None and fps_mode not in FPS_MODES:
+        raise ToolError(f"fps は \"set\"（シーンを台本の fps にしてから打つ）か \"keep\"（シーンの fps のまま打つ）にしてください。省くと、"
+                        f"シーンと台本の fps が違えば止めます: {fps_mode!r}")
     geometry = _geometry(inputs["geometry"])
     try:
         plan = eye_plan.validate(read_json(inputs["plan"]))
@@ -528,6 +533,7 @@ def motion_eye_plan(inputs, parameters, outputs, context):
     step_dir = Path(context.step_dir)
     settings_path = step_dir / "eye_motion_settings.json"
     atomic_json(settings_path, {"object": geometry["object"], "radius": sum(radii) / 2, "bones": bones, "armature": armature,
+                                "plan_fps": plan["fps"], "fps_mode": fps_mode or "check",
                                 "frames": [{"frame": row["frame"], "gaze": row["gaze"], "keys": row["keys"]} for row in timeline["frames"]]})
     record = launcher.run_blender(blender, MOTION_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
                                                                   "--out", str(outputs["blend"]), "--report", str(outputs["report"])],
@@ -538,7 +544,7 @@ def motion_eye_plan(inputs, parameters, outputs, context):
     atomic_json(outputs["report"], report)
     return StepResult(observations=[{"kind": "eye_plan", "frames": report["frames"], "count": report["count"], "keyed": len(report["keyed"]),
                                      "unknown_keys": report["unknown_keys"], "widened": sorted(report["widened"]),
-                                     "sections": len(timeline["sections"])}])
+                                     "sections": len(timeline["sections"]), "scene_fps": report.get("scene_fps")}])
 
 
 CAPTION_PARAMETERS = {"frames_dir", "name", "out_dir", "title", "font", "title_font", *("reference_width", "bar_height", "bar_alpha", "caption_size",
