@@ -57,13 +57,16 @@ uv run orpheus validate
 | `opt-in` | 明示したフラグや設定のときだけ行う。既定は無効 |
 | `always` | 通常の実行で行う |
 | `recipe-defined` | adapter・renderer・recipeなど、ユーザーが渡した設定と外部実装次第 |
+| `unknown` | 操作は登録済みだが、実行効果のmetadataがまだ公開されていない。`never`とは扱わず実装・資料を確認する |
 
 例:
 
 - `mv inspect check` のネットワークは `opt-in`。`--vlm`と`--allow-send`を明示し、設定が送信型の場合だけ外部送信できる。
 - `mv run-adapter`、`mv fx legacy`、`model3d external.run` のネットワークは `recipe-defined`。呼び出す外部プログラムを確認する。
+- `mv gate check` は設定に動画検査の材料がある場合だけFFmpegを起動するため、外部processは`opt-in`。
 - `model3d check.eyes` はNumPyとPillowで動き、Blenderを起動しない。
-- `model3d model.eye_rig`、`model.eye_keys`、`vrm.look_at`、`render.eye_sheet`はBlenderを起動する。
+- `model3d model.eye_rig`、`model.eye_keys`、`vrm.look_at`、`render.eye_sheet`、`blender.run_script`はBlenderを起動する。`render.assemble`はFFmpegを起動する。
+- 実行効果のmetadataをまだ持たない`model3d`操作は`unknown`になる。道具が登録されているだけで`never`とは推定しない。
 
 `orpheus capabilities`、`search`、`show`、`workflows`、`validate`自身はネットワーク送信、外部AI、Blender、FFmpeg、描画処理を起動しません。現在のPython環境からparserと登録情報を読むだけです。
 

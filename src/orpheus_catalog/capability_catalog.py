@@ -17,10 +17,24 @@ VALID_MATURITY = _impl.VALID_MATURITY
 VALID_PARAMETER_STATUS = _impl.VALID_PARAMETER_STATUS
 VALID_COMPONENT_STATES = _impl.VALID_COMPONENT_STATES
 VALID_EFFECT_MODES = _impl.VALID_EFFECT_MODES
+VALID_EFFECT_MODES.add("unknown")
 EXTRA_IMPORTS = _impl.EXTRA_IMPORTS
 MV_OVERRIDES = _impl.MV_OVERRIDES
 MV_RUNTIME = _impl.MV_RUNTIME
+MV_RUNTIME.setdefault(("gate", "check"), {
+    "external_process": "opt-in", "tools": ["ffmpeg"],
+    "external_process_note": "gate設定にvideo・master・flash・tailなど動画検査の材料がある場合に起動する",
+})
 MODEL3D_OVERRIDES = _impl.MODEL3D_OVERRIDES
+MODEL3D_OVERRIDES.setdefault("blender.run_script", {
+    "tools": ["blender"], "network_mode": "recipe-defined", "external_process_mode": "always",
+    "network_note": "指定したBlender Python scriptと有効化するadd-onの実装次第",
+    "external_process_note": "指定したBlenderをbackgroundまたは対話モードで毎回起動する",
+})
+MODEL3D_OVERRIDES.setdefault("render.assemble", {
+    "tools": ["ffmpeg"], "network_mode": "never", "external_process_mode": "always",
+    "external_process_note": "PNG連番と任意の音声をH.264/AACへまとめ、出力をFFmpegで読み戻す",
+})
 importlib = _impl.importlib
 importlib_util = _impl.importlib_util
 
@@ -69,7 +83,20 @@ def _mv_capabilities():
 
 
 def _model3d_capabilities():
-    return _call_collector(_ORIGINAL_MODEL3D_CAPABILITIES)
+    component, capabilities = _call_collector(_ORIGINAL_MODEL3D_CAPABILITIES)
+    # 実行効果を公開していない操作を「何もしない」とは扱わない。既知の純粋操作や
+    # 明示metadata/overrideだけを確定し、残りはunknownとして利用者に確認を促す。
+    for item in capabilities:
+        if item["id"] == "model3d.run":
+            continue
+        name = item["id"].removeprefix("model3d.")
+        requires = item["requires"]
+        if (name not in MODEL3D_OVERRIDES and not requires["tools"]
+                and requires["network"]["mode"] == "never"
+                and requires["external_process"]["mode"] == "never"):
+            requires["network"] = {"mode": "unknown", "note": "この操作は通信可否のmetadataをまだ公開していません"}
+            requires["external_process"] = {"mode": "unknown", "note": "この操作は外部process起動のmetadataをまだ公開していません"}
+    return component, capabilities
 
 
 def build_catalog() -> dict[str, Any]:
