@@ -13,6 +13,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 ## 特徴
 
 - **再現できる**: 入力は SHA-256 で記録し、同じ入力なら再描画しない。出力ごとに入力の写しと検証結果を残す。
+- **目的から探せる**: `orpheus search "目的"` で、既存の workflow と道具を実行前に逆引きする。
 - **ネットワークを呼ばない**: 生成 AI の API、クラウドへの送信、公開は行わない。外部プログラムはユーザーが明示した設定だけを実行する。
 - **採点しない**: 自動で出すのは構造の検査（`technical_pass`）だけ。作品としての採否（`accepted`）は人が記録する。
 - **契約を守る**: MV の入出力の形は `contracts/` の JSON Schema が正典。実験的な機能の設定はその外に置く。
@@ -21,6 +22,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 
 | 入口 | できること | 状態 | 詳細 |
 |---|---|---|---|
+| `orpheus search "目的"` | 制作目的から、現在の環境で見える workflow と道具を検索し、必要入力・成熟度・可用性・人が決める箇所を JSON で読む | 本体 | [capabilities](docs/capabilities.md) |
 | `mv init … render verify` | 音源・歌詞時刻・静止画・演出 JSON から、パン・ズーム・クロスフェードと歌詞テロップつきの MP4 を描く | 本体 | [runbook](docs/runbook.md) |
 | `mv workflow` | 用途別（歌詞つき MV / ダンス編集）に必要な工程を並べ、現在のファイルから完了を確認する | 本体 | [workflow](docs/workflow.md) |
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
@@ -155,6 +157,7 @@ pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 |---|---|
 | [runbook.md](docs/runbook.md) | MV 制作の実行手順（入力 → 歌詞時刻 → 演出 → 描画 → 検証） |
 | [workflow.md](docs/workflow.md) | 用途別の制作計画と完了確認 |
+| [capabilities.md](docs/capabilities.md) | 制作目的から workflow と道具を逆引きする能力カタログ |
 | [after-production.md](docs/after-production.md) | 作品が終わったあとの知見の持ち帰り（洗い出し → 判断 → 引き継ぎ書と制作後記 → 凍結 → 小さな PR）と、知見の置き場 |
 | [adapters.md](docs/adapters.md) | 歌詞同期・音源分離アダプターの共通形式と接続例 |
 | [remotion-props.md](docs/remotion-props.md) | Remotion を透過レイヤーの部品として使うための、コマ番号だけの props の書き出し |

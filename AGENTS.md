@@ -1,5 +1,6 @@
 # Orpheus
 
+- 依頼の目的から既存の道具を探すときは、ソースや自前スクリプトへ進む前に `uv run orpheus search "目的"` を実行する。候補の workflow / capability と `availability`・`maturity`・`parameters.status` を確認し、詳細が要る道具だけ `uv run orpheus show ID`、`model3d ops`、対応する `docs/` を読む（`docs/capabilities.md`）。
 - 動く既存ツールを優先する。3D は段ごとに `model3d ops` の一覧を取り直して読み、使わない部品は理由を記録する。
 - contracts/ の入出力契約を無断変更しない。
 - 推定を実測扱いしない。合成素材のテストと実曲の評価を区別する。

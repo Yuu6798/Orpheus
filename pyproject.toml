@@ -23,6 +23,7 @@ audit = ["pip-audit==2.10.1"]
 
 [project.scripts]
 mv = "mv_pipeline.cli:main"
+orpheus = "mv_pipeline.capabilities_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mv_pipeline"]
