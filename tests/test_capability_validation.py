@@ -28,3 +28,8 @@ def test_validate_allows_capabilities_from_an_unavailable_component(monkeypatch)
 
     assert report["valid"] is True
     assert report["errors"] == []
+
+
+def test_current_catalog_passes_strict_validation():
+    report = validate_catalog(build_catalog())
+    assert report["valid"] is True, report
