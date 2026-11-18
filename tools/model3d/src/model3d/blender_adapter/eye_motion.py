@@ -55,6 +55,16 @@ def overridden(driver_paths, keyed_paths):
     return sorted(set(driver_paths) & set(keyed_paths))
 
 
+def key_state_problem(head_name, muted, pinned):
+    """打つ形状キーのうちミュートされている物（muted）や、形状キーを 1 つだけ見せる設定（ピン。pinned）があれば、キーを打っても形が
+    変わらないので、止めるときの説明。無ければ None（.blend は保存するので、この工程では外さない）。"""
+    if muted:
+        return f"打つ形状キーがミュートされていて、キーを打っても形が変わりません: {sorted(muted)}。ミュートを外してください"
+    if pinned:
+        return f"{head_name} は形状キーを 1 つだけ見せる設定（ピン）になっていて、打った値が形に出ません。ピンを外してください"
+    return None
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -89,6 +99,9 @@ def main(argv=None):
     constrained = [f"{bones[side]}: {c.name}" for side in ("L", "R") for c in armature.pose.bones[bones[side]].constraints if not c.mute]
     if constrained:
         raise SystemExit(f"目の骨の拘束が、打った回りのキーを上書きします: {constrained}。拘束を外すか止めてください")
+    problem = key_state_problem(head.name, [name for name in key_ranges(frames, names) if blocks[name].mute], head.show_only_shape_key)
+    if problem:
+        raise SystemExit(problem)
     widened = {}
     for name, (low, high) in key_ranges(frames, names).items():
         block = blocks[name]

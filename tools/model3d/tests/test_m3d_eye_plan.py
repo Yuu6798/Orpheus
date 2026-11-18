@@ -97,6 +97,10 @@ def test_key_ranges_widen_the_sliders_only_where_needed():
     keyed = {'key_blocks["blink_L"].value', 'pose.bones["eye.L"].rotation_euler'}
     assert eye_motion.overridden(['key_blocks["blink_L"].value', 'key_blocks["mouth"].value'], keyed) == ['key_blocks["blink_L"].value']
     assert eye_motion.overridden([], keyed) == []
+    # 打つキーがミュートされている・ピンがあると、キーを打っても形が変わらないので止める
+    assert eye_motion.key_state_problem("Head", [], False) is None
+    assert "blink_L" in eye_motion.key_state_problem("Head", ["blink_L"], False)
+    assert "ピン" in eye_motion.key_state_problem("Head", [], True)
 
 
 def _geometry():
