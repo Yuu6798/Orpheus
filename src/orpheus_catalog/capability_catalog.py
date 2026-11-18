@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+import copy
+from collections import Counter
 from typing import Any
 
 from . import _capability_catalog_impl as _impl
+from .capability_workflows import WORKFLOWS
 
 CatalogError = _impl.CatalogError
 CATALOG_SCHEMA = _impl.CATALOG_SCHEMA
@@ -83,13 +86,9 @@ def _component_failure(error: Exception, missing_modules: set[str]) -> tuple[str
     return ("missing" if missing else "broken"), f"{type(error).__name__}: {error}"
 
 
-def _call_collector(function):
-    previous = _impl._component_failure
-    _impl._component_failure = _component_failure
-    try:
-        return function()
-    finally:
-        _impl._component_failure = previous
+# private実装はこの公開入口専用なので、一時差し替えではなく安定した判定関数を設定する。
+# これにより複数threadから同時にカタログを作っても、復元順で判定が変わらない。
+_impl._component_failure = _component_failure
 
 
 def _unknown_effects(item, *, domain):
@@ -102,7 +101,7 @@ def _unknown_effects(item, *, domain):
 
 
 def _mv_capabilities():
-    component, capabilities = _call_collector(_ORIGINAL_MV_CAPABILITIES)
+    component, capabilities = _ORIGINAL_MV_CAPABILITIES()
     for item in capabilities:
         if item["kind"] == "command-group":
             continue
@@ -113,7 +112,7 @@ def _mv_capabilities():
 
 
 def _model3d_capabilities():
-    component, capabilities = _call_collector(_ORIGINAL_MODEL3D_CAPABILITIES)
+    component, capabilities = _ORIGINAL_MODEL3D_CAPABILITIES()
     # 実行効果を公開していない操作を「何もしない」とは扱わない。既知の純粋操作や
     # 明示metadata/overrideだけを確定し、残りはunknownとして利用者に確認を促す。
     for item in capabilities:
@@ -126,12 +125,31 @@ def _model3d_capabilities():
 
 
 def build_catalog() -> dict[str, Any]:
-    previous_mv, previous_model3d = _impl._mv_capabilities, _impl._model3d_capabilities
-    _impl._mv_capabilities, _impl._model3d_capabilities = _mv_capabilities, _model3d_capabilities
-    try:
-        return _impl.build_catalog()
-    finally:
-        _impl._mv_capabilities, _impl._model3d_capabilities = previous_mv, previous_model3d
+    """現在の登録表からカタログを組み立てる。private実装のglobal関数は差し替えない。"""
+    mv_component, capabilities = _mv_capabilities()
+    model3d_component, model3d = _model3d_capabilities()
+    capabilities.extend(model3d)
+    components = {"mv": mv_component, "model3d": model3d_component}
+    by_id = {item["id"]: item for item in capabilities}
+    for workflow in WORKFLOWS:
+        for step in workflow["steps"]:
+            if step["capability"] not in by_id:
+                component_name = "model3d" if step["capability"].startswith("model3d.") else "mv"
+                item = _placeholder(step["capability"], component_name, components[component_name])
+                capabilities.append(item)
+                by_id[item["id"]] = item
+    capabilities.sort(key=lambda item: item["id"])
+    workflows = []
+    for raw in WORKFLOWS:
+        item = copy.deepcopy(raw)
+        item["availability"] = _workflow_availability(item, by_id)
+        workflows.append(item)
+    workflows.sort(key=lambda item: item["id"])
+    counts = Counter(item["parameters"]["status"] for item in capabilities)
+    return {"schema_version": CATALOG_SCHEMA, "components": components,
+            "coverage": {"capabilities": len(capabilities), "workflows": len(workflows),
+                         "parameters": {key: counts.get(key, 0) for key in sorted(VALID_PARAMETER_STATUS)}},
+            "capabilities": capabilities, "workflows": workflows}
 
 
 def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
