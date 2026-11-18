@@ -6,7 +6,8 @@ import json
 import sys
 from typing import Any
 
-from .capability_catalog import CatalogError, build_catalog, filter_items, get_item, search_catalog, validate_catalog
+from .capability_catalog import CatalogError, build_catalog, filter_items, get_item, search_catalog
+from .capability_validation import validate_catalog
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
