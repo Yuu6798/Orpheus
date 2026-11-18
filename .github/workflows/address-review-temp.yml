@@ -1,0 +1,141 @@
+name: Address Review Temp
+
+on:
+  push:
+    branches: [codex/capability-dogfood-improvements]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Apply review fixes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/orpheus_catalog/capability_workflows.py')
+          s = p.read_text(encoding='utf-8')
+          old = "'commands': [['uv', 'run', 'python', 'examples/workflow/run.py', 'PROJECT_DIR']],"
+          new = "'commands': [['uv', 'sync', '--locked', '--extra', 'analysis'],\n                             ['pnpm', 'install', '--frozen-lockfile'],\n                             ['uv', 'run', '--no-sync', 'python', 'examples/workflow/run.py', 'PROJECT_DIR']],"
+          assert old in s
+          p.write_text(s.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          p = Path('src/orpheus_catalog/_capability_catalog_impl.py')
+          s = p.read_text(encoding='utf-8')
+          old = '"node": {"resolution": "env-or-path", "environment": "ORPHEUS_NODE", "required_on_path": True},'
+          new = '"node": {"resolution": "env-or-path", "environment": "ORPHEUS_NODE", "required_on_path": False},'
+          assert old in s
+          p.write_text(s.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          p = Path('src/orpheus_catalog/capability_catalog.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''MODEL3D_OVERRIDES.setdefault("render.assemble", {
+              "tools": ["ffmpeg"], "network_mode": "never", "external_process_mode": "always",
+              "external_process_note": "PNG連番と任意の音声をH.264/AACへまとめ、出力をFFmpegで読み戻す",
+          })'''
+          new = '''MODEL3D_OVERRIDES.setdefault("render.assemble", {
+              "tools": ["ffmpeg"],
+              "tool_requirements": [{
+                  "name": "ffmpeg", "resolution": "parameter-or-context-or-bundled-or-path",
+                  "parameter": "ffmpeg", "context_tool": "ffmpeg", "required_on_path": False,
+                  "bundled_by": "imageio-ffmpeg",
+              }],
+              "network_mode": "never", "external_process_mode": "always",
+              "external_process_note": "PNG連番と任意の音声をH.264/AACへまとめ、出力をFFmpegで読み戻す",
+          })'''
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = '''        capabilities.append({
+              "id": f"model3d.{name}", "kind": "operation", "domain": "model3d",
+              "maturity": metadata.get("maturity", "experimental"),
+              "summary": override.get("summary") or metadata.get("summary") or raw.get("summary") or name,
+              "aliases": list(dict.fromkeys([*(metadata.get("aliases") or []), *(override.get("aliases") or [])])),
+              "tags": list(dict.fromkeys([name.split(".", 1)[0], *(metadata.get("tags") or [])])),
+              "entrypoint": {"argv": ["model3d", "run", "RECIPE"], "recipe_operation": name,
+                             "docs": metadata.get("docs", "docs/model3d.md")},
+              "inputs": list(raw.get("inputs") or []), "outputs": list(raw.get("outputs") or []), "parameters": parameters,
+              "requires": _requirements(["model3d"], tools, network=network, external_process=external,
+                                        network_note=metadata.get("network_note") or override.get("network_note"),
+                                        external_process_note=metadata.get("external_process_note") or override.get("external_process_note")),
+              "cacheable": bool(raw.get("cacheable", True)), "selectable": list(raw.get("selectable") or []),
+              "availability": {"available": True, "reason": None},
+          })'''
+          new = '''        requirements = _requirements(["model3d"], tools, network=network, external_process=external,
+                                       network_note=metadata.get("network_note") or override.get("network_note"),
+                                       external_process_note=metadata.get("external_process_note") or override.get("external_process_note"))
+              declared_tools = metadata.get("tool_requirements") or override.get("tool_requirements")
+              if declared_tools is not None:
+                  requirements["tool_requirements"] = copy.deepcopy(declared_tools)
+              capabilities.append({
+                  "id": f"model3d.{name}", "kind": "operation", "domain": "model3d",
+                  "maturity": metadata.get("maturity", "experimental"),
+                  "summary": override.get("summary") or metadata.get("summary") or raw.get("summary") or name,
+                  "aliases": list(dict.fromkeys([*(metadata.get("aliases") or []), *(override.get("aliases") or [])])),
+                  "tags": list(dict.fromkeys([name.split(".", 1)[0], *(metadata.get("tags") or [])])),
+                  "entrypoint": {"argv": ["model3d", "run", "RECIPE"], "recipe_operation": name,
+                                 "docs": metadata.get("docs", "docs/model3d.md")},
+                  "inputs": list(raw.get("inputs") or []), "outputs": list(raw.get("outputs") or []), "parameters": parameters,
+                  "requires": requirements,
+                  "cacheable": bool(raw.get("cacheable", True)), "selectable": list(raw.get("selectable") or []),
+                  "availability": {"available": True, "reason": None},
+              })'''
+          assert old in s
+          p.write_text(s.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          p = Path('tests/test_capability_dogfood_improvements.py')
+          s = p.read_text(encoding='utf-8')
+          old = '    assert starter["commands"] == [["uv", "run", "python", "examples/workflow/run.py", "PROJECT_DIR"]]'
+          new = '''    assert starter["commands"] == [
+              ["uv", "sync", "--locked", "--extra", "analysis"],
+              ["pnpm", "install", "--frozen-lockfile"],
+              ["uv", "run", "--no-sync", "python", "examples/workflow/run.py", "PROJECT_DIR"],
+          ]'''
+          assert old in s
+          s = s.replace(old, new, 1)
+          s = s.replace('assert tools["node"]["required_on_path"] is True', 'assert tools["node"]["required_on_path"] is False', 1)
+          s += '''\n\ndef test_model3d_ffmpeg_resolution_matches_assemble_operation():
+              catalog = build_catalog()
+              if not catalog["components"]["model3d"]["available"]:
+                  return
+              assemble = get_item(catalog, "model3d.render.assemble")
+              ffmpeg = {row["name"]: row for row in assemble["requires"]["tool_requirements"]}["ffmpeg"]
+              assert ffmpeg["resolution"] == "parameter-or-context-or-bundled-or-path"
+              assert ffmpeg["parameter"] == "ffmpeg"
+              assert ffmpeg["context_tool"] == "ffmpeg"
+              assert "environment" not in ffmpeg
+          '''
+          p.write_text(s, encoding='utf-8', newline='\n')
+
+          p = Path('README.md')
+          s = p.read_text(encoding='utf-8')
+          old = '```sh\nuv run python examples/workflow/run.py projects/workflow-example\n```'
+          new = '```sh\nuv sync --locked --extra analysis\npnpm install --frozen-lockfile\nuv run --no-sync python examples/workflow/run.py projects/workflow-example\n```'
+          assert old in s
+          p.write_text(s.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+          p = Path('docs/capabilities.md')
+          s = p.read_text(encoding='utf-8')
+          old = '`requires.tools` は互換用の名前一覧です。実際の解決方法は `requires.tool_requirements` を読みます。例えばFFmpegは `ORPHEUS_FFMPEG → PATH → imageio-ffmpeg同梱版`、ffprobeは `ORPHEUS_FFPROBE → PATH → Remotion同梱版` の順で解決するため、PATHに無くても直ちに利用不能ではありません。Nodeは `ORPHEUS_NODE` またはPATHが必要で、Blenderや外部adapterは設定で実行ファイルを渡します。'
+          new = '`requires.tools` は互換用の名前一覧です。実際の解決方法は `requires.tool_requirements` を読みます。MV側のFFmpegは `ORPHEUS_FFMPEG → PATH → imageio-ffmpeg同梱版`、ffprobeは `ORPHEUS_FFPROBE → PATH → Remotion同梱版` の順で解決するため、PATHに無くても直ちに利用不能ではありません。Nodeは `ORPHEUS_NODE` またはPATH、Blenderや外部adapterは設定で実行ファイルを渡します。`model3d render.assemble` のFFmpegは別の実装で、recipeの`ffmpeg`パラメーター → `model3d run --tool ffmpeg=PATH` → imageio-ffmpeg同梱版 → PATHの順です。'
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = '```sh\nuv run python examples/workflow/run.py PROJECT_DIR\n```'
+          new = '```sh\nuv sync --locked --extra analysis\npnpm install --frozen-lockfile\nuv run --no-sync python examples/workflow/run.py PROJECT_DIR\n```'
+          assert old in s
+          p.write_text(s.replace(old, new, 1), encoding='utf-8', newline='\n')
+          PY
+          rm -f .github/workflows/address-review-temp.yml
+          git config user.name "Yuu6798"
+          git config user.email "kkoo6798@gmail.com"
+          git add -A
+          git commit -m "fix(tooling): make starter and ffmpeg resolution exact"
+          git push origin HEAD:codex/capability-dogfood-improvements
