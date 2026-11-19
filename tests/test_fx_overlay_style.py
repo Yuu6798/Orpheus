@@ -290,3 +290,71 @@ def test_the_overlay_command_takes_a_layers_file(tmp_path):
     code, result, err = run_cli("overlay", "--base", tmp_path / "base.png", "--layers", layers, "--fps", 12, "--out", tmp_path / "runs", "--quiet")
     assert code == 0, err
     assert result["technical_pass"] is True and result["frames"] == 4
+
+
+def test_prepared_layer_crops_to_roi_and_matches_production_bit_for_bit():
+    rgba = np.zeros((SIZE[1], SIZE[0], 4), np.uint8)
+    rgba[12:22, 60:72] = (230, 180, 90, 200)
+    f = background(seed=9)
+
+    plain_prep = overlay.prepare_layer(rgba, options(), scale=1.0)
+    assert (plain_prep.y0, plain_prep.y1, plain_prep.x0, plain_prep.x1) == (12, 22, 60, 72)
+    assert plain_prep.backdrop is None and plain_prep.shadow is None and plain_prep.glow is None
+    f_orig = f.copy()
+    out_copy = overlay.apply_prepared(f_orig, plain_prep, opacity=0.37)
+    assert np.array_equal(f_orig, f)                                               # inplace=False は入力を変えない
+    out_inplace = overlay.apply_prepared(f.copy(), plain_prep, opacity=0.37, inplace=True)
+    assert np.array_equal(out_copy, out_inplace)
+    assert np.array_equal(out_copy[:12, :], f[:12, :])                             # ROI の外は入力とビット単位で同じ
+    assert overlay.apply_prepared(f, plain_prep, opacity=0.0) is f
+
+    empty = np.zeros((SIZE[1], SIZE[0], 4), np.uint8)
+    assert overlay.prepare_layer(empty, options({"shadow": {}}), scale=1.0) is None
+    assert overlay.apply_prepared(f, None, opacity=1.0) is f
+
+    mask = glyphs()
+    card_rgba = np.dstack([np.full((SIZE[1], SIZE[0], 3), 255, np.uint8), mask])
+    style = {"tint": [255, 246, 232], "backdrop": {}, "shadow": {"amount": 0.7, "sigma_px": 5},
+             "glow": {"color": [235, 150, 60], "amount": 0.75, "sigma_px": 18}}
+    styled_prep = overlay.prepare_layer(card_rgba, options(style), scale=1.0)
+    for tal in (1.0, 0.6, 0.15):
+        got = overlay.apply_prepared(f.copy(), styled_prep, opacity=tal, inplace=True)
+        assert np.array_equal(got, production_card(f.copy(), mask, tal))
+
+
+def test_timed_image_layers_prepare_once_and_match_apply_layer_every_frame(tmp_path, monkeypatch):
+    base_image(tmp_path / "base.png", color=(35, 70, 120))
+    card_a = np.zeros((SIZE[1], SIZE[0], 4), np.uint8)
+    card_a[6:20, 10:42] = (255, 245, 220, 240)
+    card_b = np.zeros((SIZE[1], SIZE[0], 4), np.uint8)
+    card_b[42:58, 24:76] = (200, 220, 255, 210)
+    Image.fromarray(card_a, "RGBA").save(tmp_path / "a.png")
+    Image.fromarray(card_b, "RGBA").save(tmp_path / "b.png")
+    layers_path = write_layers(tmp_path, [
+        {"image": "a.png", "start_s": 0.25, "end_s": 0.75, "fade_in_s": 0.2, "fade_out_s": 0.2,
+         "style": {"shadow": {}, "glow": {"color": [240, 180, 90], "sigma_px": 6}}},
+        {"image": "b.png", "start_s": 0.5, "end_s": 0.9, "fade_in_s": 0.15},
+    ])
+    layers = [overlay.describe_layer(*entry) for entry in overlay.load_layers(layers_path)]
+    base = {"kind": "image", "path": str(tmp_path / "base.png"), "size": list(SIZE), "frames": None, "fps": 12.0}
+
+    calls = []
+    real_prepare = overlay.prepare_layer
+
+    def spy_prepare(*args, **kwargs):
+        calls.append(1)
+        return real_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(overlay, "prepare_layer", spy_prepare)
+    rendered = list(overlay.frames(base, layers, 12))
+    assert len(calls) == 2                                                         # 12 コマ描いても静止画 2 枚につき 1 回ずつ
+
+    scale = min(SIZE) / 1080.0
+    under = np.full((SIZE[1], SIZE[0], 3), (35, 70, 120), np.uint8)
+    for idx, got in enumerate(rendered):
+        ref = under.astype(np.float32)
+        for layer, rgba in zip(layers, (card_a, card_b)):
+            op = overlay.opacity_at(layer, idx, 12.0)
+            if op > 0:
+                ref = overlay.apply_layer(ref, rgba, layer["options"], op, scale)
+        assert np.array_equal(got, np.clip(ref + 0.5, 0, 255).astype(np.uint8)), idx

@@ -34,8 +34,8 @@ from PIL import Image
 
 from ..io import PipelineError, atomic_json, schema_lines, sha256
 from . import fingerprint, probe, runs
-from .layering import (LAYERS_SCHEMA_PATH, LAYERS_VERSION, PLAIN, STYLE_DEFAULTS, apply_layer, entry_options,  # noqa: F401
-                       natural_key, validate_entries)
+from .layering import (LAYERS_SCHEMA_PATH, LAYERS_VERSION, PLAIN, STYLE_DEFAULTS, apply_layer, apply_prepared,  # noqa: F401
+                       entry_options, natural_key, prepare_layer, validate_entries)
 from .layering import check_fit as _check_fit, fit as _fit, frame_number as _frame_number, has_alpha as _has_alpha  # noqa: F401
 from .layering import normalize_style as _normalize_style, opacity as _opacity, read_rgba as _rgba  # noqa: F401
 
@@ -300,33 +300,64 @@ def opacity_at(layer, index, fps):
 
 def frames(base, layers, n_frames, progress=None):
     """合成したコマを順に返す。仕上げ・不透明度・premultiplied・画像のレイヤーが無ければ 0.1 と同じ式で、
-    あれば表示用の値の float で全部のレイヤーを重ねてから 1 回だけ四捨五入する。"""
+    あれば表示用の値の float で全部のレイヤーを重ねてから 1 回だけ四捨五入する。
+
+    1 枚の画像（image）レイヤーは描画前に仕上げと有効範囲（ROI）を 1 回だけ事前計算して使い回す。"""
     size, fps = base["size"], base.get("fps")         # fps は 1 枚の画像のレイヤーの時刻にだけ使う
-    sources = [_layer_frames(layer, n_frames, size) for layer in layers]
     simple = all(plain(layer) for layer in layers)
     scale = min(size) / 1080.0                       # 長さは出力の短い辺を 1080 としたときの画素
+    prepared = [None] * len(layers)
+    sources = []
+    for i, layer in enumerate(layers):
+        if not simple and layer["kind"] == "image":
+            still = _rgba(layer["path"], size, layer["options"])
+            prepared[i] = prepare_layer(still, layer["options"], scale)
+            sources.append(None)
+        else:
+            sources.append(_layer_frames(layer, n_frames, size))
     under_frames = _base_frames(base, n_frames)
     try:
         for index, under in enumerate(under_frames):
-            image = under if simple else under.astype(np.float32)
-            for layer, source in zip(layers, sources):
-                rgba = next(source)
-                if rgba is None:
-                    continue
-                if rgba.shape[:2] != under.shape[:2]:
-                    raise PipelineError(f"コマ {index} の寸法が違います: {rgba.shape[1]}x{rgba.shape[0]}（期待 {under.shape[1]}x{under.shape[0]}）")
-                if simple:
+            if simple:
+                image = under
+                for source in sources:
+                    rgba = next(source)
+                    if rgba is None:
+                        continue
+                    if rgba.shape[:2] != under.shape[:2]:
+                        raise PipelineError(f"コマ {index} の寸法が違います: {rgba.shape[1]}x{rgba.shape[0]}（期待 {under.shape[1]}x{under.shape[0]}）")
                     image = composite(image, rgba)
-                    continue
-                opacity = opacity_at(layer, index, fps)
-                if opacity > 0:
-                    image = apply_layer(image, rgba, layer["options"], opacity, scale)
-            yield image if simple else np.clip(image + 0.5, 0, 255).astype(np.uint8)
+                yield image
+            else:
+                active = []
+                for i, (layer, source) in enumerate(zip(layers, sources)):
+                    rgba = None if source is None else next(source)
+                    if rgba is not None and rgba.shape[:2] != under.shape[:2]:
+                        raise PipelineError(f"コマ {index} の寸法が違います: {rgba.shape[1]}x{rgba.shape[0]}（期待 {under.shape[1]}x{under.shape[0]}）")
+                    opacity = opacity_at(layer, index, fps)
+                    if opacity <= 0:
+                        continue
+                    if source is None:
+                        if prepared[i] is not None:
+                            active.append((prepared[i], opacity))
+                    elif rgba is not None:
+                        item = prepare_layer(rgba, layer["options"], scale)
+                        if item is not None:
+                            active.append((item, opacity))
+                if not active:
+                    yield under
+                else:
+                    image = under.astype(np.float32)
+                    for item, opacity in active:
+                        image = apply_prepared(image, item, opacity, inplace=True)
+                    yield np.clip(image + 0.5, 0, 255).astype(np.uint8)
             if progress:
                 progress(index + 1)
     finally:   # 途中で止まっても、各レイヤーの ffmpeg を閉じる
-        for source in sources + [under_frames]:
-            source.close()
+        for source in sources:
+            if source is not None:
+                source.close()
+        under_frames.close()
 
 
 # ---- run --------------------------------------------------------------------------
