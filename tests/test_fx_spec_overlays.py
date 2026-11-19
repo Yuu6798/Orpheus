@@ -217,3 +217,48 @@ def test_the_cli_takes_no_overlays(tmp_path):
     assert result["overlays"] == "disabled"
     plain = copy.deepcopy(spec_dict(layers=None, lights=[]))
     assert "overlays" not in plain
+
+
+def test_static_image_overlay_in_spec_prepares_once_and_matches_apply_layer(tmp_path, monkeypatch):
+    card(tmp_path / "card.png")
+    spec_path = project(
+        tmp_path,
+        [{"image": "card.png", "start_s": 0.25, "end_s": 1.75, "fade_in_s": 0.25, "fade_out_s": 0.25,
+          "style": {"backdrop": {}, "shadow": {}, "glow": {"color": [230, 150, 70], "sigma_px": 6}}}],
+        layers=None,
+        lights=[],
+    )
+    ctx, plain = render.prepare(fxspec.load_spec(spec_path)), plain_context(spec_path)
+    calls = []
+    real_prepare = layering.prepare_layer
+
+    def spy_prepare(*args, **kwargs):
+        calls.append(1)
+        return real_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(layering, "prepare_layer", spy_prepare)
+    with Image.open(tmp_path / "card.png") as image:
+        still = np.asarray(image.convert("RGBA"))
+    for t in (0.35, 0.5, 1.0, 1.5, 1.65):
+        got = render.frame(ctx, t, "base")
+        drawn = render.frame(plain, t, "base")
+        op = layering.opacity("image", ctx.overlays[0].entry, t)
+        scale = H / 1080.0
+        style = ctx.overlays[0].entry["style"]
+        # ROI を使わない全面の参照式と 1 画素ずつ照合する
+        alpha = still[..., 3:4].astype(np.float32) / 255.0
+        plane = alpha[..., 0]
+        ref = drawn.astype(np.float32)
+        bd = style["backdrop"]
+        grown = cv2.dilate(plane, np.ones((max(1, int(round(bd["dilate_px"] * scale))),) * 2, np.uint8), iterations=int(bd["iterations"]))
+        halo = np.clip(cv2.GaussianBlur(grown, (0, 0), bd["sigma_px"] * scale) * bd["gain"], 0, 1)
+        ref = ref * (1 - bd["amount"] * halo[..., None] * op)
+        sh = style["shadow"]
+        soft = cv2.GaussianBlur(plane, (0, 0), sh["sigma_px"] * scale)[..., None]
+        ref = ref * (1 - sh["amount"] * np.clip(soft * sh["gain"], 0, 1) * op)
+        gl = style["glow"]
+        wide = cv2.GaussianBlur(plane, (0, 0), gl["sigma_px"] * scale)[..., None]
+        ref = ref + np.array(gl["color"], np.float32) * wide * gl["amount"] * op
+        ref = ref * (1 - alpha * op) + still[..., :3].astype(np.float32) * alpha * op
+        assert np.array_equal(got, np.clip(ref + 0.5, 0, 255).astype(np.uint8)), t
+    assert len(calls) == 1                                                         # 5 時刻描いても静止画の事前計算は 1 回だけ

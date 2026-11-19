@@ -1,6 +1,8 @@
 """透過レイヤーを重ねる式と、レイヤーの設定（`mv overlay --layers` と fx-shot の `overlays` が共有する部品）。
 
     entry_options(item, label)                  設定の 1 要素（fx_overlay_layers.schema.json の layer）を検証して、既定値を埋めた設定にする
+    prepare_layer(rgba, options, scale)         仕上げと有効範囲（ROI）を事前計算した PreparedLayer を返す（全透明なら None）
+    apply_prepared(f, prepared, opacity)        PreparedLayer を有効範囲だけへ重ねる（全面演算と float32 まで同じ）
     apply_layer(f, rgba, options, opacity, scale)  表示用の値（float32 の 0..255）の f に rgba を style つきで重ねる
     opacity(kind, options, t)                   時刻 t の不透明度（1 枚の画像は start_s ≤ t < end_s の間だけ。出入りは smoothstep）
 
@@ -10,6 +12,7 @@
 """
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import jsonschema
@@ -150,17 +153,32 @@ def opacity(kind, options, t):
     return options["opacity"] * value
 
 
-def apply_layer(f, rgba, options, opacity=1.0, scale=1.0):
-    """表示用の値（float32 の 0..255）の f に、rgba（uint8）を style つきで重ねた f を返す（実制作の重ねの式と同じ式・同じ順）。
+@dataclass(frozen=True)
+class PreparedLayer:
+    """仕上げ（後光・影・光彩）と有効範囲（ROI）を事前計算した透過レイヤー 1 枚。
 
-    後光（アルファを dilate_px の正方形で iterations 回太らせて σ でぼかし、gain 倍して 0..1 に切ったものの分だけ暗くする）→
-    影（σ でぼかしたアルファ × gain の分だけ暗くする）→ 光彩（color × ぼかしたアルファ × amount を足す）→
-    本体（f × (1 − α) + 色 × α。色は tint × 輝度、tint が無ければレイヤーの色）。どの項にも opacity を掛ける。scale は長さの倍率。
-    アルファがどこも 0 なら f をそのまま返す。"""
-    import cv2
+    静止画（image）レイヤーでは 1 回だけ作って全コマで使い回す。各項は従来の全面演算と float32 の掛け順まで揃え、
+    アルファ・後光・影・光彩のどれかが 0 でない最小の矩形 [y0:y1, x0:x1] だけを保持する。"""
+
+    y0: int
+    y1: int
+    x0: int
+    x1: int
+    alpha: np.ndarray
+    premul_color: np.ndarray
+    backdrop: np.ndarray | None
+    shadow: np.ndarray | None
+    glow: np.ndarray | None
+    scale: float = 1.0
+
+
+def prepare_layer(rgba, options, scale=1.0):
+    """rgba（uint8）の仕上げ（後光・影・光彩）と有効範囲（ROI）を事前計算して PreparedLayer を返す。
+
+    アルファがどこも 0 なら None を返す（cv2 は style に後光・影・光彩があるときだけ import する）。"""
     alpha = rgba[..., 3:4].astype(np.float32) / 255.0
     if alpha.max() <= 0:
-        return f
+        return None
     style = options["style"] or {}
     if options["alpha"] == "premultiplied":
         rgb = np.clip(rgba[..., :3].astype(np.float32) / np.maximum(alpha, np.float32(1e-6)), 0, 255).astype(np.float32)
@@ -174,15 +192,79 @@ def apply_layer(f, rgba, options, opacity=1.0, scale=1.0):
         color = rgb
     plane = alpha[..., 0]
     backdrop, shadow, glow = style.get("backdrop"), style.get("shadow"), style.get("glow")
-    if backdrop:
-        size = max(1, int(round(backdrop["dilate_px"] * scale)))
-        grown = cv2.dilate(plane, np.ones((size, size), np.uint8), iterations=int(backdrop["iterations"]))
-        halo = np.clip(cv2.GaussianBlur(grown, (0, 0), backdrop["sigma_px"] * scale) * backdrop["gain"], 0, 1)
-        f = f * (1 - backdrop["amount"] * halo[..., None] * opacity)
-    if shadow:
-        soft = cv2.GaussianBlur(plane, (0, 0), shadow["sigma_px"] * scale)[..., None]
-        f = f * (1 - shadow["amount"] * np.clip(soft * shadow["gain"], 0, 1) * opacity)
-    if glow:
-        wide = cv2.GaussianBlur(plane, (0, 0), glow["sigma_px"] * scale)[..., None]
-        f = f + np.array(glow["color"], np.float32) * wide * glow["amount"] * opacity
-    return f * (1 - alpha * opacity) + color * alpha * opacity
+    backdrop_term = shadow_term = glow_term = None
+    if backdrop or shadow or glow:
+        import cv2
+        if backdrop:
+            size = max(1, int(round(backdrop["dilate_px"] * scale)))
+            grown = cv2.dilate(plane, np.ones((size, size), np.uint8), iterations=int(backdrop["iterations"]))
+            halo = np.clip(cv2.GaussianBlur(grown, (0, 0), backdrop["sigma_px"] * scale) * backdrop["gain"], 0, 1)
+            backdrop_term = backdrop["amount"] * halo[..., None]
+        if shadow:
+            soft = cv2.GaussianBlur(plane, (0, 0), shadow["sigma_px"] * scale)[..., None]
+            shadow_term = shadow["amount"] * np.clip(soft * shadow["gain"], 0, 1)
+        if glow:
+            wide = cv2.GaussianBlur(plane, (0, 0), glow["sigma_px"] * scale)[..., None]
+            glow_term = np.array(glow["color"], np.float32) * wide * glow["amount"]
+    active = plane > 0
+    if backdrop_term is not None:
+        active = active | (backdrop_term[..., 0] > 0)
+    if shadow_term is not None:
+        active = active | (shadow_term[..., 0] > 0)
+    if glow_term is not None:
+        active = active | (glow_term != 0).any(axis=-1)
+    rows = np.flatnonzero(active.any(axis=1))
+    cols = np.flatnonzero(active.any(axis=0))
+    if rows.size == 0 or cols.size == 0:
+        return None
+    y0, y1 = int(rows[0]), int(rows[-1]) + 1
+    x0, x1 = int(cols[0]), int(cols[-1]) + 1
+    a_roi = np.ascontiguousarray(alpha[y0:y1, x0:x1])
+    premul = np.ascontiguousarray(color[y0:y1, x0:x1] * a_roi)
+    return PreparedLayer(
+        y0=y0,
+        y1=y1,
+        x0=x0,
+        x1=x1,
+        alpha=a_roi,
+        premul_color=premul,
+        backdrop=None if backdrop_term is None else np.ascontiguousarray(backdrop_term[y0:y1, x0:x1]),
+        shadow=None if shadow_term is None else np.ascontiguousarray(shadow_term[y0:y1, x0:x1]),
+        glow=None if glow_term is None else np.ascontiguousarray(glow_term[y0:y1, x0:x1]),
+        scale=float(scale),
+    )
+
+
+def apply_prepared(f, prepared, opacity=1.0, *, inplace=False):
+    """事前計算済みの PreparedLayer を、有効範囲（ROI）だけへ不透明度 opacity で重ねる。
+
+    prepared が None または opacity ≤ 0 なら f をそのまま返す。inplace=True は呼び出し元が専有する float32 バッファ向け。"""
+    if prepared is None or opacity <= 0:
+        return f
+    y0, y1, x0, x1 = prepared.y0, prepared.y1, prepared.x0, prepared.x1
+    sub = f[y0:y1, x0:x1]
+    if prepared.backdrop is not None:
+        sub = sub * (1 - prepared.backdrop * opacity)
+    if prepared.shadow is not None:
+        sub = sub * (1 - prepared.shadow * opacity)
+    if prepared.glow is not None:
+        sub = sub + prepared.glow * opacity
+    sub = sub * (1 - prepared.alpha * opacity) + prepared.premul_color * opacity
+    if inplace:
+        f[y0:y1, x0:x1] = sub
+        return f
+    out = f.copy()
+    out[y0:y1, x0:x1] = sub
+    return out
+
+
+def apply_layer(f, rgba, options, opacity=1.0, scale=1.0):
+    """表示用の値（float32 の 0..255）の f に、rgba（uint8）を style つきで重ねた f を返す（実制作の重ねの式と同じ式・同じ順）。
+
+    後光（アルファを dilate_px の正方形で iterations 回太らせて σ でぼかし、gain 倍して 0..1 に切ったものの分だけ暗くする）→
+    影（σ でぼかしたアルファ × gain の分だけ暗くする）→ 光彩（color × ぼかしたアルファ × amount を足す）→
+    本体（f × (1 − α) + 色 × α。色は tint × 輝度、tint が無ければレイヤーの色）。どの項にも opacity を掛ける。scale は長さの倍率。
+    アルファがどこも 0 なら f をそのまま返す。"""
+    if opacity <= 0:
+        return f
+    return apply_prepared(f, prepare_layer(rgba, options, scale), opacity)

@@ -116,12 +116,22 @@ def describe(sp):
 
 
 class Layer:
-    """描画サイズへ合わせたレイヤー 1 つ。連番は時刻ごとに読む（直前の 1 枚だけ覚えておく）。"""
+    """描画サイズへ合わせたレイヤー 1 つ。連番は時刻ごとに読む（直前の 1 枚だけ覚えておく）。
+    1 枚の画像（still）は仕上げと有効範囲（ROI）を scale ごとに 1 回だけ事前計算して使い回す。"""
 
     def __init__(self, entry, size, paths=None, still=None, fps=24.0, output=None):
         self.entry, self.size, self.paths, self.still, self.fps = entry, tuple(size), paths, still, fps
         self.output = tuple(output) if output else self.size
         self._cached = (None, None)
+        self._prepared = {}
+        self._still_nonempty = None if still is None else bool(still[..., 3].any())
+
+    def prepared(self, scale):
+        """1 枚の画像（still）の事前計算済み PreparedLayer（scale ごとにキャッシュ。全透明なら None）。"""
+        key = float(scale)
+        if key not in self._prepared:
+            self._prepared[key] = layering.prepare_layer(self.still, self.entry, key)
+        return self._prepared[key]
 
     def rgba_at(self, t):
         """時刻 t の uint8 RGBA（描画サイズ）。無いコマは None。"""
@@ -164,11 +174,16 @@ def prepare(sp, size):
 
 
 def at(layers, t):
-    """時刻 t に見えるレイヤー [(rgba, 設定, 不透明度)]（不透明度 0・無いコマ・どこも透明のコマは除く）。"""
+    """時刻 t に見えるレイヤー [(rgba または Layer, 設定, 不透明度)]（不透明度 0・無いコマ・どこも透明のコマは除く）。"""
     visible = []
     for layer in layers:
         opacity = layering.opacity(layer.entry["kind"], layer.entry, t)
         if opacity <= 0:
+            continue
+        if layer.still is not None:
+            if not layer._still_nonempty:
+                continue
+            visible.append((layer, layer.entry, opacity))
             continue
         rgba = layer.rgba_at(t)
         if rgba is None or not rgba[..., 3].any():
@@ -179,8 +194,9 @@ def at(layers, t):
 
 def composite(display, visible, scale):
     """表示用の値（float32 の 0..255）に、見えるレイヤーを下から順に重ねる。"""
-    for rgba, entry, opacity in visible:
-        display = layering.apply_layer(display, rgba, entry, opacity, scale)
+    for item, entry, opacity in visible:
+        prepared = item.prepared(scale) if isinstance(item, Layer) else layering.prepare_layer(item, entry, scale)
+        display = layering.apply_prepared(display, prepared, opacity, inplace=True)
     return display
 
 
