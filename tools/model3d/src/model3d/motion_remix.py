@@ -150,6 +150,8 @@ def remix_pose_arrays(
             raise ToolError(f"セグメントの区間が不正です: {seg}")
         if not (1.0 <= float(seg["src_start"]) <= n_src and 1.0 <= float(seg["src_end"]) <= n_src):
             raise ToolError(f"セグメントの src 範囲が元コマ数 1..{n_src} の外です: {seg}")
+        if float(seg.get("ramp", 0.0)) < 0.0:
+            raise ToolError(f"セグメントの ramp は 0 以上にしてください: {seg}")
 
     out_locs = np.zeros((n_out_frames, n_bones, 3), dtype=np.float64)
     out_quats = np.zeros((n_out_frames, n_bones, 4), dtype=np.float64)
@@ -224,6 +226,8 @@ def compute_zero_g_trajectory(n_frames, start_f, peak_start_f, peak_end_f, land_
         raise ToolError(f"n_frames は 1 以上にしてください: {n_frames}")
     if not (start_f < peak_start_f <= peak_end_f < land_f):
         raise ToolError("start_f < peak_start_f <= peak_end_f < land_f の順にしてください")
+    if not (math.isfinite(height_m) and math.isfinite(spin_deg)):
+        raise ToolError("height_m と spin_deg は有限値にしてください")
     z = np.zeros(n_frames, dtype=np.float64)
     yaw = np.zeros(n_frames, dtype=np.float64)
     spin_rad = math.radians(float(spin_deg))
@@ -258,6 +262,10 @@ def compute_clone_formation_tracks(
     """
     if n_frames < 1:
         raise ToolError(f"n_frames は 1 以上にしてください: {n_frames}")
+    for w in windows:
+        fs, fhs, fhe, fe = float(w["start"]), float(w["hold_start"]), float(w["hold_end"]), float(w["end"])
+        if not (fs <= fhs <= fhe <= fe):
+            raise ToolError(f"window の時刻順が不正です（start <= hold_start <= hold_end <= end）: {w}")
     tx, ty, tz = (float(v) for v in target_xyz)
     sx = -1.0 if mirror_x else 1.0
     locs = np.zeros((n_frames, 3), dtype=np.float64)
@@ -275,6 +283,7 @@ def compute_clone_formation_tracks(
             if not (fs <= f <= fe):
                 continue
             max_sp = float(w.get("spread", 1.0))
+            spiral_yaw = 0.0
             if f < fhs:
                 u = _smoothstep(fs, fhs, f)
                 sp = max_sp * u
@@ -288,11 +297,11 @@ def compute_clone_formation_tracks(
                 sp = max_sp * u
                 v = u
                 if w.get("spiral_exit"):
-                    yaw += (1.0 - u) * (math.pi if sx > 0 else -math.pi)
+                    spiral_yaw = (1.0 - u) * (math.pi if sx > 0 else -math.pi)
             if v > vis:
                 spread = sp
                 vis = v
-                yaw += float(yaw_rad) * min(1.0, sp)
+                yaw = float(yaw_rad) * min(1.0, sp) + spiral_yaw
 
         s_val = float(hidden_scale) if vis < 0.01 else (0.96 + 0.04 * vis)
         locs[fi] = (tx * spread, ty * spread, tz * vis)

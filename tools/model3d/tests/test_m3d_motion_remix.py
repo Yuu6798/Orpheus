@@ -80,6 +80,16 @@ def test_clone_formation_tracks_mirror_spread_and_hide():
     assert abs(eulers[54, 2]) > 0.5
 
 
+def test_clone_formation_overlapping_windows_do_not_leak_spiral_yaw():
+    windows = [
+        {"start": 1, "hold_start": 5, "hold_end": 10, "end": 20, "spread": 0.5, "spiral_exit": True},
+        {"start": 10, "hold_start": 12, "hold_end": 25, "end": 30, "spread": 1.0, "spiral_exit": False},
+    ]
+    _, eulers, _ = mr.compute_clone_formation_tracks(30, windows, target_xyz=(1.0, 1.0, 0.0), yaw_rad=0.2, mirror_x=False)
+    # f=15 は window2（vis=1.0, spiral_exit=False）が勝つため、window1 の spiral_yaw が混入しない
+    assert abs(eulers[14, 2] - 0.2) < 0.05
+
+
 def test_remix_rejects_invalid_inputs():
     locs, quats, scales = _make_synthetic_motion(10, 2)
     with pytest.raises(ToolError):
@@ -87,4 +97,8 @@ def test_remix_rejects_invalid_inputs():
     with pytest.raises(ToolError):
         mr.remix_pose_arrays(locs, quats, scales, [{"out_start": 1, "out_end": 11, "src_start": 1.0, "src_end": 99.0}], n_out_frames=10)
     with pytest.raises(ToolError):
+        mr.remix_pose_arrays(locs, quats, scales, [{"out_start": 1, "out_end": 11, "src_start": 1.0, "src_end": 5.0, "ramp": -0.1}], n_out_frames=10)
+    with pytest.raises(ToolError):
         mr.compute_zero_g_trajectory(50, start_f=30, peak_start_f=20, peak_end_f=40, land_f=45)
+    with pytest.raises(ToolError):
+        mr.compute_clone_formation_tracks(30, [{"start": 10, "hold_start": 5, "hold_end": 20, "end": 25}], (1, 0, 0))
