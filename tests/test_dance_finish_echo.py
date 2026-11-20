@@ -52,3 +52,7 @@ def test_afterimage_echo_noop_and_unit_scaling_and_validation():
 
     with pytest.raises(ValueError):
         finish.afterimage_echo(base, [a_half], [])
+    with pytest.raises(ValueError):
+        finish.afterimage_echo(base, [np.ones((32, 32), np.float32)], [(1, 0, 0)])
+    with pytest.raises(ValueError):
+        finish.afterimage_echo(base, [a_half], [(1, 0, 0, 1)])

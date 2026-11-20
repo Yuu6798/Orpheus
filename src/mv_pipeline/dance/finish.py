@@ -111,15 +111,23 @@ def afterimage_echo(img, trail_alphas, colors, strength=0.55, sigma=6.0, edge_on
         return img
     if not colors:
         raise ValueError("colors には 1 つ以上の RGB 色を渡してください")
+    h, w = img.shape[:2]
     out = img.astype(np.float32, copy=True)
     n = len(trail_alphas)
     k = max(3, int(round(_px(edge_ksize, unit))) | 1)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)) if edge_only else None
     s = _px(sigma, unit)
-    cur = np.clip(current_alpha.astype(np.float32), 0.0, 1.0) if current_alpha is not None else None
+    if current_alpha is not None:
+        cur = np.clip(np.asarray(current_alpha, dtype=np.float32), 0.0, 1.0)
+        if cur.shape[:2] != (h, w):
+            raise ValueError(f"current_alpha の大きさ {cur.shape[:2]} が img {(h, w)} と一致しません")
+    else:
+        cur = None
 
     for idx, a_raw in enumerate(trail_alphas):
         a = np.clip(np.asarray(a_raw, dtype=np.float32), 0.0, 1.0)
+        if a.shape[:2] != (h, w):
+            raise ValueError(f"trail_alphas[{idx}] の大きさ {a.shape[:2]} が img {(h, w)} と一致しません")
         if edge_only:
             mask = np.clip(cv2.dilate(a, kernel) - cv2.erode(a, kernel), 0.0, 1.0)
         else:
@@ -129,7 +137,10 @@ def afterimage_echo(img, trail_alphas, colors, strength=0.55, sigma=6.0, edge_on
         if s > 0.2:
             mask = cv2.GaussianBlur(mask, (0, 0), s)
         decay = float(n - idx) / float(n)
-        col = np.asarray(colors[min(idx, len(colors) - 1)], dtype=np.float32).reshape(1, 1, 3)
+        c_raw = np.asarray(colors[min(idx, len(colors) - 1)], dtype=np.float32).reshape(-1)
+        if len(c_raw) != 3:
+            raise ValueError(f"colors[{idx}] は RGB の 3 要素にしてください: {c_raw.tolist()}")
+        col = c_raw.reshape(1, 1, 3)
         out = out + mask[..., None] * col * np.float32(strength * decay)
 
     return np.clip(out, 0.0, 1.0) if clip else out

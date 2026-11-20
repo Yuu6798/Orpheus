@@ -77,6 +77,8 @@ def compute_ribbon_vertices(
         raise ToolError(f"base_width は 0 以上の有限値にしてください: {base_width}")
     if not (math.isfinite(speed_lo) and math.isfinite(speed_hi) and 0.0 <= speed_lo <= speed_hi):
         raise ToolError(f"0 <= speed_lo <= speed_hi にしてください: {speed_lo}, {speed_hi}")
+    if int(speed_window) < 1:
+        raise ToolError(f"speed_window は 1 以上にしてください: {speed_window}")
     fi = int(frame_idx)
     if not (0 <= fi < len(pts_all)):
         raise ToolError(f"frame_idx ({fi}) が軌跡長 ({len(pts_all)}) の範囲外です")
@@ -93,6 +95,7 @@ def compute_ribbon_vertices(
     verts = np.empty(((n_segs + 1) * 2, 3), dtype=np.float64)
     fallback_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     fallback_side = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    prev_side = None
 
     for i in range(n_segs + 1):
         p = trail[i]
@@ -113,6 +116,11 @@ def compute_ribbon_vertices(
             side = side / s_len if s_len > 1e-6 else fallback_side
         else:
             side = side / s_len
+
+        # 急反転（ヘアピンカーブ）でリボンが蝶ネクタイ状にねじれるのを防ぐ
+        if prev_side is not None and float(np.dot(side, prev_side)) < 0.0:
+            side = -side
+        prev_side = side
 
         u = i / float(n_segs)
         width = float(base_width) * speed_fac * math.sin((1.0 - u) * math.pi * 0.85) * (1.0 - u * 0.65)

@@ -54,8 +54,19 @@ def test_compute_ribbon_vertices_handles_parallel_view_and_rejects_bad_inputs():
     verts, spd = compute_ribbon_vertices(toward_cam, frame_idx=15, camera_pos=[0.0, -5.0, 1.0], n_segs=6)
     assert np.isfinite(verts).all() and spd > 0.0
 
+    # ヘアピン急反転（+X 進行 → -X 反転）で横ベクトルが隣接節間で裏返らない（蝶ネクタイねじれ防止）
+    xs = np.concatenate([np.linspace(0.0, 1.0, 8), np.linspace(0.9, 0.0, 8)])
+    hairpin = np.stack([xs, np.zeros_like(xs), np.full_like(xs, 1.2)], axis=1)
+    vh, _ = compute_ribbon_vertices(hairpin, frame_idx=14, camera_pos=[0.0, -3.0, 1.2], n_segs=10, base_width=0.08)
+    sides = vh[1::2] - vh[0::2]
+    for i in range(1, len(sides) - 1):
+        if np.linalg.norm(sides[i - 1]) > 1e-6 and np.linalg.norm(sides[i]) > 1e-6:
+            assert float(np.dot(sides[i - 1], sides[i])) >= 0.0
+
     with pytest.raises(ToolError):
         build_ribbon_topology(0)
+    with pytest.raises(ToolError):
+        compute_ribbon_vertices(toward_cam, frame_idx=15, camera_pos=[0.0, -5.0, 1.0], speed_window=0)
     with pytest.raises(ToolError):
         compute_ribbon_vertices(toward_cam, frame_idx=99, camera_pos=[0.0, -5.0, 1.0])
     with pytest.raises(ToolError):
