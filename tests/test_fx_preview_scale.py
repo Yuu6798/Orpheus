@@ -88,7 +88,10 @@ def corr(a, b):
 def smoke_density(H, t, ref_h=None):
     f = np.zeros_like(flat(H))
     P = dict(SMOKE, col=[1.0, 1.0, 1.0])
-    (accent.smoke(f, Geo(H), t, P) if ref_h is None else smoke_at(f, Geo(H), t, P, ref_h))
+    if ref_h is None:
+        accent.smoke(f, Geo(H), t, P)
+    else:
+        smoke_at(f, Geo(H), t, P, ref_h)
     return f[..., 0]
 
 
@@ -149,8 +152,7 @@ def test_flicker_noise_is_another_pattern_at_another_size(t):
     final = m * (flicker_noise(FINAL_H, int(round(FINAL_H * 16 / 9)), t) - 0.5)
     small = shrink(final, preview)
     assert abs(corr(preview, small)) < 0.15                                   # 別の模様（docs: −0.08〜−0.07）
-    full = m * (flicker_noise(FINAL_H, int(round(FINAL_H * 16 / 9)), t) - 0.5)
-    assert full.std() == pytest.approx(preview.std(), rel=0.05)               # 揺れの強さは同じ
+    assert final.std() == pytest.approx(preview.std(), rel=0.05)              # 揺れの強さは同じ
 
 
 def test_flicker_part_uses_the_same_noise():
