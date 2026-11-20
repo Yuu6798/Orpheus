@@ -324,6 +324,7 @@ hooks から使う仕上げの部品。どれも**表示の値**（sRGB に符�
 | `halo(img, alpha, strength=0.42, gain=1.4, sigma=6)` | `behind` | 人物のまわりを暗くして浮かせる |
 | `contact_shadow(img, alpha, floor_y, …)` | `behind` | 足元の楕円の影。足の位置は人物の高さの下 6% の帯で取る（腕で動かない。`feet_span`）。足が床から上がるほど薄い |
 | `floor_reflection(img, fg, alpha, floor_y, height=300, start=0.22)` | `behind` | 床の上の人物を上下に返して、下へ薄くしながら重ねる |
+| `afterimage_echo(img, trail_alphas, colors, strength=0.55, sigma=6.0, edge_only=True, …)` | `behind` | 直前フレーム群の人物アルファから輪郭残像（分身炎残像エコー）を色付きで人物の後ろへ加算合成する。`unit` で解像度スケーリング対応 |
 | `sharpen(fg, sigma=1.4, amount=0.4)` | `performer` | アンシャープ |
 | `rim_light(fg, alpha, rgb, strength, kernel=7, …)` | `performer` | シルエットの縁のすぐ内側に光を足す（上が強い）。`kernel=5, shape="rect", blur=0, gradient=None, clip=False` で細い縁の光。`band="blur"` は縁の帯を「アルファ − σ kernel でぼかしたアルファ」にする（要素別の描画の重ねの試作と同じ帯。既定の `erode` は削ったアルファとの差） |
 | `light_tint(fg, shade, light, shadow, low, high)` | — | 人物を灯りの色で染める。陰影の要素（白い人物に光を当てた明るさ）を low〜high で 0〜1 に伸ばして smoothstep にし、陰の色から光の色（チャンネルごとの倍率）へ混ぜた倍率を掛ける |
