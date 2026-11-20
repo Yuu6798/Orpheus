@@ -4771,6 +4771,9 @@ Blender 5.2.4 LTS（日本語 UI ロケール環境を含む）の台本で実�
 - `remix_pose_arrays`: 元モーション配列を非線形フレーズ表で再構成し、拍同期の速度マイクロランプ、バレットタイム減速、逆再生、非連続つなぎ目の全骨四元数 Slerp クロスフェード、連続フレーム符号整合を純 numpy で計算する。
 - `apply_additive_bone_euler` / `compute_zero_g_trajectory` / `compute_clone_formation_tracks`: 既存骨格や布押し出し補正を壊さない局所回転上乗せ、無重力浮遊＆空中 360° スピン軌道、3D 分身リグの V 字展開・呼吸・収束スパイラル軌道を提供する。
 
+**骨格軌跡連動 3D 光リボン（`model3d.bone_ribbon`）**:
+- `build_ribbon_topology` / `compute_ribbon_vertices`: 骨格の 3D ワールド軌跡 `(N, 3)` とカメラ位置から、移動速度ゲート・カメラ正対ビルボード幅・尾端テーパー付きの動的リボン頂点と Quad UV トポロジーを純 numpy で計算する。
+
 **確かめたこと**:
 - CI では fake `bpy` による Blender 5.2 / 4.x 両系統、日本語ノード名ツリー、`SCALE` ソケット明示結線、四元数連続性の単体テスト、および `test_m3d_import_paths.py` / `test_m3d_blender_scripts.py` を確認。
 - 実環境の Blender 5.2.4 LTS（`--factory-startup`）で Armature への Action 生成・F-Curve 評価・World/Principled 構築・`BLENDED` 設定・`make_vector_lerp` 結線のスモーク実行を確認。

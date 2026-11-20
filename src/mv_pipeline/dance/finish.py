@@ -99,6 +99,42 @@ def contact_shadow(img, alpha, floor_y, strength=0.5, band=0.06, width=0.30, pad
     return img * (1 - strength * level * shadow)[..., None]
 
 
+def afterimage_echo(img, trail_alphas, colors, strength=0.55, sigma=6.0, edge_only=True, edge_ksize=9,
+                    current_alpha=None, unit=1.0, clip=True):
+    """分身炎残像エコー（人物の後ろへ加算合成する表示空間の残像）。
+
+    trail_alphas は直前フレーム群の人物アルファ (H, W)（新しい順）、colors は対応する RGB 発光色（0〜1。長さが短ければ最後の色を繰り返し）。
+    edge_only=True のときは膨張−収縮の輪郭帯だけを光らせ、current_alpha を渡すと現在人物のシルエット内側を引いて輪郭外へ綺麗に流す。
+    長さ（sigma・edge_ksize）は 1080×1920 基準で unit を掛けてスケーリングする。
+    """
+    if not trail_alphas or strength <= 0.0:
+        return img
+    if not colors:
+        raise ValueError("colors には 1 つ以上の RGB 色を渡してください")
+    out = img.astype(np.float32, copy=True)
+    n = len(trail_alphas)
+    k = max(3, int(round(_px(edge_ksize, unit))) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)) if edge_only else None
+    s = _px(sigma, unit)
+    cur = np.clip(current_alpha.astype(np.float32), 0.0, 1.0) if current_alpha is not None else None
+
+    for idx, a_raw in enumerate(trail_alphas):
+        a = np.clip(np.asarray(a_raw, dtype=np.float32), 0.0, 1.0)
+        if edge_only:
+            mask = np.clip(cv2.dilate(a, kernel) - cv2.erode(a, kernel), 0.0, 1.0)
+        else:
+            mask = a
+        if cur is not None:
+            mask = np.clip(mask * (1.0 - cur * 0.85), 0.0, 1.0)
+        if s > 0.2:
+            mask = cv2.GaussianBlur(mask, (0, 0), s)
+        decay = float(n - idx) / float(n)
+        col = np.asarray(colors[min(idx, len(colors) - 1)], dtype=np.float32).reshape(1, 1, 3)
+        out = out + mask[..., None] * col * np.float32(strength * decay)
+
+    return np.clip(out, 0.0, 1.0) if clip else out
+
+
 def floor_reflection(img, fg, alpha, floor_y, height=300.0, start=0.22, unit=1.0):
     """床の反射。床の線 floor_y の上 height 画素の人物（表示の値の色 fg × アルファ）を上下に返して床に重ね、
     濃さを start から 0 へ直線で薄くする。"""
