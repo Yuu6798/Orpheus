@@ -20,7 +20,7 @@ def test_public_schemas_are_valid_and_cover_real_outputs(capsys):
     assert capabilities_cli.main(["schema", "catalog"]) == 0
     envelope = json.loads(capsys.readouterr().out)
     assert envelope["ok"] is True
-    assert envelope["result"]["schema"]["$id"] == "orpheus-capability-catalog/0.3"
+    assert envelope["result"]["schema"]["$id"] == "orpheus-capability-catalog/0.4"
     assert validation_errors("response", envelope) == []
 
 

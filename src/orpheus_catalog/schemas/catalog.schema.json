@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "orpheus-capability-catalog/0.3",
+  "$id": "orpheus-capability-catalog/0.4",
   "title": "Orpheus capability catalog",
   "type": "object",
   "required": ["schema_version", "components", "coverage", "capabilities", "workflows"],
   "properties": {
-    "schema_version": {"const": "orpheus-capability-catalog/0.3"},
+    "schema_version": {"const": "orpheus-capability-catalog/0.4"},
     "components": {"type": "object", "additionalProperties": {"$ref": "#/$defs/component"}},
     "coverage": {"$ref": "#/$defs/coverage"},
     "capabilities": {"type": "array", "items": {"$ref": "#/$defs/capability"}},
@@ -13,6 +13,40 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "verifiedAssessmentRequirement": {
+      "if": {"properties": {"maturity": {"const": "verified"}}, "required": ["maturity"]},
+      "then": {
+        "required": ["maturity_assessment"],
+        "properties": {"maturity_assessment": {"properties": {"evidence": {"minItems": 1}}}}
+      }
+    },
+    "maturityAssessment": {
+      "type": "object",
+      "required": ["reviewed_on", "review_basis", "next_review", "reason", "scope", "evidence", "limitations", "promotion_criteria"],
+      "properties": {
+        "reviewed_on": {"type": "string", "format": "date"},
+        "review_basis": {"type": "string", "minLength": 1},
+        "next_review": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "scope": {"type": "string", "minLength": 1},
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "section", "summary"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "section": {"type": "string", "minLength": 1},
+              "summary": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "limitations": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "promotion_criteria": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
     "component": {
       "type": "object",
       "required": ["available", "state"],
@@ -116,12 +150,14 @@
     },
     "capability": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/verifiedAssessmentRequirement"}],
       "required": ["id", "kind", "domain", "maturity", "summary", "aliases", "tags", "entrypoint", "inputs", "outputs", "parameters", "requires", "availability"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "kind": {"enum": ["command", "command-group", "operation"]},
         "domain": {"type": "string", "minLength": 1},
-        "maturity": {"enum": ["stable", "experimental", "external"]},
+        "maturity": {"enum": ["stable", "verified", "experimental", "external"]},
+        "maturity_assessment": {"$ref": "#/$defs/maturityAssessment"},
         "summary": {"type": "string", "minLength": 1},
         "aliases": {"type": "array", "items": {"type": "string"}},
         "tags": {"type": "array", "items": {"type": "string"}},
@@ -197,12 +233,14 @@
     },
     "workflow": {
       "type": "object",
+      "allOf": [{"$ref": "#/$defs/verifiedAssessmentRequirement"}],
       "required": ["id", "kind", "domain", "maturity", "summary", "aliases", "tags", "required_inputs", "steps", "human_decisions", "docs", "asset_expectations", "starters", "parameter_readiness", "availability"],
       "properties": {
         "id": {"type": "string", "minLength": 1},
         "kind": {"const": "workflow"},
         "domain": {"type": "string", "minLength": 1},
-        "maturity": {"enum": ["stable", "experimental", "external"]},
+        "maturity": {"enum": ["stable", "verified", "experimental", "external"]},
+        "maturity_assessment": {"$ref": "#/$defs/maturityAssessment"},
         "summary": {"type": "string", "minLength": 1},
         "aliases": {"type": "array", "items": {"type": "string"}},
         "tags": {"type": "array", "items": {"type": "string"}},

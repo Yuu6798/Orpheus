@@ -40,7 +40,7 @@ def parser() -> argparse.ArgumentParser:
     workflows = commands.add_parser("workflows", help="目的別 workflow の一覧または検索")
     workflows.add_argument("--query", help="workflow だけを目的で検索する")
     workflows.add_argument("--domain")
-    workflows.add_argument("--maturity", choices=["stable", "experimental", "external"])
+    workflows.add_argument("--maturity", choices=["stable", "verified", "experimental", "external"])
     workflows.add_argument("--available-only", action="store_true")
     workflows.add_argument("--parameter-status", choices=["schema", "cli", "docs", "undocumented"])
     workflows.add_argument("--machine-readable-only", action="store_true",
@@ -59,7 +59,7 @@ def _filters(command: argparse.ArgumentParser, *, include_workflow: bool = True)
     kinds = (["command", "command-group", "operation", "workflow"] if include_workflow
              else ["command", "command-group", "operation"])
     command.add_argument("--kind", choices=kinds)
-    command.add_argument("--maturity", choices=["stable", "experimental", "external"])
+    command.add_argument("--maturity", choices=["stable", "verified", "experimental", "external"])
     command.add_argument("--available-only", action="store_true")
     command.add_argument("--parameter-status", choices=["schema", "cli", "docs", "undocumented"])
     command.add_argument("--machine-readable-only", action="store_true")

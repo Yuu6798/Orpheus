@@ -2,7 +2,8 @@
 
 設定画または既存モデルから、部位・骨の対応（SemanticMap）、加工レシピ（RecipeGraph）の実行、形状と動作の検査、
 書き出しまでを**レシピと記録（RunRecord）**で進める共通処理。Blender・生成器・リギングは別プロセスで呼び、
-Orpheus（`mv dance` など）とは出力ファイルと記録だけで接続する。使い方と限界は `docs/model3d.md`（リポジトリの docs）。
+Orpheus（`mv dance` など）とは出力ファイルと記録だけで接続する。使い方と限界は [docs/model3d.md](../../docs/model3d.md)。
+操作ごとの実制作検証済み／実験的の区別と根拠・残条件は [機能の成熟度](../../docs/maturity.md) と `orpheus show model3d.OPERATION` で読む。
 
 ```sh
 uv sync --locked --extra analysis --extra fx --extra model3d
