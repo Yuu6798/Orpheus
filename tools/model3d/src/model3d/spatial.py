@@ -101,3 +101,86 @@ def nearest(points, queries, cell=None, max_radius=4, chunk=200_000):
             better = (chosen < best[q]) | ((chosen == best[q]) & (pick < index[q]))
             best[q[better]], index[q[better]] = chosen[better], pick[better]
     return index, np.sqrt(best), {"cell": cell, "passes": passes, "brute_force": int(brute)}
+
+
+def _corridor_metrics(points, camera_pos, target_pos, xy_only=False):
+    """点群から「カメラ→注視点」線分への軸方向射影と直交距離を計算する（numpy のみ）。"""
+    pts = np.asarray(points, dtype=np.float64)
+    cam = np.asarray(camera_pos, dtype=np.float64).reshape(-1)
+    tgt = np.asarray(target_pos, dtype=np.float64).reshape(-1)
+    if xy_only:
+        if pts.ndim != 2 or pts.shape[1] not in (2, 3):
+            raise ToolError(f"points の形は (N, 2) または (N, 3) にしてください: {pts.shape}")
+        if len(cam) not in (2, 3) or len(tgt) not in (2, 3):
+            raise ToolError("camera_pos と target_pos は 2 要素または 3 要素にしてください")
+        pts = pts[:, :2]
+        cam = cam[:2]
+        tgt = tgt[:2]
+    else:
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            raise ToolError(f"points の形は (N, 3) にしてください: {pts.shape}")
+        if len(cam) != 3 or len(tgt) != 3:
+            raise ToolError("camera_pos と target_pos は 3 要素にしてください")
+    if not (np.isfinite(pts).all() and np.isfinite(cam).all() and np.isfinite(tgt).all()):
+        raise ToolError("視線コリドーの入力に非有限の値があります")
+    axis = cam - tgt
+    seg_len = float(np.linalg.norm(axis))
+    if seg_len <= 1e-9:
+        raise ToolError("camera_pos と target_pos が同じ位置のため視線コリドーを定義できません")
+    direction = axis / seg_len
+    rel = pts - tgt[None, :]
+    proj = rel @ direction
+    perp_vec = rel - proj[:, None] * direction[None, :]
+    perp = np.linalg.norm(perp_vec, axis=1)
+    return proj, perp, seg_len
+
+
+def camera_corridor_mask(points, camera_pos, target_pos, radius, pad_camera=0.0, pad_target=0.0, xy_only=False):
+    """注視点〜カメラを結ぶ円柱コリドー内に侵入している点の真偽マスク `(N,)` を返す。
+
+    浮遊タイルや破片オブジェクトがカメラと主役の視線を遮る事故を防ぐための判定部品。
+    軸方向は `[pad_target, dist + pad_camera]` の範囲をコリドーとみなす（既定は注視点からカメラまで）。
+    """
+    radius = float(radius)
+    if not np.isfinite(radius) or radius < 0.0:
+        raise ToolError(f"radius は 0 以上の有限値にしてください: {radius!r}")
+    if not (np.isfinite(pad_camera) and np.isfinite(pad_target)):
+        raise ToolError("pad_camera / pad_target は有限値にしてください")
+    proj, perp, seg_len = _corridor_metrics(points, camera_pos, target_pos, xy_only=xy_only)
+    in_axial = (proj >= float(pad_target)) & (proj <= seg_len + float(pad_camera))
+    return in_axial & (perp <= radius)
+
+
+def camera_corridor_attenuation(
+    points,
+    camera_pos,
+    target_pos,
+    inner_radius,
+    outer_radius,
+    pad_camera=0.0,
+    pad_target=0.0,
+    xy_only=False,
+):
+    """視線コリドー内の演出強度（浮遊量など）を滑らかに 0→1 へ減衰させる係数 `(N,)` を返す。
+
+    - コリドー内かつ直交距離 <= `inner_radius`: `0.0`（完全に回避）
+    - コリドー内かつ `inner_radius` < 直交距離 < `outer_radius`: smoothstep で `0.0..1.0`
+    - それ以外: `1.0`（元の演出量を維持）
+    """
+    inner = float(inner_radius)
+    outer = float(outer_radius)
+    if not (np.isfinite(inner) and np.isfinite(outer)) or inner < 0.0 or outer < inner:
+        raise ToolError(f"0 <= inner_radius <= outer_radius にしてください: {inner!r}, {outer!r}")
+    if not (np.isfinite(pad_camera) and np.isfinite(pad_target)):
+        raise ToolError("pad_camera / pad_target は有限値にしてください")
+    proj, perp, seg_len = _corridor_metrics(points, camera_pos, target_pos, xy_only=xy_only)
+    in_axial = (proj >= float(pad_target)) & (proj <= seg_len + float(pad_camera))
+    att = np.ones(len(proj), dtype=np.float64)
+    if not in_axial.any():
+        return att
+    if outer == inner:
+        att[in_axial & (perp <= inner)] = 0.0
+        return att
+    t = np.clip((perp[in_axial] - inner) / (outer - inner), 0.0, 1.0)
+    att[in_axial] = t * t * (3.0 - 2.0 * t)
+    return att
