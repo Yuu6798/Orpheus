@@ -4754,6 +4754,20 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 Blender での30秒描画と最終品質の全編出力は、まだこの経路で確かめていない。リポジトリ外の手順では、2026-11-06 に 32 秒を描いた。
 汎用 `blender.run_script` を recipe の工程として通す確認も、まだしていない。
 
+## Blender 5.2 安全化ヘルパー（`blender_adapter.blender5_safe`）
+
+Blender 5.2.4 LTS（日本語 UI ロケール環境を含む）の台本で実際に踏んだ不具合を防ぐ共通部品。`bpy` はトップレベルで読まず、関数引数で受け取るため CI の単体テストおよび Blender 外の独立台本読み込み（`test_m3d_blender_scripts.py`）と両立する。
+
+- `init_layered_action_channelbag(bpy, arm, action_name)` / `write_linear_fcurve(...)`: `action_slot` の手動代入（C レベルクラッシュ要因）と新規 Armature の `pose is None` を回避し、`keyframe_insert` でネイティブに Slot / Channelbag を初期化してから `foreach_set("co", ...)` ＋ `fc.update()` で LINEAR カーブを一括書込する（Blender 4.x の従来 `action.fcurves` へもフォールバック）。
+- `clear_and_build_world_bg` / `clear_and_build_principled`: `nodes["Background"]` / `nodes["Principled BSDF"]` のような UI ロケール依存の辞書引きを使わず、`nodes.clear()` 後に型名で新規構築する。
+- `make_vector_scale` / `make_vector_lerp`: `ShaderNodeVectorMath(SCALE)` の `inputs[1]` 誤結線（`Scale` が既定値 1.0 のまま残る白飛びバグ）を防ぎ必ず `inputs["Scale"]` へ接続する。また `ShaderNodeMix` の同名ソケット重複を避ける明示ベクトル補間を提供する。
+- `enforce_quat_continuity(quats)`: `(N, 4)` / `(N, B, 4)` の隣接フレーム四元数内積を非負に揃え、補間・モーションブラーの 360 度フリップを防ぐ。
+- `set_blended_alpha(material)`: EEVEE Next では `surface_render_method = "BLENDED"`、旧版では `blend_method = "BLEND"` を設定する。
+
+**確かめたこと**:
+- CI では fake `bpy` による Blender 5.2 / 4.x 両系統、日本語ノード名ツリー、`SCALE` ソケット明示結線、四元数連続性の単体テスト、および `test_m3d_import_paths.py` / `test_m3d_blender_scripts.py` を確認。
+- 実環境の Blender 5.2.4 LTS（`--factory-startup`）で Armature への Action 生成・F-Curve 評価・World/Principled 構築・`BLENDED` 設定・`make_vector_lerp` 結線のスモーク実行を確認。
+
 ## 限界・未検証
 
 - **既存制作 worker の接続は限定的**。元 GLB／分割 GLB／FBX、採用済みのウェイト・法線・動作・補正を再利用する。
