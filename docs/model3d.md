@@ -4767,6 +4767,10 @@ Blender 5.2.4 LTS（日本語 UI ロケール環境を含む）の台本で実�
 **カメラ視線コリドー遮蔽ガード（`model3d.spatial`）**:
 - `camera_corridor_mask` / `camera_corridor_attenuation`: カメラ〜注視点の線分を中心とする円柱コリドー内へ侵入する浮遊破片・床タイルを numpy だけで判定し、`smoothstep` 減衰係数 `[0.0 .. 1.0]` で視界遮蔽を防ぐ（3D 空間および XY 平面投影の両対応）。
 
+**非線形モーションリミックス・分身軌道（`model3d.motion_remix`）**:
+- `remix_pose_arrays`: 元モーション配列を非線形フレーズ表で再構成し、拍同期の速度マイクロランプ、バレットタイム減速、逆再生、非連続つなぎ目の全骨四元数 Slerp クロスフェード、連続フレーム符号整合を純 numpy で計算する。
+- `apply_additive_bone_euler` / `compute_zero_g_trajectory` / `compute_clone_formation_tracks`: 既存骨格や布押し出し補正を壊さない局所回転上乗せ、無重力浮遊＆空中 360° スピン軌道、3D 分身リグの V 字展開・呼吸・収束スパイラル軌道を提供する。
+
 **確かめたこと**:
 - CI では fake `bpy` による Blender 5.2 / 4.x 両系統、日本語ノード名ツリー、`SCALE` ソケット明示結線、四元数連続性の単体テスト、および `test_m3d_import_paths.py` / `test_m3d_blender_scripts.py` を確認。
 - 実環境の Blender 5.2.4 LTS（`--factory-startup`）で Armature への Action 生成・F-Curve 評価・World/Principled 構築・`BLENDED` 設定・`make_vector_lerp` 結線のスモーク実行を確認。
