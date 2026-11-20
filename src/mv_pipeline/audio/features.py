@@ -41,12 +41,12 @@ def _validate_band(name, band, nyquist):
     return (lo, hi)
 
 
-def _norm_smooth(arr, alpha):
-    """98 パーセンタイル基準で正規化し、急な立ち上がりを保ちつつ減衰を平滑化する。無音なら全 0。"""
+def _norm_smooth(arr, alpha, floor=1e-12):
+    """98 パーセンタイル基準で正規化し、急な立ち上がりを保ちつつ減衰を平滑化する。floor 以下は無音扱い（0）。"""
     if len(arr) == 0:
         return []
     p98 = float(np.percentile(arr, 98))
-    if not math.isfinite(p98) or p98 <= 1e-12:
+    if not math.isfinite(p98) or p98 <= floor:
         return [0.0] * len(arr)
     clipped = np.clip(arr / p98, 0.0, CLIP_MAX)
     out = np.empty_like(clipped)
@@ -86,9 +86,10 @@ def measure(
     seconds = len(x) / float(rate)
     n_frames = max(1, int(round(seconds * fps)))
     hop = float(rate) / float(fps)
-    win = max(64, int(round(hop * 2.0)))
-    # 2 の冪に切り上げて FFT を安定・高速化（窓長は最低 256 標本を確保して低域分解能を保つ）
-    fft_n = max(256, 1 << (win - 1).bit_length())
+    # 高 fps でも低域 25..140 Hz の物理的な周波数分離を保つため最低 1024 標本（約 46 ms @ 22050 Hz）を確保
+    win = max(1024, int(round(hop * 2.0)))
+    # 2 の冪に切り上げて FFT を安定・高速化（高 fps でも低域 25..140 Hz の分解能 <= 10.8 Hz を保つため最低 2048 点）
+    fft_n = max(2048, 1 << (win - 1).bit_length())
     hann = np.hanning(win)
     freqs = np.fft.rfftfreq(fft_n, 1.0 / float(rate))
     mask_b = (freqs >= b_band[0]) & (freqs < b_band[1])
@@ -98,6 +99,7 @@ def measure(
     raw_b = np.zeros(n_frames, dtype=np.float64)
     raw_m = np.zeros(n_frames, dtype=np.float64)
     raw_h = np.zeros(n_frames, dtype=np.float64)
+    raw_t = np.zeros(n_frames, dtype=np.float64)
     raw_r = np.zeros(n_frames, dtype=np.float64)
 
     half = win // 2
@@ -113,6 +115,7 @@ def measure(
             seg[dst_lo:dst_lo + (src_hi - src_lo)] = x[src_lo:src_hi]
             raw_r[i] = math.sqrt(float(np.mean(seg[dst_lo:dst_lo + (src_hi - src_lo)] ** 2)))
         spec = np.abs(np.fft.rfft(seg * hann, n=fft_n)) ** 2
+        raw_t[i] = math.sqrt(float(spec.sum()))
         if mask_b.any():
             raw_b[i] = math.sqrt(float(spec[mask_b].sum()))
         if mask_m.any():
@@ -120,10 +123,12 @@ def measure(
         if mask_h.any():
             raw_h[i] = math.sqrt(float(spec[mask_h].sum()))
 
-    bass = _norm_smooth(raw_b, smooth)
-    mid = _norm_smooth(raw_m, smooth)
-    high = _norm_smooth(raw_h, smooth)
-    rms = _norm_smooth(raw_r, smooth)
+    # 全体スペクトル RMS に対して -40 dB（1%）未満の微小サイドローブしか無い帯域を 1.0 へ誤増幅しない
+    band_floor = max(1e-12, float(np.percentile(raw_t, 98)) * 0.01) if len(raw_t) else 1e-12
+    bass = _norm_smooth(raw_b, smooth, floor=band_floor)
+    mid = _norm_smooth(raw_m, smooth, floor=band_floor)
+    high = _norm_smooth(raw_h, smooth, floor=band_floor)
+    rms = _norm_smooth(raw_r, smooth, floor=1e-12)
 
     onset = []
     for i in range(n_frames):

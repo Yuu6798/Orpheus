@@ -40,6 +40,19 @@ def test_camera_corridor_attenuation_monotonic_smoothstep():
     assert np.allclose(att, [0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
 
 
+def test_camera_corridor_padding_and_empty_points():
+    cam = [0.0, -4.0, 0.0]
+    tgt = [0.0, 0.0, 0.0]
+    # pad_target=-0.5 で注視点の 0.5m 奥まで、pad_camera=0.5 でカメラの 0.5m 手前まで保護範囲を拡張
+    pts = np.array([[0.0, +0.3, 0.0], [0.0, -4.3, 0.0], [0.0, +0.8, 0.0]])
+    mask = camera_corridor_mask(pts, cam, tgt, radius=1.0, pad_camera=0.5, pad_target=-0.5)
+    assert mask.tolist() == [True, True, False]
+
+    empty = np.zeros((0, 3), dtype=np.float64)
+    assert camera_corridor_mask(empty, cam, tgt, radius=1.0).shape == (0,)
+    assert camera_corridor_attenuation(empty, cam, tgt, inner_radius=1.0, outer_radius=2.0).shape == (0,)
+
+
 def test_camera_corridor_rejects_degenerate_and_bad_inputs():
     pts = np.array([[0.0, 0.0, 0.0]])
     with pytest.raises(ToolError):

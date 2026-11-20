@@ -1,7 +1,6 @@
 """mv audio features（フレーム単位の 3 帯域 FFT 特徴量抽出）のテスト。"""
 import json
 import math
-import struct
 import wave
 from pathlib import Path
 
@@ -44,6 +43,15 @@ def test_measure_separates_bass_mid_high_bands():
     assert res["bass"][15] > 0.7 and res["mid"][15] < 0.05 and res["high"][15] < 0.05
     assert res["mid"][45] > 0.7 and res["bass"][45] < 0.05 and res["high"][45] < 0.05
     assert res["high"][75] > 0.7 and res["bass"][75] < 0.05 and res["mid"][75] < 0.05
+
+
+def test_measure_preserves_low_band_resolution_at_high_fps():
+    rate = 22050
+    t = np.arange(rate, dtype=np.float64) / rate
+    sig = 0.8 * np.sin(2.0 * math.pi * 60.0 * t)
+    res = features.measure(sig, rate=rate, fps=120.0)
+    assert res["frames"] == 120
+    assert res["bass"][60] > 0.7 and res["mid"][60] < 0.05
 
 
 def test_measure_handles_silence_without_nan():
