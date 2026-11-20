@@ -30,6 +30,9 @@ def _deliver_parser(commands):
     split.add_argument("master", type=Path)
     split.add_argument("--out", type=Path, required=True, help="folder for the parts (a <folder>.split.json record is written beside it)")
     split.add_argument("--part-bytes", type=int, default=25_000_000, help="bytes per part (default 25,000,000)")
+    split.add_argument("--text-head", type=int, default=0, metavar="BYTES",
+                       help="write the first BYTES as certutil base64 text (<name>.part00.b64) that the join script decodes, "
+                            "for transfers that rewrite the head of an MP4 (default 0: off; e.g. 1048576)")
     split.add_argument("--name", help="file name of the joined master (ASCII letters, digits, . _ -; default: the master's name)")
     split.add_argument("--title", help="title shown in the join script (default: the name)")
     split.add_argument("--force", action="store_true", help="overwrite parts and files of the same names")
@@ -43,5 +46,5 @@ def deliver_command(args):
         return deliver.review_copy(args.master, args.out, args.limit_bytes, args.target_bytes, args.maxrate, args.bufsize, args.preset,
                                    args.threads, args.force)
     if args.deliver_command == "split":
-        return deliver.split(args.master, args.out, args.part_bytes, args.name, args.title, args.force)
+        return deliver.split(args.master, args.out, args.part_bytes, args.name, args.title, args.force, args.text_head)
     raise PipelineError(f"Unsupported deliver command: {args.deliver_command}")

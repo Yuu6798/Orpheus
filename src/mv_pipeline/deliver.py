@@ -3,7 +3,7 @@
 
     mv deliver join SEGMENT... --out MASTER.mp4 [--audio SONG.wav [--audio-start SEC] [--fade-in 0.02] [--fade-out 0.25]] [--force]
     mv deliver review-copy MASTER --out REVIEW.mp4 [--limit-bytes 28000000] [--target-bytes 27000000] [--threads 1] [--force]
-    mv deliver split MASTER --out DIR [--part-bytes 25000000] [--name NAME] [--title TITLE] [--force]
+    mv deliver split MASTER --out DIR [--part-bytes 25000000] [--text-head BYTES] [--name NAME] [--title TITLE] [--force]
 
 join:
 
@@ -40,6 +40,10 @@ split（受け渡しの片。実制作の受け渡しの道具と同じ形）:
 - <NAME の _master より前>_parts_SHA256SUMS.txt（片と元データの sha256）。
 - 片を順につないだ sha256 が元データと同じかを、その場で確かめる（bat は実行しない）。記録は DIR の隣の <DIR の名前>.split.json
   （DIR を "." で渡しても、絶対パスにしてから名前と隣を決める）。片・bat・SHA256SUMS が元データと同じファイルになるなら、--force でも書かない。
+- --text-head BYTES（既定 0 = 使わない）: 元データの先頭 BYTES を certutil -encode の形の base64 のテキスト <NAME>.part00.b64 にし、
+  残りを --part-bytes ごとに <NAME>.part01 … に切る。受け渡しの経路が MP4 の頭を書き換える（MP4 で始まるファイルに C2PA の箱が
+  足される）と、頭の片をバイトでつないだ元データが合わなくなる。テキストの片は書き換えられないので、bat が certutil -decode で
+  頭の片を戻してからつなぐ（戻した頭の片は結合の後に消す）。
 """
 import hashlib
 import os
@@ -77,6 +81,36 @@ certutil -hashfile {name} SHA256 | findstr /i /c:"{sha}" >nul
 if errorlevel 1 (echo 【NG】一致しません。片がそろっているか確かめてください) else (echo 【OK】一致しました。{name} が元の動画です)
 pause
 '''
+TEXT_HEAD_BAT = '''@echo off
+rem {title} の元データ（{nbytes:,} バイト）を片から結合して SHA-256 を照合します（このフォルダで実行）
+cd /d "%~dp0"
+for %%F in ({parts}) do if not exist "%%F" (echo 見つからない片があります: %%F & pause & exit /b 1)
+certutil -f -decode {text} {head} >nul
+if errorlevel 1 (echo 先頭の片を base64 から戻せませんでした & pause & exit /b 1)
+copy /y /b {plus} {name} >nul
+if errorlevel 1 (echo 片を結合できませんでした & del {head} & pause & exit /b 1)
+del {head}
+certutil -hashfile {name} SHA256
+echo 期待する SHA-256: {sha}
+certutil -hashfile {name} SHA256 | findstr /i /c:"{sha}" >nul
+if errorlevel 1 (echo 【NG】一致しません。片がそろっているか確かめてください) else (echo 【OK】一致しました。{name} が元の動画です)
+pause
+'''
+
+
+def certutil_text(data):
+    """data を certutil -encode の形の base64 のテキストにする（見出しと結びの行、64 字ごとの改行、CRLF。certutil -decode で戻る）。"""
+    import base64
+    body = base64.b64encode(data).decode("ascii")
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return ("-----BEGIN CERTIFICATE-----\r\n" + "".join(f"{line}\r\n" for line in lines) + "-----END CERTIFICATE-----\r\n").encode("ascii")
+
+
+def certutil_bytes(text):
+    """certutil_text の逆（見出し・結びの行と改行を除いて base64 を戻す）。"""
+    import base64
+    lines = text.decode("ascii").replace("\r", "").split("\n")
+    return base64.b64decode("".join(line for line in lines if line and not line.startswith("-----")), validate=True)
 
 
 def _ffmpeg_info():
@@ -389,8 +423,10 @@ def _sums_name(name):
     return f"{stem}_parts_SHA256SUMS.txt"
 
 
-def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=False):
-    """元データを片に切り、結合の bat と SHA256SUMS を書いて、結果の辞書を返す。"""
+def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=False, text_head=0):
+    """元データを片に切り、結合の bat と SHA256SUMS を書いて、結果の辞書を返す。
+    text_head > 0 なら、先頭 text_head バイトを certutil の形の base64 のテキストの片（<NAME>.part00.b64）にし、
+    残りを part_bytes ごとの片（<NAME>.part01 …）にする（受け渡しの経路が MP4 の頭を書き換えても、つなげるように）。"""
     master, out_dir = Path(master), Path(out_dir)
     if not master.is_file():
         raise PipelineError(f"元データが見つかりません: {master}")
@@ -407,6 +443,8 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
         raise PipelineError(f"--title の {title[error.start:error.end]!r} は CP932（bat の文字コード）で書けません") from error
     if part_bytes < 1:
         raise PipelineError(f"--part-bytes は 1 以上にしてください: {part_bytes}")
+    if text_head < 0:
+        raise PipelineError(f"--text-head は 0 以上にしてください（0 は使わない）: {text_head}")
     folder = out_dir.resolve()             # "." で渡されても、記録は片のフォルダの隣に、フォルダの名前で書く
     if not folder.name:
         raise PipelineError(f"--out には名前のあるフォルダを指定してください（記録をその隣の <フォルダの名前>.split.json に書くため）: {out_dir}")
@@ -415,17 +453,25 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
         raise PipelineError(f"{master.name} は moov が mdat より前にありません（faststart で書き直してください）: {boxes}")
     streams = probe.inspect(master)
     total = master.stat().st_size
-    count = max(1, -(-total // part_bytes))
+    head_bytes = min(text_head, total)              # 0 なら、先頭もほかと同じバイトの片
+    count = 1 + -(-(total - head_bytes) // part_bytes) if head_bytes else max(1, -(-total // part_bytes))
     width = max(2, len(str(count - 1)))
     parts = [f"{name}.part{i:0{width}d}" for i in range(count)]
     digest = sha256(master)
-    bat = BAT.format(title=title, nbytes=total, parts=" ".join(parts), plus=" + ".join(parts), name=name, sha=digest)
+    if head_bytes:
+        text_name = f"{parts[0]}.b64"                 # 渡すのはテキストの片と、2 本目からのバイトの片
+        pieces = [text_name] + parts[1:]
+        bat = TEXT_HEAD_BAT.format(title=title, nbytes=total, parts=" ".join(pieces), text=text_name, head=parts[0],
+                                   plus=" + ".join(parts), name=name, sha=digest)
+    else:
+        pieces = parts
+        bat = BAT.format(title=title, nbytes=total, parts=" ".join(parts), plus=" + ".join(parts), name=name, sha=digest)
     longest = max(len(line) for line in bat.splitlines())
     if longest > CMD_LINE_LIMIT:            # 片の名前を 1 行の for と copy に並べるので、片が多いと cmd が読めない行になる
         raise PipelineError(f"結合の bat の行が {longest:,} 字になり、Windows の cmd の上限 {CMD_LINE_LIMIT:,} 字を超えます（片 {count} 本）。"
                             "--part-bytes を大きくするか、--name を短くしてください")
     bat_bytes = bat.replace("\n", "\r\n").encode("cp932")
-    targets = [out_dir / p for p in parts] + [out_dir / "join_master.bat", out_dir / _sums_name(name)]
+    targets = [out_dir / p for p in pieces] + [out_dir / "join_master.bat", out_dir / _sums_name(name)]
     record_path = folder.parent / f"{folder.name}.split.json"
     if any(_same_file(target) == _same_file(master) for target in targets + [record_path]):     # 置き換えると元データが消える
         raise PipelineError(f"片・bat・SHA256SUMS・記録の名前が元データ {master.name} と同じになります。--name か --out を変えてください"
@@ -437,7 +483,13 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
     out_dir.mkdir(parents=True, exist_ok=True)
     records = []
     with master.open("rb") as stream:
-        for part in parts:
+        if head_bytes:
+            head = stream.read(head_bytes)
+            target = out_dir / pieces[0]
+            _write_new(target, certutil_text(head))
+            records.append({"name": pieces[0], "bytes": target.stat().st_size, "sha256": sha256(target), "kind": "base64",
+                            "decoded_name": parts[0], "decoded_bytes": len(head), "decoded_sha256": hashlib.sha256(head).hexdigest()})
+        for part in pieces[1:] if head_bytes else parts:
             data = stream.read(part_bytes)
             target = out_dir / part
             _write_new(target, data)
@@ -447,7 +499,10 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
     sums_path = out_dir / _sums_name(name)
     _write_new(sums_path, sums.encode("utf-8"))
     joined = hashlib.sha256()
-    for part in parts:
+    for part in pieces:
+        if head_bytes and part == pieces[0]:
+            joined.update(certutil_bytes((out_dir / part).read_bytes()))      # bat の certutil -decode と同じく、テキストから戻す
+            continue
         with (out_dir / part).open("rb") as stream:
             for block in iter(lambda: stream.read(1 << 20), b""):
                 joined.update(block)
@@ -461,6 +516,11 @@ def split(master, out_dir, part_bytes=PART_BYTES, name=None, title=None, force=F
               "bat": {"name": "join_master.bat", "encoding": "cp932", "newline": "CRLF", "sha256": sha256(out_dir / "join_master.bat")},
               "sums": {"name": sums_path.name, "sha256": sha256(sums_path)},
               "join_check": {"ok": ok, "joined_sha256": joined.hexdigest(), "how": "片を順につないで sha256 を数えた（bat は実行していない）"}}
+    if head_bytes:
+        record["text_head"] = {"bytes": head_bytes, "piece": pieces[0], "decoded_name": parts[0],
+                               "format": "certutil -encode の形（-----BEGIN CERTIFICATE----- の行・64 字ごとの改行・CRLF・-----END CERTIFICATE----- の行）",
+                               "how": "bat が certutil -f -decode で先頭の片を戻してからつなぎ、つないだ後に戻した片を消す"}
     atomic_json(record_path, record)
-    return {"dir": str(out_dir), "parts": [r["name"] for r in records], "part_bytes": part_bytes, "bat": str(out_dir / "join_master.bat"),
+    return {"dir": str(out_dir), "parts": [r["name"] for r in records], "part_bytes": part_bytes, "text_head": head_bytes,
+            "bat": str(out_dir / "join_master.bat"),
             "sums": str(sums_path), "master_sha256": digest, "join_check": ok, "record": str(record_path)}

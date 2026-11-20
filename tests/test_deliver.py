@@ -477,8 +477,101 @@ def test_split_needs_a_faststart_master(master, tmp_path):
         deliver.split(slow, tmp_path / "parts")
 
 
+# ---- 先頭の片をテキストにする（--text-head） -------------------------------------------------------------
+
+def ref_text_head_pieces(master, head, part):
+    """実制作の受け渡しの道具（先頭 head バイトを certutil の形の base64 に、残りを part バイトごとに）の片の中身を順に返す。
+    書き方をそのまま写したもの（名前は道具の .001.b64・.002 … で、ここでは中身だけを比べる）。"""
+    import base64
+    data = master.read_bytes()
+    b = base64.b64encode(data[:head]).decode('ascii')
+    txt = ('-----BEGIN CERTIFICATE-----\r\n' + '\r\n'.join(b[i:i + 64] for i in range(0, len(b), 64)) + '\r\n-----END CERTIFICATE-----\r\n').encode('ascii')
+    return [txt] + [data[i:i + part] for i in range(head, len(data), part)]
+
+
+def rewrite_mp4_heads(folder):
+    """MP4 の頭（ftyp の箱）で始まるファイルにだけ、ftyp の直後へ uuid の箱を足す（受け渡しの経路が C2PA の箱を足すのと同じ形の書き換え）。
+    書き換えたファイルの名前を返す。"""
+    changed = []
+    for path in sorted(folder.iterdir()):
+        data = path.read_bytes()
+        if len(data) >= 8 and data[4:8] == b"ftyp":
+            end = struct.unpack(">I", data[:4])[0]
+            box = struct.pack(">I", 8 + 16 + 8) + b"uuid" + bytes(range(16)) + b"c2pa-box"
+            path.write_bytes(data[:end] + box + data[end:])
+            changed.append(path.name)
+    return changed
+
+
+def join_like_bat(folder, record):
+    """bat と同じ手順（テキストの片を戻してから、名前の順につなぐ）でつないだバイト列。"""
+    out = b""
+    for part in record["parts"]:
+        piece = (folder / part["name"]).read_bytes()
+        out += deliver.certutil_bytes(piece) if part.get("kind") == "base64" else piece
+    return out
+
+
+def test_split_text_head_writes_the_same_pieces_as_the_private_tool(master, tmp_path):
+    result = deliver.split(master, tmp_path / "parts", 9000, "SONG_r1_master.mp4", "テスト Shorts r1", text_head=4096)
+    names = result["parts"]
+    assert names[0] == "SONG_r1_master.mp4.part00.b64" and names[1] == "SONG_r1_master.mp4.part01" and result["text_head"] == 4096
+    pieces = [(tmp_path / "parts" / n).read_bytes() for n in names]
+    assert pieces == ref_text_head_pieces(master, 4096, 9000)              # 制作の道具と、片の中身がバイト単位で同じ
+    text = pieces[0]
+    assert text.startswith(b"-----BEGIN CERTIFICATE-----\r\n") and text.endswith(b"-----END CERTIFICATE-----\r\n")
+    assert b"\n" not in text.replace(b"\r\n", b"") and max(len(line) for line in text.split(b"\r\n")) == 64
+    assert deliver.certutil_bytes(text) == master.read_bytes()[:4096]
+    assert all(p[4:8] != b"ftyp" for p in pieces)                          # MP4 の頭で始まる片が無い
+    record = read_json(tmp_path / "parts.split.json")
+    assert join_like_bat(tmp_path / "parts", record) == master.read_bytes() and result["join_check"]
+    assert record["text_head"]["bytes"] == 4096 and record["text_head"]["decoded_name"] == "SONG_r1_master.mp4.part00"
+    assert record["parts"][0]["decoded_sha256"] == sha256_bytes(master.read_bytes()[:4096])
+    sums = (tmp_path / "parts" / "SONG_r1_parts_SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()
+    assert [line.split("  ")[1] for line in sums] == names + ["SONG_r1_master.mp4"]      # 戻した頭の片は渡さないので載せない
+    bat = (tmp_path / "parts" / "join_master.bat").read_bytes()
+    assert b"\r\n" in bat and b"\n" not in bat.replace(b"\r\n", b"")
+    lines = bat.decode("cp932").split("\r\n")
+    assert "certutil -f -decode SONG_r1_master.mp4.part00.b64 SONG_r1_master.mp4.part00 >nul" in lines
+    assert any(line.startswith("copy /y /b SONG_r1_master.mp4.part00 + SONG_r1_master.mp4.part01 + ") for line in lines)
+    assert "del SONG_r1_master.mp4.part00" in lines and "テスト Shorts r1" in lines[1]
+    assert lines.index("del SONG_r1_master.mp4.part00") > next(i for i, line in enumerate(lines) if line.startswith("copy /y /b"))
+    loop = next(line for line in lines if line.startswith("for %%F in ("))
+    assert "SONG_r1_master.mp4.part00.b64" in loop and "SONG_r1_master.mp4.part00 " not in loop       # 確かめるのは渡した片
+
+
+def sha256_bytes(data):
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_split_text_head_survives_a_transfer_that_rewrites_mp4_heads(master, tmp_path):
+    # 受け渡しの経路が MP4 の頭に箱を足すと、先頭の片（MP4 の頭）が書き換わり、バイトでつないだ元データが合わなくなっていた
+    plain = deliver.split(master, tmp_path / "plain", 9000, "SONG_r1_master.mp4")
+    assert rewrite_mp4_heads(tmp_path / "plain") == ["SONG_r1_master.mp4.part00"]
+    joined = b"".join((tmp_path / "plain" / n).read_bytes() for n in plain["parts"])
+    assert sha256_bytes(joined) != plain["master_sha256"]
+    text = deliver.split(master, tmp_path / "text", 9000, "SONG_r1_master.mp4", text_head=4096)
+    assert rewrite_mp4_heads(tmp_path / "text") == []                     # テキストの片もバイトの片も、MP4 の頭で始まらない
+    assert sha256_bytes(join_like_bat(tmp_path / "text", read_json(tmp_path / "text.split.json"))) == text["master_sha256"]
+
+
+def test_split_text_head_bounds(master, tmp_path):
+    whole = deliver.split(master, tmp_path / "whole", 9000, "SONG_r1_master.mp4", text_head=10 ** 9)    # 元データより大きい: 片はテキストの 1 本
+    assert whole["parts"] == ["SONG_r1_master.mp4.part00.b64"] and whole["text_head"] == master.stat().st_size and whole["join_check"]
+    lines = (tmp_path / "whole" / "join_master.bat").read_bytes().decode("cp932").split("\r\n")
+    assert "copy /y /b SONG_r1_master.mp4.part00 SONG_r1_master.mp4 >nul" in lines
+    with pytest.raises(PipelineError, match="0 以上"):
+        deliver.split(master, tmp_path / "neg", 9000, "SONG_r1_master.mp4", text_head=-1)
+    off = deliver.split(master, tmp_path / "off", 9000, "SONG_r1_master.mp4", text_head=0)           # 0 は前と同じ（バイトの片だけ）
+    assert off["text_head"] == 0 and off["parts"][0] == "SONG_r1_master.mp4.part00"
+    assert "text_head" not in read_json(tmp_path / "off.split.json")
+
+
 def test_cli_review_copy_and_split(master, tmp_path):
     code, result, err = run_cli("deliver", "review-copy", master, "--out", tmp_path / "r.mp4")
     assert code == 0 and result["technical_pass"], err
     code, result, err = run_cli("deliver", "split", master, "--out", tmp_path / "parts", "--part-bytes", "8000", "--title", "試し")
     assert code == 0 and result["join_check"] and len(result["parts"]) >= 2, err
+    code, result, err = run_cli("deliver", "split", master, "--out", tmp_path / "text", "--part-bytes", "8000", "--text-head", "2048")
+    assert code == 0 and result["join_check"] and result["parts"][0].endswith(".part00.b64") and result["text_head"] == 2048, err
