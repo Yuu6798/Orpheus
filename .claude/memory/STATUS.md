@@ -48,7 +48,7 @@ Date は UTC（日本時間では #2・#6 は 2026-10-25 未明）。
 
 | PR | Title | Date | Phase |
 |---|---|---|---|
-| #PRR | FX-RES-1: hooks の部品（`accent.smoke`・`flicker`・`steel`、`sky.lamps`・`rain`、`fire.embers`・`blade_fire`）に基準の高さ `ref_h` を足した（書くと、画の高さが違うときだけその高さで計算して画の大きさへ直す。書かなければ今までと同じ画）。煙と dot の灯は docs の手順の関数とバイト単位で同じ。合成の画で、本番を縮めた見え方が下見と相関 0.97 以上。実作品の timeline では未確認 | 2026-11-20 | 持ち帰り |
+| #242 | FX-RES-1: hooks の部品（`accent.smoke`・`flicker`・`steel`、`sky.lamps`・`rain`、`fire.embers`・`blade_fire`）に基準の高さ `ref_h` を足した（書くと、画の高さが違うときだけその高さで計算して画の大きさへ直す。書かなければ今までと同じ画）。煙と dot の灯は docs の手順の関数とバイト単位で同じ。合成の画で、本番を縮めた見え方が下見と相関 0.97 以上。実作品の timeline では未確認 | 2026-11-20 | 持ち帰り |
 | #241 | FX-FACE-1: 顔の見切れを数える `mv gate faces`（fx の timeline の枠を描かずに全コマへ写し、画面に入る割合 visible と切れたコマを数える。`--extra` で手などの枠も）と、`mv gate check` の「顔の見切れ」の行（`face_cut` を書いたときだけ。要確認で不合格にしない）。2026-11 の MV の縦の Shorts で、指摘前の版の 3 カットだけを数え、制作の台本と一致 | 2026-11-20 | 持ち帰り |
 | #238〜#240 | 2026-11 に完成した MV の持ち帰り: 受け渡しの片の先頭を base64 のテキストにする `mv deliver split --text-head`（#238）、下見（`--scale`）と本番の大きさで見え方が変わる hooks の部品と手当て（#239）、本編の timeline から縦の Shorts を作る手順と `workflow.shorts_from_timeline`、今の main で本編と Shorts を描き直して制作の出力と照らし `mv.fx.timeline.render`・`plan`・`mv.overlay` を実制作検証済みに（#240） | 2026-11-20 | 持ち帰り |
 | #237 | 保存した顔リグの検品手順を `docs/model3d.md` に追加。固定カメラで表情・首振り・毛束の接触を切り分け、中立姿勢に戻して照合する | 2026-11-20 | 持ち帰り |
