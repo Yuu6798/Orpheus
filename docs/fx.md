@@ -952,6 +952,8 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
      （[gate の「顔の見切れを数える」](gate.md#顔の見切れを数えるmv-gate-faces-と検査の-face_cut)。その MV の指摘前の版では、指摘された 3 カットだけが切れていた）。
 5. **歌詞と終わりのカード**: 縦の配置で書き出した透過の連番を、曲全体のコマ番号の名前にして、`mv overlay --base timeline.mp4 --layers LAYERS.json` で重ねる（[overlay](#overlay透過レイヤーの重ね合わせfx-lyric-1)）。
    層の `first_frame` は区間の頭のコマ番号（T0 × fps）、字の無いコマは `missing: "transparent"`。本編の歌詞の時刻をそのまま使える。
+   - 重ねた字と顔・手の重なりは、同じ layers.json と `mv gate faces` の `faces.json` を `mv gate check` の `overlay` に渡すと、全部のコマで数えられる
+     （[gate の「重ねの字と顔」](gate.md#重ねの字と顔検査の-overlay)）。
    - 字と札は、縦画面の上・右・下の操作部品のおおよその範囲を避ける（dance の `ui_regions` の既定と同じ目安。上 0〜0.06、右 x 0.86〜・y 0.45〜0.88、下 0.80〜。画面の割合）。
      目安なので、スマホで確かめる。
    - 終わりのカード（本編への誘導）は、最後のカットの被写体に掛からない側に置く。本数がある Shorts で置き場をそろえるなら、全部の最後のカットで確かめる。
