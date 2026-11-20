@@ -1,22 +1,66 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "orpheus-capability-search/0.3",
+  "$id": "orpheus-capability-search/0.4",
   "title": "Orpheus capability search result",
   "type": "object",
-  "required": ["schema_version", "query", "filters", "results", "searched"],
+  "required": [
+    "schema_version",
+    "query",
+    "filters",
+    "results",
+    "searched"
+  ],
   "properties": {
-    "schema_version": {"const": "orpheus-capability-search/0.3"},
-    "query": {"type": "string"},
+    "schema_version": {
+      "const": "orpheus-capability-search/0.4"
+    },
+    "query": {
+      "type": "string"
+    },
     "filters": {
       "type": "object",
-      "required": ["domain", "kind", "maturity", "available_only", "parameter_status", "machine_readable_only"],
+      "required": [
+        "domain",
+        "kind",
+        "maturity",
+        "available_only",
+        "parameter_status",
+        "machine_readable_only"
+      ],
       "properties": {
-        "domain": {"type": ["string", "null"]},
-        "kind": {"type": ["string", "null"]},
-        "maturity": {"type": ["string", "null"]},
-        "available_only": {"type": "boolean"},
-        "parameter_status": {"type": ["string", "null"]},
-        "machine_readable_only": {"type": "boolean"}
+        "domain": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maturity": {
+          "enum": [
+            null,
+            "stable",
+            "verified",
+            "experimental",
+            "external"
+          ]
+        },
+        "available_only": {
+          "type": "boolean"
+        },
+        "parameter_status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "machine_readable_only": {
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
@@ -24,16 +68,161 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["score", "reasons", "item"],
+        "required": [
+          "score",
+          "reasons",
+          "item"
+        ],
         "properties": {
-          "score": {"type": "number"},
-          "reasons": {"type": "array", "items": {"type": "string"}},
-          "item": {"type": "object", "required": ["id", "kind", "summary", "availability"]}
+          "score": {
+            "type": "number"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "item": {
+            "type": "object",
+            "required": [
+              "id",
+              "kind",
+              "summary",
+              "availability",
+              "maturity"
+            ],
+            "properties": {
+              "maturity": {
+                "enum": [
+                  "stable",
+                  "verified",
+                  "experimental",
+                  "external"
+                ]
+              },
+              "maturity_assessment": {
+                "$ref": "#/$defs/maturityAssessment"
+              }
+            },
+            "allOf": [
+              {
+                "$ref": "#/$defs/verifiedAssessmentRequirement"
+              }
+            ]
+          }
         },
         "additionalProperties": false
       }
     },
-    "searched": {"type": "integer", "minimum": 0}
+    "searched": {
+      "type": "integer",
+      "minimum": 0
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "maturityAssessment": {
+      "type": "object",
+      "required": [
+        "reviewed_on",
+        "review_basis",
+        "next_review",
+        "reason",
+        "scope",
+        "evidence",
+        "limitations",
+        "promotion_criteria"
+      ],
+      "properties": {
+        "reviewed_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "review_basis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "next_review": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "section",
+              "summary"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "section": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "promotion_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "verifiedAssessmentRequirement": {
+      "if": {
+        "properties": {
+          "maturity": {
+            "const": "verified"
+          }
+        },
+        "required": [
+          "maturity"
+        ]
+      },
+      "then": {
+        "required": [
+          "maturity_assessment"
+        ],
+        "properties": {
+          "maturity_assessment": {
+            "properties": {
+              "evidence": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }

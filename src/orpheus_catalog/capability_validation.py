@@ -5,13 +5,14 @@ from typing import Any
 
 from .capability_catalog import build_catalog, validate_catalog as validate_shape
 from .schemas import validation_errors
+from .maturity import assessment_reference_errors
 
 
 def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
     """公開schema、未導入、読込み破損、登録済み領域の参照切れを別の状態として検査する。"""
     data = catalog or build_catalog()
     report = validate_shape(data)
-    errors = list(report["errors"])
+    errors = [*report["errors"], *assessment_reference_errors(data)]
     seen = {(error.get("code"), error.get("id"), error.get("component")) for error in errors}
 
     for failure in validation_errors("catalog", data):
@@ -35,5 +36,5 @@ def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
                 errors.append(error)
                 seen.add(key)
 
-    return {**report, "schema_version": "orpheus-capability-validation/0.3",
+    return {**report, "schema_version": "orpheus-capability-validation/0.4",
             "valid": not errors, "errors": errors}

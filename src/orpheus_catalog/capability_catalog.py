@@ -12,6 +12,7 @@ from typing import Any
 
 from . import _capability_catalog_impl as _impl
 from .capability_workflows import WORKFLOWS
+from .maturity import MaturityAssessmentError, apply_assessments
 
 CatalogError = _impl.CatalogError
 CATALOG_SCHEMA = _impl.CATALOG_SCHEMA
@@ -236,6 +237,10 @@ def build_catalog() -> dict[str, Any]:
         item["parameter_readiness"] = _workflow_parameter_readiness(item, by_id)
         workflows.append(item)
     workflows.sort(key=lambda item: item["id"])
+    try:
+        apply_assessments(capabilities, workflows)
+    except MaturityAssessmentError as error:
+        raise CatalogError("INVALID_MATURITY_ASSESSMENTS", str(error), errors=error.errors) from error
     counts = Counter(item["parameters"]["status"] for item in capabilities)
     return {"schema_version": CATALOG_SCHEMA, "components": components,
             "coverage": {"capabilities": len(capabilities), "workflows": len(workflows),

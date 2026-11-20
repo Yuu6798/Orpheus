@@ -1,5 +1,7 @@
 # Remotion 用の props（`mv export remotion-props`）
 
+成熟度と実素材の確認範囲は操作ごとに記録する。[機能の成熟度](maturity.md) と `orpheus show ID` を参照。
+
 Remotion を「透過レイヤーの部品」（歌詞テロップなどを透過 PNG 連番で描く側）として使うとき、Remotion 側に秒を扱わせず、
 **コマ番号だけ**の props.json を渡すための書き出し。analysis.json（と任意で storyboard.json）から作る。
 

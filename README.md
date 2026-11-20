@@ -16,7 +16,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 - **目的から始められる**: `orpheus search "目的"` で workflow を逆引きし、`starters` から既存の合成例をそのまま試せる。
 - **勝手に送信しない**: 生成 AI の API、クラウドへの送信、公開は行わない。初回のブラウザー取得など環境依存の通信と、明示した外部プログラムの副作用は能力目録に表示する。
 - **採点しない**: 自動で出すのは構造の検査（`technical_pass`）だけ。作品としての採否（`accepted`）は人が記録する。
-- **契約を守る**: MV の入出力の形は `contracts/` の JSON Schema が正典。実験的な機能の設定はその外に置く。
+- **契約を守る**: MV の入出力の形は `contracts/` の JSON Schema が正典。拡張機能の設定はその外で版を管理し、実制作の確認範囲を操作ごとに記録する。
 
 ## 何ができるか
 
@@ -28,27 +28,35 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv run-adapter` | 手元に入れてある歌詞同期器・音源分離器を argv 設定で呼び、結果を取り込む | 本体 | [adapters](docs/adapters.md) |
 | `mv export remotion-props` | analysis / storyboard から、Remotion 側が秒を扱わずに済むコマ番号だけの props.json を書く | 実験的 | [remotion-props](docs/remotion-props.md) |
 | `mv layer render` | Remotion の透過レイヤーの描画を工程として包み、版・sha256・ブラウザー・描画時間・決定論の確認を台帳に残す | 実験的 | [remotion-props › 台帳](docs/remotion-props.md#描画を台帳に載せるmv-layer-render) |
-| `mv export subtitles` | 歌詞の行の時刻から、字幕ファイル（SRT・WebVTT・LRC）と動画の概要欄に貼る歌詞を書く | 実験的 | [subtitles](docs/subtitles.md) |
+| `mv export subtitles` | 歌詞の行の時刻から、字幕ファイル（SRT・WebVTT・LRC）と動画の概要欄に貼る歌詞を書く | 実制作検証済み（SRT・VTT・概要欄） | [subtitles](docs/subtitles.md) |
 | `mv audio grid` | 曲の音の立ち上がりに一定のテンポの格子を当てはめ、拍と小節の頭の時刻を推定して、音源か analysis.json の隣に書く（dance・fx-timeline の `beats` がそのまま読める。値は推定） | 実験的 | [audio](docs/audio.md) |
 | `mv audio hits` | 曲の音から、強打（ときどき光らせるものに使う疎な一覧）と、帯域差分の打点（強さつきの密な一覧）の時刻を推定して、音源か analysis.json の隣に書く（格子の記録を渡せば小節と拍の位置も。値は推定） | 実験的 | [audio](docs/audio.md) |
-| `mv audio keys` | 打点の記録から fx-shot の光の強さのキー（稲妻の明滅）を作り、その光のキーだけを置き換えた spec を隣に書く | 実験的 | [audio](docs/audio.md) |
-| `mv fx` | 1 枚絵から、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる（深度とマスクは任意。無ければ、それを使う機能だけが使えない） | 実験的 | [fx](docs/fx.md) |
+| `mv audio keys` | 打点の記録から fx-shot の光の強さのキー（稲妻の明滅）を作り、その光のキーだけを置き換えた spec を隣に書く | 実制作検証済み（記載範囲） | [audio](docs/audio.md) |
+| `mv audio end` / `mv gate tail` | 指定窓で音の終わりと、その後に続く映像の長さを測る | 実制作検証済み（計測の範囲） | [audio](docs/audio.md) / [gate](docs/gate.md) |
+| `mv fx render` / `stills` | 1 枚絵から、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる（深度とマスクは任意。無ければ、それを使う機能だけが使えない） | 実制作検証済み（記載範囲） | [fx](docs/fx.md) |
 | `mv fx timeline` | いくつもの fx のショットを、カット・クロスフェード・黒・フラッシュ・焼け抜けでつないで 1 本にする。`--hooks` で、炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒などの演出の部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`）を掛ける | 実験的 | [fx › timeline](docs/fx.md#timeline複数のショットをつなぐfx-timeline02)、[演出の hooks](docs/fx.md#演出の-hooks火空と天気明かり) |
-| `mv fx guides` | 素材の絵に座標の目盛りを重ねて、光や炎を置く位置を読む | 実験的 | [fx › 見比べの補助](docs/fx.md#見比べの補助目盛り基準の列比較動画) |
-| `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する。`--cuts` で区間を同時に描き、`mv deliver join` でつなぐ | 実験的 | [fx › legacy 接続](docs/fx.md#legacy-接続) |
+| `mv fx guides` | 素材の絵に座標の目盛りを重ねて、光や炎を置く位置を読む | 実制作検証済み（PNG） | [fx › 見比べの補助](docs/fx.md#見比べの補助目盛り基準の列比較動画) |
+| `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する。`--cuts` で区間を同時に描き、`mv deliver join` でつなぐ | 実制作検証済み（接続口） | [fx › legacy 接続](docs/fx.md#legacy-接続) |
 | `mv overlay` | 透過の連番（PNG）やアルファつき動画を土台に重ねて、fx と同じ式と印で H.264 にする | 実験的 | [fx › overlay](docs/fx.md#overlay透過レイヤーの重ね合わせfx-lyric-1) |
 | `mv dance` | 緑背景の人物動画をステージに合成し、カメラと縦の歌詞を載せる | 実験的 | [dance](docs/dance.md) |
+| `mv dance finish` | 完成済みの不透明コマに仕上げと音を付けて書き出す（透過要素の全体合成は別） | 実制作検証済み（記載範囲） | [dance](docs/dance.md) |
 | `mv gate` | 書き出し前の機械的な検査（歌詞時刻・UI 枠・拍・書き出し）、歌詞の行・秒の確認表、透過連番から起こす timeline、完成動画の明滅の回数（`mv gate flashes`。規格への適合は判定しない）、分離ボーカルの声の区間・音符・旋律の繰り返しのずれ（`mv gate voice`・`notes`・`repeat`。数字だけ） | 実験的 | [gate](docs/gate.md) |
 | `mv inspect` | 生成動画の異常候補をコマと秒で見つけ、分類し、設定画と照合して修正計画を書く | 実験的 | [inspect](docs/inspect.md) |
-| `mv handoff` | 別の担当から届いた絵の機械的な検査（変えてよい範囲の外が元の絵と同じか・大きさ）。範囲の外を元に戻した絵も書ける | 実験的 | [handoff](docs/handoff.md) |
-| `mv sheet` | 動画や透過連番の指定時刻・出来事のコマを 1 枚に並べて見る（合否なしの閲覧用） | 実験的 | [sheet](docs/sheet.md) |
-| `mv deliver` | 描いた区間の動画を再エンコードせずにつなぎ、音を付けて元データの MP4 にする。確認用の小さい版（2 パス）と、受け渡しの片（結合の bat と SHA256SUMS つき）も作る | 実験的 | [deliver](docs/deliver.md) |
-| `model3d` | 設定画や既存モデルから、部位と骨の対応・加工レシピ・検査・書き出し・動きの移し替え・舞台描画を記録つきで進める | 実験的・外部ツール | [model3d](docs/model3d.md) |
+| `mv handoff check` | 別の担当から届いた絵の機械的な検査（変えてよい範囲の外が元の絵と同じか・大きさ）。範囲の外を元に戻した絵も書ける | 実制作検証済み（記載範囲） | [handoff](docs/handoff.md) |
+| `mv sheet` | 動画や透過連番の指定時刻・出来事のコマを 1 枚に並べて見る（合否なしの閲覧用） | 実制作検証済み（動画比較） | [sheet](docs/sheet.md) |
+| `mv deliver join` / `review-copy` / `split` | 描いた区間の動画を再エンコードせずにつなぎ、音を付けて元データの MP4 にする。確認用の小さい版（2 パス）と、受け渡しの片（結合の bat と SHA256SUMS つき）も作る | 実制作検証済み（記載範囲） | [deliver](docs/deliver.md) |
+| `model3d` | 設定画や既存モデルから、部位と骨の対応・加工レシピ・検査・書き出し・動きの移し替え・舞台描画を記録つきで進める | 操作別：実制作検証済み／実験的 | [model3d](docs/model3d.md) |
 
 fx や dance に無い描き方を自前のスクリプトで書くときは、色・記録・つなぎ・検査だけを借りられる（[自前の描画スクリプトから乗る](docs/external-renderer.md)）。
 
-「本体」は `contracts/` の契約に沿って動く範囲（MV の描画と検証は CI が合成素材で確かめる。アダプターの接続は手元の同期器・分離器で確かめる）、「実験的」は設定スキーマが契約の外にあり、しきい値や既定値が合成素材で決めた仮の値の範囲です。
-実験的な機能の実素材での確認状況は各ドキュメントの冒頭に書いてあります。
+「本体（stable）」は既存の安定契約の範囲です。2026-11-20 に制作記録を見直し、現行実装を実素材で照合した操作を「実制作検証済み（verified）」へ更新しました。設定が `contracts/` の外にあることと、実素材で未確認であることを分けています。
+「実験的（experimental）」には、残る確認事項と昇格条件を付けています。確認範囲・根拠・限界・次の見直し時期は [機能の成熟度](docs/maturity.md) と `orpheus show ID` の `maturity_assessment` を参照してください。verified は機能・オプションの記載範囲に限り、作品の採用や全環境での再現を自動で保証する表示ではありません。
+
+```sh
+uv run orpheus capabilities --maturity verified
+uv run orpheus show mv.deliver.join
+uv run orpheus show model3d.vrm.bake_springs
+```
 
 ## 必要なもの
 
@@ -93,7 +101,7 @@ uv run mv verify projects/demo
 ```
 
 動画は `projects/demo/runs/<run_id>/video.mp4`、検証結果は同じフォルダーの `verification.json` に出ます。検証記録には凍結入力と現在入力のSHA-256、および `current_inputs_match` が含まれます。
-実験的な機能も同じ形で合成素材のデモを持っています（`--extra fx` が要ります）。
+拡張機能にも同じ形で合成素材のデモがあります（`--extra fx` が要ります）。
 
 ```sh
 uv sync --locked --extra analysis --extra fx --extra model3d
@@ -151,7 +159,7 @@ projects/             作業用（Git には入れない。音源・画像・動
 - 実曲の MV には、音源・正しい歌詞・対象区間・画像が要ります。合成素材の描画が通ることは、実曲の同期精度を保証しません。
 - 画像は手動で搬入し、演出はファイルで受け渡します。画像生成 API、LLM への送信、Drive への公開は含みません。
 - 歌詞同期器（Qwen）と音源分離器（Demucs）の接続スクリプトは同梱していますが、モデルの実行環境は別に用意します。
-- 実験的な機能のしきい値・既定値は合成素材で決めた仮の値で、実素材での確認範囲は各ドキュメントに書いてあります。
+- 推定のしきい値・既定値には仮のものが残ります。操作ごとの実素材の確認範囲と残条件は [機能の成熟度](docs/maturity.md) と各ドキュメントに記録しています。
 - 作品の素材・モデル・動画・鍵・費用はこのリポジトリに含めません。
 
 ## 開発
@@ -174,12 +182,13 @@ pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 | [runbook.md](docs/runbook.md) | MV 制作の実行手順（入力 → 歌詞時刻 → 演出 → 描画 → 検証） |
 | [workflow.md](docs/workflow.md) | 用途別の制作計画と完了確認 |
 | [capabilities.md](docs/capabilities.md) | 制作目的から workflow と道具を逆引きする能力カタログ |
+| [maturity.md](docs/maturity.md) | 操作ごとの成熟度、実制作の根拠、残る条件と次の見直し |
 | [after-production.md](docs/after-production.md) | 作品が終わったあとの知見の持ち帰り（洗い出し → 判断 → 引き継ぎ書と制作後記 → 凍結 → 小さな PR）と、知見の置き場 |
 | [adapters.md](docs/adapters.md) | 歌詞同期・音源分離アダプターの共通形式と接続例 |
 | [remotion-props.md](docs/remotion-props.md) | Remotion を透過レイヤーの部品として使うための、コマ番号だけの props の書き出し |
 | [sheet.md](docs/sheet.md) | 時刻や出来事のコマを 1 枚に並べる閲覧用のシート |
 | [subtitles.md](docs/subtitles.md) | 歌詞の行の時刻からの字幕ファイル（SRT・WebVTT・LRC）と、概要欄に貼る歌詞 |
-| [fx.md](docs/fx.md) / [dance.md](docs/dance.md) / [gate.md](docs/gate.md) / [inspect.md](docs/inspect.md) / [handoff.md](docs/handoff.md) | 実験的な機能の使い方と限界 |
+| [fx.md](docs/fx.md) / [dance.md](docs/dance.md) / [gate.md](docs/gate.md) / [inspect.md](docs/inspect.md) / [handoff.md](docs/handoff.md) | 拡張機能の使い方と限界 |
 | [deliver.md](docs/deliver.md) | 区間の動画のつなぎ、音を付けた元データ、確認用の小さい版、受け渡しの片 |
 | [model3d.md](docs/model3d.md) / [model3d-dance.md](docs/model3d-dance.md) / [model3d-review.md](docs/model3d-review.md) | 3D ツールの使い方、既存制作レシピの接続、実行確認の記録 |
 | [dependencies.md](docs/dependencies.md) | 採用ツールの版と利用条件（Remotion の利用条件を含む） |

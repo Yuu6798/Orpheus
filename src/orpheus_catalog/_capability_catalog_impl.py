@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from .capability_workflows import WORKFLOWS
+from .maturity import VALID_MATURITY, MaturityAssessmentError, apply_assessments
 
-CATALOG_SCHEMA = "orpheus-capability-catalog/0.3"
-SEARCH_SCHEMA = "orpheus-capability-search/0.3"
-VALID_MATURITY = {"stable", "experimental", "external"}
+CATALOG_SCHEMA = "orpheus-capability-catalog/0.4"
+SEARCH_SCHEMA = "orpheus-capability-search/0.4"
 VALID_PARAMETER_STATUS = {"schema", "cli", "docs", "undocumented"}
 VALID_COMPONENT_STATES = {"available", "missing", "broken"}
 VALID_EFFECT_MODES = {"never", "opt-in", "always", "recipe-defined", "environment-dependent", "unknown"}
@@ -435,6 +435,10 @@ def build_catalog() -> dict[str, Any]:
         item["parameter_readiness"] = _workflow_parameter_readiness(item, by_id)
         workflows.append(item)
     workflows.sort(key=lambda item: item["id"])
+    try:
+        apply_assessments(capabilities, workflows)
+    except MaturityAssessmentError as error:
+        raise CatalogError("INVALID_MATURITY_ASSESSMENTS", str(error), errors=error.errors) from error
     counts = Counter(item["parameters"]["status"] for item in capabilities)
     return {"schema_version": CATALOG_SCHEMA, "components": components,
             "coverage": {"capabilities": len(capabilities), "workflows": len(workflows),
@@ -494,7 +498,7 @@ def validate_catalog(catalog: dict[str, Any] | None = None) -> dict[str, Any]:
         for step in workflow.get("steps", []):
             if step.get("capability") not in capability_ids:
                 errors.append({"code": "UNKNOWN_CAPABILITY", "id": workflow.get("id"), "capability": step.get("capability")})
-    return {"schema_version": "orpheus-capability-validation/0.2", "valid": not errors, "errors": errors,
+    return {"schema_version": "orpheus-capability-validation/0.4", "valid": not errors, "errors": errors,
             "coverage": data.get("coverage", {})}
 
 

@@ -12,11 +12,11 @@ uv sync --locked --extra analysis --extra fx --extra model3d && pnpm install --f
 uv run pytest                  # 数分（model3d のテストを含む）。fx / model3d のテストは各 extra で同期した環境でだけ走る（無いと黙って skip される）
 pnpm typecheck && pnpm test    # tsc --noEmit / node --test
 uv run mv demo projects/demo && uv run mv render projects/demo && uv run mv verify projects/demo
-uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（実験的。docs/fx.md。--extra fx が前提）
+uv run mv fx demo projects/fxdemo && uv run mv fx render projects/fxdemo/spec.json   # fx（操作別の成熟度は docs/maturity.md。docs/fx.md。--extra fx が前提）
 uv run mv dance demo projects/dancedemo && uv run mv dance render projects/dancedemo/spec.json   # ダンス合成（実験的。docs/dance.md。--extra fx が前提）
 uv run mv gate lines 歌詞.lrc 出力 --vocals vocals.flac; uv run mv gate check gate.json   # 行・秒の確認表と書き出し前の検査（実験的。docs/gate.md）
 uv run mv inspect demo projects/inspectdemo && uv run mv inspect check projects/inspectdemo/inspect.json   # 生成動画の検品（異常の位置・分類・設定画・修正計画。実験的。docs/inspect.md。--extra fx が前提。VLM は --vlm と送るなら --allow-send を明示したときだけ）
-uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json   # 自作 3D ツール（tools/model3d。外部ツール・実験的。docs/model3d.md。--extra model3d が前提）
+uv run model3d demo projects/model3d-demo && uv run model3d run projects/model3d-demo/recipe.json   # 自作 3D ツール（tools/model3d。外部ツール。成熟度は操作別、docs/maturity.md。docs/model3d.md。--extra model3d が前提）
 uv run model3d run projects/model3d-demo/recipe_generate.json   # 設定画 → 初期モデル（代役の生成器。status は needs_review が正常。本物の TripoSR は別 venv。tools/model3d/backends/README.md）
 ```
 
