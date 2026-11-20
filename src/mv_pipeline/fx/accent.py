@@ -4,21 +4,23 @@
 fire.py・sky.py と同じく、**画面の座標**と**表示の値**（float32 の 0..255）の上で計算し、実制作の演出の部品と同じ式・同じ順・
 同じ型で書いてある（同じ入力なら同じ画）。位置と長さは基準座標で書き、geo（hooks の view.base(幅, 高さ)）で画面へ写す。
 amt・len を [[t, 値], ...] で書くと時刻で補間する。どれも時刻 t と引数だけで決まる。
+smoke・flicker・steel は P に ref_h（基準の高さ）を書けば、画の高さと違うとき、その高さで計算して画の大きさへ直す（下見の
+`--scale` と本番で見え方を揃える。docs/fx.md の hooks の節）。書かなければ、今までと同じ式・同じ画。
 
     warm_light(f, geo, t, P)      柔らかい暖色の光（顔の照り返し・石への映り込み。mode: mul・tint・それ以外はスクリーン合成）
     streaks(f, geo, t, P)         濡れた石に映る縦の光の筋
     shadow(f, geo, t, P)          足元から伸びる影（くさび形、柔らかい縁）
     spread_light(f, geo, t, P)    紙の内側に灯が広がる（暗く平らにした紙が、中心から円く元の絵に戻る）。新しい画を返す
-    flicker(f, geo, t, P, sc)     描かれた灯・炎の明るい暖色の所を少し揺らす。新しい画を返す
-    smoke(f, geo, t, P)           立ち昇る煙
-    steel(f, blade, t, P)         刃の中の粒と、刃に沿ってゆっくり動く反射（blade は fire.Blade。view.blade(...) が作る）
+    flicker(f, geo, t, P, sc)     描かれた灯・炎の明るい暖色の所を少し揺らす。新しい画を返す（P の ref_h で基準の高さ）
+    smoke(f, geo, t, P)           立ち昇る煙（P の ref_h で基準の高さ）
+    steel(f, blade, t, P)         刃の中の粒と、刃に沿ってゆっくり動く反射（blade は fire.Blade。view.blade(...) が作る。P の ref_h で基準の高さ）
 """
 import math
 
 import cv2
 import numpy as np
 
-from .fire import blur, ease, lerp_keys, roi_of, screen, tex, tex_win
+from .fire import RefGeo, at_reference, blur, ease, lerp_keys, ref_size, resize_to, roi_of, scaled_blade, screen, tex, tex_win
 from .sky import flick
 
 
@@ -137,29 +139,57 @@ def spread_light(f, geo, t, P):
     return screen(out, np.array([255, 150, 60], np.float32)[None, None] * np.clip(g * pm, 0, 1)[..., None])
 
 
+def _region(geo, box, height, width):
+    """基準座標の箱 (x0, y0, x1, y1) を画面へ写した 0/1 の範囲（画素の境は切り捨て）。"""
+    x0, y0 = geo.pt(*box[:2])
+    x1, y1 = geo.pt(*box[2:])
+    reg = np.zeros((height, width), np.float32)
+    reg[int(max(0, y0)):int(max(0, y1)), int(max(0, x0)):int(max(0, x1))] = 1
+    return reg
+
+
 def flicker(f, geo, t, P, sc=None):
-    """描かれた灯・炎の明るい暖色の所を少し揺らす。新しい画を返す。P: amt、region（x0, y0, x1, y1。基準座標。無ければ画面全体）。
-    sc はむらの流れる速さの倍率（既定は画の高さ / 1080。実制作は出力の高さ / 1080）。"""
+    """描かれた灯・炎の明るい暖色の所を少し揺らす。新しい画を返す。P: amt、region（x0, y0, x1, y1。基準座標。無ければ画面全体）、
+    ref_h（基準の高さ。むらと範囲のぼかしをその高さで作る）。sc はむらの流れる速さの倍率（既定は画の高さ / 1080。実制作は出力の
+    高さ / 1080）。ref_h があるときは、基準の高さへ同じ割合で直す（sc × 基準の高さ / 画の高さ。sc が無ければ基準の高さ / 1080）。"""
     amt = P.get("amt", 0.06)
     H, W = f.shape[:2]
-    scale = H / 1080.0 if sc is None else sc
     r, g, b = f[..., 0], f[..., 1], f[..., 2]
     m = np.clip((r - b - 40) / 80.0, 0, 1) * np.clip((f.mean(-1) - 60) / 80.0, 0, 1)
-    if P.get("region"):
-        x0, y0 = geo.pt(*P["region"][:2])
-        x1, y1 = geo.pt(*P["region"][2:])
-        reg = np.zeros((H, W), np.float32)
-        reg[int(max(0, y0)):int(max(0, y1)), int(max(0, x0)):int(max(0, x1))] = 1
-        m = m * blur(reg, 10)
-    nz = tex_win(tex(55, 512, 40, 60), t * 120 * scale, 9, H, W)
+    ref = ref_size(f, P.get("ref_h"))
+    if ref is None:
+        if P.get("region"):
+            m = m * blur(_region(geo, P["region"], H, W), 10)
+        scale = H / 1080.0 if sc is None else sc
+        nz = tex_win(tex(55, 512, 40, 60), t * 120 * scale, 9, H, W)
+    else:                          # 基準の高さ: むらと範囲のぼかしをその高さで作って画の大きさへ直し、揺れの式は画の大きさの画に掛ける
+        s, h, w = ref
+        if P.get("region"):
+            m = m * resize_to(blur(_region(RefGeo(geo, s), P["region"], h, w), 10), W, H)
+        scale = h / 1080.0 if sc is None else sc * s
+        nz = resize_to(tex_win(tex(55, 512, 40, 60), t * 120 * scale, 9, h, w), W, H)
     fl = 1 + amt * ((nz - 0.5) * 2.5 + 0.6 * math.sin(t * 11.3) + 0.4 * math.sin(t * 6.1))
     return f * (1 + (fl - 1) * m)[..., None]
 
 
 def smoke(f, geo, t, P):
-    """立ち昇る煙。P: src（根元。基準座標）、w・h（幅と高さ）、amt（keys 可）、speed（昇る速さ）、drift（上ほど横へ流れる割合）、col。"""
+    """立ち昇る煙。P: src（根元。基準座標）、w・h（幅と高さ）、amt（keys 可）、speed（昇る速さ）、drift（上ほど横へ流れる割合）、col、
+    ref_h（基準の高さ。煙の濃さをその高さで作って画の大きさへ直し、同じ式で混ぜる）。"""
     amt = lerp_keys(P["amt"], t) if isinstance(P.get("amt"), list) else P.get("amt", 0.5)
     if amt <= 0.01:
+        return f
+    ref = ref_size(f, P.get("ref_h"))
+    if ref is not None:            # 基準の高さの黒い画に白 1 で描くと、値が濃さ × 0.55 になる。それを画の大きさへ直して同じ式で混ぜる
+        s, h, w = ref
+        rest = {key: value for key, value in P.items() if key not in ("ref_h", "col")}
+        probe = smoke(np.zeros((h, w, 3), np.float32), RefGeo(geo, s), t, {**rest, "col": [1.0, 1.0, 1.0]})
+        a = probe[..., 0]
+        if not a.any():
+            return f
+        H, W = f.shape[:2]
+        A = np.clip(resize_to(a, W, H), 0, None)[..., None]
+        c = np.array(P.get("col", [120, 125, 140]), np.float32)
+        f[:] = f * (1 - A) + c[None, None] * A
         return f
     H, W = f.shape[:2]
     X, Y = geo.pt(*P["src"])
@@ -189,7 +219,12 @@ def smoke(f, geo, t, P):
 
 def steel(f, blade, t, P):
     """刃の中に弱い粒と、刃に沿ってゆっくり動く反射を足す（描いた刀を周りの絵の質感に寄せる）。P: grain（粒の強さ）、spec（反射の
-    強さ）、speed（反射の速さ。刃の長さ / 秒）、phase（反射の位置のずれ）。"""
+    強さ）、speed（反射の速さ。刃の長さ / 秒）、phase（反射の位置のずれ）、ref_h（基準の高さ。その高さへ縮めた画に描き、足した分
+    だけを画の大きさへ直して足す。fire.at_reference）。"""
+    ref = ref_size(f, P.get("ref_h"))
+    if ref is not None:            # 基準の高さで描いて、足した分（粒と反射）だけを戻す
+        rest = {key: value for key, value in P.items() if key != "ref_h"}
+        return at_reference(f, ref, lambda g: steel(g, scaled_blade(blade, ref[0]), t, rest))
     H, W = f.shape[:2]
     S, s, w = blade.points, blade.s, blade.widths
     roi = roi_of(S, pad=w.max() + 4, width=W, height=H)

@@ -9,10 +9,12 @@ fire.py と同じく、**画面の座標**（出力の画素）と**表示の値
 - 深度（lightning の sky: depth と grade）は**画面の**深度（出力の大きさ、1 = 手前・0 = 奥）で渡す。hooks の view.depth()
   が spec の深度を camera で写したものを返す。
 - どれも時刻 t と引数だけで決まる。雨粒の並びは、大きさと seed ごとに 1 回だけ作って持つ（RAIN_LIMIT 通りを超えたら作り直す）。
+- lamps・rain は P に ref_h（基準の高さ）を書けば、画の高さと違うとき、その高さで計算して画の大きさへ直す（下見の `--scale` と
+  本番で見え方を揃える。docs/fx.md の hooks の節）。書かなければ、今までと同じ式・同じ画。
 
-    lamps(f, geo, t, P)                       灯（灯籠の火袋・窓・遠い点）。点く・消える時刻と揺らぎ
+    lamps(f, geo, t, P)                       灯（灯籠の火袋・窓・遠い点）。点く・消える時刻と揺らぎ（P の ref_h で基準の高さ）
     lightning(f, geo, t, P, screen_depth)     稲光（空の明滅と、枝つきの稲妻の筋）
-    rain(f, t, P, sc)                         画面全体の雨（3 層）。光のある所では雨粒が明るく見える
+    rain(f, t, P, sc)                         画面全体の雨（3 層）。光のある所では雨粒が明るく見える（P の ref_h で基準の高さ）
     grade(f, P, screen_depth)                 暗い所・遠い所に薄い色（既定は紫）を足す
 """
 import math
@@ -20,7 +22,7 @@ import math
 import cv2
 import numpy as np
 
-from .fire import blur, roi_of, screen
+from .fire import RefGeo, blur, ref_size, resize_to, roi_of, screen
 
 _rain = {}
 RAIN_LIMIT = 32            # 作り置く雨粒の並びの数の上限（超えたら作り直す）
@@ -52,7 +54,25 @@ def lamps(f, geo, t, P):
 
     x・y（光の中心）、r（光の半径）、kind（dot・box・window）、box（x0, y0, x1, y1。box・window の火袋や窓の範囲）、
     on・ramp・off・off_ramp・amt（lamp_level）、flick（揺らぎの強さ）、col、gain・fill・feather（box・window の紙の光り方）、
-    core・halo・core_amt（にじみの芯の大きさと、外と芯の強さ）。位置と長さは基準座標。P の amt と col は全部の灯に掛かる。"""
+    core・halo・core_amt（にじみの芯の大きさと、外と芯の強さ）。位置と長さは基準座標。P の amt と col は全部の灯に掛かる。
+
+    P の ref_h（基準の高さ）を書くと、にじみ（芯と外）だけをその高さの黒い画に描き、画の大きさへ直してスクリーン合成する
+    （芯の半径の下限 1 画素が、基準の高さの割合になる）。box・window の紙の光り方は絵の明るさを掛けるので、画の大きさのまま
+    先に全部の灯の分を描く（書かないときは灯ごとに紙 → にじみの順。灯のにじみと別の灯の紙が重なる所だけ順が変わる）。"""
+    ref = ref_size(f, P.get("ref_h"))
+    if ref is None:
+        return _lamps(f, geo, t, P, papers=True, glows=True)
+    s, h, w = ref
+    _lamps(f, geo, t, P, papers=True, glows=False)
+    layer = _lamps(np.zeros((h, w, 3), np.float32), RefGeo(geo, s), t, P, papers=False, glows=True)
+    if layer.any():
+        H, W = f.shape[:2]
+        f[:] = screen(f, resize_to(layer, W, H))
+    return f
+
+
+def _lamps(f, geo, t, P, papers, glows):
+    """lamps の本体。papers: box・window の紙の光り方、glows: にじみ（芯と外）を描くか。"""
     H, W = f.shape[:2]
     gcol = np.array(P.get("col", [255, 150, 60]), np.float32)
     for j, L in enumerate(P["lamps"]):
@@ -64,7 +84,7 @@ def lamps(f, geo, t, P):
         X, Y = geo.pt(L["x"], L["y"])
         r = L.get("r", 20) * geo.k
         kind = L.get("kind", "dot")
-        if kind in ("box", "window") and "box" in L:
+        if papers and kind in ("box", "window") and "box" in L:
             bx0, by0 = geo.pt(L["box"][0], L["box"][1])
             bx1, by1 = geo.pt(L["box"][2], L["box"][3])
             x0, y0, x1, y1 = int(max(0, bx0 - 2)), int(max(0, by0 - 2)), int(min(W, bx1 + 3)), int(min(H, by1 + 3))
@@ -78,6 +98,8 @@ def lamps(f, geo, t, P):
                 gain = np.array(L.get("gain", [5.0, 3.1, 1.4]), np.float32) * lv
                 lit = sub * (1 + gain[None, None] * m[..., None]) + col[None, None] * (m * lv * L.get("fill", 0.35) * (0.4 + lum[..., 0]))[..., None]
                 sub[:] = np.clip(lit, 0, 255)
+        if not glows:
+            continue
         # 光のにじみ（芯と外）
         cr = max(1.0, L.get("core", 0.25) * r)
         x0, y0, x1, y1 = int(max(0, X - 3 * r)), int(max(0, Y - 3 * r)), int(min(W, X + 3 * r + 1)), int(min(H, Y + 3 * r + 1))
@@ -196,10 +218,21 @@ def rain(f, t, P, sc=None):
 
     P: amt、density（本数の倍率）、angle（縦 1 に対する横の流れ）、layers（[[本数, 速さ, 長さ, 明るさ, 太さ], ...]。
     本数は 960×540 あたり、速さと長さは高さ 1080 の画素）、seed、col（雨の色）、ambient（雨そのものの明るさ）、catch（光の拾い方）。
-    sc は長さと速さの倍率（既定は画の高さ / 1080。実制作は出力の高さ / 1080）。"""
+    sc は長さと速さの倍率（既定は画の高さ / 1080。実制作は出力の高さ / 1080）。
+
+    P の ref_h（基準の高さ）を書くと、画をその高さへ縮めて雨を描き、足した分だけを画の大きさへ直して足す（雨粒の並び・太さ・
+    ぼかしと光の拾い方が、基準の高さの見え方になる）。sc は基準の高さへ同じ割合で直す（sc × 基準の高さ / 画の高さ。
+    sc が無ければ基準の高さ / 1080）。"""
     amt = P.get("amt", 1.0)
     if amt <= 0.01:
         return f
+    ref = ref_size(f, P.get("ref_h"))
+    if ref is not None:
+        s, h, w = ref
+        H, W = f.shape[:2]
+        rest = {key: value for key, value in P.items() if key != "ref_h"}
+        g = cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA if h < H else cv2.INTER_LINEAR)
+        return f + resize_to(rain(g, t, rest, h / 1080.0 if sc is None else sc * s) - g, W, H)
     H, W = f.shape[:2]
     scale = H / 1080.0 if sc is None else sc
     small = cv2.resize(f, (max(1, W // 8), max(1, H // 8)), interpolation=cv2.INTER_AREA)

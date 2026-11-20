@@ -3254,11 +3254,17 @@
           "path": "docs/fx.md",
           "section": "演出の hooks（火・空と天気・明かり）",
           "summary": "火の演出は実素材 84/83 コマ、空・雨・明かりは実素材 9 ショット 762 コマで制作関数と一致。"
+        },
+        {
+          "path": "tests/test_fx_preview_scale.py",
+          "section": "部品に基準の高さ（ref_h）を書く",
+          "summary": "ref_h を画の高さと同じにすると書かないときとバイト単位で同じ。煙と dot の灯は docs の手順の関数とバイト単位で同じ。本番の大きさに ref_h 540 で描いて縮めると、7 つの部品とも下見との相関 0.97 以上（合成の画）。"
         }
       ],
       "limitations": [
         "バイト一致は同じ素材・設定・ライブラリ版（numpy 2.3.5・OpenCV 5.0.0・ffmpeg 6.1.1）での比較。",
         "burn・pulse・loop の動画・layers の planes・lights・深度のあるショットは、実作品の timeline で通していない（burn と hooks の particles.gather の現実装は実素材未確認）。",
+        "hooks の部品の基準の高さ（ref_h。2026-11-21 に足した選択肢）は、実作品の timeline で通していない。煙と dot の灯は、制作の hooks の関数と合成の画の 20 通りでバイト単位で同じ。ほかの部品は合成の画で下見と見え方を比べただけ。",
         "見た目の採否は人の判断で、technical_pass やバイト一致とは別。"
       ],
       "promotion_criteria": [

@@ -1,8 +1,9 @@
 """下見（--scale）と本番の大きさで見え方が変わる部品（accent.smoke・accent.flicker・sky.lamps の小さな灯）と、
 その部品だけ下見の大きさで計算して拡大する方法（docs/fx.md の hooks の節「下見（--scale）と本番の大きさで見え方が変わる部品」）。
 
-素材はすべて合成（平らな画）。geo は基準座標 1672×941 の絵を画面いっぱいに写すもの。方法の関数（*_at）は docs に書いた手順を
-そのまま書いたもので、部品は変えていない。docs の数（相関・濃さの比）は、ここと同じ設定で測った値。
+素材はすべて合成（平らな画と、なめらかな模様に暖色の四角を置いた画）。geo は基準座標 1672×941 の絵を画面いっぱいに写すもの。
+方法の関数（*_at）は docs に書いた手順をそのまま書いたもの。部品に基準の高さ（ref_h）を書くと、煙と dot の灯はこの関数と
+バイト単位で同じ画になる（後半のテスト）。docs の数（相関・濃さの比）は、ここと同じ設定で測った値。
 """
 import math
 
@@ -11,7 +12,7 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from mv_pipeline.fx import accent, sky  # noqa: E402
+from mv_pipeline.fx import accent, fire, sky  # noqa: E402
 from mv_pipeline.fx.fire import screen, tex, tex_win  # noqa: E402
 
 BASE_W, BASE_H = 1672, 941
@@ -196,3 +197,126 @@ def test_flicker_noise_drawn_at_the_preview_height_keeps_the_pattern():
     preview = flicker_noise(h, w, 1.0)
     kept = cv2.resize(preview, (int(round(FINAL_H * 16 / 9)), FINAL_H), interpolation=cv2.INTER_LINEAR)
     assert corr(preview, shrink(kept, preview)) > 0.99
+
+
+# ---- 部品に基準の高さ（ref_h）を書く ------------------------------------------------------------------
+
+def busy(H):
+    """平らでない画（なめらかな模様と、明るい暖色の四角。揺れ・紙の灯が掛かる所）。"""
+    W = int(round(H * 16 / 9))
+    y, x = np.mgrid[0:H, 0:W].astype(np.float32)
+    f = np.stack([90 + 60 * np.sin(x / W * 6.3), 70 + 40 * np.cos(y / H * 5.1), 60 + 30 * np.sin((x + y) / W * 4)], -1)
+    f[int(H * .3):int(H * .5), int(W * .4):int(W * .55)] = (230, 170, 80)
+    return f.astype(np.float32)
+
+
+def blade(H):
+    geo = Geo(H)
+    points = np.array([geo.pt(x, y) for x, y in [[700, 600], [760, 510], [830, 400], [900, 300]]], np.float32)
+    return fire.Blade(points=points, s=np.array([0.0, 0.33, 0.66, 1.0], np.float32),
+                      widths=np.array([14, 12, 9, 6], np.float32) * geo.k, k=geo.k, px=H / 1080)
+
+
+def at(H):
+    W = H * 16 / 9
+    return lambda u: (0.3 * W + u * 0.4 * W - 0.5, 0.7 * H - 0.5)
+
+
+def opt(P, ref_h):
+    return P if ref_h is None else dict(P, ref_h=ref_h)
+
+
+T = 1.3
+LAMP4 = {"lamps": [{"x": 600, "y": 400, "r": 4, "on": -1}]}
+LAMP_BOX = {"lamps": [{"x": 800, "y": 380, "r": 30, "kind": "box", "box": [700, 300, 900, 450], "on": -1}, {"x": 600, "y": 400, "r": 4, "on": -1}]}
+FLICKER = {"amt": 0.11, "region": [600, 250, 1000, 520]}
+PARTS = {   # 名前 → (描き方, 本番を縮めたときの下限の相関, |差| の合計の比の範囲)
+    "smoke": (lambda f, H, r: accent.smoke(f, Geo(H), T, opt(SMOKE, r)), 0.99, (0.98, 1.02)),
+    "flicker": (lambda f, H, r: accent.flicker(f, Geo(H), T, opt(FLICKER, r)), 0.99, (0.98, 1.02)),
+    "lamps": (lambda f, H, r: sky.lamps(f, Geo(H), T, opt(LAMP4, r)), 0.99, (0.98, 1.02)),
+    "lamps_box": (lambda f, H, r: sky.lamps(f, Geo(H), T, opt(LAMP_BOX, r)), 0.99, (0.98, 1.02)),
+    "embers": (lambda f, H, r: fire.embers(f, at(H), T, 5, 60, 1.5, k=H / 1080, ref_h=r), 0.95, (0.97, 1.03)),
+    "rain": (lambda f, H, r: sky.rain(f, T, opt({"amt": 1.0}, r)), 0.99, (0.97, 1.03)),
+    "blade_fire": (lambda f, H, r: fire.blade_fire(f, blade(H), T, opt({"h": 60, "embers": 12, "patch": 0.3, "heat": 0.3}, r)),
+                   0.99, (0.97, 1.03)),
+    "steel": (lambda f, H, r: accent.steel(f, blade(H), T, opt({"grain": 0.1, "spec": 0.35, "phase": 0.5}, r)), 0.99, (0.9, 1.02)),
+}
+
+
+def part_delta(name, H, ref_h=None):
+    draw = PARTS[name][0]
+    f = busy(H)
+    return (draw(f.copy(), H, ref_h) - f).mean(-1)
+
+
+def against_preview(name, final):
+    preview = part_delta(name, PREVIEW_H)
+    small = shrink(final, preview)
+    return corr(preview, small), float(np.abs(small).sum() / np.abs(preview).sum())
+
+
+@pytest.mark.parametrize("name", list(PARTS))
+def test_ref_h_keeps_the_preview_look_at_the_final_size(name):
+    """本番の大きさに ref_h = 下見の高さで描いて縮めると、下見と同じ見え方（書かないと、煙・揺らぎ・小さな灯・火の粉・雨・
+    刃の火・鋼の質感は形か量が変わる）。"""
+    least, (low, high) = PARTS[name][1:]
+    c, ratio = against_preview(name, part_delta(name, FINAL_H, PREVIEW_H))
+    assert c > least and low < ratio < high
+    if name != "lamps_box":                                             # 紙の灯は大きさに依らない（芯の小さな灯が混ざるだけ）
+        c0, ratio0 = against_preview(name, part_delta(name, FINAL_H))
+        assert c0 < 0.95 or not 0.95 < ratio0 < 1.05
+
+
+@pytest.mark.parametrize("name", list(PARTS))
+def test_ref_h_equal_to_the_height_is_the_part_unchanged(name):
+    assert np.array_equal(part_delta(name, PREVIEW_H, PREVIEW_H), part_delta(name, PREVIEW_H))
+
+
+@pytest.mark.parametrize("t", [0.0, 1.0, 2.5])
+def test_smoke_ref_h_is_the_method_above(t):
+    P = dict(SMOKE, drift=0.4, col=[70, 75, 96])
+    want = smoke_at(busy(FINAL_H), Geo(FINAL_H), t, P, PREVIEW_H)
+    assert np.array_equal(accent.smoke(busy(FINAL_H), Geo(FINAL_H), t, dict(P, ref_h=PREVIEW_H)), want)
+
+
+@pytest.mark.parametrize("r", [4, 9])
+def test_dot_lamps_ref_h_is_the_method_above(r):
+    P = {"lamps": [{"x": 600, "y": 400, "r": r, "on": -1}, {"x": 900, "y": 300, "r": 6, "on": 0.2, "flick": 2.0, "col": [255, 180, 90]}]}
+    want = lamps_at(busy(FINAL_H), Geo(FINAL_H), 0.5, P, PREVIEW_H)
+    assert np.array_equal(sky.lamps(busy(FINAL_H), Geo(FINAL_H), 0.5, dict(P, ref_h=PREVIEW_H)), want)
+
+
+def test_flicker_ref_h_draws_the_noise_at_the_reference_height():
+    """むらを基準の高さで引いて拡大し、揺れの式は本番の画に掛ける（docs の「揺らぎ」の手順。範囲なし）。"""
+    f = busy(FINAL_H)
+    got = accent.flicker(f.copy(), Geo(FINAL_H), T, {"amt": 0.11, "ref_h": PREVIEW_H})
+    w = int(round(FINAL_H * 16 / 9 * PREVIEW_H / FINAL_H))
+    nz = cv2.resize(flicker_noise(PREVIEW_H, w, T), (f.shape[1], f.shape[0]), interpolation=cv2.INTER_LINEAR)
+    m = np.clip((f[..., 0] - f[..., 2] - 40) / 80.0, 0, 1) * np.clip((f.mean(-1) - 60) / 80.0, 0, 1)
+    fl = 1 + 0.11 * ((nz - 0.5) * 2.5 + 0.6 * math.sin(T * 11.3) + 0.4 * math.sin(T * 6.1))
+    assert np.array_equal(got, f * (1 + (fl - 1) * m)[..., None])
+
+
+@pytest.mark.parametrize("draw", [
+    lambda f, sc, P: accent.flicker(f, Geo(FINAL_H), T, P, sc),
+    lambda f, sc, P: sky.rain(f, T, dict(P, amt=1.0), sc),
+])
+def test_ref_h_converts_an_explicit_sc_to_the_reference_height(draw):
+    """sc（流れる速さ・長さの倍率。実制作は出力の高さ / 1080）を渡しても、基準の高さへ同じ割合で直す。"""
+    P = {"amt": 0.11, "ref_h": PREVIEW_H}
+    assert np.array_equal(draw(busy(FINAL_H), FINAL_H / 1080, P), draw(busy(FINAL_H), None, P))
+
+
+def test_ref_h_above_the_height_draws_large_and_shrinks():
+    """基準の高さが画より高いときは、基準の高さで描いて縮める（下見を本番の見え方に寄せる）。"""
+    final = smoke_density(FINAL_H, 1.0)
+    f = np.zeros_like(flat(PREVIEW_H))
+    accent.smoke(f, Geo(PREVIEW_H), 1.0, dict(SMOKE, col=[1.0, 1.0, 1.0], ref_h=FINAL_H))
+    small = shrink(final, f[..., 0])
+    assert corr(f[..., 0], small) > 0.99 and f[..., 0].sum() / small.sum() == pytest.approx(1.0, abs=0.02)
+
+
+@pytest.mark.parametrize("value", [0, 1.5, float("nan"), float("inf"), -540])
+def test_ref_h_must_be_a_height(value):
+    with pytest.raises(ValueError, match="ref_h"):
+        accent.smoke(busy(PREVIEW_H), Geo(PREVIEW_H), 1.0, dict(SMOKE, ref_h=value))
