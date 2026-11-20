@@ -3272,12 +3272,12 @@
       ],
       "maturity": "experimental",
       "reason": "グループの見出しは個別機能の検証済み範囲を一括保証しない。検証済みの子は exact ID で個別表示する。",
-      "scope": "現在の既知 leaf: mv.gate.check, mv.gate.demo, mv.gate.flashes, mv.gate.lines, mv.gate.notes, mv.gate.repeat, mv.gate.tail, mv.gate.timeline, mv.gate.voice",
+      "scope": "現在の既知 leaf: mv.gate.check, mv.gate.demo, mv.gate.faces, mv.gate.flashes, mv.gate.lines, mv.gate.notes, mv.gate.repeat, mv.gate.tail, mv.gate.timeline, mv.gate.voice",
       "evidence": [
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 1 / その他 8。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 2 / その他 8。"
         }
       ],
       "limitations": [
@@ -3312,6 +3312,35 @@
       ],
       "promotion_criteria": [
         "代表的な実作品 run で必要検査ごとの実施・未実施を記録し、利用するしきい値を確認する。歌詞を含む用途では確定した歌唱時刻との照合を行う。"
+      ]
+    },
+    {
+      "ids": [
+        "mv.gate.faces"
+      ],
+      "maturity": "verified",
+      "reason": "実作品の縦の Shorts 2 本で、制作の検査の台本と同じ枠を写し、切れたコマの数とコマごとの割合が台本と一致した。指摘前の版ではユーザーが見つけた 3 カットだけが切れていた。",
+      "scope": "fx の timeline の spec のショットの faces（frame source・clamp・punch の縦の窓）を、描かずに全コマの画面へ写し、枠の面積のうち画面に入る割合（visible）と切れたコマを数える工程。",
+      "evidence": [
+        {
+          "path": "docs/gate.md",
+          "section": "顔の見切れを数える（`mv gate faces` と検査の `face_cut`）",
+          "summary": "2026-11-21、採用版（r2）の 2 本は切れたコマ 0（807・838 コマ）。指摘前の版（r1）は 97 コマ（2 カット）と 74 コマ（1 カット）で、ユーザーがスマホで指摘した 3 カットと同じ。制作の台本を同じ r1 に掛けた値とコマごとの差は最大 0.0009（507 コマ）、切れたコマの数は同じ。"
+        },
+        {
+          "path": "tests/test_gate_faces.py",
+          "section": "test_projection_counts_frames_where_the_face_leaves_the_frame",
+          "summary": "合成の横長の絵の上で縦の窓を動かし、visible を窓の幅から計算した値と 0.005 以内で照合。画面に入る枠は mv fx timeline render の faces.json と同じ記録。"
+        }
+      ],
+      "limitations": [
+        "枠は人が書く（多くは目測の推定）。顔を見つける道具ではなく、枠が実際の顔より小さいと見切れを見落とす。",
+        "--extra の枠と動画のショットの枠は、実作品では通していない（合成の試験だけ）。",
+        "切れたコマの良し悪し（演出として切るか）は判定しない。"
+      ],
+      "promotion_criteria": [
+        "記載した保証範囲・入出力形式・版の互換性方針を正式に固定する。contracts/ への移動・変更が必要なら独立した明示的変更として扱う。",
+        "実制作の再現記録と対応する回帰検証を、その正式な保証範囲に対応付ける。"
       ]
     },
     {

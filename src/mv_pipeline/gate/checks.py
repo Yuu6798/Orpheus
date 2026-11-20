@@ -19,6 +19,7 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "beats": "analysis.json",                          "downbeats"・"beats"・"beats_s" のどれかの配列（無ければ timeline の beats）
      "flash": {"delta": 0.10, "max_per_s": 3},          書いたときだけ、master（無ければ video）の明滅を測る検査を足す（gate/flashes.py）
      "tail": {"max_tail_s": 1.0},                       書いたときだけ、master（無ければ video）の音の終わりと絵の終わりを測る（gate/tail.py）
+     "face_cut": {"min_visible": 1.0, "roles": ["main"]},  書いたときだけ、faces の visible（mv gate faces が書く）で顔の見切れを数える
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
@@ -30,6 +31,7 @@ timeline は dance-timeline/0.1 と 0.2 の両方を読む。dance/dance_timelin
 
 "flash" を書かない設定では、検査は今までの 9 つだけで、結果も合否も出力のファイルも変わらない（明滅の検査は既定で掛けない）。
 "tail" も同じく、書いたときだけ「音の終わり」の行を足す（余韻の長さは好みなので、目安を超えても要確認で、不合格にはしない）。
+"face_cut" も書いたときだけ「顔の見切れ」の行を足す（寄りで額や顎を切るのは演出のこともあるので、切れていても要確認で、不合格にはしない）。
 """
 import bisect
 import itertools
@@ -215,6 +217,64 @@ def check_faces(timeline, faces):
     if any(face.get("estimated") for face in faces):
         summary = f"推定の顔を含む {len(faces)} 区間を照合、{summary}（うち実測 {measured} 件）"
     return result(name, "fail" if measured else "warn" if problems else "pass", summary, problems)
+
+
+FACE_CUT_CHECK = "顔の見切れ"
+FACE_ROLES = ("main", "other")
+
+
+def face_cut_settings(value, where):
+    """gate の設定の "face_cut" → {"min_visible", "roles"}（既定は 1.0 と ["main"]）。"""
+    if not isinstance(value, dict):
+        raise PipelineError(f"{where} は {{\"min_visible\": 1.0, \"roles\": [\"main\"]}} の形の辞書にしてください")
+    unknown = sorted(set(value) - {"min_visible", "roles"})
+    if unknown:
+        raise PipelineError(f"{where} に知らない鍵があります: {unknown}")
+    least = value.get("min_visible", 1.0)
+    if isinstance(least, bool) or not isinstance(least, (int, float)) or not 0 < least <= 1:
+        raise PipelineError(f"{where} の min_visible は 0 より大きく 1 以下の数にしてください: {least!r}")
+    roles = value.get("roles", ["main"])
+    if not isinstance(roles, list) or not roles or any(role not in FACE_ROLES for role in roles):
+        raise PipelineError(f"{where} の roles は {list(FACE_ROLES)} から選んだ 1 つ以上の並びにしてください: {roles!r}")
+    return {"min_visible": float(least), "roles": list(dict.fromkeys(roles))}
+
+
+def check_face_cut(timeline, faces, settings):
+    """faces の visible（枠の面積のうち画面に入っている割合。mv gate faces が書く）が min_visible より小さいコマを、
+    役（と label）ごとに続いたコマへまとめて数える。描いた区間の外の枠は見ない。切れていても要確認（不合格にしない）。"""
+    name = FACE_CUT_CHECK
+    if faces is None:
+        return skip(name, "faces")
+    marked = [face for face in faces if "visible" in face]
+    if not marked:
+        return skip(name, "visible のある faces（mv gate faces の faces.json）")
+    first, last = _window(timeline)
+    fps = timeline["fps"]
+    watched = [face for face in marked if face.get("role", "main") in settings["roles"] and first - EPS <= face["start"] < last - EPS]
+    cut = sorted((face for face in watched if face["visible"] < settings["min_visible"] - EPS),
+                 key=lambda face: (face.get("role", "main"), face.get("label") or "", face["start"]))
+    groups = []
+    for face in cut:
+        key = (face.get("role", "main"), face.get("label") or "")
+        if groups and groups[-1]["key"] == key and face["start"] - groups[-1]["last"] <= 1.5 / fps:
+            group = groups[-1]
+            group["last"] = face["start"]
+            group["starts"].add(round(face["start"], 6))
+            group["least"] = min(group["least"], face["visible"])
+        else:
+            groups.append({"key": key, "first": face["start"], "last": face["start"], "starts": {round(face["start"], 6)},
+                           "least": face["visible"]})
+    problems = []
+    for group in sorted(groups, key=lambda g: g["first"]):
+        role, label = group["key"]
+        who = label or ("主役の顔" if role == "main" else "ほかの枠")
+        problems.append({"t": group["first"], "text": who,
+                         "detail": f"{len(group['starts'])} コマで枠が画面から切れます（画面に入る割合の最小 {group['least']:.2f}）"})
+    frames = len({round(face["start"], 6) for face in cut})
+    least = settings["min_visible"]
+    aim = "枠の全部が画面に入る" if least >= 1 else f"枠の {least * 100:g}% 以上が画面に入る"
+    summary = f"{len(watched)} 個の枠を照合、切れたコマ {frames}（目安: {aim}）"
+    return result(name, "warn" if problems else "pass", summary, problems)
 
 
 def estimate_faces(spec_path, timeline):
@@ -615,6 +675,9 @@ def run(config_path, out=None):
     if ending is not None:
         from . import tail
         ending = tail.settings(ending, 'gate の設定の "tail"')
+    face_cut = config.get("face_cut")  # 書いたときだけ顔の見切れを数える
+    if face_cut is not None:
+        face_cut = face_cut_settings(face_cut, 'gate の設定の "face_cut"')
     video, master = path_of("video"), path_of("master")
     scoped = _scoped(timeline)
     confirmed = load("confirmed")
@@ -642,6 +705,8 @@ def run(config_path, out=None):
     if ending is not None:
         row, tail_report = check_tail(timeline, video, master, ending)
         checks.append(row)
+    if face_cut is not None:
+        checks.append(check_face_cut(timeline, faces, face_cut))
     statuses = {c["status"] for c in checks}
     overall = ("fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses
                else "pass_with_warnings" if "warn" in statuses else "pass")
@@ -650,6 +715,8 @@ def run(config_path, out=None):
         report["flash"] = {**flash, "report": flashes.REPORT_NAME if flash_report is not None else None}
     if ending is not None:
         report["tail"] = {**ending, "report": tail.REPORT_NAME if tail_report is not None else None}
+    if face_cut is not None:
+        report["face_cut"] = face_cut
     out = Path(out) if out else base / "gate_report"
     out.mkdir(parents=True, exist_ok=True)
     if flash_report is not None:

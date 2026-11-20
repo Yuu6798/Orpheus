@@ -109,6 +109,8 @@ MV_RUNTIME = {
         "external_process_note": "動画の復号にFFmpegを使い、--vlm指定時は外部VLMアダプターも起動する",
     },
     ("gate", "flashes"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("gate", "faces"): {"external_process": "opt-in", "tools": ["ffmpeg"],
+                        "external_process_note": "動画のショットがあれば、枠を写すために動画を読む"},
     ("gate", "tail"): {"external_process": "always", "tools": ["ffmpeg", "ffprobe"]},
     ("sheet",): {"external_process": "opt-in", "tools": ["ffmpeg", "ffprobe"],
                  "external_process_note": "動画入力または並べた動画の出力で使う"},
@@ -263,6 +265,8 @@ def _mv_extras(path: tuple[str, ...]) -> list[str]:
         return [] if len(path) == 1 else ["fx"]
     if top == "gate" and len(path) > 1 and path[1] in {"voice", "notes", "repeat"}:
         return ["analysis"]
+    if top == "gate" and len(path) > 1 and path[1] == "faces":
+        return ["fx"]           # fx の timeline の素材を読んで枠を写す
     if top == "overlay":
         return ["fx"]
     return []

@@ -29,6 +29,15 @@ def _gate_parser(commands):
     demo.add_argument("--flash-align", choices=["beat", "downbeat"], default="beat", help="what the flashes should be compared with")
     demo.add_argument("--attack-ms", type=float, default=30.0, help="rise time of each line's tone")
     demo.add_argument("--floor-db", type=float, default=-40.0, help="background noise relative to the tone")
+    faces = sub.add_parser("faces", help="project the face boxes of an fx timeline onto every frame without rendering, and count "
+                                         "frames where a face box is cut by the frame edge (numbers only; faces.json for gate check)")
+    faces.add_argument("timeline", type=Path, help="fx timeline (fx-timeline/0.2)")
+    faces.add_argument("--out", type=Path, required=True, help="folder for faces.json (gate check faces + visible) and faces_report.json")
+    faces.add_argument("--start", type=float, default=0.0, help="start of the range in timeline seconds (default 0)")
+    faces.add_argument("--duration", type=float, help="length of the range in seconds (default: to the end)")
+    faces.add_argument("--extra", type=Path, help="gate-boxes/0.1 JSON with more boxes per shot in source coordinates (hands, props)")
+    faces.add_argument("--min-visible", type=float, default=1.0,
+                       help="count a frame when a main box has less than this share of its area inside the frame (default 1.0: any cut)")
     tl = sub.add_parser("timeline", help="measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check")
     tl.add_argument("--frames", action="append", default=[], required=True,
                     help="PNG sequence folder; 'DIR:lyric-001' binds the folder to one line. Repeatable")
@@ -87,6 +96,11 @@ def gate_command(args):
         from ..gate import demo
         return demo.create(args.dir, args.duration, args.fps, args.bpm, args.beats_per_bar, not args.no_downbeats, args.shifts,
                            args.flashes, args.flash_align, args.attack_ms, args.floor_db)
+    if args.gate_command == "faces":
+        from . import _require_fx
+        _require_fx()       # 枠を写すのに fx の timeline の素材を読む（cv2 を使う）
+        from ..gate import faces
+        return faces.write(args.timeline, args.out, args.start, args.duration, args.extra, args.min_visible)
     if args.gate_command == "timeline":
         from ..gate import frames_timeline
         flashes = [v for v in (args.flashes or "").split(",") if v.strip()]
