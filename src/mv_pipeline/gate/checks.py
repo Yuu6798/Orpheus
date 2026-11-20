@@ -20,6 +20,7 @@ gate.json のパスは gate.json のあるフォルダ基準（絶対パスも�
      "flash": {"delta": 0.10, "max_per_s": 3},          書いたときだけ、master（無ければ video）の明滅を測る検査を足す（gate/flashes.py）
      "tail": {"max_tail_s": 1.0},                       書いたときだけ、master（無ければ video）の音の終わりと絵の終わりを測る（gate/tail.py）
      "face_cut": {"min_visible": 1.0, "roles": ["main"]},  書いたときだけ、faces の visible（mv gate faces が書く）で顔の見切れを数える
+     "overlay": {"layers": "layers.json", "alpha": 26},    書いたときだけ、mv overlay で重ねる透過の字と faces の枠の重なりを数える（gate/overlay_text.py）
      "thresholds": {…}}                                 下の THRESHOLDS を上書き
 
 結果は status: pass / fail / warn / skip。**skip は「材料が無くて見ていない」で、合格ではない**。
@@ -32,6 +33,7 @@ timeline は dance-timeline/0.1 と 0.2 の両方を読む。dance/dance_timelin
 "flash" を書かない設定では、検査は今までの 9 つだけで、結果も合否も出力のファイルも変わらない（明滅の検査は既定で掛けない）。
 "tail" も同じく、書いたときだけ「音の終わり」の行を足す（余韻の長さは好みなので、目安を超えても要確認で、不合格にはしない）。
 "face_cut" も書いたときだけ「顔の見切れ」の行を足す（寄りで額や顎を切るのは演出のこともあるので、切れていても要確認で、不合格にはしない）。
+"overlay" も書いたときだけ「重ねの字と顔」の行を足す（実測の主役の顔に重なれば不合格、推定の枠とほかの枠は要確認）。
 """
 import bisect
 import itertools
@@ -678,6 +680,10 @@ def run(config_path, out=None):
     face_cut = config.get("face_cut")  # 書いたときだけ顔の見切れを数える
     if face_cut is not None:
         face_cut = face_cut_settings(face_cut, 'gate の設定の "face_cut"')
+    overlay = config.get("overlay")    # 書いたときだけ、重ねる透過の字と枠の重なりを数える
+    if overlay is not None:
+        from . import overlay_text
+        overlay = overlay_text.settings(overlay, 'gate の設定の "overlay"')
     video, master = path_of("video"), path_of("master")
     scoped = _scoped(timeline)
     confirmed = load("confirmed")
@@ -707,6 +713,10 @@ def run(config_path, out=None):
         checks.append(row)
     if face_cut is not None:
         checks.append(check_face_cut(timeline, faces, face_cut))
+    overlay_report = None
+    if overlay is not None:
+        row, overlay_report = overlay_text.check(timeline, faces, overlay, base)
+        checks.append(row)
     statuses = {c["status"] for c in checks}
     overall = ("fail" if "fail" in statuses else "pass_with_skips" if "skip" in statuses
                else "pass_with_warnings" if "warn" in statuses else "pass")
@@ -717,8 +727,12 @@ def run(config_path, out=None):
         report["tail"] = {**ending, "report": tail.REPORT_NAME if tail_report is not None else None}
     if face_cut is not None:
         report["face_cut"] = face_cut
+    if overlay is not None:
+        report["overlay"] = {**overlay, "report": overlay_text.REPORT_NAME if overlay_report is not None else None}
     out = Path(out) if out else base / "gate_report"
     out.mkdir(parents=True, exist_ok=True)
+    if overlay_report is not None:
+        atomic_json(out / overlay_text.REPORT_NAME, overlay_report)
     if flash_report is not None:
         flashes.write(flash_report, out)
     if tail_report is not None:
