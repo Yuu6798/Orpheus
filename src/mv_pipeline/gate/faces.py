@@ -168,7 +168,7 @@ def report(timeline, interval, frames, min_visible=1.0, roles=("main",)):
             continue
         cut = False
         for entry in watched:
-            _, visible = visible_part(entry["raw"])
+            visible = round(visible_part(entry["raw"])[1], 4)      # faces.json と同じ丸め（mv gate check と同じコマを数える）
             row["min_visible"] = visible if row["min_visible"] is None else min(row["min_visible"], visible)
             if visible < min_visible - EPS:
                 cut = True

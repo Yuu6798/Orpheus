@@ -60,6 +60,8 @@ def test_projection_counts_frames_where_the_face_leaves_the_frame(tmp_path):
     assert rep["frames_with_cut"] == sum(v < 1 - 1e-6 for v in got) == row["cut_frames"]
     assert row["min_visible"] == 0 and row["sides"] == ["right"] and row["first_cut_t"] == pytest.approx(min(
         i / FPS for i, v in enumerate(got) if v < 1 - 1e-6))
+    gate_row = checks.check_face_cut({"fps": FPS, "duration_s": 1.0}, records, checks.face_cut_settings({}, "x"))
+    assert f"切れたコマ {rep['frames_with_cut']}（" in gate_row["summary"]   # 報告と mv gate check が同じコマを数える
 
 
 def test_faces_match_the_render_for_the_boxes_inside_the_frame(tmp_path):
