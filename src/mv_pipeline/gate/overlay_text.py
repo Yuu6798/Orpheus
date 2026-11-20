@@ -16,6 +16,7 @@ gate.json に `"overlay": {"layers": "layers.json", "alpha": 26, "roles": ["main
   字の読みやすさや置き場の好みは判定しない。
 """
 import math
+from pathlib import Path
 
 import numpy as np
 
@@ -117,7 +118,6 @@ class _Alpha:
                 return None
             alpha = rgba[..., 3].astype(np.float32)
         else:
-            from pathlib import Path
             name = self.names[index] if self.first is None else self.names.get(self.first + index)
             if name is None:
                 return None
