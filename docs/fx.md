@@ -728,7 +728,7 @@ uv run mv overlay --base fx_runs/<run_id>/both.mp4 --layer lyrics_png/ --layer s
 - コマ数・fps・寸法が合わないものはエラー（勝手に合わせない）。土台が画像なら `--fps` が要り、コマ数はレイヤーから決まる（決まらなければ `--frames`）。土台が動画なら fps とコマ数は動画から。
 - run（既定 `<土台のフォルダ>/overlay_runs/<run_id>/`）に `overlay.mp4`・`manifest.json`・`render.log` を残し、`index.json` に key → run_id を登録する。key は土台・各レイヤーの使うコマ・音声の sha256 と設定から作り、同じ入力の成功 run は再利用する（`--force` で作り直す）。manifest の `overlay` の欄（土台・レイヤーごとの使うコマの sha256・音声・レイヤーごとの設定 `options`・書き出しの設定）は `fx_overlay.schema.json`（fx-overlay/0.2。`contracts/` の外）で検証してから書く。
 - 書き出しの後に `probe.check_video`（technical_pass。寸法・fps・コマ数・色タグ・音声の尺）を通す。通らなければ run は failed。
-- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー（連番は読む各コマで確かめる。アルファの無いコマは不透明になって土台を覆うため）。実験的。Remotion の実際の連番ではまだ通していない。
+- 書き出しは fx の render（cv2 を import する）なので fx extra が要る（仕上げと resize も cv2 を使う）。動画の土台・レイヤーはコマを復号順にそのまま読み（`-fps_mode passthrough`）、タグが bt709 なら行列を指定して読む（dance / inspection と同じ）。連番の並びは数字の大小（`frame2` < `frame10`）。アルファの無い連番・動画はエラー（連番は読む各コマで確かめる。アルファの無いコマは不透明になって土台を覆うため）。Remotion の実際の連番ではまだ通していない（JIZURA の連番では通した。下の「実作品の連番で通した記録」）。
 
 **レイヤーごとの設定（`--layers`。fx-overlay-layers/0.1）** — `--layer` の代わりに、設定ファイル（`src/mv_pipeline/fx/fx_overlay_layers.schema.json`）で重ねる。
 
@@ -769,6 +769,17 @@ uv run mv overlay --base title_bg.png --fps 30 --frames 300 --layers cards.json 
 - 長さ（`sigma_px`・`dilate_px`）は出力の短い辺を 1080 としたときの画素（1920x1080 でも 1080x1920 でもそのままの画素。縮めた下見では一緒に縮む）。
 - 仕上げ・不透明度・`premultiplied`・1 枚の画像の無いレイヤーだけなら、0.1 と同じ式（レイヤーごとに 8 bit へ丸める）で、`--layer` と同じ絵になる。
 - 段階 1 の 0.2 の描画に、見本の字の連番を公開版の歌詞と同じ仕上げで重ね、公開版と並べて見た（白に近い桃の本体・紫の光彩・影）。
+- **実作品の連番で通した記録**（2026-11-21。今の main で重ね直した。制作のときの main より後の版）: 2026-11 に完成した MV の歌詞（JIZURA で書き出した、字の色を焼いた straight α の連番。
+  曲全体のコマ番号の名前・`first_frame`・`missing: "transparent"`・仕上げ backdrop と shadow の既定値）と、終わりのカード（仕上げなしの連番）で確かめた。
+  - 縦の Shorts の 1 本目（1080×1920・807 コマ）: 制作と同じ土台と連番（sha256 は run の記録と同じ）で `mv overlay --layers --crf 16` を通し、`overlay.mp4` が制作の出力とバイト単位で同じだった。
+  - 本編（1920×1080・5,544 コマ）: 題字のカード（1 枚の画像。`start_s`/`end_s`・0.8 秒の出入り）と歌詞の連番（3,620 枚）の 2 層を、今の main で重ね直し、
+    `overlay.mp4` が制作の出力とバイト単位で同じだった（制作は、1 枚の画像の層を事前計算する変更（#235）より前の版）。
+  - 時刻（縦の 1 本目）: 出力の各コマに、連番のどのコマ番号が重なっているかを、前後 1 コマの連番を同じ重ね方（`layering.apply_layer`）で土台に重ねた画と比べて確かめた。
+    連番のコマが前とも後とも違う 187 コマ（3 コマおき）のうち 186 コマで、同じ番号のコマを重ねた画が出力にいちばん近かった（2 番目に近い画との二乗誤差の比は中央値 1.6。
+    残る 1 コマは、前のコマとの差が 0.03% の同点）。
+  - 縁と色（縦の 1 本目）: 仕上げの無いカードだけを重ねた 130 コマで、期待値 `下 × (1 − α) + 色 × α` と出力の輝度の差を見た。縁（0.05 < α < 0.95）は平均 −0.42・絶対値の平均 1.30、
+    内側（α ≥ 0.95）は −1.20・1.37、外側（α ≤ 0.05）は +0.16・1.24 で、どれも H.264 の符号化の差と同じ大きさだった（縁だけ暗い・明るいといったずれは無い）。
+  - 歌詞の連番は JIZURA で書き出したもので、Remotion の実際の連番ではまだ通していない。
 
 ### spec の中で重ねる（`overlays`）
 
@@ -911,6 +922,52 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
   - gate の設定に `beats` が無ければ、timeline の拍で照合する。
 - **字幕**は描かない。歌詞は書き出した `timeline.mp4` に `mv overlay` で重ねる（実制作と同じく、仕上げの後に字が来る）。
 - 前処理したショットはメモリに 2 つまで持つ。順に描くので、古いものから捨てる。同じ spec のショットは前処理を共有する。
+
+### 本編の timeline から縦の Shorts を作る
+
+本編（横）の timeline の一部を、縦（1080×1920）の Shorts に作り直す手順。2026-11 に完成した MV から、この手順で縦の Shorts を 2 本作った（ユーザーが採用）。
+能力カタログの `workflow.shorts_from_timeline` は、この手順を道具の順に並べたもの。
+
+1. **区間**: 本編の時刻 T0 から L 秒。歌の行の切れ目（前の行の伸ばしが切れた後から、次の行の歌い出しの前まで）に合わせ、コマにそろえる（T0 = コマ番号 / fps）。
+   長さは公開先の決まりに合わせる（その 2 本は 1 分以内）。
+2. **timeline**: 本編の timeline を写し、`output` を縦にする。区間のショットだけ縦用の spec に差し替え、時刻（ショットの `start`・拍の脈の `sections`・hooks の中の時刻）は本編のままにする。
+   区間の外のショットは残したままでよい（描くのは区間だけ）。
+   - 区間の頭に決め絵を置くなら、その絵の縦用の spec を `start` が T0 のショットとして足す。
+     区間の中のショットを抜けば、その前のショットがそのぶん延びる（その MV では、最後の絵を長く見せるために 2 ショットを抜いた）。
+   - 縦用の spec は、元の spec を写して `camera` を `frame: "source"`・`clamp: true` にし、keys の `zoom`・`center` を縦の窓に合わせて書き直す
+     （[カメラの視野と顔の枠](#カメラの視野と顔の枠fx-shot03)。`source` なら横の絵の左右を追える）。
+   - `frame: "source"` は `layers`（planes・effects）・`lights` と一緒に使えない（止まる）。本編でそれを使ったショットは、縦では外すか、hooks で描く（その MV では塵の層を外した）。
+   - `punch`（入りの押し込み）は zoom を 1 より小さくしない。keys の zoom が 1/(1 − amount) より小さいと、押し込みの頭が 1 で止まって浅くなる（zoom 1 なら押し込みは見えない）。
+     押し込みを全部見せるなら、zoom を 1/(1 − amount) 以上にする。いちばん引いた画（zoom 1）から寄せるなら、ちょうど 1/(1 − amount)
+     （その MV の頭の決め絵は amount 0.048・keys の zoom 1.05 で、zoom 1 から 0.4 秒で寄せた）。
+3. **hooks**: 本編の hooks を写して使う。部品の位置は基準座標なので、縦の窓でもそのまま写る。hooks の `t` は timeline の時刻なので、時刻も本編のままでよい。
+   - hooks がショットを spec のファイル名で見分けていると、縦用の spec の名前（例えば頭に `v_` を付けた名前）で外れ、その演出は止まらずに抜ける（その MV で踏んだ）。
+     縦用の名前でも当たるようにして、要所のコマで演出が出ているかを見る。
+   - 本編の確認版を `--scale` で決めたなら、[下見と本番の大きさで見え方が変わる部品](#演出の-hooks火空と天気明かり)の注意も同じ。
+4. **描く**: `uv run mv fx timeline render TIMELINE --start T0 --duration L --hooks HOOKS.py`。`timeline.mp4` は T0 から始まる（`--start` は本編の秒）。
+   - 要所のコマは `mv sheet timeline.mp4 --at …`（T0 からの秒）で並べて、顔・字の置き場・演出を見る。
+   - 歌詞を重ねるなら、timeline の `output.crf` を低い値の中間（その MV は 10）にして、重ねで仕上げの crf（16）に 1 回だけ書く（強い圧縮を 2 回重ねないように）。
+   - 縦の寄りでは、顔が窓の端に掛かりやすい。その MV では、ユーザーがスマホで 3 カットの顔の見切れを指摘し、カメラを動かして顔全体を入れた。
+     spec の `faces` に顔の枠を書けば、run の `faces.json` に画面の箱が残る（画面の外は切った箱）。枠のうち画面に入っている割合は記録しないので、その MV では元の枠をカメラで写して全コマで数えた。
+5. **歌詞と終わりのカード**: 縦の配置で書き出した透過の連番を、曲全体のコマ番号の名前にして、`mv overlay --base timeline.mp4 --layers LAYERS.json` で重ねる（[overlay](#overlay透過レイヤーの重ね合わせfx-lyric-1)）。
+   層の `first_frame` は区間の頭のコマ番号（T0 × fps）、字の無いコマは `missing: "transparent"`。本編の歌詞の時刻をそのまま使える。
+   - 字と札は、縦画面の上・右・下の操作部品のおおよその範囲を避ける（dance の `ui_regions` の既定と同じ目安。上 0〜0.06、右 x 0.86〜・y 0.45〜0.88、下 0.80〜。画面の割合）。
+     目安なので、スマホで確かめる。
+   - 終わりのカード（本編への誘導）は、最後のカットの被写体に掛からない側に置く。本数がある Shorts で置き場をそろえるなら、全部の最後のカットで確かめる。
+6. **音と書き出し**: `uv run mv deliver join overlay.mp4 --out master.mp4 --audio SONG.wav --audio-start T0`（[deliver](deliver.md)。頭 0.02 秒・終わり 0.25 秒のフェードが既定）。
+   確認用は `mv deliver review-copy`、受け渡しの片は `mv deliver split`（受け渡しで MP4 の頭が書き換わるなら `--text-head`）。
+
+**実作品で通した記録**（2026-11-21。今の main で描き直した。制作のときの main より後の版で、fx の指紋も違う）:
+- 縦の 1 本目（807 コマ。1080×1920・24fps）: 縦の timeline（81 ショット）の区間に映る 15 ショット（静止画と 2 枚組、つなぎは cut・flash・xfade、hooks）を、
+  制作と同じ入力で `mv fx timeline render` → `mv overlay --layers` → `mv deliver join` まで通した。`timeline.mp4`（crf 10）・`timeline.json`・注意の文、
+  `overlay.mp4`、元データ（ユーザーが採用した版）が、どれも制作のものとバイト単位で同じだった。
+- 本編（1920×1080・5,544 コマ・231.0 秒）: timeline（82 ショット＝静止画 57・2 枚組 12 組の 24・動画 1、つなぎは cut 77・black 1・xfade 3・flash 1、hooks）の全体を、
+  制作と同じ入力で今の main の `mv fx timeline render` で描き直した。`timeline.mp4`（crf 10 の中間）・`timeline.json`・注意の文（81 件）が、制作の run とバイト単位で同じだった。
+  続けて `mv overlay --layers`（題字のカードと歌詞の連番）と `mv deliver join` も通し、`overlay.mp4` と元データ（ユーザーが採用した版）も制作のものとバイト単位で同じだった。
+- `mv fx timeline plan` の表は、縦の timeline（81 ショット）と本編の timeline（82 ショット）の両方で、描いた run の `timeline.json` のショットの区切り・つなぎと一致した。
+- 制作の記録（照合の元）: 本編は、切り替わりのコマ（3 か所）が狙ったコマちょうどで、音は元の WAV と 7 か所の相互相関でずれ 0 サンプルだった。
+  2 本の縦の Shorts（807 コマと 838 コマ）は、どの段も technical_pass で、ユーザーがスマホで見た指摘（顔の見切れ 3 カット）を直した版を採用した。
+- 確かめていないこと: 区間の外のショット・動画のショット・拍の脈を含む縦の区間、burn・particles、この手順を別の作品で通すこと。
 
 ### 焼け抜け（burn・fx-timeline/0.2）
 

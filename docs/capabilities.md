@@ -147,6 +147,13 @@ uv run --no-sync python examples/workflow/run.py PROJECT_DIR
 
 各工程の値と見た目の採否は、人が対象作品に合わせて決めます。`technical_pass`や`status: succeeded`から、作品の`accepted`を自動で決めません。
 
+`workflow.shorts_from_timeline`は、本編のfx timelineから縦のShortsを作る順を示します（手順と罠は[fx](fx.md)の「本編の timeline から縦の Shorts を作る」）。
+
+1. `mv fx timeline plan`: 縦用のspecに差し替えたtimelineのショット・つなぎ・秒を確かめる（任意）。
+2. `mv fx timeline render`: 区間だけを本編の秒で縦に描く（`--start`・`--duration`・`--hooks`）。
+3. `mv overlay`: 歌詞と終わりのカードの透過連番を重ねる（任意。`first_frame`は区間の頭のコマ番号）。
+4. `mv deliver join`: 同じ区間の音を付ける（`--audio-start`は区間の頭）。そのあとの確認版と分割は`workflow.delivery`と同じです。
+
 ## 追加・更新
 
 - 目的別workflowは `src/orpheus_catalog/capability_workflows.py` に追加する。
