@@ -2848,17 +2848,29 @@
         "mv.deliver.split"
       ],
       "maturity": "verified",
-      "reason": "実作品 2 本の分割片・結合用 bat・SHA256SUMS が制作で使ったものと一致した。",
-      "scope": "完成マスターを指定サイズの片に分け、Windows 結合スクリプトとチェックサムを作る工程。",
+      "reason": "実作品 2 本の分割片・結合用 bat・SHA256SUMS が制作で使ったものと一致した。先頭をテキストにする形（--text-head）も、別の実作品 2 本で片が制作で渡したものと一致した。",
+      "scope": "完成マスターを指定サイズの片に分け、Windows 結合スクリプトとチェックサムを作る工程。--text-head で先頭の片を certutil の形の base64 のテキストにする形を含む。",
       "evidence": [
         {
           "path": "docs/deliver.md",
           "section": "実制作との比較",
           "summary": "再作成した実作品 2 本を同じ名前・題名で分割し、片、join_master.bat、SHA256SUMS のすべてが制作物とバイト単位で一致。"
+        },
+        {
+          "path": "docs/deliver.md",
+          "section": "実制作との比較",
+          "summary": "2026-11、別の縦の Shorts 2 本（59,939,043 / 58,986,099 バイト）を制作と同じ --text-head 1048576・--part-bytes 25000000 で分割し、テキストの片 1 本とバイトの片 3 本が、制作で PC へ渡して読み戻しで照合した片と名前を除きバイト単位で一致。"
+        },
+        {
+          "path": "tests/test_deliver.py",
+          "section": "test_split_text_head_survives_a_transfer_that_rewrites_mp4_heads",
+          "summary": "合成の元データで、MP4 の頭で始まるファイルに箱を足す書き換えを片に当て、--text-head なしでは結合が合わず、ありでは合うことを確認。"
         }
       ],
       "limitations": [
         "制作と同じファイル名・題名・分割設定での比較。",
+        "--text-head の bat は Windows で実行していない（certutil -decode で先頭の片を戻してつなぐ手順は、同じ制作の別の受け渡しで実行済み）。",
+        "先頭の書き換えへの手当ては、2026-10〜11 に観測した経路（MP4 の頭で始まるファイルに箱を足す）に対するもの。ほかの書き換え方は確かめていない。",
         "任意の配信サービスへの送信や公開は対象外。"
       ],
       "promotion_criteria": [

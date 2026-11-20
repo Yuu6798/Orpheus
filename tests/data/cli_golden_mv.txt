@@ -1380,7 +1380,7 @@ options:
 {"options": ["--threads"], "dest": "threads", "action": "_StoreAction", "nargs": null, "const": null, "default": 1, "type": "int", "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv deliver split
-usage: mv deliver split [-h] --out OUT [--part-bytes PART_BYTES] [--name NAME] [--title TITLE] [--force] master
+usage: mv deliver split [-h] --out OUT [--part-bytes PART_BYTES] [--text-head BYTES] [--name NAME] [--title TITLE] [--force] master
 
 positional arguments:
   master
@@ -1390,6 +1390,7 @@ options:
   --out OUT             folder for the parts (a <folder>.split.json record is written beside it)
   --part-bytes PART_BYTES
                         bytes per part (default 25,000,000)
+  --text-head BYTES     write the first BYTES as certutil base64 text (<name>.part00.b64) that the join script decodes, for transfers that rewrite the head of an MP4 (default 0: off; e.g. 1048576)
   --name NAME           file name of the joined master (ASCII letters, digits, . _ -; default: the master's name)
   --title TITLE         title shown in the join script (default: the name)
   --force               overwrite parts and files of the same names
@@ -1398,6 +1399,7 @@ options:
 {"options": [], "dest": "master", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--part-bytes"], "dest": "part_bytes", "action": "_StoreAction", "nargs": null, "const": null, "default": 25000000, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--text-head"], "dest": "text_head", "action": "_StoreAction", "nargs": null, "const": null, "default": 0, "type": "int", "choices": null, "required": false, "metavar": "BYTES"}
 {"options": ["--name"], "dest": "name", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--title"], "dest": "title", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
