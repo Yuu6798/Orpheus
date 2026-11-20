@@ -948,7 +948,8 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
    - 要所のコマは `mv sheet timeline.mp4 --at …`（T0 からの秒）で並べて、顔・字の置き場・演出を見る。
    - 歌詞を重ねるなら、timeline の `output.crf` を低い値の中間（その MV は 10）にして、重ねで仕上げの crf（16）に 1 回だけ書く（強い圧縮を 2 回重ねないように）。
    - 縦の寄りでは、顔が窓の端に掛かりやすい。その MV では、ユーザーがスマホで 3 カットの顔の見切れを指摘し、カメラを動かして顔全体を入れた。
-     spec の `faces` に顔の枠を書けば、run の `faces.json` に画面の箱が残る（画面の外は切った箱）。枠のうち画面に入っている割合は記録しないので、その MV では元の枠をカメラで写して全コマで数えた。
+     spec の `faces` に顔の枠を書いて `mv gate faces TIMELINE --start T0 --duration L --out DIR` を通すと、描かずに全コマで、枠が画面から切れたコマを数える
+     （[gate の「顔の見切れを数える」](gate.md#顔の見切れを数えるmv-gate-faces-と検査の-face_cut)。その MV の指摘前の版では、指摘された 3 カットだけが切れていた）。
 5. **歌詞と終わりのカード**: 縦の配置で書き出した透過の連番を、曲全体のコマ番号の名前にして、`mv overlay --base timeline.mp4 --layers LAYERS.json` で重ねる（[overlay](#overlay透過レイヤーの重ね合わせfx-lyric-1)）。
    層の `first_frame` は区間の頭のコマ番号（T0 × fps）、字の無いコマは `missing: "transparent"`。本編の歌詞の時刻をそのまま使える。
    - 字と札は、縦画面の上・右・下の操作部品のおおよその範囲を避ける（dance の `ui_regions` の既定と同じ目安。上 0〜0.06、右 x 0.86〜・y 0.45〜0.88、下 0.80〜。画面の割合）。

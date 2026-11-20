@@ -727,13 +727,14 @@ options:
 {"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
 {"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv gate
-usage: mv gate [-h] {check,lines,demo,timeline,flashes,tail,voice,notes,repeat} ...
+usage: mv gate [-h] {check,lines,demo,faces,timeline,flashes,tail,voice,notes,repeat} ...
 
 positional arguments:
-  {check,lines,demo,timeline,flashes,tail,voice,notes,repeat}
+  {check,lines,demo,faces,timeline,flashes,tail,voice,notes,repeat}
     check               run the checks; exit code 1 when any check fails
     lines               write the line/second table and lines_measured.json
     demo                write synthetic test material with known answers (vocals stand-in, lyrics, timeline, beats, expected.json)
+    faces               project the face boxes of an fx timeline onto every frame without rendering, and count frames where a face box is cut by the frame edge (numbers only; faces.json for gate check)
     timeline            measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check
     flashes             count whole-frame brightness flashes in a finished video (no timeline); exit code 1 above --max-per-s. Not a compliance judgment
     tail                when the sound of a finished video ends and how long the picture goes on after it (no timeline); warns above --max-tail-s or when the sound is still on at the end. Numbers only
@@ -745,7 +746,7 @@ options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "gate_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "lines", "demo", "timeline", "flashes", "tail", "voice", "notes", "repeat"], "required": true, "metavar": null}
+{"options": [], "dest": "gate_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "lines", "demo", "faces", "timeline", "flashes", "tail", "voice", "notes", "repeat"], "required": true, "metavar": null}
 ==== mv gate check
 usage: mv gate check [-h] [--out OUT] config
 
@@ -811,6 +812,28 @@ options:
 {"options": ["--flash-align"], "dest": "flash_align", "action": "_StoreAction", "nargs": null, "const": null, "default": "beat", "type": null, "choices": ["beat", "downbeat"], "required": false, "metavar": null}
 {"options": ["--attack-ms"], "dest": "attack_ms", "action": "_StoreAction", "nargs": null, "const": null, "default": 30.0, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -40.0, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv gate faces
+usage: mv gate faces [-h] --out OUT [--start START] [--duration DURATION] [--extra EXTRA] [--min-visible MIN_VISIBLE] timeline
+
+positional arguments:
+  timeline              fx timeline (fx-timeline/0.2)
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             folder for faces.json (gate check faces + visible) and faces_report.json
+  --start START         start of the range in timeline seconds (default 0)
+  --duration DURATION   length of the range in seconds (default: to the end)
+  --extra EXTRA         gate-boxes/0.1 JSON with more boxes per shot in source coordinates (hands, props)
+  --min-visible MIN_VISIBLE
+                        count a frame when a main box has less than this share of its area inside the frame (default 1.0: any cut)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "timeline", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--start"], "dest": "start", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--extra"], "dest": "extra", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--min-visible"], "dest": "min_visible", "action": "_StoreAction", "nargs": null, "const": null, "default": 1.0, "type": "float", "choices": null, "required": false, "metavar": null}
 ==== mv gate timeline
 usage: mv gate timeline [-h] --frames FRAMES --lyrics LYRICS --layer LAYER [--hints HINTS] [--alpha-threshold ALPHA_THRESHOLD] [--flashes FLASHES] --out OUT
 
