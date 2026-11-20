@@ -7,12 +7,14 @@
 - どの関数も時刻 t と引数だけで決まる（状態を持たない。区間を分けて描いても、静止画でも同じ画）。乱数は seed から作る。
 - 位置・大きさは画面の画素で渡す。素材の座標からの写し方は、hooks の view（fx/view.py。実制作の Geo に当たる）が持つ。
 - むら（tex）は粒の大きさごとに作り置く（1 枚 1 MB。160 枚を超えたら作り直す）。
+- 基準の高さ（`ref_h`。embers は引数、blade_fire は P の鍵）: 書けば、画の高さと違うとき、その高さで計算して画の大きさへ直す
+  （下見の `--scale` と本番で見え方を揃える。docs/fx.md の hooks の節）。書かなければ、今までと同じ式・同じ画。
 
     flame_field(src, t, hpx, seed)   炎の出どころ src（0..1 の配列）から立ち上がる炎の場 F（0..1）
     add_fire(f, x0, y0, F)           F を炎の色で f[y0:, x0:] に重ねる（光 glow も）
     candle(f, X, Y, t, size, seed)   (X, Y) を根元にした小さな炎（芯の火）
-    embers(f, at, t, seed, n, cycle) 火の粉（at(u) が生まれる場所）
-    blade_fire(f, blade, t, P)       刃に沿って燃える火（Blade は画面の点列と幅）
+    embers(f, at, t, seed, n, cycle) 火の粉（at(u) が生まれる場所。ref_h で基準の高さ）
+    blade_fire(f, blade, t, P)       刃に沿って燃える火（Blade は画面の点列と幅。P の ref_h で基準の高さ）
     blade_candle(f, blade, t, P)     刃の上の小さな炎
 """
 import math
@@ -28,6 +30,54 @@ TEX_LIMIT = 160            # 作り置くむらの枚数の上限（超えたら
 
 
 # ---- 小道具 -------------------------------------------------------------------------------
+
+def ref_size(f, ref_h):
+    """基準の高さ ref_h で計算するときの (倍率 s, 高さ, 幅)。ref_h が無いか、画の高さと同じなら None（今までと同じ計算）。"""
+    if ref_h is None:
+        return None
+    ref_h = float(ref_h)
+    if not math.isfinite(ref_h) or ref_h < 2:
+        raise ValueError(f"ref_h は 2 以上の数にしてください: {ref_h!r}")
+    H, W = f.shape[:2]
+    if round(ref_h) == H:
+        return None
+    s = ref_h / H
+    return s, int(round(H * s)), int(round(W * s))
+
+
+def resize_to(a, width, height):
+    """基準の大きさで作った配列を (width, height) へ。拡大は線形、縮小は面積の平均。"""
+    interp = cv2.INTER_LINEAR if a.shape[0] < height else cv2.INTER_AREA
+    return cv2.resize(a, (width, height), interpolation=interp)
+
+
+class RefGeo:
+    """geo（画面の画素へ写す。pt・pts・k）を、s 倍の画面へ写すものにする。画素の中心が整数なので (X + 0.5)·s − 0.5。"""
+
+    def __init__(self, geo, s):
+        self.geo, self.s, self.k = geo, s, geo.k * s
+
+    def pt(self, x, y):
+        X, Y = self.geo.pt(x, y)
+        return ((X + 0.5) * self.s - 0.5, (Y + 0.5) * self.s - 0.5)
+
+    def pts(self, points):
+        return np.array([self.pt(x, y) for x, y in points], np.float32)
+
+
+def at_reference(f, ref, draw):
+    """f を基準の大きさへ縮め（拡大し）、draw(g) で描いた画との差だけを f の大きさへ戻して足す。f を書き換えて返す。
+    刃の火・鋼の質感のように、光と素材の画の両方から決まる部品に使う（f の細部はそのまま残り、部品が足した分だけが基準の
+    大きさの見え方になる）。"""
+    H, W = f.shape[:2]
+    _, h, w = ref
+    interp = cv2.INTER_AREA if h < H else cv2.INTER_LINEAR
+    g = cv2.resize(f, (w, h), interpolation=interp)
+    d = draw(g.copy()) - g
+    if not d.any():
+        return f
+    f[:] = f + resize_to(d, W, H)
+    return f
 
 def lerp_keys(keys, t):
     """keys = [[t, v], ...]（v は数か数の並び）を t で直線補間する。範囲の外は端の値。"""
@@ -216,9 +266,25 @@ def candle(f, X, Y, t, size, seed, amt=1.0, white=0.0, sway=0.0, lean=0.0, glow_
 # ---- 火の粉 ------------------------------------------------------------------------------
 
 def embers(f, at, t, seed, n, cycle, life=(0.6, 1.4), vy=(60, 160), vx=(-25, 25), size=(1.0, 2.2), k=1.0, amt=1.0,
-           col=(255, 200, 120), glow_col=(255, 100, 20), wind=0.0, acc=30.0):
-    """at(u) → 生まれる場所 (X, Y)（u は 0..1）。速さ・大きさは画素（k 倍）。粒は周期 cycle 秒で生まれ直す。t だけで決まる。"""
+           col=(255, 200, 120), glow_col=(255, 100, 20), wind=0.0, acc=30.0, ref_h=None):
+    """at(u) → 生まれる場所 (X, Y)（u は 0..1）。速さ・大きさは画素（k 倍）。粒は周期 cycle 秒で生まれ直す。t だけで決まる。
+    ref_h を渡すと、その高さの黒い画に描いた光を画の大きさへ直して、スクリーン合成する（粒の大きさに掛ける k の下限 0.6 と光彩の
+    下限 1 画素が、どの出力の大きさでも基準の高さの割合になる）。"""
     if amt <= 0.01 or n <= 0:
+        return f
+    ref = ref_size(f, ref_h)
+    if ref is not None:
+        r, h, w = ref
+
+        def at_ref(u):
+            X, Y = at(u)
+            return (X + 0.5) * r - 0.5, (Y + 0.5) * r - 0.5
+
+        layer = embers(np.zeros((h, w, 3), np.float32), at_ref, t, seed, n, cycle, life, vy, vx, size, k * r, amt, col, glow_col,
+                       wind, acc)
+        if layer.any():
+            H, W = f.shape[:2]
+            f[:] = screen(f, resize_to(layer, W, H))
         return f
     H, W = f.shape[:2]
     rng = np.random.default_rng(seed)
@@ -278,6 +344,12 @@ class Blade:
     px: float | None = None
 
 
+def scaled_blade(blade, r):
+    """刃を r 倍の画面へ写す（点は画素の中心が整数の写し方、幅・k・px は r 倍）。"""
+    return Blade(points=((blade.points + 0.5) * r - 0.5).astype(np.float32), s=blade.s, widths=blade.widths * r, k=blade.k * r,
+                 px=None if blade.px is None else blade.px * r)
+
+
 def resample(points, s, widths, step):
     """刃の点列を、どの区間も画面で step 画素以下になるよう細かく分ける（s と幅は直線で補う）。(points, s, widths) を返す。
     どの区間も同じ数に分けるので、点の番号で位置を決めるもの（火の粉の生まれる場所・刃の上の炎の位置）は変わらない。"""
@@ -309,6 +381,10 @@ def blade_fire(f, blade, t, P):
     amt = float(P.get("amt", 1.0))
     if amt <= 0.01:
         return f
+    ref = ref_size(f, P.get("ref_h"))
+    if ref is not None:            # 基準の高さで描いて、足した分だけを戻す（光と、熱で白むのは刃の画にも依るので）
+        rest = {key: value for key, value in P.items() if key != "ref_h"}
+        return at_reference(f, ref, lambda g: blade_fire(g, scaled_blade(blade, ref[0]), t, rest))
     H, W = f.shape[:2]
     S, s, w = blade.points, blade.s, blade.widths
     if P.get("resample"):

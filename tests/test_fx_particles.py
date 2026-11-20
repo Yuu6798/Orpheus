@@ -495,7 +495,7 @@ def test_default_colors_and_lengths_are_the_values_of_the_existing_parts():
     assert particles.SIZE == pytest.approx(sum(embers["size"].default) / 2)
     assert particles.RISE == pytest.approx(sum(embers["vy"].default) / 2) and particles.FADE_S == pytest.approx(sum(embers["life"].default) / 2)
     assert f"g = max(1.0, {particles.GLOW:g} * k)" in inspect.getsource(fire.embers)
-    assert str(list(particles.CORE)) in inspect.getsource(sky.lamps) and str(list(particles.FLAME)) in inspect.getsource(fire.candle)
+    assert str(list(particles.CORE)) in inspect.getsource(sky._lamps) and str(list(particles.FLAME)) in inspect.getsource(fire.candle)
     assert f"rng.uniform({particles.BRIGHT[0]}, {particles.BRIGHT[1]}, n)" in inspect.getsource(sky.rain)
 
 
