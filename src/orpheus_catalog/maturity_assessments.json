@@ -3199,7 +3199,7 @@
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 0 / その他 3。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 2 / その他 1。"
         }
       ],
       "limitations": [
@@ -3211,36 +3211,59 @@
     },
     {
       "ids": [
-        "mv.fx.timeline.render",
         "mv.fx.timeline.plan"
       ],
-      "maturity": "experimental",
-      "reason": "実素材で確認した演出部品はあるが、現 timeline を使う完成作品全体の実描画・接続記録はない。",
-      "scope": "ショット・動画・つなぎ・hooks を時間軸で統合する経路。",
+      "maturity": "verified",
+      "reason": "実作品の 2 つの timeline で、表のショットの区切りとつなぎが、制作の描画の記録と一致した。",
+      "scope": "timeline のショット・つなぎ・秒の表を出す工程（描かない）。",
       "evidence": [
+        {
+          "path": "docs/fx.md",
+          "section": "本編の timeline から縦の Shorts を作る",
+          "summary": "2026-11-21、今の main の plan の表が、実作品の本編（82 ショット）と縦（81 ショット）の timeline で、描いた run の timeline.json のショットの区切り（0.5 ms 以内）とつなぎの種類に一致。"
+        }
+      ],
+      "limitations": [
+        "表の「いちばん近い拍」の欄は照合していない。",
+        "plan の構造の確認は render の画の確認ではない。"
+      ],
+      "promotion_criteria": [
+        "記載した保証範囲・入出力形式・版の互換性方針を正式に固定する。contracts/ への移動・変更が必要なら独立した明示的変更として扱う。",
+        "実制作の再現記録と対応する回帰検証を、その正式な保証範囲に対応付ける。"
+      ]
+    },
+    {
+      "ids": [
+        "mv.fx.timeline.render"
+      ],
+      "maturity": "verified",
+      "reason": "実作品の本編と縦の Shorts の timeline を、今の main で制作と同じ入力から描き直し、制作の run とバイト単位で一致した。制作の記録で切り替わりのコマと音のずれも確かめてある。",
+      "scope": "fx-timeline/0.2 で、spec のショット（静止画・2 枚組・layers の effects の粒）と動画のショット、つなぎ（cut・black・xfade・flash）、timeline の look、hooks を、横 1920×1080 と縦 1080×1920（frame source・clamp・punch）で、全体と区間（--start/--duration）に描く経路。",
+      "evidence": [
+        {
+          "path": "docs/fx.md",
+          "section": "本編の timeline から縦の Shorts を作る",
+          "summary": "2026-11-21、実作品の縦の Shorts の区間（807 コマ・15 ショット・cut/flash/xfade・hooks）を今の main で描き直し、timeline.mp4・timeline.json・注意の文が制作の run とバイト単位で一致。本編（1920×1080・5,544 コマ・82 ショット＝静止画・2 枚組・動画 1、塵の effects 10 ショット、black/xfade/flash・look・hooks）も全体を描き直し、timeline.mp4・timeline.json・注意の文 81 件が制作の run とバイト単位で一致。"
+        },
+        {
+          "path": "docs/fx.md",
+          "section": "本編の timeline から縦の Shorts を作る",
+          "summary": "制作の記録: 本編の切り替わり 3 か所が狙ったコマちょうど、音は元の WAV と 7 か所の相互相関でずれ 0 サンプル。下見（--scale 0.5）との見た目の差は hooks の部品の大きさによる（docs/fx.md の hooks の節）。"
+        },
         {
           "path": "docs/fx.md",
           "section": "演出の hooks（火・空と天気・明かり）",
           "summary": "火の演出は実素材 84/83 コマ、空・雨・明かりは実素材 9 ショット 762 コマで制作関数と一致。"
-        },
-        {
-          "path": "docs/fx.md",
-          "section": "演出の hooks（火・空と天気・明かり）",
-          "summary": "46 ショット・5760 コマのショット割当は一致したが、描画部品はスタブ、画と拍は合成。実素材の 2 動画ショットはコマ選択・混合だけの比較。"
-        },
-        {
-          "path": "docs/fx.md",
-          "section": "焼け抜け（burn・fx-timeline/0.2）",
-          "summary": "現在の burn は合成素材での確認のみ。元の実試作と式の一部は違う。"
         }
       ],
       "limitations": [
-        "制作設定と合成画によるテストを実作品全体の再現と呼ばない。",
-        "particles.converge と burn の現実装は実素材未確認。",
-        "plan の構造確認は render の全体の品質確認ではない。"
+        "バイト一致は同じ素材・設定・ライブラリ版（numpy 2.3.5・OpenCV 5.0.0・ffmpeg 6.1.1）での比較。",
+        "burn・pulse・loop の動画・layers の planes・lights・深度のあるショットは、実作品の timeline で通していない（burn と hooks の particles.gather の現実装は実素材未確認）。",
+        "見た目の採否は人の判断で、technical_pass やバイト一致とは別。"
       ],
       "promotion_criteria": [
-        "現在の fx timeline CLI で、実素材・実音源と対象 hooks/つなぎを含む代表区間を計画から出力まで通し、コマ数・接続・音・見た目の既知差を記録する。"
+        "記載した保証範囲・入出力形式・版の互換性方針を正式に固定する。contracts/ への移動・変更が必要なら独立した明示的変更として扱う。",
+        "実制作の再現記録と対応する回帰検証を、その正式な保証範囲に対応付ける。"
       ]
     },
     {
@@ -3527,27 +3550,33 @@
       "ids": [
         "mv.overlay"
       ],
-      "maturity": "experimental",
-      "reason": "実ショットに見本の字を重ねた局所比較はあるが、実際の Remotion 連番を用いた作品工程は未確認。",
-      "scope": "透過 PNG 連番・アルファ動画・カードを基準画像または動画へ重ねる処理。",
+      "maturity": "verified",
+      "reason": "実作品の本編と縦の Shorts の重ね（歌詞の透過連番・題字の 1 枚の画像・終わりのカード）を今の main で重ね直し、制作の出力とバイト単位で一致した。時刻と縁も独立に測った。",
+      "scope": "--layers で、straight α の透過 PNG 連番（曲全体のコマ番号・first_frame・missing transparent・仕上げ backdrop と shadow）と 1 枚の透過画像（start_s/end_s・出入り） を、動画の土台に重ねて crf 16 で書く工程。",
       "evidence": [
         {
           "path": "docs/fx.md",
           "section": "overlay（透過レイヤーの重ね合わせ・FX-LYRIC-1）",
-          "summary": "段階 1 の 0.2 描画に見本の字を制作と同じ仕上げで重ねた。Remotion の実連番では未実施。"
+          "summary": "2026-11-21、実作品の縦の Shorts（807 コマ）で、今の main の overlay.mp4 が制作の出力とバイト単位で一致（土台・連番の sha256 は run の記録と同じ）。本編（1920×1080・5,544 コマ。題字カードの 1 枚の画像と歌詞の連番 3,620 枚）も重ね直し、overlay.mp4 と、join した元データ（採用版）が制作のものとバイト単位で一致（制作は #235 より前の版）。"
+        },
+        {
+          "path": "docs/fx.md",
+          "section": "overlay（透過レイヤーの重ね合わせ・FX-LYRIC-1）",
+          "summary": "時刻（縦の 1 本目）: 連番のコマが前とも後とも違う 187 コマ（3 コマおき）のうち 186 コマで、同じコマ番号を重ねた画が出力にいちばん近い（残る 1 コマは差 0.03% の同点）。縁と色: 仕上げの無いカードだけを重ねた 130 コマで、期待値 下×(1−α)+色×α との輝度の差は縁・内側・外側とも絶対値の平均 1.24〜1.37（符号化の差と同じ大きさ）。"
         },
         {
           "path": "tests/test_fx_overlay_style.py",
           "section": "test_prepared_layer_crops_to_roi_and_matches_production_bit_for_bit",
-          "summary": "PR #235 の ROI 最適化に対応するテストは同じ配列に対する処理の一致確認。これだけで実作品工程の確認は増えない。"
+          "summary": "PR #235 の ROI 最適化に対応するテストは同じ配列に対する処理の一致確認。"
         }
       ],
       "limitations": [
-        "完成した実歌詞連番を用いた end-to-end の採用比較ではない。",
-        "入力の premultiplied/straight alpha と resize_space の設定に依存する。"
+        "Remotion の連番・アルファつき動画のレイヤー・premultiplied・resize・tint と glow は、実作品で通していない。",
+        "バイト一致は同じ素材・設定・ライブラリ版での比較。字の置き場や顔との重なりの採否は人の判断で、ここでは数えていない。"
       ],
       "promotion_criteria": [
-        "実際の歌詞または題字連番を現 overlay 経路に通し、透明縁・色・時刻・技術検査・入力ハッシュを確認する。"
+        "記載した保証範囲・入出力形式・版の互換性方針を正式に固定する。contracts/ への移動・変更が必要なら独立した明示的変更として扱う。",
+        "実制作の再現記録と対応する回帰検証を、その正式な保証範囲に対応付ける。"
       ]
     },
     {
@@ -3764,6 +3793,30 @@
       ],
       "promotion_criteria": [
         "既存契約と回帰検証を維持する。実制作の確認範囲を広げたときは、その根拠を追加する。"
+      ]
+    },
+    {
+      "ids": [
+        "workflow.shorts_from_timeline"
+      ],
+      "maturity": "verified",
+      "reason": "実作品の縦の Shorts 1 本を、今の main で必須の段から元データまで通し、ユーザーが採用した元データとバイト単位で一致した。",
+      "scope": "本編の fx timeline の写しの区間を縦用の spec に差し替えて描き（render）、歌詞と終わりのカードの透過連番を重ね（overlay）、同じ区間の音を付ける（join）までのつながり。",
+      "evidence": [
+        {
+          "path": "docs/fx.md",
+          "section": "本編の timeline から縦の Shorts を作る",
+          "summary": "2026-11-21、実作品の縦の Shorts（807 コマ）を、制作と同じ入力で render → overlay → join まで今の main で通し、timeline.mp4・overlay.mp4・元データ（採用版）が制作のものとバイト単位で一致。もう 1 本（838 コマ）は制作で同じ順に書き出し、各段 technical_pass。"
+        }
+      ],
+      "limitations": [
+        "1 つの作品の 2 本での実績。動画のショット・拍の脈を含む縦の区間は通していない。",
+        "顔の見切れ・字と札の置き場は人が見て決めた（道具で数える段は無い）。",
+        "plan・sheet・review-copy・split の段は、この照合に入れていない（review-copy と split はそれぞれの操作で照合済み）。"
+      ],
+      "promotion_criteria": [
+        "記載した保証範囲・入出力形式・版の互換性方針を正式に固定する。contracts/ への移動・変更が必要なら独立した明示的変更として扱う。",
+        "実制作の再現記録と対応する回帰検証を、その正式な保証範囲に対応付ける。"
       ]
     }
   ]
