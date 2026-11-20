@@ -25,6 +25,8 @@ def enforce_quat_continuity(quats):
     arr = np.array(quats, dtype=np.float64, copy=True)
     if arr.ndim not in (2, 3) or arr.shape[-1] != 4:
         raise ValueError(f"quats の形は (N, 4) または (N, B, 4) にしてください: {arr.shape}")
+    if not np.isfinite(arr).all():
+        raise ValueError("quats に非有限の値（NaN / Inf）が含まれています")
     if arr.shape[0] <= 1:
         return arr
     if arr.ndim == 2:
@@ -80,6 +82,8 @@ def write_linear_fcurve(container, data_path, index, frames, values):
         raise ValueError(f"frames ({len(f_arr)}) と values ({len(v_arr)}) の長さが一致しません")
     if len(f_arr) == 0:
         raise ValueError("空のカーブは書けません")
+    if not np.isfinite(f_arr).all() or not np.isfinite(v_arr).all():
+        raise ValueError("frames または values に非有限の値（NaN / Inf）が含まれています")
 
     fc = container.fcurves.new(data_path=data_path, index=int(index))
     fc.keyframe_points.add(len(f_arr))
@@ -102,11 +106,20 @@ def _rgba(color):
     raise ValueError(f"色は 3 要素または 4 要素にしてください: {color!r}")
 
 
+def _ensure_node_tree(owner):
+    """Blender 5.2+ で非推奨の `use_nodes` 参照を避けつつ確実に `node_tree` を取得する。"""
+    nt = getattr(owner, "node_tree", None)
+    if nt is None and hasattr(owner, "use_nodes"):
+        owner.use_nodes = True
+        nt = getattr(owner, "node_tree", None)
+    if nt is None:
+        raise RuntimeError(f"{owner!r} の node_tree を取得できません")
+    return nt
+
+
 def clear_and_build_world_bg(world, color=(0.0, 0.0, 0.0, 1.0), strength=1.0):
     """UI ロケールに依存せず World の背景ノードを構築する（`nodes["Background"]` を使わない）。"""
-    if hasattr(world, "use_nodes") and not world.use_nodes:
-        world.use_nodes = True
-    nt = world.node_tree
+    nt = _ensure_node_tree(world)
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputWorld")
     bg = nt.nodes.new("ShaderNodeBackground")
@@ -125,9 +138,7 @@ def clear_and_build_principled(
     coat_roughness=None,
 ):
     """UI ロケールに依存せず Principled BSDF マテリアルを構築する（`nodes["Principled BSDF"]` を使わない）。"""
-    if hasattr(material, "use_nodes") and not material.use_nodes:
-        material.use_nodes = True
-    nt = material.node_tree
+    nt = _ensure_node_tree(material)
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")

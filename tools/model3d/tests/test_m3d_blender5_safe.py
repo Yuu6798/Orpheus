@@ -262,9 +262,17 @@ def test_enforce_quat_continuity_2d_and_3d():
         assert np.all(dots >= 0.0)
 
 
-def test_enforce_quat_continuity_rejects_bad_shape():
+def test_enforce_quat_continuity_rejects_bad_shape_and_non_finite():
     with pytest.raises(ValueError):
         b5.enforce_quat_continuity(np.zeros((4, 3)))
+    with pytest.raises(ValueError):
+        b5.enforce_quat_continuity(np.array([[1.0, 0.0, 0.0, np.nan]]))
+
+
+def test_write_linear_fcurve_rejects_non_finite():
+    cb = _FakeChannelBag()
+    with pytest.raises(ValueError):
+        b5.write_linear_fcurve(cb, 'pose.bones["hips"].location', 0, [1.0, 2.0], [0.0, float("inf")])
 
 
 def test_init_layered_action_blender52_and_4x():
@@ -288,23 +296,33 @@ def test_init_layered_action_blender52_and_4x():
 
 
 def test_locale_independent_world_and_principled_builders():
-    # 日本語 UI 相当のノード名しか存在しないツリーでも失敗しない
-    class _World:
-        use_nodes = False
-        node_tree = _FakeNodeTree({"背景": _FakeNode("ShaderNodeBackground")})
+    # Blender 4.x 相当: use_nodes=False の間は node_tree=None、日本語ノード名ツリーでも失敗しない
+    class _World4:
+        def __init__(self):
+            self.use_nodes = False
+            self._nt = _FakeNodeTree({"背景": _FakeNode("ShaderNodeBackground")})
 
-    w = _World()
+        @property
+        def node_tree(self):
+            return self._nt if self.use_nodes else None
+
+    w = _World4()
     bg, out = b5.clear_and_build_world_bg(w, (0.01, 0.02, 0.03), strength=1.5)
     assert w.use_nodes is True
     assert bg.inputs[0].default_value == (0.01, 0.02, 0.03, 1.0)
     assert bg.inputs[1].default_value == 1.5
     assert (bg.outputs[0], out.inputs[0]) in w.node_tree.links.edges
 
-    class _Mat:
-        use_nodes = False
-        node_tree = _FakeNodeTree({"プリンシプルBSDF": _FakeNode("ShaderNodeBsdfPrincipled")})
+    # Blender 5.2+ 相当: 既に node_tree があれば非推奨の use_nodes へ触れない
+    class _Mat52:
+        def __init__(self):
+            self.node_tree = _FakeNodeTree({"プリンシプルBSDF": _FakeNode("ShaderNodeBsdfPrincipled")})
 
-    m = _Mat()
+        @property
+        def use_nodes(self):
+            raise AssertionError("node_tree が既に存在する場合は非推奨 use_nodes を参照しないこと")
+
+    m = _Mat52()
     bsdf, mout = b5.clear_and_build_principled(m, (0.02, 0.02, 0.03), metallic=0.3, roughness=0.05, coat_weight=0.8)
     assert bsdf.inputs["Base Color"].default_value == (0.02, 0.02, 0.03, 1.0)
     assert bsdf.inputs["Metallic"].default_value == 0.3
