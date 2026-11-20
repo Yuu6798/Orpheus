@@ -4764,6 +4764,9 @@ Blender 5.2.4 LTS（日本語 UI ロケール環境を含む）の台本で実�
 - `enforce_quat_continuity(quats)`: `(N, 4)` / `(N, B, 4)` の隣接フレーム四元数内積を非負に揃え、補間・モーションブラーの 360 度フリップを防ぐ。
 - `set_blended_alpha(material)`: EEVEE Next では `surface_render_method = "BLENDED"`、旧版では `blend_method = "BLEND"` を設定する。
 
+**カメラ視線コリドー遮蔽ガード（`model3d.spatial`）**:
+- `camera_corridor_mask` / `camera_corridor_attenuation`: カメラ〜注視点の線分を中心とする円柱コリドー内へ侵入する浮遊破片・床タイルを numpy だけで判定し、`smoothstep` 減衰係数 `[0.0 .. 1.0]` で視界遮蔽を防ぐ（3D 空間および XY 平面投影の両対応）。
+
 **確かめたこと**:
 - CI では fake `bpy` による Blender 5.2 / 4.x 両系統、日本語ノード名ツリー、`SCALE` ソケット明示結線、四元数連続性の単体テスト、および `test_m3d_import_paths.py` / `test_m3d_blender_scripts.py` を確認。
 - 実環境の Blender 5.2.4 LTS（`--factory-startup`）で Armature への Action 生成・F-Curve 評価・World/Principled 構築・`BLENDED` 設定・`make_vector_lerp` 結線のスモーク実行を確認。

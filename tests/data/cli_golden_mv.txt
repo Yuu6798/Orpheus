@@ -1427,21 +1427,22 @@ options:
 {"options": ["--title"], "dest": "title", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv audio
-usage: mv audio [-h] {grid,hits,keys,end,lows} ...
+usage: mv audio [-h] {grid,hits,keys,end,lows,features} ...
 
 positional arguments:
-  {grid,hits,keys,end,lows}
+  {grid,hits,keys,end,lows,features}
     grid                fit a constant-tempo beat grid to the onsets: beats, downbeats and drift (estimated)
     hits                strong hits (sparse) and band-difference onsets (dense, with strength), estimated
     keys                light intensity keys from the hits: writes a copy of an fx-shot spec with one light's intensity keyed to the hits
     end                 when the sound ends: the last 0.1 s window whose loudness is within --floor-db of the loudest window (measured), and the digital silence after it
     lows                where the bass drops out: beats (with --grid) or windows whose low band is --drop-db below the median while the sound goes on (measured)
+    features            per-frame 3-band FFT envelopes (bass/mid/high), RMS, onset, and optional beat pulse (measured)
 
 options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "audio_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["grid", "hits", "keys", "end", "lows"], "required": true, "metavar": null}
+{"options": [], "dest": "audio_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["grid", "hits", "keys", "end", "lows", "features"], "required": true, "metavar": null}
 ==== mv audio grid
 usage: mv audio grid [-h] [--bpm-min BPM_MIN] [--bpm-max BPM_MAX] [--bpm BPM] [--phase PHASE] [--downbeat {onset,chroma}] [--beats-per-bar BEATS_PER_BAR] [--out OUT] [--fair-refine] [--force] source
 
@@ -1577,5 +1578,35 @@ options:
 {"options": ["--band"], "dest": "band", "action": "_StoreAction", "nargs": 2, "const": null, "default": [20.0, 150.0], "type": "float", "choices": null, "required": false, "metavar": ["LOW_HZ", "HIGH_HZ"]}
 {"options": ["--drop-db"], "dest": "drop_db", "action": "_StoreAction", "nargs": null, "const": null, "default": 10.0, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": -30.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv audio features
+usage: mv audio features [-h] [--fps FPS] [--grid GRID] [--bass-hz LOW_HZ HIGH_HZ] [--mid-hz LOW_HZ HIGH_HZ] [--high-hz LOW_HZ HIGH_HZ] [--smooth SMOOTH] [--out OUT] [--force] source
+
+positional arguments:
+  source                audio file, or a project folder with analysis.json (then analysis.features.json is written beside it)
+
+options:
+  -h, --help            show this help message and exit
+  --fps FPS             frames per second to sample (default 30)
+  --grid GRID           mv audio grid record of the same audio: adds beat_num and beat_pulse
+  --bass-hz LOW_HZ HIGH_HZ
+                        bass band in Hz (default 25 140)
+  --mid-hz LOW_HZ HIGH_HZ
+                        mid band in Hz (default 250 2600)
+  --high-hz LOW_HZ HIGH_HZ
+                        high band in Hz (default 4000 10500)
+  --smooth SMOOTH       decay smoothing factor in (0, 1] (default 0.35)
+  --out OUT             record to write (default: <audio stem>.features.json beside the audio)
+  --force               overwrite a record whose contents differ
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 30.0, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--grid"], "dest": "grid", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--bass-hz"], "dest": "bass_hz", "action": "_StoreAction", "nargs": 2, "const": null, "default": [25.0, 140.0], "type": "float", "choices": null, "required": false, "metavar": ["LOW_HZ", "HIGH_HZ"]}
+{"options": ["--mid-hz"], "dest": "mid_hz", "action": "_StoreAction", "nargs": 2, "const": null, "default": [250.0, 2600.0], "type": "float", "choices": null, "required": false, "metavar": ["LOW_HZ", "HIGH_HZ"]}
+{"options": ["--high-hz"], "dest": "high_hz", "action": "_StoreAction", "nargs": 2, "const": null, "default": [4000.0, 10500.0], "type": "float", "choices": null, "required": false, "metavar": ["LOW_HZ", "HIGH_HZ"]}
+{"options": ["--smooth"], "dest": "smooth", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.35, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}

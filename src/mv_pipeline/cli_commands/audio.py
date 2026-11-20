@@ -75,6 +75,20 @@ def _audio_parser(commands):
                       help="a window sounds when its total level is within this many dB of the loudest (default -30)")
     lows.add_argument("--out", type=Path, help="record to write (default: <audio stem>.lows.json beside the audio)")
     lows.add_argument("--force", action="store_true", help="overwrite a record whose contents differ")
+    features = sub.add_parser("features", help="per-frame 3-band FFT envelopes (bass/mid/high), RMS, onset, and optional beat pulse (measured)")
+    features.add_argument("source", type=Path, help="audio file, or a project folder with analysis.json (then analysis.features.json is "
+                                                    "written beside it)")
+    features.add_argument("--fps", type=float, default=30.0, help="frames per second to sample (default 30)")
+    features.add_argument("--grid", type=Path, help="mv audio grid record of the same audio: adds beat_num and beat_pulse")
+    features.add_argument("--bass-hz", type=float, nargs=2, default=[25.0, 140.0], metavar=("LOW_HZ", "HIGH_HZ"),
+                          help="bass band in Hz (default 25 140)")
+    features.add_argument("--mid-hz", type=float, nargs=2, default=[250.0, 2600.0], metavar=("LOW_HZ", "HIGH_HZ"),
+                          help="mid band in Hz (default 250 2600)")
+    features.add_argument("--high-hz", type=float, nargs=2, default=[4000.0, 10500.0], metavar=("LOW_HZ", "HIGH_HZ"),
+                          help="high band in Hz (default 4000 10500)")
+    features.add_argument("--smooth", type=float, default=0.35, help="decay smoothing factor in (0, 1] (default 0.35)")
+    features.add_argument("--out", type=Path, help="record to write (default: <audio stem>.features.json beside the audio)")
+    features.add_argument("--force", action="store_true", help="overwrite a record whose contents differ")
 
 
 def audio_command(args):
@@ -95,4 +109,8 @@ def audio_command(args):
     if args.audio_command == "lows":
         from ..audio import lows
         return lows.run(args.source, args.grid, args.out, args.window, tuple(args.band), args.drop_db, args.floor_db, args.force)
+    if args.audio_command == "features":
+        from ..audio import features
+        return features.run(args.source, args.fps, args.grid, args.out, tuple(args.bass_hz), tuple(args.mid_hz),
+                            tuple(args.high_hz), args.smooth, args.force)
     raise PipelineError(f"Unsupported audio command: {args.audio_command}")
