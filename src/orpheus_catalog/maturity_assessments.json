@@ -3238,12 +3238,12 @@
       ],
       "maturity": "verified",
       "reason": "実作品の本編と縦の Shorts の timeline を、今の main で制作と同じ入力から描き直し、制作の run とバイト単位で一致した。制作の記録で切り替わりのコマと音のずれも確かめてある。",
-      "scope": "fx-timeline/0.2 で、spec のショット（静止画・2 枚組）と動画のショット、つなぎ（cut・black・xfade・flash）、hooks を、横 1920×1080 と縦 1080×1920（frame source・clamp・punch）で、全体と区間（--start/--duration）に描く経路。",
+      "scope": "fx-timeline/0.2 で、spec のショット（静止画・2 枚組・layers の effects の粒）と動画のショット、つなぎ（cut・black・xfade・flash）、timeline の look、hooks を、横 1920×1080 と縦 1080×1920（frame source・clamp・punch）で、全体と区間（--start/--duration）に描く経路。",
       "evidence": [
         {
           "path": "docs/fx.md",
           "section": "本編の timeline から縦の Shorts を作る",
-          "summary": "2026-11-21、実作品の縦の Shorts の区間（807 コマ・15 ショット・cut/flash/xfade・hooks）を今の main で描き直し、timeline.mp4・timeline.json・注意の文が制作の run とバイト単位で一致。本編（1920×1080・5,544 コマ・82 ショット＝静止画・2 枚組・動画 1、black/xfade/flash・hooks）も全体を描き直し、timeline.mp4・timeline.json・注意の文 81 件が制作の run とバイト単位で一致。"
+          "summary": "2026-11-21、実作品の縦の Shorts の区間（807 コマ・15 ショット・cut/flash/xfade・hooks）を今の main で描き直し、timeline.mp4・timeline.json・注意の文が制作の run とバイト単位で一致。本編（1920×1080・5,544 コマ・82 ショット＝静止画・2 枚組・動画 1、塵の effects 10 ショット、black/xfade/flash・look・hooks）も全体を描き直し、timeline.mp4・timeline.json・注意の文 81 件が制作の run とバイト単位で一致。"
         },
         {
           "path": "docs/fx.md",
@@ -3258,7 +3258,7 @@
       ],
       "limitations": [
         "バイト一致は同じ素材・設定・ライブラリ版（numpy 2.3.5・OpenCV 5.0.0・ffmpeg 6.1.1）での比較。",
-        "burn・particles・pulse・loop の動画・layers と lights のあるショットは、実作品の timeline で通していない（burn と particles の現実装は実素材未確認）。",
+        "burn・pulse・loop の動画・layers の planes・lights・深度のあるショットは、実作品の timeline で通していない（burn と hooks の particles.gather の現実装は実素材未確認）。",
         "見た目の採否は人の判断で、technical_pass やバイト一致とは別。"
       ],
       "promotion_criteria": [
@@ -3810,7 +3810,7 @@
         }
       ],
       "limitations": [
-        "1 つの作品の 2 本での実績。区間の外のショット・動画のショット・拍の脈を含む縦の区間は通していない。",
+        "1 つの作品の 2 本での実績。動画のショット・拍の脈を含む縦の区間は通していない。",
         "顔の見切れ・字と札の置き場は人が見て決めた（道具で数える段は無い）。",
         "plan・sheet・review-copy・split の段は、この照合に入れていない（review-copy と split はそれぞれの操作で照合済み）。"
       ],

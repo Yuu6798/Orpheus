@@ -961,13 +961,13 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json     # timeline.mp
 - 縦の 1 本目（807 コマ。1080×1920・24fps）: 縦の timeline（81 ショット）の区間に映る 15 ショット（静止画と 2 枚組、つなぎは cut・flash・xfade、hooks）を、
   制作と同じ入力で `mv fx timeline render` → `mv overlay --layers` → `mv deliver join` まで通した。`timeline.mp4`（crf 10）・`timeline.json`・注意の文、
   `overlay.mp4`、元データ（ユーザーが採用した版）が、どれも制作のものとバイト単位で同じだった。
-- 本編（1920×1080・5,544 コマ・231.0 秒）: timeline（82 ショット＝静止画 57・2 枚組 12 組の 24・動画 1、つなぎは cut 77・black 1・xfade 3・flash 1、hooks）の全体を、
+- 本編（1920×1080・5,544 コマ・231.0 秒）: timeline（82 ショット＝静止画 57・2 枚組 12 組の 24・動画 1、つなぎは cut 77・black 1・xfade 3・flash 1、layers の effects（塵の粒）10 ショット・look・hooks）の全体を、
   制作と同じ入力で今の main の `mv fx timeline render` で描き直した。`timeline.mp4`（crf 10 の中間）・`timeline.json`・注意の文（81 件）が、制作の run とバイト単位で同じだった。
   続けて `mv overlay --layers`（題字のカードと歌詞の連番）と `mv deliver join` も通し、`overlay.mp4` と元データ（ユーザーが採用した版）も制作のものとバイト単位で同じだった。
 - `mv fx timeline plan` の表は、縦の timeline（81 ショット）と本編の timeline（82 ショット）の両方で、描いた run の `timeline.json` のショットの区切り・つなぎと一致した。
 - 制作の記録（照合の元）: 本編は、切り替わりのコマ（3 か所）が狙ったコマちょうどで、音は元の WAV と 7 か所の相互相関でずれ 0 サンプルだった。
   2 本の縦の Shorts（807 コマと 838 コマ）は、どの段も technical_pass で、ユーザーがスマホで見た指摘（顔の見切れ 3 カット）を直した版を採用した。
-- 確かめていないこと: 区間の外のショット・動画のショット・拍の脈を含む縦の区間、burn・particles、この手順を別の作品で通すこと。
+- 確かめていないこと: 動画のショット・拍の脈を含む縦の区間、burn・layers の planes・lights・深度・hooks の `particles.gather`、この手順を別の作品で通すこと。
 
 ### 焼け抜け（burn・fx-timeline/0.2）
 
