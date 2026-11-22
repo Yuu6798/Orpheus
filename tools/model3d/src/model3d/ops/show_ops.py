@@ -35,10 +35,11 @@ def plan_lights(inputs, parameters, outputs, context):
 
 SHOW_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "show_render.py"
 SHOW_PARAMETERS = {"blender", "timeout", "resolution", "samples", "raytracing", "shadows", "view_transform", "camera", "motion_blur",
-                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links", "shadow"}
+                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links", "shadow", "exposure", "volumetric"}
 CAMERA_KEYS = {"sensor_height", "clip"}
 SHADOW_KEYS = {"pool_size", "resolution_scale", "overflow"}
 OVERFLOW = ("fail", "warn")
+VOLUMETRIC_KEYS = {"tile_size", "samples", "start", "end", "shadows", "shadow_samples"}
 BLUR_KEYS = {"shutter", "steps", "off"}
 LIGHT_KEYS = {"energy", "base", "color"}
 BLOOM_KEYS = {"quality", "threshold", "smoothness", "clamp", "maximum", "strength", "size"}
@@ -124,6 +125,33 @@ def _show_settings(parameters):
                 raise ToolError(f"shadow.overflow は {OVERFLOW} のどれかにしてください（fail: あふれたら失敗、warn: 報告に書くだけ）: "
                                 f"{shadow['overflow']!r}")
             s["shadow"]["overflow"] = shadow["overflow"]
+    if parameters.get("exposure") is not None:
+        exposure = float(number(parameters, "exposure"))
+        if not -32 <= exposure <= 32:                    # Blender の露出の範囲
+            raise ToolError(f"exposure は -32〜32（段。0 で変えない）にしてください: {exposure!r}")
+        s["exposure"] = exposure
+    volumetric = _section(parameters, "volumetric", VOLUMETRIC_KEYS)
+    if volumetric:
+        from ..blender_adapter.show_render import VOLUMETRIC_TILES
+        s["volumetric"] = {}
+        if "tile_size" in volumetric:
+            if isinstance(volumetric["tile_size"], bool) or volumetric["tile_size"] not in VOLUMETRIC_TILES:
+                raise ToolError(f"volumetric.tile_size は霧の升の大きさ（画素）{list(VOLUMETRIC_TILES)} のどれかにしてください: "
+                                f"{volumetric['tile_size']!r}")
+            s["volumetric"]["tile_size"] = int(volumetric["tile_size"])
+        for key, high in (("samples", 256), ("shadow_samples", 128)):
+            if key in volumetric:
+                value = number(volumetric, key, minimum=1, integer=True)
+                if value > high:
+                    raise ToolError(f"volumetric.{key} は 1〜{high} にしてください: {value!r}")
+                s["volumetric"][key] = value
+        for key in ("start", "end"):
+            if key in volumetric:
+                s["volumetric"][key] = float(number(volumetric, key, minimum=0, exclusive=True))
+        if "start" in s["volumetric"] and "end" in s["volumetric"] and s["volumetric"]["start"] >= s["volumetric"]["end"]:
+            raise ToolError(f"volumetric.start は end より小さくしてください: {s['volumetric']['start']!r} ≥ {s['volumetric']['end']!r}")
+        if "shadows" in volumetric:
+            s["volumetric"]["shadows"] = _flag(volumetric["shadows"], "volumetric.shadows")
     if "cuts" in parameters:
         s["cuts"] = _frames(parameters["cuts"], "cuts", minimum=2)
     if "lights" in parameters:
@@ -230,7 +258,7 @@ def show_manifest(report, frames_dir):
                   "動きのぶれ（motion_blur。コマから後ろ）がカットをまたがない。fstop と focus_m のコマは被写界深度。光の値"
                   "（lights。plan.lights の model3d-light-track/0.1）で、名前で指した光の強さと色、look.lit の塗りのまわりの明るさ"
                   "（ambient）をコマごとに入れる。表情の形状キー（expressions）、空（world）、にじみ（bloom）、光と影のつなぎ分け"
-                  "（links。幕だけを照らし、踊り手だけが影を落とす光など）。影の領域（shadow の pool_size・resolution_scale）を入れ、"
+                  "（links。幕だけを照らし、踊り手だけが影を落とす光など）。影の領域（shadow の pool_size・resolution_scale）・露出（exposure）・霧（volumetric）を入れ、"
                   "Blender の記録に影の領域のあふれ（Shadow buffer full）があれば、既定で工程を失敗にする（shadow.overflow を warn に"
                   "すると報告に書くだけ）。作品ごとの舞台は、"
                   "フック（hooks。Python の台本。レシピに明示したときだけ実行し、sha256 を報告に残す）の build と frame で作って動かす。"
