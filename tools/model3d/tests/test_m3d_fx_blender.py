@@ -88,3 +88,128 @@ def test_mono_frame_lights_and_levels():
     fx_blender.set_level(parts, 0.5)
     fx_blender.set_level(parts, 0.5)
     assert [p["fx_level"] for p in parts] == [0.5, 0.5] and [p.tagged for p in parts] == [1, 1]
+
+
+# ---- 材質のノード（代役の node_tree: ノードの型と、つなぎを見る） ----
+class _Socket:
+    def __init__(self, node, key):
+        self.node, self.key, self.default_value, self.links = node, key, None, []
+
+    @property
+    def is_linked(self):
+        return bool(self.links)
+
+
+class _Sockets:
+    def __init__(self, node):
+        self.node, self.items = node, {}
+
+    def __getitem__(self, key):
+        if key not in self.items:
+            self.items[key] = _Socket(self.node, key)
+        if self.node.type == "ShaderNodeMix" and key in ("A", "B"):
+            self.node.mix_types.append(self.node.data_type)          # A・B を引いたときの型（型を決めてから引くこと）
+        return self.items[key]
+
+    def __iter__(self):
+        return iter([self[0], self[1], self[2]])
+
+
+class _Node:
+    def __init__(self, kind):
+        self.type, self.name, self.data_type, self.mix_types = kind, kind, None, []
+        self.inputs, self.outputs = _Sockets(self), _Sockets(self)
+
+
+class _Nodes(list):
+    def new(self, kind):
+        node = _Node(kind)
+        self.append(node)
+        return node
+
+
+class _Links(list):
+    def new(self, source, target):
+        link = SimpleNamespace(from_socket=source, to_socket=target)
+        target.links.append(link)
+        self.append(link)
+        return link
+
+
+def _material_bpy():
+    def new(name):
+        return SimpleNamespace(name=name, use_nodes=False, surface_render_method="DITHERED", use_backface_culling=True,
+                               node_tree=SimpleNamespace(nodes=_Nodes(), links=_Links()))
+    return SimpleNamespace(data=SimpleNamespace(materials=SimpleNamespace(new=new)))
+
+
+def _one(material, kind):
+    found = [n for n in material.node_tree.nodes if n.type == kind]
+    assert len(found) == 1, (kind, len(found))
+    return found[0]
+
+
+def _source(socket):
+    """socket へつながる元のソケット（つながりは 1 本だけ）。"""
+    assert len(socket.links) == 1, socket.key
+    return socket.links[0].from_socket
+
+
+def test_additive_material_glows_by_the_vertex_value_and_the_gain():
+    material = fx_blender.additive_material(_material_bpy(), "fx_core", (0.5, 0.3, 1.0), (1, 1, 1), 6.0, soft=2.0)
+    assert material.surface_render_method == "BLENDED" and material.use_backface_culling is False
+    out, add = _one(material, "ShaderNodeOutputMaterial"), _source(_one(material, "ShaderNodeOutputMaterial").inputs["Surface"]).node
+    assert add.type == "ShaderNodeAddShader"
+    assert _source(add.inputs[0]).node.type == "ShaderNodeBsdfTransparent" and _source(add.inputs[1]).node.type == "ShaderNodeEmission"
+    emission = _one(material, "ShaderNodeEmission")
+    times_gain = _source(emission.inputs["Strength"]).node
+    assert times_gain.type == "ShaderNodeMath" and times_gain.operation == "MULTIPLY"
+    shape_times_value, gain = (_source(times_gain.inputs[k]).node for k in (0, 1))
+    assert gain.type == "ShaderNodeValue" and gain.name == "fx_gain" and gain.outputs[0].default_value == 6.0
+    assert shape_times_value.operation == "MULTIPLY"
+    attribute = _source(shape_times_value.inputs[1]).node
+    assert (attribute.type, attribute.attribute_type, attribute.attribute_name) == ("ShaderNodeAttribute", "GEOMETRY", "fx")
+    power = _source(shape_times_value.inputs[0]).node
+    assert power.operation == "POWER" and power.inputs[1].default_value == 2.0
+    mix = _one(material, "ShaderNodeMix")
+    assert mix.mix_types and set(mix.mix_types) == {"RGBA"}
+    assert mix.inputs["A"].default_value == (0.5, 0.3, 1.0, 1) and mix.inputs["B"].default_value == (1, 1, 1, 1)
+    white = _source(mix.inputs["Factor"]).node
+    assert white.type == "ShaderNodeMapRange" and white.interpolation_type == "SMOOTHSTEP"
+    assert (white.inputs["From Min"].default_value, white.inputs["From Max"].default_value) == (0.50, 0.90)
+    uv = _source(_one(material, "ShaderNodeSeparateXYZ").inputs[0])
+    assert uv.node.type == "ShaderNodeTexCoord" and uv.key == "UV"
+    assert _source(_one(material, "ShaderNodeEmission").inputs["Color"]).node is mix and out is not None
+
+
+def test_disc_and_flat_materials():
+    disc = fx_blender.disc_material(_material_bpy(), "fx_orb", (0.5, 0.3, 1.0), (1, 1, 1), 5.0, power=3.0)
+    assert disc.surface_render_method == "BLENDED"
+    assert sorted(n.operation for n in disc.node_tree.nodes if n.type == "ShaderNodeVectorMath") == ["LENGTH", "SUBTRACT"]
+    ranges = [n for n in disc.node_tree.nodes if n.type == "ShaderNodeMapRange"]
+    inside = next(n for n in ranges if n.inputs["From Min"].default_value == 0.5)
+    assert inside.inputs["From Max"].default_value == 0.0 and not hasattr(inside, "interpolation_type")   # 直線（ふちへ消える）
+    assert any(n.type == "ShaderNodeMath" and n.operation == "POWER" and n.inputs[1].default_value == 3.0 for n in disc.node_tree.nodes)
+    flat = fx_blender.flat_material(_material_bpy(), "black", (0.0, 0.0, 0.0))
+    emission = _one(flat, "ShaderNodeEmission")
+    assert emission.inputs["Color"].default_value == (0.0, 0.0, 0.0, 1)
+    assert _source(_one(flat, "ShaderNodeOutputMaterial").inputs["Surface"]).node is emission
+
+
+def test_drive_by_object_multiplies_the_socket_by_the_object_attribute():
+    bpy = _material_bpy()
+    material = fx_blender.flat_material(bpy, "panel", (1, 1, 1))
+    emission = _one(material, "ShaderNodeEmission")
+    emission.inputs["Strength"].default_value = 0.8
+    base = fx_blender.drive_by_object(bpy, material, emission.inputs["Strength"])
+    multiply = _source(emission.inputs["Strength"]).node
+    assert multiply.operation == "MULTIPLY" and _source(multiply.inputs[0]).node is base and base.outputs[0].default_value == 0.8
+    attribute = _source(multiply.inputs[1])
+    assert attribute.key == "Fac" and (attribute.node.attribute_type, attribute.node.attribute_name) == ("OBJECT", "fx_level")
+    linked = fx_blender.flat_material(bpy, "linked", (1, 1, 1))                  # 口に線がつながっていれば、その元 × 属性
+    upstream = linked.node_tree.nodes.new("ShaderNodeValue").outputs[0]
+    strength = _one(linked, "ShaderNodeEmission").inputs["Strength"]
+    linked.node_tree.links.new(upstream, strength)
+    assert fx_blender.drive_by_object(bpy, linked, strength, "level") is None
+    multiply = strength.links[-1].from_socket.node
+    assert _source(multiply.inputs[0]) is upstream and _source(multiply.inputs[1]).node.attribute_name == "level"
