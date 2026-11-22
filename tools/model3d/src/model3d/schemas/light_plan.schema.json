@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "model3d-light-plan/0.1",
   "title": "model3d light plan",
-  "description": "plan.lights の光の段取り表。コマ T（1 から。時刻 t = (T - 1) / fps 秒）ごとに、values の既定の値を求め、t を含む区間（segments。頭は前の区間の until、最後の区間だけ until を省ける）の let（区間の中の名前）と set で上書きし、閃光（flashes。強い方を残す）を重ねる。値は数・3 つの並び（色や位置。要素は数か式）・式（文字列。色の名前も式）。式で使えるのは t・low・mid・high・hit・colors と let の名前と、関数 beat・ramp・ease・mix・max・min・exp、+ - * /、if の条件の中の比べる式だけ（docs/model3d.md の「光の台本」）。fps・grid・frames は、光のキー（keys）を渡せばそれを使う（書くなら同じ値）。",
+  "description": "plan.lights の光の段取り表。コマ T（1 から。時刻 t = (T - 1) / fps 秒）ごとに、values の既定の値を求め、t を含む区間（segments。頭は前の区間の until、最後の区間だけ until を省ける）の let（区間の中の名前）と set で上書きし、閃光（flashes。強い方を残す）を重ねる。値は数・3 つの並び（色や位置。要素は数か式）・式（文字列。色の名前も式）。式で使えるのは t・low・mid・high・hit・colors と let の名前と、関数 beat・ramp・ease・mix・max・min・exp・rand、+ - * /、if の条件の中の比べる式だけ（docs/model3d.md の「光の台本」）。fps・grid・frames は、光のキー（keys）を渡せばそれを使う（書くなら同じ値）。",
   "type": "object",
   "required": ["schema_version", "values"],
   "properties": {

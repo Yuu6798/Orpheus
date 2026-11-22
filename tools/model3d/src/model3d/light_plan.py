@@ -17,7 +17,9 @@ flash（閃光の強さ。既定 0）・flash_color（既定 [1, 1, 1]）・fade
   その区間の let の名前（前に書いたもの）。
 - 関数: beat(k)（拍 k の時刻 k0_time + period × k）、ramp(x, a, b)（ease((x − a) / max(b − a, 1e-6))）、ease(u[, "smooth"|"linear"|"in"|"out"])
   （u を 0〜1 に切ってから。smooth は u²(3 − 2u)、in は u²、out は 1 − (1 − u)²）、mix(a, b, u)（a + (b − a) × u。a と b は数どうしか
-  3 つの並びどうし）、max・min（2 つ以上の数）、exp。
+  3 つの並びどうし）、max・min（2 つ以上の数）、exp、rand(k)（コマ T と種 k から決まる 0 以上 1 未満の数。T × 7919 + k を種にした
+  Python の random.Random の最初の数。k は 0〜7918 の整数の定数（7919 より小さいので、別のコマ・別の種と同じ数にならない）。
+  コマの番号だけで決まるので、実行ごと・区切って描いても同じ。4 作目の 3D のダンスのフックの、点きはじめのネオンのちらつきと同じ式）。
 - 演算: + − × ÷（3 つの並びは要素ごと。並びと数の掛け算・割り算も）、単項の −、比べる（< <= > >=。続けて書ける）、
   「a if 比べる else b」。数と、ease の 2 つ目の文字列のほかの定数は使えない。
 計算は Python の浮動小数（倍精度）で、式に書いた順に行う（同じ式なら、元の台本と同じ丸めになる）。
@@ -25,12 +27,15 @@ flash（閃光の強さ。既定 0）・flash_color（既定 [1, 1, 1]）・fade
 import ast
 import math
 import operator
+import random
 
 from .io import ToolError
 from .stage_plan import EPS, Clock, find, inside, spans
 
 SIGNALS = ("t", "low", "mid", "high", "hit")
-FUNCTIONS = {"beat": (1, 1), "ramp": (3, 3), "ease": (1, 2), "mix": (3, 3), "max": (2, None), "min": (2, None), "exp": (1, 1)}
+FUNCTIONS = {"beat": (1, 1), "ramp": (3, 3), "ease": (1, 2), "mix": (3, 3), "max": (2, None), "min": (2, None), "exp": (1, 1),
+             "rand": (1, 1)}
+RAND_STRIDE = 7919                                       # rand(k) の種は T × RAND_STRIDE + k（k は 0〜RAND_STRIDE − 1）
 EASE = ("smooth", "linear", "in", "out")
 RESERVED = {"flash": 0.0, "flash_color": [1.0, 1.0, 1.0], "fade": 1.0}
 FLASH = {"decay": 0.10, "length": 0.6}                  # 閃光の既定（3 作目の VRM のダンスの値）。色を省くと values の flash_color の既定
@@ -53,6 +58,11 @@ def ease(u, kind="smooth"):
 
 def ramp(x, a, b):
     return ease((x - a) / max(b - a, 1e-6), "smooth")
+
+
+def rand(T, seed):
+    """コマ T と種 seed（0〜RAND_STRIDE − 1 の整数）から決まる、0 以上 1 未満の数。"""
+    return random.Random(int(T) * RAND_STRIDE + int(seed)).random()
 
 
 def mix(a, b, u):
@@ -115,6 +125,12 @@ class Expression:
             low, high = FUNCTIONS[node.func.id]
             if len(node.args) < low or (high is not None and len(node.args) > high) or any(isinstance(a, ast.Starred) for a in node.args):
                 self._fail(f"{node.func.id} の引数の数")
+            if node.func.id == "rand":
+                seed = node.args[0]
+                if not (isinstance(seed, ast.Constant) and isinstance(seed.value, int) and not isinstance(seed.value, bool)
+                        and 0 <= seed.value < RAND_STRIDE):
+                    self._fail(f"rand の種（0〜{RAND_STRIDE - 1} の整数の定数）")
+                return
             for k, arg in enumerate(node.args):
                 if node.func.id == "ease" and k == 1:
                     if not (isinstance(arg, ast.Constant) and arg.value in EASE):
@@ -152,6 +168,8 @@ class Expression:
         if isinstance(node, ast.IfExp):
             return self._eval(node.body, env) if self._eval(node.test, env) else self._eval(node.orelse, env)
         name = node.func.id                               # ast.Call（形は読むときに確かめてある）
+        if name == "rand":
+            return rand(env["@T"], node.args[0].value)
         if name == "ease":
             u = self._eval(node.args[0], env)
             return ease(number(u, "ease"), node.args[1].value if len(node.args) > 1 else "smooth")
@@ -301,7 +319,7 @@ class Plan:
             phase = 0.0                                  # ちょうど拍のコマで、引き算の丸めのために余りがほぼ 1 拍ぶんになり、hit が落ちないように）
         hit = math.exp(-phase / self.tau)
         return {"t": t, "low": low, "mid": mid, "high": high, "hit": hit, **self.colors,
-                "@k0": self.grid["k0_time"], "@period": self.grid["period"]}
+                "@k0": self.grid["k0_time"], "@period": self.grid["period"], "@T": T}
 
     def at(self, T):
         """コマ T の値 {名前: 数か 3 つの並び} と区間の番号。"""
