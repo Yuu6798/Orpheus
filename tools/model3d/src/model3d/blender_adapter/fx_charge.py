@@ -13,7 +13,7 @@ Blender の中で `import fx_charge` で読む。CI でも試せる）。
 
 layers: {"orb": 玉, "core": 芯・枝・光条, "halo": 芯のにじみ, "fine": 集まる線・巻きつく線・輪・余韻の線, "motes": 集まる粒}
 （fx_strips.Quads か None）。mono はそのコマの白黒の値（fx の白黒のコマ）: 0.5 より大きい（白い地）なら玉とにじみを作らず、
-大きさが 0.5 以上なら光条を作らない（足し算の物は、白い地で黒い四角になる）。
+大きさが 0.5 より大きいなら光条を作らない（足し算の物は、白い地で黒い四角になる。しきいは fx_blender.mono_frame と同じ）。
 
 出来事の欄（どれも書く）: `tip`・`base`（点）、`along`（点の並び。省くと [tip, base]）、`charge`・`hold`・`after`・`flash`・`ring`（秒）、
 `length`・`width`（芯の長さと幅 m）、`size`（細かい部分の大きさ m）、`halo`（にじみの幅の倍率）、`ring_speed`（輪の広がる速さ m/s）、
@@ -57,8 +57,12 @@ def _colours(event):
 
 
 def window(event):
-    """(溜めの秒, 撃って余韻が終わるまでの秒)。"""
-    return float(fx_events.need(event, "charge")), float(fx_events.need(event, "hold")) + float(fx_events.need(event, "after"))
+    """(溜めの秒, 撃って余韻が終わるまでの秒)。段の秒（charge・hold・after・flash・ring）は 0 より大きい数だけ受ける。"""
+    for key in ("charge", "hold", "after", "flash", "ring"):
+        value = fx_events.need(event, key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise fx_events.EventError(f"溜めて・撃って・余韻の {key} は 0 より大きい秒にしてください: {value!r}")
+    return float(event["charge"]), float(event["hold"]) + float(event["after"])
 
 
 def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
@@ -72,18 +76,20 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
     age = table.age(event, f)
     tip, base = table.point(fx_events.need(event, "tip"), f, camera), table.point(fx_events.need(event, "base"), f, camera)
     aim = fx_strips.unit(tip - base)
-    side = fx_strips.unit(np.cross(aim, UP))
+    if float(np.linalg.norm(aim)) == 0.0:                                 # 根もとと先が同じ所なら、上へ撃つ
+        aim = UP.copy()
+    side = fx_strips.perpendicular(aim)                                   # 真上・真下へ撃つときも、輪と巻きつく線の向きを持つ
     lift = np.cross(side, aim)
-    seed = int(fx_events.need(event, "seed"))
-    rng = fx_events.rng(seed, 21, int(f))
+    seed = fx_events.need(event, "seed")
+    rng = fx_events.rng(seed, 21, table.tick(f))
     gain = float(event.get("gain", 1.0)) * gain
     view = fx_strips.unit(np.asarray(camera["position"], float) - tip)
-    right = fx_strips.unit(np.cross(view, UP))
+    right = fx_strips.perpendicular(view)                                 # カメラが先の真上・真下でも、玉と光条の向きを持つ
     up = np.cross(right, view)
     power = float(fx_events.need(event, "light"))
     c_charge, c_release, c_after = _colours(event)
     orb, core, halo, fine, motes = (layers.get(k) for k in ("orb", "core", "halo", "fine", "motes"))
-    soft = mono < 0.5                                                     # 白い地では、玉とにじみを作らない
+    soft = mono <= 0.5                                                    # 白い地（mono_frame と同じく 0.5 より大きい）では、玉とにじみを作らない
 
     def add(layer, method, *args, **kwargs):
         if layer is not None:
@@ -142,7 +148,7 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
         flash = max(0.0, 1.0 - age / float(fx_events.need(event, "flash")))
         if soft:
             add(orb, "dot", tip, (F["orb_release"][0] + F["orb_release"][1] * flash) * s, gain * (1.0 + 1.4 * flash), right, up)
-        if flash > 0.0 and abs(mono) < 0.5:
+        if flash > 0.0 and abs(mono) <= 0.5:
             thin, mid, peak, base_w = F["ray_width"]
             for a, reach in F["rays"]:
                 d = right * math.cos(a) + up * math.sin(a)
