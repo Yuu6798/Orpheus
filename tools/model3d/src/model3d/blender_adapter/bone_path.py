@@ -75,6 +75,17 @@ def bone_term(head, tail, axes, at, offset, unit):
     return value
 
 
+def bone_offset(head, tail, axes, point, at, unit):
+    """bone_term の逆: 点 point（Blender 単位）を、付け根から先へ at の割合の所から見た、骨の軸（x・y・z。長さ 1）に沿った
+    ずらし（m）にする。head・tail・point は 3 つの数、axes は 3 本の軸の向き（世界。長さは問わない）。numpy で解く
+    （軸が直交でなくても、bone_term がその軸で足し戻せば point になる値）。"""
+    import numpy as np
+    head, tail, point = (np.asarray(v, float) for v in (head, tail, point))
+    base = head if at == 0 else tail if at == 1 else head + at * (tail - head)
+    columns = np.stack([np.asarray(unit_axis(np.asarray(a, float)), float) for a in axes], axis=1)
+    return [float(v) * unit for v in np.linalg.solve(columns, point - base)]
+
+
 def combine(terms, value_of):
     """Σ weight × 項の値 ÷ Σ weight（項の値に重みを掛けて足し、重みの和で割る。試作の (左 + 右) / 2 や 肩 × 0.7 + 腰 × 0.3 と同じ丸め）。"""
     total, weights = None, 0.0

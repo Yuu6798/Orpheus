@@ -1,13 +1,16 @@
 """出来事を置く前の段取り: 踊りと打音から出来事の時刻の候補を拾う（plan.motion_marks）、世界の点があるコマの画面のどこに映るかを
-出す（check.on_screen）。
+出す（check.on_screen）、メッシュの決まった所を骨の軸の位置に直す（motion.bone_offset。Blender の中で）。
 出来事の形そのものは、render.show のフックから blender_adapter の fx_* を呼んで作る（docs/model3d.md の「演出の出来事」）。"""
 import math
+from pathlib import Path
 
-from ..io import ToolError, atomic_json
+from ..io import ToolError, atomic_json, read_json
 from . import StepResult, register, require
 
 MARKS_PARAMETERS = {"dance", "landing", "extremes", "hits"}
 SCREEN_PARAMETERS = {"points", "frames", "margin", "dance", "strict", "report_only"}
+OFFSET_PARAMETERS = {"blender", "frame", "armature", "bone_prefix", "targets", "timeout"}
+BONE_OFFSET_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "bone_offset.py"
 
 
 def _real(value, where, minimum=None, exclusive=False):
@@ -199,3 +202,75 @@ def check_on_screen(inputs, parameters, outputs, context):
         atomic_json(outputs["report"], report)
         outputs = {}
     return _finish(summary, outputs, parameters, "画面の位置")
+
+
+# ---- motion.bone_offset ----
+def offset_settings(parameters):
+    unknown = set(parameters) - OFFSET_PARAMETERS
+    if unknown:
+        raise ToolError(f"motion.bone_offset の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(OFFSET_PARAMETERS)}）")
+    prefix = parameters.get("bone_prefix", "mixamorig:")
+    if not isinstance(prefix, str):
+        raise ToolError(f"motion.bone_offset の bone_prefix は文字列にしてください: {prefix!r}")
+    targets = parameters.get("targets")
+    if not isinstance(targets, dict) or not targets:
+        raise ToolError("motion.bone_offset には targets（{名前: {\"bone\", \"object\", \"pick\", …}}）が要ります")
+    out = {}
+    for name, item in targets.items():
+        where = f"motion.bone_offset の targets.{name}"
+        if not isinstance(item, dict) or set(item) - {"bone", "at", "object", "pick", "box", "index", "near"} or \
+                not {"bone", "object", "pick"} <= set(item):
+            raise ToolError(f"{where} は {{\"bone\", \"at\"（任意）, \"object\", \"pick\", \"box\"・\"index\"・\"near\"（任意）}} にしてください: {item!r}")
+        if item["pick"] not in ("highest", "lowest", "nearest", "vertex"):
+            raise ToolError(f"{where}.pick は highest・lowest・nearest・vertex のどれかにしてください: {item['pick']!r}")
+        entry = {"bone": prefix + str(item["bone"]), "name": str(item["bone"]), "object": str(item["object"]), "pick": item["pick"],
+                 "at": _real(item.get("at", 0.0), f"{where}.at", 0)}
+        if "box" in item:
+            box = item["box"]
+            if not isinstance(box, list) or len(box) != 2:
+                raise ToolError(f"{where}.box は [[x, y, z] の下, [x, y, z] の上]（世界の座標 m）にしてください: {box!r}")
+            low, high = _vector(box[0], f"{where}.box"), _vector(box[1], f"{where}.box")
+            if any(a > b for a, b in zip(low, high)):
+                raise ToolError(f"{where}.box の下が上より大きい: {box!r}")
+            entry["box"] = [low, high]
+        if item["pick"] == "vertex":
+            index = item.get("index")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+                raise ToolError(f"{where}: pick が vertex のときは index（0 以上の整数）が要ります")
+            entry["index"] = index
+        if item["pick"] == "nearest":
+            entry["near"] = _vector(item.get("near"), f"{where}.near")
+        out[name] = entry
+    frame = parameters.get("frame", 1)
+    if isinstance(frame, bool) or not isinstance(frame, int):
+        raise ToolError(f"motion.bone_offset の frame は整数（動きのコマ）にしてください: {frame!r}")
+    armature = parameters.get("armature")
+    if armature is not None and not isinstance(armature, str):
+        raise ToolError(f"motion.bone_offset の armature は物体の名前にしてください: {armature!r}")
+    return {"frame": frame, "armature": armature, "targets": out}
+
+
+@register("motion.bone_offset", inputs=("blend",), outputs=("offsets",), cacheable=False,
+          summary="メッシュの決まった所（targets: 物体 object の、箱 box の中でいちばん高い・低い頂点、点 near にいちばん近い頂点、頂点の"
+                  "番号 index）を、決めた姿勢（frame）で、骨（bone）の付け根から先へ at の割合の所から見た骨の軸（x・y・z。長さ 1）の位置"
+                  "（m）に直す（Blender の中で。変形した後のメッシュ）。offsets（model3d-bone-offset/0.1）の points は、motion.bone_path の"
+                  "points にそのまま書ける。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+def bone_offset(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "motion.bone_offset")
+    if "offsets" not in outputs:
+        raise ToolError("motion.bone_offset には outputs の offsets が要ります")
+    blender = _blender(parameters, context, "motion.bone_offset")
+    settings = offset_settings(parameters)
+    settings_path = Path(context.step_dir) / "bone_offset_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, BONE_OFFSET_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                      "--out", outputs["offsets"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters))
+    result = read_json(outputs["offsets"])
+    if result.get("schema_version") != "model3d-bone-offset/0.1" or set(result.get("points", {})) != set(settings["targets"]):
+        raise ToolError(f"motion.bone_offset: 測った結果に、点が足りません（{sorted(settings['targets'])}）")
+    return StepResult(observations=[{"kind": "bone_offset", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                                     "blender_version": record["blender_version"], "frame": settings["frame"],
+                                     "points": {k: v["offset"] for k, v in ((n, p[0]) for n, p in result["points"].items())}}])
