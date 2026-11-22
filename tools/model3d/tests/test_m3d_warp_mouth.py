@@ -215,3 +215,18 @@ def test_a_large_upward_move_does_not_fold_the_rows_above_the_line():
     image = face()
     warped, _, _ = mouth_warp.warp(image, settings(scale=0.5, upper_arch=30, corner_mark=8))
     assert np.isfinite(warped).all()
+
+
+def test_a_wide_stretch_keeps_the_columns_in_order():
+    xs = np.arange(400, dtype=float)
+    moved = xs + mouth_warp.side_shift(xs, 150.0, 2.0, 62.0, 50.0)              # scale 0.5 の口（半幅 50 + 12）を 2 倍に（戻す長さ 50）
+    assert np.diff(moved).min() > 0                                             # 動かした先が増える並びのまま（逆に引ける）
+    t = np.abs(xs - 150.0)
+    fixed = xs + np.where(t <= 62, xs - 150.0, np.sign(xs - 150.0) * 62 * (1 - mouth_warp.smooth_step((t - 62) / 50.0)))
+    assert np.diff(fixed).min() < 0                                             # 戻す長さを広げないと、移り変わりの所で減る
+    small = mouth_warp.side_shift(xs, 150.0, 1.12, 109.5, 100.0)                # 台本の値の範囲（k 1.12、半幅 97.5 + 12、戻す長さ 100）
+    t = np.abs(xs - 150.0)
+    script = np.where(t <= 109.5, (1.12 - 1) * (xs - 150.0), np.sign(xs - 150.0) * (1.12 - 1) * 109.5 * (1 - mouth_warp.smooth_step((t - 109.5) / 100.0)))
+    assert np.array_equal(small, script)                                        # 台本と同じ式
+    warped, _, report = mouth_warp.warp(face(), settings(scale=0.5, scale_x=2.0))
+    assert np.isfinite(warped).all() and report["mask_box"] is not None
