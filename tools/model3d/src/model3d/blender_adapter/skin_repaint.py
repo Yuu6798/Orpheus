@@ -9,6 +9,8 @@
     色だけで肌を選ぶと、色の近い服まで崩す。ただの平均でならすと肌が縮んで服との間にすき間が出る。
   - clean: 部品（袖など）を外すと、その下の肌に部品の色がにじんだしみが出る。手を含む島の、選んだ骨（上腕・前腕など）の頂点のうち、
     肌色でないもの（しみ）を、まわりのきれいな肌の色で埋め（外側から順に広げる）、軽くならして塗り直す。手は触らない。
+    4 作目の 3D のダンスで足した物（省けば今までと同じ）: 色相が 0° をまたぐ肌色（hue_deg の下 > 上）、隣を近さ（neighbours.radius）で決める口
+    （uv の境目で面が切れたメッシュ）、色むらを明るい側の肌の色へ寄せる段（tone）。
 塗り直しは、3 頂点とも対象の三角形を、色の絵の上で頂点の色の重心補間で塗る（三角形の外へ paint_margin_px 画素塗り足す。先に全部の
 塗り足しを塗り、あとで内側を塗る。逆にすると、隣の三角形の内側を塗り足しが上書きして、辺に沿った細い線が出る）。
 塗り直した絵は --texture の PNG に書いて詰め込み、元の絵を使っていた所を付け替える。元のファイルは変えない。
@@ -35,7 +37,10 @@ SMOOTH = {"z_range": None, "z_soft": 0.03, "x_min": None, "x_max": None, "x_soft
           "seed_z": None, "shape": None, "color_iterations": 60, "paint_margin_px": 4.0}
 SHAPE = {"iterations": 10, "factor": 0.5, "inflate": -0.53, "z_max": None, "z_soft": 0.02}
 CLEAN = {"armature": None, "island_groups": None, "island_min": 50, "region_groups": None, "fill_iterations": 300, "smooth_iterations": 25,
-         "smooth_factor": 0.5, "paint_margin_px": 4.0}
+         "smooth_factor": 0.5, "paint_margin_px": 4.0, "neighbours": None, "tone": None}
+# 色むらを寄せる段の、計算の作りの既定（「明るい側」とみなす百分位）。区間の数・使う区間の頂点の下限・明るい区間の数・寄せる割合は、
+# 部品の大きさと頂点の細かさに寄るので既定を置かない（工程で必ず書く）
+TONE = {"percentile": 60.0}
 
 
 def parse_args(argv):
@@ -91,11 +96,71 @@ def world_normals(normals, world):
 
 
 def skin_colored(colors, skin):
-    """頂点の色が肌色か (count,)。skin は {"hue_deg": [下, 上], "saturation": [下, 上], "value_min": 下}。HSV は colorsys（台本と同じ）。"""
-    hsv = np.array([colorsys.rgb_to_hsv(*color) for color in colors])
+    """頂点の色が肌色か (count,)。skin は {"hue_deg": [下, 上], "saturation": [下, 上], "value_min": 下}。HSV は colorsys（台本と同じ）。
+    色相の下が上より大きいときは 0° をまたぐ範囲（[350, 10] は 350〜360° と 0〜10°）。"""
+    hsv = np.array([colorsys.rgb_to_hsv(*color) for color in colors]).reshape(-1, 3)
     hue = hsv[:, 0] * 360
-    return ((hue >= skin["hue_deg"][0]) & (hue <= skin["hue_deg"][1])
-            & (hsv[:, 1] >= skin["saturation"][0]) & (hsv[:, 1] <= skin["saturation"][1]) & (hsv[:, 2] >= skin["value_min"]))
+    low, high = skin["hue_deg"]
+    in_hue = ((hue >= low) | (hue <= high)) if low > high else ((hue >= low) & (hue <= high))
+    return in_hue & (hsv[:, 1] >= skin["saturation"][0]) & (hsv[:, 1] <= skin["saturation"][1]) & (hsv[:, 2] >= skin["value_min"])
+
+
+def radius_edges(points, radius, keep=None):
+    """距離が radius 以下の頂点の組 (E, 2)（keep の頂点どうしだけ。小さい番号が先、重ならない）。面のつながりの代わりに、近さで隣を決める
+    （画像から作ったメッシュは、uv の境目で面が切れていて、つながりで広げると境目で止まる）。radius の升目に分けて、隣の升目だけを調べる。"""
+    points = np.asarray(points, dtype=np.float64)
+    chosen = np.flatnonzero(keep) if keep is not None else np.arange(len(points))
+    cells = np.floor(points[chosen] / radius).astype(np.int64)
+    buckets = {}
+    for k, cell in enumerate(map(tuple, cells)):
+        buckets.setdefault(cell, []).append(k)
+    buckets = {cell: np.array(members) for cell, members in buckets.items()}
+    offsets = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) > (0, 0, 0)]
+    found = []
+    for cell, members in buckets.items():
+        here = points[chosen[members]]
+        gap = np.linalg.norm(here[:, None] - here[None, :], axis=2)
+        a, b = np.nonzero(np.triu(gap <= radius, 1))
+        found.append(np.stack([members[a], members[b]], axis=1))
+        for dx, dy, dz in offsets:
+            other = buckets.get((cell[0] + dx, cell[1] + dy, cell[2] + dz))
+            if other is None:
+                continue
+            gap = np.linalg.norm(here[:, None] - points[chosen[other]][None, :], axis=2)
+            a, b = np.nonzero(gap <= radius)
+            found.append(np.stack([members[a], other[b]], axis=1))
+    pairs = chosen[np.concatenate(found)] if found else np.zeros((0, 2), dtype=np.int64)
+    return np.sort(pairs, axis=1).astype(np.int64)
+
+
+def light_tone(positions, colors, region, clean, tone):
+    """色むらを寄せる「明るい側の肌の色」(3,) と報告（4 作目の 3D のダンスの台本と同じ計算）。範囲の頂点の主な向き（いちばん広がる軸）に沿って
+    bins の区間に分け、区間ごとに、もとからきれいな肌の頂点（min_vertices 未満の区間は使わない）のうち、いちばん明るい値が percentile 以上の頂点の
+    色の中央値を取る。そのうち明るい light_bins 区間の色の中央値。区間が 1 つも無ければ None。"""
+    points = positions[region]
+    centre = points.mean(axis=0)
+    axis = np.linalg.svd(points - centre, full_matrices=False)[2][0]
+    along = (positions - centre) @ axis
+    low, high = along[region].min(), along[region].max()
+    good = region & clean
+    centres, tones = [], []
+    for k in range(tone["bins"]):
+        a, b = low + (high - low) * k / tone["bins"], low + (high - low) * (k + 1) / tone["bins"]
+        last = k == tone["bins"] - 1                                  # 最後の区間は、軸のいちばん端の頂点も含める
+        pick = good & (along >= a) & ((along <= high) if last else (along < b))
+        if pick.sum() < tone["min_vertices"]:
+            continue
+        chosen = colors[pick]
+        level = chosen.max(axis=1)
+        centres.append((a + b) / 2)
+        tones.append(np.median(chosen[level >= np.percentile(level, tone["percentile"])], axis=0))
+    if not tones:
+        return None, {"bins_used": 0}
+    tones = np.array(tones)
+    order = np.argsort(tones.max(axis=1) + tones.sum(axis=1) * 0.01)
+    light = np.median(tones[order[-tone["light_bins"]:]], axis=0)
+    return light, {"bins_used": len(tones), "light": [float(v) for v in light], "tone_first": [float(v) for v in tones[0]],
+                   "tone_last": [float(v) for v in tones[-1]]}
 
 
 def neighbour_mean(values, edges, count, usable=None):
@@ -281,6 +346,9 @@ def main(argv=None):
             raise SystemExit(f"アーマチュアがありません: {settings['armature']}")
         deform = deform_names(armatures[0]) if armatures else None     # いちばん重い骨は、変形に使う骨のグループの中で
         top = top_groups(body, deform)
+        if settings.get("neighbours"):                    # 隣を面のつながりでなく近さで決める（島も、近さでつながった頂点の集まり）
+            edges = radius_edges(positions, settings["neighbours"]["radius"], uses_image)
+            roots = islands(count, edges)
         is_arm = np.array([name.startswith(tuple(settings["region_groups"])) for name in top])
         is_hand = np.array([name.startswith(tuple(settings["island_groups"])) for name in top])
         arm_roots = [root for root in np.unique(roots[is_hand]) if (is_hand & (roots == root)).sum() >= settings["island_min"]]
@@ -304,6 +372,13 @@ def main(argv=None):
             mean, has = neighbour_mean(filled, island_edges, count, everything)
             move = region & has
             filled[move] += (mean[move] - filled[move]) * settings["smooth_factor"]
+        toned = None
+        if settings.get("tone") and region.any():         # 色むらを、明るい側の肌の色へ flat の割合で寄せる
+            tone = {**TONE, **settings["tone"]}
+            light, toned = light_tone(positions, color, region, clean, tone)
+            if light is None:
+                raise SystemExit(f"色むらを寄せる区間がありません（どの区間も、きれいな肌の頂点が {tone['min_vertices']} 未満）")
+            filled[region] = tone["flat"] * light + (1 - tone["flat"]) * filled[region]
         weight = region.astype(float)
         triangles = [(list(t.vertices), uv[list(t.loops)]) for t in mesh.loop_triangles
                      if t.material_index in slots and in_island[list(t.vertices)].all() and weight[list(t.vertices)].max() > 0]
@@ -311,6 +386,10 @@ def main(argv=None):
         reference = np.median(color[region & clean], axis=0) if (region & clean).any() else np.zeros(3)
         report.update(islands=len(arm_roots), region_verts=int(region.sum()), dirty_verts=int(dirty.sum()), not_filled=remaining,
                       clean_skin_rgb=[float(v) for v in reference])
+        if settings.get("neighbours"):
+            report["neighbour_pairs"] = int(len(edges))
+        if toned is not None:
+            report["tone"] = toned
     replace_image(bpy, image, result, Path(a.texture).stem, a.texture)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     report.update(texels_painted=painted, settings=settings)
