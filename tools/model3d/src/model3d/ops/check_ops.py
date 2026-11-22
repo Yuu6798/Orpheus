@@ -239,8 +239,34 @@ def check_uv_stretch(inputs, parameters, outputs, context):
     return _finish(report, outputs, parameters, "uv の伸びの検査")
 
 
-FRAMES_PARAMETERS = {"left_dir", "right_dir", "range", "top", "amplify", "view_frame", "strict", "report_only",
+FRAMES_PARAMETERS = {"left_dir", "right_dir", "range", "top", "amplify", "view_frame", "strict", "report_only", "zone",
                      *checks.FRAME_THRESHOLDS}
+
+
+def frame_zone(value):
+    """check.frames の zone（数える範囲の内・外を分けて数える）を確かめる。"""
+    import math
+    if not isinstance(value, dict):
+        raise ToolError(f"zone は {{\"boxes\": [[x0, y0, x1, y1], …], \"threshold\": 数, \"metres_per_pixel\": 数}} にしてください: {value!r}")
+    unknown = set(value) - {"boxes", "threshold", "metres_per_pixel"}
+    if unknown:
+        raise ToolError(f"zone の知らないキー: {sorted(unknown)}（使えるのは boxes・threshold・metres_per_pixel）")
+    boxes = value.get("boxes")
+    if not isinstance(boxes, list) or not boxes:
+        raise ToolError(f"zone.boxes は数える範囲の枠 [x0, y0, x1, y1]（画素。右と下は含まない）の並びにしてください: {boxes!r}")
+    for k, box in enumerate(boxes):
+        if (not isinstance(box, list) or len(box) != 4 or not all(isinstance(v, int) and not isinstance(v, bool) for v in box)
+                or box[0] >= box[2] or box[1] >= box[3]):
+            raise ToolError(f"zone.boxes[{k}] は [x0, y0, x1, y1]（整数、x0 < x1、y0 < y1）にしてください: {box!r}")
+    checked = {"boxes": boxes, "threshold": 0}
+    for key, required_positive in (("threshold", False), ("metres_per_pixel", True)):
+        if value.get(key) is None:
+            continue
+        v = value[key]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 or (required_positive and v == 0):
+            raise ToolError(f"zone.{key} は {'正' if required_positive else '0 以上'}の数にしてください: {v!r}")
+        checked[key] = v
+    return checked
 
 
 def frame_sides(inputs, parameters, recipe_dir):
@@ -271,8 +297,9 @@ def frame_sides(inputs, parameters, recipe_dir):
 @register("check.frames", inputs=("left", "right"), outputs=("report", "view"), cacheable=False,
           summary="2 つのコマの並び（描いたコマの一覧か、コマのフォルダ）を、同じ T どうしで画素で比べる: 同じコマの数・違う画素の数・"
                   "いちばん大きい値の差・色の差の平均・透けの違い・差の大きさごとの画素の数・違いの大きいコマ。片方にしか無いコマと大きさの"
-                  "違うコマも並べる。view で [左 | 右 | 差 × amplify] の PNG。しきい値（コマごとの max_differing_pixels・"
-                  "max_channel_diff・max_mean_abs）を渡したときだけ合否を出す。コマは隠れた入力なので再利用しない")
+                  "違うコマも並べる。view で [左 | 右 | 差 × amplify] の PNG。zone（数える範囲の枠と差のしきい）で、変わった画素を"
+                  "範囲の内と外に分けて数える（外が 0 でなければはみ出し。枠は mm でも）。しきい値（コマごとの max_differing_pixels・"
+                  "max_channel_diff・max_mean_abs・max_outside_pixels）を渡したときだけ合否を出す。コマは隠れた入力なので再利用しない")
 def check_frames(inputs, parameters, outputs, context):
     from . import number
     unknown = set(parameters) - FRAMES_PARAMETERS
@@ -282,7 +309,10 @@ def check_frames(inputs, parameters, outputs, context):
     thresholds = {key: number(parameters, key, minimum=0) for key in checks.FRAME_THRESHOLDS if parameters.get(key) is not None}
     top = number(parameters, "top", 5, minimum=1, integer=True)
     amplify = number(parameters, "amplify", 8, minimum=0, exclusive=True)
-    report = checks.compare_frames(sides["left"], sides["right"], thresholds, top)
+    zone = frame_zone(parameters["zone"]) if parameters.get("zone") is not None else None
+    if "max_outside_pixels" in thresholds and zone is None:
+        raise ToolError("max_outside_pixels（数える範囲の外の数の上限）は zone と一緒に使ってください")
+    report = checks.compare_frames(sides["left"], sides["right"], thresholds, top, zone=zone)
     report.update(left=sources["left"], right=sources["right"])
     if "view" in outputs:
         T = parameters.get("view_frame")

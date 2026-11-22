@@ -415,8 +415,30 @@ def uv_stretch(mesh, width, height, threshold=8.0, thresholds=None):
     return report
 
 
-FRAME_THRESHOLDS = ("max_differing_pixels", "max_channel_diff", "max_mean_abs")
+FRAME_THRESHOLDS = ("max_differing_pixels", "max_channel_diff", "max_mean_abs", "max_outside_pixels")
 FRAME_BANDS = (0, 2, 8, 16, 64, 128)
+
+
+def zone_counts(worst, zone):
+    """1 組のコマの差 worst (H, W)（いちばん大きい値の差）を、数える範囲 zone の内と外に分けて数える（4 作目の 3D のダンスの引き算の検査）。
+    zone は {"boxes": [[x0, y0, x1, y1], …]（画素。右と下は含まない）, "threshold": 差がこれより大きい画素を数える, "metres_per_pixel": 任意}。
+    変わった画素の数と枠（画素。左上と右下を含む）、範囲の内・外の数。metres_per_pixel があれば、枠の幅と高さを mm でも出す
+    （(右 − 左 + 1) × 1 画素の長さ。0.1 mm に丸める）。外が 0 でなければ、ねらった所の外へはみ出している。"""
+    changed = worst > zone["threshold"]
+    inside = np.zeros(worst.shape, dtype=bool)
+    for x0, y0, x1, y1 in zone["boxes"]:
+        inside[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)] = True
+    ys, xs = np.nonzero(changed)
+    row = {"changed": int(len(ys)), "inside": int((changed & inside).sum()), "outside": int((changed & ~inside).sum())}
+    if len(ys):
+        row["box"] = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+        if zone.get("metres_per_pixel") is not None:
+            scale = zone["metres_per_pixel"] * 1000
+            row["size_mm"] = [round((row["box"][2] - row["box"][0] + 1) * scale, 1), round((row["box"][3] - row["box"][1] + 1) * scale, 1)]
+        if row["outside"]:
+            oy, ox = np.nonzero(changed & ~inside)
+            row["outside_box"] = [int(ox.min()), int(oy.min()), int(ox.max()), int(oy.max())]
+    return row
 
 
 def frame_files(source):
@@ -459,15 +481,19 @@ def _frame_arrays(path):
     return rgb, alpha
 
 
-def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS):
+def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS, zone=None):
     """2 つのコマの並び（{T: ファイル}）を、同じ T どうしで画素で比べる。ファイルが同じ（sha256）なら開かずに同じとする。
 
     コマごとに、違う画素の数（色か透けのどれかが違う）・いちばん大きい値の差（0〜255）・色の差の平均（R・G・B の 3 つ。
     リポジトリ外の試作の比べと同じ値）・透けの違う画素の数。片方にしか無いコマと、大きさの違うコマも並べる。
     左を基準に比べる: しきい値（コマごとの max_differing_pixels・max_channel_diff・max_mean_abs）を渡したときだけ合否を出し、
-    そのときは右に無いコマと大きさの違うコマも不合格にする（右にしか無いコマは並べるだけ）。"""
+    そのときは右に無いコマと大きさの違うコマも不合格にする（右にしか無いコマは並べるだけ）。
+    zone（任意。zone_counts）を渡すと、コマごとの行に、数える範囲の内と外の数（zone）を足し、まとめに外へはみ出したコマを並べる。
+    しきい値 max_outside_pixels は、範囲の外の数の上限（zone と一緒に使う）。"""
     from .io import sha256
     from PIL import Image
+    if thresholds and "max_outside_pixels" in thresholds and zone is None:   # 黙って無視しない
+        raise ToolError("max_outside_pixels（数える範囲の外の数の上限）は zone と一緒に使ってください")
     rows, missing_right, size_mismatch = [], [], []
     identical = pixels = differing_total = 0
     over = dict.fromkeys(bands, 0)
@@ -482,6 +508,8 @@ def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS):
             pixels += width * height
             rows.append({"T": T, "identical": True, "same_file": True, "differing_pixels": 0, "max_channel_diff": 0,
                          "mean_abs_diff": 0.0, "alpha_differing_pixels": 0})
+            if zone is not None:
+                rows[-1]["zone"] = {"changed": 0, "inside": 0, "outside": 0}
             continue
         (a, a_alpha), (b, b_alpha) = _frame_arrays(left[T]), _frame_arrays(right[T])
         if a.shape != b.shape:
@@ -500,6 +528,8 @@ def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS):
         rows.append({"T": T, "identical": differing == 0, "same_file": False, "differing_pixels": differing,
                      "max_channel_diff": int(max(diff.max(), alpha.max())), "mean_abs_diff": float(diff.mean()),
                      "alpha_differing_pixels": int((alpha > 0).sum())})
+        if zone is not None:
+            rows[-1]["zone"] = zone_counts(worst, zone)
     missing_left = sorted(T for T in right if T not in left)
     report = {"check": "frames", "status": "done", "frames": len(left), "compared": sum(1 for r in rows if "differing_pixels" in r),
               "identical_frames": int(identical), "missing_on_right": missing_right, "missing_on_left": missing_left,
@@ -508,6 +538,12 @@ def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS):
               "pixels_over": {f">{band}": count for band, count in over.items()},
               "worst_frames": sorted((r for r in rows if "differing_pixels" in r), key=lambda r: -r["differing_pixels"])[:top],
               "rows": rows}
+    if zone is not None:
+        zoned = [r for r in rows if "zone" in r]
+        report["zone"] = {"boxes": zone["boxes"], "threshold": zone["threshold"],
+                          "changed": sum(r["zone"]["changed"] for r in zoned), "inside": sum(r["zone"]["inside"] for r in zoned),
+                          "outside": sum(r["zone"]["outside"] for r in zoned),
+                          "frames_outside": [r["T"] for r in zoned if r["zone"]["outside"]]}
     thresholds = thresholds or {}
     if not thresholds:
         report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
@@ -523,6 +559,11 @@ def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS):
             beyond = [r["T"] for r in rows if field in r and r[field] > thresholds[key]]
             if beyond:
                 failures.append(f"{field} が {thresholds[key]:g} を超えるコマが {len(beyond)} 枚（最初の T: {beyond[:10]}）")
+    if "max_outside_pixels" in thresholds and zone is not None:
+        beyond = [r["T"] for r in rows if "zone" in r and r["zone"]["outside"] > thresholds["max_outside_pixels"]]
+        if beyond:
+            failures.append(f"数える範囲の外で変わった画素が {thresholds['max_outside_pixels']:g} を超えるコマが {len(beyond)} 枚"
+                            f"（はみ出し。最初の T: {beyond[:10]}）")
     report.update({"pass": not failures, "failures": failures})
     return report
 

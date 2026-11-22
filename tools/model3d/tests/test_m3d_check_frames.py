@@ -168,3 +168,67 @@ def test_the_cli_prints_a_summary_and_fails_only_when_limits_are_exceeded(tmp_pa
     assert code == 1 and result["pass"] is False
     code, result, _ = run_cli("frames", "compare", left, right, "--max-channel-diff", "255")
     assert code == 0 and result["pass"] is True
+
+
+# ---- 数える範囲の内と外（zone） -------------------------------------------------------------------------------------------------
+
+def test_one_pixel_outside_the_zone_is_counted_as_spilling(tmp_path):
+    _frames(tmp_path / "l", count=2, size=(20, 12))
+    _frames(tmp_path / "r", count=2, size=(20, 12))
+    for xy in ((3, 3), (4, 3), (5, 4)):                                       # ねらった所（範囲の中）の 3 画素
+        _poke(tmp_path / "r" / "f0001.png", xy, (0, 0, 0))
+    _poke(tmp_path / "r" / "f0001.png", (15, 9), (0, 0, 0))                  # 範囲の外の 1 画素
+    _poke(tmp_path / "r" / "f0002.png", (4, 4), (18, 101, 200))              # 差 2 だけ（しきい以下。コマ 2 の色は (20, 100, 200)）
+    sides = {side: checks.frame_files(tmp_path / side) for side in ("l", "r")}
+    zone = {"boxes": [[2, 2, 8, 6]], "threshold": 6, "metres_per_pixel": 0.0002}
+    report = checks.compare_frames(sides["l"], sides["r"], zone=zone)
+    first, second = (row["zone"] for row in report["rows"])
+    assert first == {"changed": 4, "inside": 3, "outside": 1, "box": [3, 3, 15, 9], "size_mm": [2.6, 1.4], "outside_box": [15, 9, 15, 9]}
+    assert second == {"changed": 0, "inside": 0, "outside": 0}                 # しきいより小さい差は数えない
+    assert report["zone"]["outside"] == 1 and report["zone"]["frames_outside"] == [1]
+    judged = checks.compare_frames(sides["l"], sides["r"], {"max_outside_pixels": 0}, zone=zone)
+    assert judged["pass"] is False and "はみ出し" in judged["failures"][0]
+    assert checks.compare_frames(sides["l"], sides["r"], {"max_outside_pixels": 1}, zone=zone)["pass"] is True
+    assert "zone" not in checks.compare_frames(sides["l"], sides["r"])["rows"][0]      # 省けば今までと同じ行
+    with pytest.raises(ToolError, match="zone と一緒に"):                       # 範囲なしの上限は、黙って無視しない
+        checks.compare_frames(sides["l"], sides["r"], {"max_outside_pixels": 0})
+    same = checks.compare_frames(sides["l"], {1: sides["l"][1]}, zone=zone)
+    assert same["rows"][0]["zone"] == {"changed": 0, "inside": 0, "outside": 0}
+
+
+def test_zone_counts_match_the_script_way_of_counting():
+    rng = np.random.default_rng(4)
+    worst = rng.integers(0, 20, (30, 40))
+    row = checks.zone_counts(worst, {"boxes": [[0, 0, 40, 30]], "threshold": 6, "metres_per_pixel": 0.0002888888888888889})
+    rows, cols = np.where(worst > 6)                                           # 試作: 差が 6 より大きい画素の数と、その枠（mm も）
+    assert row["changed"] == len(rows) and row["box"] == [int(cols.min()), int(rows.min()), int(cols.max()), int(rows.max())]
+    assert row["size_mm"] == [round((cols.max() - cols.min() + 1) * 0.2888888888888889, 1), round((rows.max() - rows.min() + 1) * 0.2888888888888889, 1)]
+    assert row["outside"] == 0 and row["inside"] == row["changed"]
+
+
+@pytest.mark.parametrize("parameters, message", [
+    ({"zone": {"boxes": [[0, 0, 5, 5]], "blur": 1}}, "知らないキー"),
+    ({"zone": {"boxes": []}}, "zone.boxes"),
+    ({"zone": {"boxes": [[5, 0, 1, 5]]}}, "zone.boxes"),
+    ({"zone": {"boxes": [[0, 0, 5, 5]], "threshold": -1}}, "threshold"),
+    ({"zone": {"boxes": [[0, 0, 5, 5]], "metres_per_pixel": 0}}, "metres_per_pixel"),
+    ({"max_outside_pixels": 0}, "zone と一緒に"),
+])
+def test_the_operation_rejects_bad_zones(tmp_path, parameters, message):
+    from model3d.ops import get
+    _frames(tmp_path / "l")
+    _frames(tmp_path / "r")
+    with pytest.raises(ToolError, match=message):
+        get("check.frames").function({}, {"left_dir": "l", "right_dir": "r", **parameters}, {"report": tmp_path / "o.json"}, Context(tmp_path))
+
+
+def test_the_operation_fails_a_spill_with_max_outside_pixels(tmp_path):
+    from model3d import executor
+    _frames(tmp_path / "l", count=1, size=(20, 12))
+    _frames(tmp_path / "r", count=1, size=(20, 12))
+    _poke(tmp_path / "r" / "f0001.png", (15, 9), (0, 0, 0))
+    zone = {"boxes": [[2, 2, 8, 6]], "threshold": 6}
+    review = executor.run_recipe(_recipe(tmp_path, {"left_dir": "l", "right_dir": "r", "zone": zone, "max_outside_pixels": 0},
+                                         outputs={"report": "frames.json"}), tmp_path / "runs")
+    assert review["steps"]["compare"]["status"] == "needs_review"
+    assert review["steps"]["compare"]["observations"][0]["zone"]["outside"] == 1
