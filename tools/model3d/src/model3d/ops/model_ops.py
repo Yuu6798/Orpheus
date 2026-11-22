@@ -545,11 +545,21 @@ def _range(value, where, low=None, high=None):
     return value
 
 
-def _skin(value):
+def _hue(value, wrap):
+    """色相の範囲 [下, 上]（度）。wrap なら、下 > 上 を 0° をまたぐ範囲（[350, 10] は 350〜360° と 0〜10°）として受ける。"""
+    if (wrap and isinstance(value, list) and len(value) == 2
+            and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) for v in value) and value[0] > value[1]):
+        if not (0 <= value[1] < value[0] <= 360):
+            raise ToolError(f"skin.hue_deg は 0〜360 の中にしてください: {value!r}")
+        return value
+    return _range(value, "skin.hue_deg", 0.0, 360.0)
+
+
+def _skin(value, wrap=False):
     if not isinstance(value, dict):
         raise ToolError(f"skin は {{\"hue_deg\": [下, 上], \"saturation\": [下, 上], \"value_min\": 下}} にしてください: {value!r}")
     _refuse_unknown(value, ("hue_deg", "saturation", "value_min"), "skin")
-    return {"hue_deg": _range(value.get("hue_deg"), "skin.hue_deg", 0.0, 360.0),
+    return {"hue_deg": _hue(value.get("hue_deg"), wrap),
             "saturation": _range(value.get("saturation"), "skin.saturation", 0.0, 1.0),
             "value_min": _real(value.get("value_min"), "skin.value_min", 0.0, maximum=1.0)}
 
@@ -625,16 +635,35 @@ def smooth_skin(inputs, parameters, outputs, context):
 @register("model.clean_skin", inputs=("blend",), outputs=("blend", "texture", "report"), cacheable=False,
           summary="外した部品の下の肌のしみを消す（Blender の中で）: island_groups（手など。名前の頭）がいちばん重い頂点を island_min 以上"
                   "含む島の、region_groups（上腕・前腕など。名前の頭）の頂点のうち、肌色（skin）でないもの（しみ）を、まわりのきれいな"
-                  "肌の色で外側から順に埋め、範囲の中を軽くならして、色の絵を塗り直す（手は触らない）。塗り直した絵は texture の PNG に"
-                  "書いて詰め込む。元のファイルは変えない")
+                  "肌の色で外側から順に埋め、範囲の中を軽くならして、色の絵を塗り直す（手は触らない）。肌色の色相は 0° をまたいでもよい"
+                  "（hue_deg の下 > 上）。neighbours.radius で隣と島を近さで決め（uv の境目で面が切れたメッシュ）、tone で色むらを明るい側の"
+                  "肌の色へ寄せる。塗り直した絵は texture の PNG に書いて詰め込む。元のファイルは変えない")
 def clean_skin(inputs, parameters, outputs, context):
     require(inputs, ("blend",), "model.clean_skin")
     _refuse_unknown(parameters, COMMON | {"body", "image", "skin", "island_groups", "island_min", "region_groups",
-                                           "fill_iterations", "smooth_iterations", "smooth_factor", "paint_margin_px"},
+                                           "fill_iterations", "smooth_iterations", "smooth_factor", "paint_margin_px", "neighbours", "tone"},
                     "model.clean_skin")
     settings = {"body": _name(parameters.get("body"), "body"), "image": _name(parameters.get("image"), "image"), "armature": _armature(parameters),
-                "skin": _skin(parameters.get("skin")), "island_groups": _names(parameters.get("island_groups"), "island_groups"),
+                "skin": _skin(parameters.get("skin"), wrap=True), "island_groups": _names(parameters.get("island_groups"), "island_groups"),
                 "region_groups": _names(parameters.get("region_groups"), "region_groups")}
+    neighbours = parameters.get("neighbours")
+    if neighbours is not None:                           # 隣を面のつながりでなく近さで決める（uv の境目で面が切れたメッシュ）
+        if not isinstance(neighbours, dict):
+            raise ToolError(f"neighbours は {{\"radius\": 近さ（m）}} にしてください: {neighbours!r}")
+        _refuse_unknown(neighbours, ("radius",), "neighbours")
+        settings["neighbours"] = {"radius": _real(neighbours.get("radius"), "neighbours.radius", 0.0, exclusive=True)}
+    tone = parameters.get("tone")
+    if tone is not None:                                 # 色むらを、明るい側の肌の色へ寄せる段
+        if not isinstance(tone, dict):
+            raise ToolError(f"tone は {{\"flat\": 寄せる割合, \"bins\": …}} にしてください: {tone!r}")
+        _refuse_unknown(tone, ("flat", "bins", "min_vertices", "percentile", "light_bins"), "tone")
+        checked = {"flat": _real(tone.get("flat"), "tone.flat", 0.0, exclusive=True, maximum=1.0)}
+        for key in ("bins", "min_vertices", "light_bins"):
+            if key in tone:
+                checked[key] = number(tone, key, minimum=1, integer=True)
+        if "percentile" in tone:
+            checked["percentile"] = _real(tone["percentile"], "tone.percentile", 0.0, maximum=100.0)
+        settings["tone"] = checked
     for key in ("island_min", "fill_iterations", "smooth_iterations"):
         if key in parameters:
             settings[key] = number(parameters, key, minimum=1 if key == "island_min" else 0, integer=True)

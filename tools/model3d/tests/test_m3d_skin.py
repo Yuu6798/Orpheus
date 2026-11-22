@@ -57,6 +57,45 @@ def test_skin_colour_test():
     assert list(sr.skin_colored(colors, skin)) == [True, False, False, False]   # 生成り・暗い・青は肌ではない
 
 
+def test_skin_hue_can_wrap_around_zero_like_the_script():
+    import colorsys
+    rng = np.random.default_rng(2)
+    colors = 0.55 + 0.45 * rng.random((2000, 3))                                 # 明るい色（肌に近い色を多く）
+    skin = {"hue_deg": [335, 25], "saturation": [0.02, 0.45], "value_min": 0.62}
+    hsv = np.array([colorsys.rgb_to_hsv(*c) for c in colors])                     # 4 作目の 3D のダンスの台本の決まり
+    script = ((hsv[:, 0] * 360 >= 335) | (hsv[:, 0] * 360 <= 25)) & (hsv[:, 1] >= 0.02) & (hsv[:, 1] <= 0.45) & (hsv[:, 2] >= 0.62)
+    assert (sr.skin_colored(colors, skin) == script).all() and script.sum() > 5
+    pinkish, warm = [0.95, 0.80, 0.84], [0.95, 0.82, 0.78]                         # 色相 約 345° と 約 14°
+    assert list(sr.skin_colored(np.array([pinkish, warm]), skin)) == [True, True]
+    assert list(sr.skin_colored(np.array([pinkish, warm]), {**skin, "hue_deg": [0, 25]})) == [False, True]   # またがない範囲は今まで通り
+
+
+def test_radius_edges_are_the_pairs_within_the_radius():
+    rng = np.random.default_rng(6)
+    points = rng.random((300, 3)) * 0.05
+    keep = rng.random(300) > 0.2
+    edges = sr.radius_edges(points, 0.006, keep)
+    gap = np.linalg.norm(points[:, None] - points[None, :], axis=2)
+    brute = {(i, j) for i, j in zip(*np.nonzero(np.triu(gap <= 0.006, 1))) if keep[i] and keep[j]}
+    assert {tuple(e) for e in edges.tolist()} == brute and len(edges) == len(brute) and len(brute) > 50
+    split = np.array([[0, 0, 0], [0.001, 0, 0], [0.001, 0, 0], [0.002, 0, 0], [0.5, 0, 0]], dtype=float)   # uv の境目で面が切れた 2 枚と、離れた点
+    roots = sr.islands(5, sr.radius_edges(split, 0.0015))
+    assert roots[0] == roots[1] == roots[2] == roots[3] != roots[4]             # 近さで、切れた面どうしがつながる
+
+
+def test_light_tone_takes_the_bright_side_along_the_main_axis():
+    x = np.linspace(0, 0.3, 240)
+    positions = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
+    colors = np.where((x < 0.15)[:, None], [0.80, 0.55, 0.55], [0.98, 0.90, 0.88])   # ひじ側は濃い桃色、手首側は明るい肌
+    region = np.ones(240, bool)
+    clean = np.ones(240, bool)
+    clean[200:] = False                                                         # しみ（使わない）
+    tone = {"bins": 12, "min_vertices": 10, "percentile": 60.0, "light_bins": 4}
+    light, report = sr.light_tone(positions, colors, region, clean, tone)
+    assert light == pytest.approx([0.98, 0.90, 0.88]) and report["bins_used"] == 10      # しみの多い 2 区間は数が足りず使わない
+    assert sr.light_tone(positions, colors, region, np.zeros(240, bool), tone)[0] is None
+
+
 def test_neighbour_mean_with_and_without_usable():
     values = np.array([[0.0], [1.0], [4.0]])
     edges = np.array([[0, 1], [1, 2]])
@@ -151,6 +190,24 @@ def test_skin_steps(tmp_path):
     assert arms["x_mode"] == "clean" and arms["x_settings"]["region_groups"] == ["upper_arm", "lower_arm"]
 
 
+def test_clean_skin_passes_the_wrapping_hue_neighbours_and_tone(tmp_path):
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    extra = {"skin": {**SKIN, "hue_deg": [335, 25]}, "neighbours": {"radius": 0.004}, "tone": {"flat": 0.95, "bins": 12}}
+    result = run_recipe(tmp_path, [{"id": "arms", "operation": "model.clean_skin", "inputs": {"blend": "$inputs.model"},
+                                    "parameters": {"blender": blender, **CLEAN, **extra},
+                                    "outputs": {"blend": "b.blend", "texture": "t.png", "report": "b.json"}}])
+    assert result["status"] == "succeeded", result
+    settings = json.loads(Path(result["steps"]["arms"]["artifacts"]["report"]).read_text(encoding="utf-8"))["x_settings"]
+    assert settings["skin"]["hue_deg"] == [335, 25] and settings["neighbours"] == {"radius": 0.004}
+    assert settings["tone"] == {"flat": 0.95, "bins": 12}
+    (tmp_path / "plain").mkdir()
+    plain = run_recipe(tmp_path / "plain", [{"id": "arms", "operation": "model.clean_skin", "inputs": {"blend": "$inputs.model"},
+                                             "parameters": {"blender": blender, **CLEAN},
+                                             "outputs": {"blend": "b.blend", "texture": "t.png", "report": "b.json"}}])
+    plain_settings = json.loads(Path(plain["steps"]["arms"]["artifacts"]["report"]).read_text(encoding="utf-8"))["x_settings"]
+    assert "neighbours" not in plain_settings and "tone" not in plain_settings     # 省けば今までと同じ設定
+
+
 def test_clean_skin_that_cannot_fill_needs_review(tmp_path):
     blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
     result = run_recipe(tmp_path, [{"id": "arms", "operation": "model.clean_skin", "inputs": {"blend": "$inputs.model"},
@@ -177,6 +234,12 @@ class Context:
     ("model.clean_skin", {**CLEAN, "island_groups": []}, "island_groups"),
     ("model.clean_skin", {**CLEAN, "smooth_factor": 1.5}, "smooth_factor"),
     ("model.clean_skin", {**CLEAN, "image": ""}, "image"),
+    ("model.clean_skin", {**CLEAN, "skin": {**SKIN, "hue_deg": [370, 10]}}, "hue_deg"),
+    ("model.clean_skin", {**CLEAN, "neighbours": {"radius": 0}}, "neighbours.radius"),
+    ("model.clean_skin", {**CLEAN, "neighbours": {"radius": 0.004, "k": 3}}, "知らない設定"),
+    ("model.clean_skin", {**CLEAN, "tone": {"bins": 12}}, "tone.flat"),
+    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9, "percentile": 120}}, "percentile"),
+    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9, "bins": 0}}, "bins"),
 ])
 def test_skin_ops_reject_bad_settings(tmp_path, operation, parameters, message):
     from model3d.ops import get
