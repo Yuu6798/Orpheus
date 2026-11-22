@@ -18,6 +18,10 @@ settings.json（look.lit が書く。DEFAULTS に重ねる）:
   Layer Weight の Facing を smoothstep で 0〜1 にする範囲）は必ず書く。gain（強さ。既定 1）、amount（材質ごとの割合の既定。
   既定 1）、materials（元の材質の名前 → 割合。0 の材質には足さない）、side（[下, 上]。カメラの座標の法線の X を 0〜1 にする範囲。
   既定 [-0.25, 0.25]）、down（[下, 上]。同じく Y。真下を向く縁を弱める。既定 [-0.75, -0.15]）、blend（Layer Weight の Blend。既定 0.5）
+- color_attribute: 元の材質の名前 → 色の属性（頂点の色）の名前。その材質の絵の色を、絵や Base Color の代わりに、その属性にする
+  （省くと、どの材質も今までどおり）。その材質を使うメッシュに、その名前の色の属性が無ければ止める
+- unlit: 元の材質の名前 → 倍率。その材質は光を受けずに、絵の色 × 倍率の決まった明るさで出す（舞台の光が届かない体の中の部品など。
+  まわりの明るさも縁の光も足さない）。soft・rim.materials と同じ材質には書けない
 塗り（リポジトリ外の試作 3 作目の VRM のダンスの演出版と同じ組み方）:
 - 絵の色 ×（まわりの明るさ ＋ 光の当たり具合を 2 段に分けたもの × 光の色あい）を Emission で出す。
 - 光の当たり具合: 白い Diffuse BSDF を Shader to RGB で読み（舞台の光の向き・色・影を受ける。EEVEE でだけ働く）、RGB のいちばん
@@ -30,7 +34,10 @@ settings.json（look.lit が書く。DEFAULTS に重ねる）:
   ノードにある。コマごとに書き換えるときは set_rim（フックからは import lit_look）。材質の印 model3d_lit_rim は割合。
 - 絵の色: 元の材質の、名前に texture を含む画像ノード（ノードの並びで最初の、画像のあるもの）の画像を、既定の UV で読む（絵の
   補間は元のまま。UV の変換・色の掛け率・透けは持ち越さない）。無ければ、Principled BSDF の Base Color に直接つないだ画像
-  ノード。それも無ければ Principled BSDF の Base Color の色。どれも無い材質は止める。
+  ノード。それも無ければ Principled BSDF の Base Color の色。どれも無い材質は止める。color_attribute に書いた材質は、どれより先に
+  その色の属性（Color Attribute のノード。線形の色）。
+- 決まった明るさ（unlit に書いた材質）: 絵の色 × 倍率を Emission で出すだけ（ノード 4 つ）。材質の印 model3d_lit_unlit は倍率。
+  まわりの明るさのノードが無いので、描く工程はまわりの明るさを入れない。
 - 元の材質は書き換えず、材質ごと新しく作って枠に入れる（VRM の MToon は出力がノードグループの中にあり、外の出力につないでも
   使われない）。同じ元の材質は 1 つの塗りを分け合う。塗らないメッシュとメッシュのデータを分け合う物体は、物体の側の枠に入れる。
   裏の面を描かない設定は元の材質のまま。
@@ -64,6 +71,7 @@ OUTLINE_MARK = "model3d_outline"                         # look.toon の輪郭�
 RIM_GROUP = "model3d_lit_rim"                            # 縁の光の値（左の色・右の色・強さ）のノードグループの名前
 RIM_MARK = "model3d_lit_rim"                             # 縁の光を足した材質の印（値は割合）
 RIM_DEFAULTS = {"gain": 1.0, "amount": 1.0, "materials": {}, "side": [-0.25, 0.25], "down": [-0.75, -0.15], "blend": 0.5}
+UNLIT_MARK = "model3d_lit_unlit"                         # 決まった明るさで出す材質の印（値は倍率）
 
 
 def parse_args(argv):
@@ -232,6 +240,44 @@ def add_rim(tree, source, group, amount, rim):
     return total.outputs[0]
 
 
+def source_color(tree, source):
+    """絵の色の出どころ（("image", 画像ノード)・("color", RGBA)・("attribute", 色の属性の名前)）のノードを作り、色の出力を返す。"""
+    new = tree.nodes.new
+    kind, value = source
+    if kind == "image":
+        image = new("ShaderNodeTexImage")                # UV は既定の UV
+        image.image = value.image
+        image.interpolation = value.interpolation
+        return image.outputs["Color"]
+    if kind == "attribute":
+        attribute = new("ShaderNodeVertexColor")         # 色の属性（頂点の色）。線形の色
+        attribute.layer_name = value
+        return attribute.outputs["Color"]
+    flat = new("ShaderNodeRGB")
+    flat.outputs[0].default_value = value
+    return flat.outputs[0]
+
+
+def unlit_material(bpy, material, source, factor):
+    """光を受けない、決まった明るさの材質: 絵の色 × factor を Emission で出す（4 作目の 3D のダンスのフックと同じ組み方）。"""
+    skin = new_material(bpy, material.name + ".lit")
+    skin.use_backface_culling = material.use_backface_culling
+    tree = skin.node_tree
+    tree.nodes.clear()
+    out = tree.nodes.new("ShaderNodeOutputMaterial")
+    color = source_color(tree, source)
+    scale = tree.nodes.new("ShaderNodeVectorMath")
+    scale.operation = "SCALE"
+    scale.inputs["Scale"].default_value = float(factor)
+    emission = tree.nodes.new("ShaderNodeEmission")
+    tree.links.new(color, scale.inputs[0])
+    tree.links.new(scale.outputs[0], emission.inputs["Color"])
+    tree.links.new(emission.outputs[0], out.inputs["Surface"])
+    skin[MARK] = material.name
+    skin[UNLIT_MARK] = float(factor)
+    return skin
+
+
 def lit_material(bpy, material, source, soft, s, rim_group=None, rim_amount=0.0):
     """光を受ける塗りの材質（試作の stage_skin と同じ組み方・同じ値）。rim_group（縁の光のノードグループ）と rim_amount（割合）が
     あれば、縁の光を足す（割合 0 なら足さない）。戻り: 新しい材質。"""
@@ -242,16 +288,7 @@ def lit_material(bpy, material, source, soft, s, rim_group=None, rim_amount=0.0)
     tree.nodes.clear()
     new = tree.nodes.new
     out = new("ShaderNodeOutputMaterial")
-    kind, value = source
-    if kind == "image":
-        image = new("ShaderNodeTexImage")                # UV は既定の UV
-        image.image = value.image
-        image.interpolation = value.interpolation
-        color = image.outputs["Color"]
-    else:
-        image = new("ShaderNodeRGB")
-        image.outputs[0].default_value = value
-        color = image.outputs[0]
+    color = source_color(tree, source)
     diffuse = new("ShaderNodeBsdfDiffuse")
     diffuse.inputs["Color"].default_value = (1, 1, 1, 1)
     to_rgb = new("ShaderNodeShaderToRGB")
@@ -360,11 +397,20 @@ def main(argv=None):
     bare = [name for name in meshes if not any(s.material for s in bpy.data.objects[name].material_slots)]
     if bare and settings["meshes"] is not None:          # 名指ししたメッシュに材質が無ければ、塗れないので止める
         raise SystemExit(f"meshes の {bare} に材質がありません（塗りを替えられません）")
+    attributes, unlit = settings.get("color_attribute") or {}, settings.get("unlit") or {}
     sources = {}                                         # 元の材質の名前 → 絵の色の出どころ
     for name in meshes:
         for slot in bpy.data.objects[name].material_slots:
             m = slot.material
-            if m is None or m.name in sources:
+            if m is None:
+                continue
+            if m.name in attributes:                     # 色の属性: その材質を使う、どのメッシュにも要る
+                mesh = bpy.data.objects[name].data
+                if mesh.color_attributes.get(attributes[m.name]) is None:
+                    raise SystemExit(f"{name} に色の属性 {attributes[m.name]!r} がありません（color_attribute の {m.name}。"
+                                     f"あるのは {sorted(a.name for a in mesh.color_attributes)}）")
+                sources[m.name] = ("attribute", attributes[m.name])
+            if m.name in sources:
                 continue
             found = color_source(list(m.node_tree.nodes), settings["texture"]) if m.node_tree is not None else None
             if found is None:
@@ -375,16 +421,30 @@ def main(argv=None):
     unknown = sorted(set(settings["soft"]) - set(sources))
     if unknown:
         raise SystemExit(f"soft の材質が、塗りを替えるメッシュにありません: {unknown}（あるのは {sorted(sources)}）")
+    for key, names in (("color_attribute", attributes), ("unlit", unlit)):
+        unknown = sorted(set(names) - set(sources))
+        if unknown:
+            raise SystemExit(f"{key} の材質が、塗りを替えるメッシュにありません: {unknown}（あるのは {sorted(sources)}）")
+    both = sorted(set(unlit) & set(settings["soft"]))
+    if both:
+        raise SystemExit(f"unlit の材質は soft にできません（光を受けないので段が無い）: {both}")
     rim = rim_settings(settings)
     if rim is not None:
         unknown = sorted(set(rim["materials"]) - set(sources))
         if unknown:
             raise SystemExit(f"rim.materials の材質が、塗りを替えるメッシュにありません: {unknown}（あるのは {sorted(sources)}）")
+        both = sorted(set(unlit) & set(rim["materials"]))
+        if both:
+            raise SystemExit(f"unlit の材質には縁の光を足しません（rim.materials から外してください）: {both}")
     rim_group = rim_control(bpy, rim) if rim is not None else None
     made, amounts = {}, {}
 
     def lit_for(m):
         if m.name not in made:
+            if m.name in unlit:
+                amounts[m.name] = 0.0
+                made[m.name] = unlit_material(bpy, m, sources[m.name], unlit[m.name])
+                return made[m.name]
             amounts[m.name] = float(rim["materials"].get(m.name, rim["amount"])) if rim is not None else 0.0
             made[m.name] = lit_material(bpy, m, sources[m.name], m.name in settings["soft"], settings, rim_group, amounts[m.name])
         return made[m.name]
@@ -394,10 +454,14 @@ def main(argv=None):
     materials = []
     for source, skin in made.items():
         kind, value = sources[source]
-        entry = {"source": source, "material": skin.name, "soft": bool(skin[SOFT_MARK]),
-                 "ambient_scale": skin[SCALE_MARK], "color": kind,
+        entry = {"source": source, "material": skin.name, "soft": bool(skin.get(SOFT_MARK, False)),
+                 "ambient_scale": skin.get(SCALE_MARK), "color": kind,
                  "texture_node": value.name if kind == "image" else None,
                  "image": value.image.name if kind == "image" else None}
+        if kind == "attribute":
+            entry["attribute"] = value
+        if unlit:
+            entry["unlit"] = unlit.get(source)
         if rim is not None:
             entry["rim"] = amounts[source]
         materials.append(entry)
