@@ -1,6 +1,6 @@
 """look.lit: 設定の重ね方・絵の色の出どころの選び方・既定のメッシュの選び方（Blender なしで動く部分）と、台本の引数と工程の
-受け渡し（代役の Blender）を確かめる。材質のノードを作る所は本物の Blender が要るので、CI では確かめない（docs/model3d.md の
-手元の確認）。"""
+受け渡し（代役の Blender）を確かめる。材質のノードの作りは、ノードの代役（lit_nodes_stand_in）で型・設定・値・つなぎを調べる。
+描いた絵は本物の Blender が要るので、CI では確かめない（docs/model3d.md の手元の確認）。"""
 import json
 from pathlib import Path
 from types import SimpleNamespace as M
@@ -208,3 +208,134 @@ def test_the_extra_range_may_fall():
     from model3d.ops.look_ops import _lit_settings
     assert _lit_settings({"extra": {"to": [0.3, 0.0]}})["extra"] == {"to": [0.3, 0.0]}   # 写す先は下がってもよい
     assert _lit_settings({}) == {"meshes": None}                                         # 省いたものは書かない
+
+
+# 縁の光（rim）。ノードの作りは、Blender の代役（lit_nodes_stand_in）で調べる。描いた絵は docs/model3d.md の手元の確認。
+from lit_nodes_stand_in import describe, digest, fake_bpy, feeding  # noqa: E402
+
+RIM = {"left": [0.2, 0.6, 1.0], "right": [1.0, 0.3, 0.1], "edge": [0.4, 0.9]}
+SOURCE = M(name="body", use_backface_culling=True)
+PICTURE = ("image", M(image=M(name="tex.png"), interpolation="Closest"))
+# 縁の光を足さないときの塗りのノード（型・設定・値・つなぎ）。縁の光を足す前の look.lit と同じ（19 個・23 本）
+UNCHANGED = {(False, "image"): "58d286fb0b7d1da462c564dc1d5de87b9487977fc7ad0b0c254a38096f78181e",
+             (False, "color"): "5fc0a2bbf87904ad2d941aeddfeaa438407f5938d2ebf3da52d1c8f5552b743c",
+             (True, "image"): "2bed158730abbec33139544c44cac2630f337a68fb77c2ce675125ed0ca87344",
+             (True, "color"): "e6c25ceb2c656d222bc23c5150cda79656728320daf1d7041dbb75a0b208f6b0"}
+
+
+@pytest.mark.parametrize("soft", [False, True])
+@pytest.mark.parametrize("kind", ["image", "color"])
+def test_without_rim_the_material_is_unchanged(soft, kind):
+    source = PICTURE if kind == "image" else ("color", (0.2, 0.4, 0.6, 1.0))
+    with_rim = lit_look.merged({"rim": RIM})
+    for settings, make_group, amount in ((lit_look.merged({}), False, 0.0),
+                                         (with_rim, False, 1.0),            # グループが無ければ足さない
+                                         (with_rim, True, 0.0)):            # 割合 0 の材質にも足さない
+        bpy = fake_bpy()
+        group = lit_look.rim_control(bpy, lit_look.rim_settings(settings)) if make_group else None
+        skin = lit_look.lit_material(bpy, SOURCE, source, soft, settings, group, amount)
+        d = describe(skin.node_tree)
+        assert (len(d["nodes"]), len(d["links"])) == (19, 23)
+        assert digest(d) == UNCHANGED[(soft, kind)]
+        assert lit_look.RIM_MARK not in skin
+
+
+def test_rim_settings_fill_defaults_and_keep_the_given_values():
+    assert lit_look.rim_settings(lit_look.merged({})) is None
+    rim = lit_look.rim_settings(lit_look.merged({"rim": {**RIM, "gain": 0.5, "materials": {"face": 0.3}}}))
+    assert rim == {**RIM, "gain": 0.5, "amount": 1.0, "materials": {"face": 0.3}, "side": [-0.25, 0.25],
+                   "down": [-0.75, -0.15], "blend": 0.5}
+    assert "rim" not in lit_look.DEFAULTS                                  # 既定の設定（報告の settings）は今と同じ
+
+
+def test_the_rim_control_group_holds_the_two_colours_and_the_gain():
+    bpy = fake_bpy()
+    group = lit_look.rim_control(bpy, lit_look.rim_settings({"rim": {**RIM, "gain": 1.5}}))
+    assert group.name == lit_look.RIM_GROUP
+    assert group.interface.sockets == [("left", "OUTPUT", "NodeSocketColor"), ("right", "OUTPUT", "NodeSocketColor"),
+                                       ("gain", "OUTPUT", "NodeSocketFloat")]
+    assert group.nodes["left"].outputs[0].default_value == (0.2, 0.6, 1.0, 1)
+    assert group.nodes["right"].outputs[0].default_value == (1.0, 0.3, 0.1, 1)
+    assert group.nodes["gain"].outputs[0].default_value == 1.5
+    output = group.nodes["NodeGroupOutput"]
+    assert [feeding(group, output, name)[0].name for name in ("left", "right", "gain")] == ["left", "right", "gain"]
+    lit_look.set_rim(bpy, left=[0.0, 0.0, 1.0], gain=0.0)                  # コマごとの書き換え（全部の材質に効く）
+    assert group.nodes["left"].outputs[0].default_value == (0.0, 0.0, 1.0, 1.0)
+    assert group.nodes["right"].outputs[0].default_value == (1.0, 0.3, 0.1, 1)
+    assert group.nodes["gain"].outputs[0].default_value == 0.0
+    with pytest.raises(SystemExit, match="もう縁の光"):
+        lit_look.rim_control(bpy, lit_look.rim_settings({"rim": RIM}))
+    with pytest.raises(SystemExit, match="ありません"):
+        lit_look.set_rim(fake_bpy(), gain=1.0)
+
+
+def test_the_rim_adds_the_side_coloured_edge_to_the_emission():
+    bpy = fake_bpy()
+    settings = lit_look.merged({"rim": {**RIM, "side": [-0.3, 0.3], "down": [-0.8, -0.2], "blend": 0.4}})
+    group = lit_look.rim_control(bpy, lit_look.rim_settings(settings))
+    skin = lit_look.lit_material(bpy, SOURCE, PICTURE, False, settings, group, 0.35)
+    tree = skin.node_tree
+    assert skin[lit_look.RIM_MARK] == 0.35
+    d = describe(tree)
+    assert (len(d["nodes"]), len(d["links"])) == (19 + 14, 23 + 17)        # 足すのはノード 14 個、つなぎ 17 本（Emission へは付け替え）
+    emission = next(n for n in tree.nodes if n.type == "EMISSION")
+    total, _ = feeding(tree, emission, "Color")
+    assert total.bl_idname == "ShaderNodeVectorMath" and total.operation == "ADD"
+    painted, _ = feeding(tree, total, "Vector")                                 # 足す前の塗り（絵の色 ×（まわり ＋ 光））
+    assert painted.operation == "MULTIPLY" and feeding(tree, painted, "Vector")[0].bl_idname == "ShaderNodeTexImage"
+    scaled, _ = feeding(tree, total, "Vector_001")
+    assert scaled.operation == "SCALE"
+    mix, socket = feeding(tree, scaled, "Vector")
+    assert mix.bl_idname == "ShaderNodeMix" and mix.data_type == "RGBA" and socket.identifier == "Result_Color"
+    control = next(n for n in tree.nodes if n.bl_idname == "ShaderNodeGroup")
+    assert control.node_tree is group
+    links = {(k.from_socket.identifier, k.to_socket.identifier) for k in tree.links if k.to_node is mix}
+    assert links == {("left", "A_Color"), ("right", "B_Color"), ("#0", "Factor_Float")}   # 型の名前で引く（Float の A・B ではない）
+    side, _ = feeding(tree, mix, "Factor_Float")
+    assert (side.inputs["From Min"].default_value, side.inputs["From Max"].default_value) == (-0.3, 0.3)
+    xyz, axis = feeding(tree, side, "Value")
+    assert xyz.bl_idname == "ShaderNodeSeparateXYZ" and axis.name == "X"
+    to_camera, _ = feeding(tree, xyz, "#0")
+    assert (to_camera.vector_type, to_camera.convert_from, to_camera.convert_to) == ("NORMAL", "WORLD", "CAMERA")
+    assert feeding(tree, to_camera, "#0")[1].name == "Normal"
+    strength, _ = feeding(tree, scaled, "Scale")
+    edge_and_down, _ = feeding(tree, strength, "#0")
+    gain_and_amount, _ = feeding(tree, strength, "#1")
+    assert feeding(tree, gain_and_amount, "#0")[1].name == "gain" and gain_and_amount.inputs[1].default_value == 0.35
+    edge, _ = feeding(tree, edge_and_down, "#0")
+    down, _ = feeding(tree, edge_and_down, "#1")
+    assert (edge.inputs["From Min"].default_value, edge.inputs["From Max"].default_value) == (0.4, 0.9)
+    assert feeding(tree, edge, "Value")[1].name == "Facing"
+    assert feeding(tree, edge, "Value")[0].inputs["Blend"].default_value == 0.4
+    assert (down.inputs["From Min"].default_value, down.inputs["From Max"].default_value) == (-0.8, -0.2)
+    assert feeding(tree, down, "Value")[1].name == "Y"
+    assert all(n.interpolation_type == "SMOOTHSTEP" for n in (edge, side, down))
+
+
+def test_the_operation_checks_and_passes_the_rim():
+    from model3d.ops.look_ops import _lit_settings
+    rim = _lit_settings({"rim": {"left": [1, 0, 0], "right": [0, 0, 1], "edge": [0.5, 0.9], "gain": 2, "materials": {"face": 0}}})["rim"]
+    assert rim == {"left": [1.0, 0.0, 0.0], "right": [0.0, 0.0, 1.0], "edge": [0.5, 0.9], "gain": 2.0, "materials": {"face": 0.0}}
+    full = _lit_settings({"rim": {**RIM, "amount": 0.5, "side": [-0.1, 0.1], "down": [-0.9, -0.3], "blend": 1}})["rim"]
+    assert full["amount"] == 0.5 and full["side"] == [-0.1, 0.1] and full["down"] == [-0.9, -0.3] and full["blend"] == 1.0
+
+
+@pytest.mark.parametrize("rim, message", [
+    ({"left": [1, 0, 0], "right": [0, 0, 1]}, "edge"),
+    ({"right": [0, 0, 1], "edge": [0.5, 0.9]}, "left"),
+    ({**RIM, "glow": 1}, "知らない鍵"),
+    ({**RIM, "left": [1, 0]}, "rim.left"),
+    ({**RIM, "right": [1, -0.1, 0]}, "rim.right"),
+    ({**RIM, "edge": [0.9, 0.5]}, "rim.edge"),
+    ({**RIM, "gain": -1}, "gain"),
+    ({**RIM, "amount": "a"}, "amount"),
+    ({**RIM, "materials": {"face": -0.1}}, "rim.materials"),
+    ({**RIM, "materials": ["face"]}, "rim.materials"),
+    ({**RIM, "side": [0.2, -0.2]}, "rim.side"),
+    ({**RIM, "down": [0.1]}, "rim.down"),
+    ({**RIM, "blend": 1.5}, "rim.blend"),
+    ("on", "rim は辞書"),
+])
+def test_the_operation_rejects_bad_rim(tmp_path, rim, message):
+    with pytest.raises(ToolError, match=message):
+        call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "rim": rim})
