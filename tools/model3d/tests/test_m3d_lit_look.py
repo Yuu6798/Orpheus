@@ -358,3 +358,57 @@ def test_the_operation_checks_and_passes_the_rim():
 def test_the_operation_rejects_bad_rim(tmp_path, rim, message):
     with pytest.raises(ToolError, match=message):
         call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "rim": rim})
+
+
+# 色の属性（color_attribute）と、光を受けない決まった明るさ（unlit）
+def test_a_colour_attribute_is_the_picture_colour():
+    bpy = fake_bpy()
+    skin = lit_look.lit_material(bpy, SOURCE, ("attribute", "paint"), False, lit_look.merged({}))
+    tree = skin.node_tree
+    d = describe(tree)
+    assert (len(d["nodes"]), len(d["links"])) == (19, 23)                 # 絵のノードが色の属性のノードに替わるだけ
+    attribute = next(n for n in tree.nodes if n.bl_idname == "ShaderNodeVertexColor")
+    assert attribute.layer_name == "paint" and not any(n.bl_idname in ("ShaderNodeTexImage", "ShaderNodeRGB")
+                                                       and n.name != lit_look.AMBIENT for n in tree.nodes)
+    painted = next(k.to_node for k in tree.links if k.from_node is attribute)
+    assert painted.operation == "MULTIPLY" and feeding(tree, painted, "Vector")[1].name == "Color"
+    assert feeding(tree, next(n for n in tree.nodes if n.type == "EMISSION"), "Color")[0] is painted
+
+
+@pytest.mark.parametrize("source", [("attribute", "paint"), PICTURE, ("color", (0.1, 0.2, 0.3, 1.0))])
+def test_an_unlit_material_is_the_colour_times_the_factor(source):
+    bpy = fake_bpy()
+    skin = lit_look.unlit_material(bpy, SOURCE, source, 0.8)
+    tree = skin.node_tree
+    d = describe(tree)
+    assert [n["type"] for n in d["nodes"]][0] == "ShaderNodeOutputMaterial" and len(d["nodes"]) == 4 and len(d["links"]) == 3
+    emission = next(n for n in tree.nodes if n.type == "EMISSION")
+    scale, _ = feeding(tree, emission, "Color")
+    assert scale.operation == "SCALE" and scale.inputs["Scale"].default_value == 0.8
+    colour, _ = feeding(tree, scale, "Vector")
+    assert colour.bl_idname == {"attribute": "ShaderNodeVertexColor", "image": "ShaderNodeTexImage", "color": "ShaderNodeRGB"}[source[0]]
+    assert feeding(tree, tree.nodes["ShaderNodeOutputMaterial"], "Surface")[0] is emission
+    assert skin[lit_look.MARK] == "body" and skin[lit_look.UNLIT_MARK] == 0.8 and skin.use_backface_culling
+    assert lit_look.AMBIENT not in tree.nodes and lit_look.SCALE_MARK not in skin   # まわりの明るさは入れない（描く工程も入れない）
+
+
+def test_the_operation_checks_and_passes_the_attribute_and_unlit():
+    from model3d.ops.look_ops import _lit_settings
+    s = _lit_settings({"color_attribute": {"patch": "col"}, "unlit": {"patch": 0.8, "tube": 1}, "soft": ["face"],
+                       "rim": {**RIM, "materials": {"face": 0.3}}})
+    assert s["color_attribute"] == {"patch": "col"} and s["unlit"] == {"patch": 0.8, "tube": 1.0}
+    assert "color_attribute" not in _lit_settings({}) and "unlit" not in _lit_settings({})
+
+
+@pytest.mark.parametrize("parameters, message", [
+    ({"color_attribute": {"patch": ""}}, "color_attribute"),
+    ({"color_attribute": ["col"]}, "color_attribute"),
+    ({"color_attribute": {}}, "color_attribute"),
+    ({"unlit": {"patch": -1}}, "unlit"),
+    ({"unlit": {}}, "unlit"),
+    ({"unlit": {"face": 1.0}, "soft": ["face"]}, "soft"),
+    ({"unlit": {"face": 1.0}, "rim": {**RIM, "materials": {"face": 0.5}}}, "rim.materials"),
+])
+def test_the_operation_rejects_bad_attribute_and_unlit(tmp_path, parameters, message):
+    with pytest.raises(ToolError, match=message):
+        call(tmp_path, {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), **parameters})

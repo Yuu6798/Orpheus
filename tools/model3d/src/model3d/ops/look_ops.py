@@ -214,7 +214,8 @@ def toon_look(inputs, parameters, outputs, context):
 
 
 LIT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "lit_look.py"
-LIT_PARAMETERS = {"blender", "meshes", "soft", "texture", "lit", "soft_lit", "extra", "floor", "ambient", "rim", "timeout"}
+LIT_PARAMETERS = {"blender", "meshes", "soft", "texture", "lit", "soft_lit", "extra", "floor", "ambient", "rim", "color_attribute",
+                  "unlit", "timeout"}
 LIT_SHADE_KEYS = {"band", "gain", "ambient"}
 EXTRA_KEYS = {"from", "to"}
 RIM_KEYS = {"left", "right", "edge", "gain", "amount", "materials", "side", "down", "blend"}
@@ -303,6 +304,22 @@ def _lit_settings(parameters):
         out["ambient"] = _vector(parameters["ambient"], "ambient", lower=0)
     if "rim" in parameters:
         out["rim"] = _rim_settings(parameters)
+    if "color_attribute" in parameters:
+        value = parameters["color_attribute"]
+        if (not isinstance(value, dict) or not value
+                or not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in value.items())):
+            raise ToolError(f"color_attribute は {{元の材質の名前: 色の属性の名前}}（空でない文字列）にしてください: {value!r}")
+        out["color_attribute"] = dict(value)
+    if "unlit" in parameters:
+        if not parameters["unlit"]:
+            raise ToolError("unlit は {元の材質の名前: 倍率} にしてください（1 つ以上）")
+        out["unlit"] = _material_numbers(parameters["unlit"], "unlit")
+        both = sorted(set(out["unlit"]) & set(out.get("soft", [])))
+        if both:
+            raise ToolError(f"unlit の材質は soft にできません（光を受けないので段が無い）: {both}")
+        both = sorted(set(out["unlit"]) & set(out.get("rim", {}).get("materials", {})))
+        if both:
+            raise ToolError(f"unlit の材質には縁の光を足しません（rim.materials から外してください）: {both}")
     return out
 
 
@@ -313,7 +330,9 @@ def _lit_settings(parameters):
                   "枠に入れる。soft の材質（顔など）は段をやわらかく、まわりの明るさを多めに。まわりの明るさは、材質ごとの RGB ノード "
                   "model3d_lit_ambient に、描く工程（render.show）がコマごとに入れる。rim を書くと縁の光（面が横を向く所に、カメラから見て"
                   "左と右で色を分けた光。真下を向く縁は弱める。材質ごとの割合）を足す。縁の光の色と強さは、全部の材質が見る 1 つの"
-                  "ノードグループ model3d_lit_rim にあり、コマごとに書き換えられる。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+                  "ノードグループ model3d_lit_rim にあり、コマごとに書き換えられる。color_attribute の材質は、絵の色を色の属性（頂点の色）"
+                  "から読む。unlit の材質は、光を受けずに絵の色 × 倍率の決まった明るさで出す（縁の光も足さない）。"
+                  "Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def lit_look(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
     from ..io import read_json
@@ -342,4 +361,8 @@ def lit_look(inputs, parameters, outputs, context):
                    "without_material": len(report.get("without_material") or [])}
     if report.get("rim") is not None:
         observation["rim_materials"] = report["rim"].get("materials")
+    if any(m.get("unlit") is not None for m in materials):
+        observation["unlit_materials"] = sum(1 for m in materials if m.get("unlit") is not None)
+    if any(m.get("color") == "attribute" for m in materials):
+        observation["attribute_materials"] = sum(1 for m in materials if m.get("color") == "attribute")
     return StepResult(observations=[observation])
