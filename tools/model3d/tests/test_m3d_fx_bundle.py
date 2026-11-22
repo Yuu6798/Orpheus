@@ -72,3 +72,17 @@ def test_missing_fields_stop():
     event = {k: v for k, v in EVENT.items() if k != "width"}
     with pytest.raises(EventError, match="width"):
         _draw(14, event)
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"seed": "17"}, "整数"), ({"seed": 3.7}, "整数"), ({"levels": [0, 2]}, "1 以上"), ({"levels": [3]}, "levels"),
+    ({"levels": [3, 1.5]}, "0 以上の整数"), ({"forks": 2.5}, "0 以上の整数"),
+])
+def test_bad_seed_levels_and_forks_stop(change, message):
+    with pytest.raises(EventError, match=message):
+        _draw(14, {**EVENT, **change})
+
+
+def test_a_straight_trunk_without_forks_is_drawn():
+    (co, _, _), _, _ = _draw(14, {**EVENT, "levels": [0, 0], "forks": 0})
+    assert len(co) == 1                                                   # 折らない幹は 1 区間

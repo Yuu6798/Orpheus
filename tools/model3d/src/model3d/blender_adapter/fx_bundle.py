@@ -101,6 +101,24 @@ def strands(a, b, seed, tick, jag, levels, forks, width, fork_length=None):
     return out
 
 
+def _whole(value, where):
+    """0 以上の整数（整数に等しい数も受ける）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or value < 0:
+        raise fx_events.EventError(f"{where} は 0 以上の整数にしてください: {value!r}")
+    return int(value)
+
+
+def _levels(event, forks):
+    """[幹を折る回数, 細かく折る回数]。枝を出すときは、幹を 1 回以上折る（折らないと、枝の出どころが先になって伸びない）。"""
+    levels = fx_events.need(event, "levels")
+    if not isinstance(levels, (list, tuple)) or len(levels) != 2:
+        raise fx_events.EventError(f"levels は [幹を折る回数, 細かく折る回数] にしてください: {levels!r}")
+    coarse, fine = (_whole(v, "levels") for v in levels)
+    if forks and coarse < 1:
+        raise fx_events.EventError(f"枝を出す（forks {forks}）ときは、levels の 1 つ目（幹を折る回数）を 1 以上にしてください: {levels!r}")
+    return coarse, fine
+
+
 def life(event):
     return float(fx_events.need(event, "grow")) + float(fx_events.need(event, "hold")) + float(fx_events.need(event, "fade"))
 
@@ -118,7 +136,7 @@ def phase(table, event, f):
         level, thick = 1.0, 1.0
     else:
         k = min(1.0, (age - grow - hold) / max(fade, 1e-6))
-        level = (1.0 - k) ** 1.5 * (1.0 - FORM["flicker"] + FORM["flicker"] * fx_events.rng(int(event["seed"]), 5, int(f)).random())
+        level = (1.0 - k) ** 1.5 * (1.0 - FORM["flicker"] + FORM["flicker"] * fx_events.rng(event["seed"], 5, table.tick(f)).random())
         thick = 1.0 - FORM["fade_thin"] * k
     return reach, level, thick
 
@@ -134,9 +152,9 @@ def draw(table, event, f, camera, core, halo=None, gain=1.0, values=None):
     reach, level, thick = state
     level *= float(event.get("gain", 1.0)) * gain
     a, b = table.point(fx_events.need(event, "from"), f, camera), table.point(fx_events.need(event, "to"), f, camera)
-    forks = int(fx_events.need(event, "forks"))
-    lines = strands(a, b, int(fx_events.need(event, "seed")), table.tick(f, event.get("every", 1)), float(fx_events.need(event, "jag")),
-                    tuple(int(v) for v in fx_events.need(event, "levels")), forks, float(fx_events.need(event, "width")),
+    forks = _whole(fx_events.need(event, "forks"), "forks")
+    lines = strands(a, b, fx_events.need(event, "seed"), table.tick(f, event.get("every", 1)), float(fx_events.need(event, "jag")),
+                    _levels(event, forks), forks, float(fx_events.need(event, "width")),
                     tuple(fx_events.need(event, "fork_length")) if forks else None)
     wide = event.get("halo")
     for line in lines:
