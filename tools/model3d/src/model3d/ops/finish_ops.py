@@ -1,4 +1,4 @@
-"""仕上げ: 描いたコマに、コマ割り（同じ瞬間を 2〜3 のカメラで上下に割って見せる）を掛けて、別のフォルダへ書く（render.assemble の前）。"""
+"""仕上げ: 描いたコマに、コマ割り（同じ瞬間を 2〜3 のカメラで上下に割って見せる）か目の残像を掛けて、別のフォルダへ書く（render.assemble の前）。"""
 import hashlib
 import math
 import shutil
@@ -323,3 +323,100 @@ def render_panels(inputs, parameters, outputs, context):
                    "seconds": elapsed}
     unresolved = ([f"別のカメラのコマが無いので割らなかった T: {[row['T'] for row in skipped][:20]}"] if skipped else [])
     return StepResult(observations=[observation], unresolved=unresolved)
+
+
+AFTERIMAGE_PARAMETERS = {"frames_dir", "range", "fps", "out_dir", "reference_height", "source", "span", "amount", "decay_frames",
+                         "threshold", "blur", "color", "min_amount"}
+
+
+@register("render.afterimage", inputs=("frames",), outputs=("frames", "report"), cacheable=False,
+          summary="目の残像: 描いたコマ（frames の model3d-frames/0.1 か、frames_dir と range の T）のうち、span の T に、source の T の"
+                  "明るいコマ（暗くなる直前など）をぼかして、明るい所（明るさ − threshold）だけを color（0〜1 の RGB。補色など）でうすく足して、"
+                  "別のフォルダへ書く。濃さは span の最初の T で amount、decay_frames コマごとに 1/e に薄れ、min_amount 以下のコマは足さない。"
+                  "ぼかし（blur）は基準の高さ（reference_height。既定 1 で画面の高さの比）での sigma。ほかのコマはそのまま写す。"
+                  "2D の側の afterimage_echo（人物の輪郭の残像）とは別のもの。frames は書いたコマの一覧（render.assemble の入力になる）。"
+                  "コマのフォルダは隠れた入力なので再利用しない（毎回実行）")
+def render_afterimage(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+
+    from .. import afterimage as A
+    operation = "render.afterimage"
+    unknown = set(parameters) - AFTERIMAGE_PARAMETERS
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(AFTERIMAGE_PARAMETERS)}）")
+    if "frames" not in outputs:
+        raise ToolError(f"{operation} には outputs の frames（書いたコマの一覧）が要ります")
+    source_dir, frames, manifest = main_frames(inputs, parameters, context, operation)
+    fps = parameters.get("fps") if parameters.get("fps") is not None else (manifest or {}).get("fps")
+    if fps is None:
+        raise ToolError(f"{operation} には fps が要ります（パラメーター fps か、描いたコマの一覧の fps）")
+    fps = float(number({"fps": fps}, "fps", minimum=0, exclusive=True))
+    reference = float(number(parameters, "reference_height", 1.0, minimum=0, exclusive=True))
+    source_T = _int(parameters.get("source"), "source（明るいコマの T）", 1)
+    first, last = _span(parameters.get("span"), "span")
+    amount = float(_real(parameters.get("amount"), "amount", 0, exclusive=True))
+    decay = float(_real(parameters.get("decay_frames"), "decay_frames", 0, exclusive=True))
+    threshold = float(_real(parameters.get("threshold"), "threshold", 0))
+    if threshold >= 1:
+        raise ToolError(f"threshold は 0 以上 1 より小さい明るさにしてください: {threshold!r}")
+    sigma = float(_real(parameters.get("blur"), "blur", 0, exclusive=True))
+    color = parameters.get("color")
+    if (not isinstance(color, list) or len(color) != 3
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in color)):
+        raise ToolError(f"color は [r, g, b]（0〜1 の数）にしてください: {color!r}")
+    min_amount = float(_real(parameters.get("min_amount", 0.0), "min_amount", 0))
+    by_T = {T: (f, path, h) for T, f, path, h in frames}
+    if first <= source_T:
+        raise ToolError(f"span（{first}〜{last}）は、source の T {source_T} より後から始めてください（明るいコマの後に残る像）")
+    if source_T not in by_T:
+        raise ToolError(f"source の T {source_T} が、描いたコマにありません")
+    if not any(first <= T <= last for T in by_T):
+        raise ToolError(f"span の T（{first}〜{last}）が、描いたコマに 1 つもありません")
+    out_dir = (resolve_path(context.recipe_dir, parameters["out_dir"]) if parameters.get("out_dir")
+               else Path(context.step_dir) / "frames")
+    if Path(out_dir).resolve() == source_dir.resolve():
+        raise ToolError(f"out_dir が元のコマのフォルダと同じです（元のコマを書き換えません）: {out_dir}")
+    missing = [T for T, _f, file, _h in frames if not file.is_file()]
+    if missing:
+        raise ToolError(f"{operation}: コマがありません（{len(missing)} コマ。最初の T: {missing[:10]}）: {source_dir}")
+    _f, source_path, source_expected = by_T[source_T]
+    source_sha = checked(source_path, source_expected, source_T, "描いたコマ")
+    bright = read_rgb(source_path, source_T, operation)
+    H, W = bright.shape[:2]
+    s = H / reference
+    picture = A.ghost(bright, sigma * s, threshold, [float(c) for c in color])
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    began = time.monotonic()
+    digest, listing, applied = hashlib.sha256(), [], []
+    for T, f, path, expected in frames:
+        h = checked(path, expected, T, "描いたコマ")
+        digest.update(f"{T}:{h}\n".encode())
+        target = Path(out_dir) / path.name
+        strength = A.strength(T, first, amount, decay) if first <= T <= last else 0.0
+        if strength <= min_amount:                    # 区間の外と、薄すぎるコマは、そのまま写す
+            check_copy(path, T, operation, (W, H))
+            shutil.copyfile(path, target)
+            listing.append({"T": T, "f": f, "file": target.name, "sha256": h, "bytes": target.stat().st_size})
+            continue
+        image = read_rgb(path, T, operation, (W, H))
+        Image.fromarray(np.ascontiguousarray(A.add(image, picture, strength))).save(target)
+        applied.append({"T": T, "amount": round(strength, 6)})
+        listing.append({"T": T, "f": f, "file": target.name, "sha256": sha256(target), "bytes": target.stat().st_size})
+    write_frames(outputs, out_dir, fps, (W, H), listing)
+    elapsed = round(time.monotonic() - began, 2)
+    report = {"schema_version": "model3d-afterimage/0.1",
+              "source": {"directory": str(source_dir.resolve()), "first": frames[0][0], "last": frames[-1][0], "count": len(frames),
+                         "sha256": digest.hexdigest()},
+              "bright": {"T": source_T, "sha256": source_sha},
+              "out_dir": str(Path(out_dir).resolve()), "resolution": [W, H], "fps": fps, "reference_height": reference, "scale": s,
+              "span": [first, last], "amount": amount, "decay_frames": decay, "threshold": threshold, "blur_px": sigma * s,
+              "color": [float(c) for c in color], "min_amount": min_amount,
+              "lit_pixels": int((picture.max(axis=2) > 0).sum()), "applied": applied, "copied": len(frames) - len(applied),
+              "seconds": elapsed}
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    observation = {"kind": "afterimage", "frames": len(frames), "applied": len(applied),
+                   "first_applied": applied[0]["T"] if applied else None, "last_applied": applied[-1]["T"] if applied else None,
+                   "copied": len(frames) - len(applied), "seconds": elapsed}
+    return StepResult(observations=[observation])
