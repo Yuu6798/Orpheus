@@ -114,7 +114,7 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
             dist = (reach * (1.0 - frac) ** 1.5 + floor_) * s
             add(motes, "strip", [tip + d * (dist + (lead + back * (1.0 - frac)) * s), tip + d * dist],
                 [F["mote_width"][0] * s, F["mote_width"][1] * s], [gain * 0.3 * k, gain * 1.2 * k * frac])
-        return [(power * 0.25 * k * (0.7 + 0.3 * rng.random()), tip + view * (F["glow_ahead"][0] * s), c_charge)]
+        return [(gain * power * 0.25 * k * (0.7 + 0.3 * rng.random()), tip + view * (F["glow_ahead"][0] * s), c_charge)]
     if age <= hold:                                                       # 撃つ
         k = age / hold
         length = float(fx_events.need(event, "length"))
@@ -163,7 +163,7 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
             n = F["ring_points"]
             points = [centre + (side * math.cos(2 * math.pi * i / (n - 1)) + lift * math.sin(2 * math.pi * i / (n - 1))) * radius for i in range(n)]
             add(fine, "strip", points, [(F["ring_width"][0] * ring + F["ring_width"][1]) * s] * n, [ring * 1.3] * n)
-        return [(power * (0.6 + 1.2 * flash), tip + view * (F["glow_ahead"][1] * s), c_release)]
+        return [(gain * power * (0.6 + 1.2 * flash), tip + view * (F["glow_ahead"][1] * s), c_release)]
     k = (age - hold) / after                                              # 余韻
     level = gain * (1.0 - k) * (0.6 + 0.4 * rng.random())
     if soft:
@@ -176,4 +176,4 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
         b = path[i] + (path[i + 1] - path[i]) * rng.uniform(0.5, 1.0) + np.array([rng.uniform(-jx, jx), rng.uniform(-jx, jx), rng.uniform(0.0, jz)]) * s
         points = fx_bundle.displace([a, b], rng, F["after_jag"], 2)
         add(fine, "strip", points, [F["after_width"] * s] * len(points), [level] * len(points))
-    return [(power * 0.12 * (1.0 - k), tip, c_after)]
+    return [(gain * power * 0.12 * (1.0 - k), tip, c_after)]
