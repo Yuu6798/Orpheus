@@ -14,7 +14,7 @@ APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "apply_
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
-                         "review_note", "occlusion_part", "color_match", "visibility", "two_sided_depth", "core", "regions")
+                         "review_note", "occlusion_part", "color_match", "visibility", "two_sided_depth", "core", "regions", "prefilter")
 ELLIPSE_KEYS = ("center", "radius", "inner", "name")
 VIEW_PARTS_PARAMETERS = ("view", "parts", "margin", "background")
 ALIGNMENT_KEYS = ("model", "reference", "kind")
@@ -64,6 +64,12 @@ def projection_settings(parameters):
         if not isinstance(regions, list) or not regions:
             raise ToolError(f"regions は楕円 {{\"center\": [x, y], \"radius\": [rx, ry], \"inner\": 0〜1}} の並びにしてください: {regions!r}")
         options["regions"] = [_ellipse(region, f"regions[{k}]") for k, region in enumerate(regions)]
+    if parameters.get("prefilter") is not None:          # 写す前のならし: "auto"（升目 1 つの半分）か、参照画像の画素の σ
+        prefilter = parameters["prefilter"]
+        if prefilter != "auto" and (isinstance(prefilter, bool) or not isinstance(prefilter, (int, float))
+                                    or not math.isfinite(prefilter) or prefilter < 0):
+            raise ToolError(f"prefilter は \"auto\"（升目 1 つの半分）か、参照画像の画素の σ（0 以上の数）にしてください: {prefilter!r}")
+        options["prefilter"] = prefilter
     note = parameters.get("review_note")
     if note is not None and (not isinstance(note, str) or not note.strip()):
         raise ToolError("texture.project_reference の review_note は空でない文字列にしてください")
