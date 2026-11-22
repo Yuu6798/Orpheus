@@ -371,3 +371,92 @@ def test_new_projection_settings_are_checked():
                            ({"visibility": False, "occlusion_part": "head"}, "occlusion_part")):
         with pytest.raises(ToolError, match=message):
             projection_settings({**base, **extra})
+
+
+# ---- 写す前のならし（prefilter） ---------------------------------------------------------------------------------------------
+
+def rolled_blur(array, sigma):
+    """4 作目の 3D のダンスの写す台本のならし（窓 ±ceil(3σ)、縁は巻き戻し）。中ほどは texture.blur と同じになるはず。"""
+    offsets = np.arange(-int(np.ceil(3 * sigma)), int(np.ceil(3 * sigma)) + 1)
+    weights = np.exp(-0.5 * (offsets / sigma) ** 2)
+    weights /= weights.sum()
+    for axis in (0, 1):
+        array = sum(w * np.roll(array, int(o), axis=axis) for o, w in zip(offsets, weights))
+    return array
+
+
+def test_blur_is_the_script_blur_away_from_the_edges():
+    rng = np.random.default_rng(7)
+    image = rng.random((40, 50, 3)) * 255
+    reach = int(np.ceil(3 * 1.96))
+    assert np.abs(texture.blur(image, 1.96) - rolled_blur(image, 1.96))[reach:-reach, reach:-reach].max() < 1e-9
+    assert texture.blur(image, 0.05) is not None and np.array_equal(texture.blur(image, 0.05), image)   # 0.05 以下はそのまま
+    assert texture.blur(np.full((5, 5), 7.0), 4.0) == pytest.approx(np.full((5, 5), 7.0))               # 窓が絵より広くても平らなまま
+
+
+def test_texel_size_is_the_median_of_view_over_texture_area():
+    points = np.array([[[0, 0], [8, 0], [0, 8]], [[0, 0], [4, 0], [0, 4]], [[0, 0], [8, 0], [0, 8]]], dtype=float)
+    corners = np.array([[[0, 0], [2, 0], [0, 2]], [[0, 0], [2, 0], [0, 2]], [[0, 0], [0, 0], [0, 0]]], dtype=float)
+    assert texture.texel_size(points, corners) == (pytest.approx(3.0), 2)       # 4 と 2 の中央値。面積 0 の三角形は数えない
+    assert texture.texel_size(points, corners, [0]) == (pytest.approx(4.0), 1)
+    assert texture.texel_size(points, corners, [2]) == (None, 0)
+
+
+def diagonal(size=64):
+    """右上が赤、左下が青の、斜めの境のある参照画像。"""
+    y, x = np.mgrid[0:size, 0:size]
+    image = np.zeros((size, size, 4))
+    image[..., :3] = np.where(((x - 0.37 * y) > 20)[..., None], [220.0, 30.0, 30.0], [30.0, 30.0, 220.0])
+    image[..., 3] = 255
+    return image
+
+
+def thin_lines(size=64):
+    """白地に、5 画素おきの幅 1 画素の黒い縦線（色の絵の升目（4 画素）より細かい絵）。"""
+    image = np.full((size, size, 4), 255.0)
+    image[:, ::5, :3] = 0
+    return image
+
+
+def test_prefilter_auto_uses_half_a_texel_and_removes_the_stripes_of_fine_lines():
+    mesh = mesh_of(quad())
+    plain, _, plain_report = project(mesh, reference=thin_lines(), base=gray(16))
+    smooth, _, report = project(mesh, reference=thin_lines(), base=gray(16), prefilter="auto")
+    assert report["prefilter"] == {"mode": "auto", "texel_view_px": 4.0, "triangles": 2, "sigma_view_px": 2.0, "sigma_reference_px": 2.0}
+    assert "prefilter" not in plain_report
+    ideal = thin_lines()[..., :3].reshape(16, 4, 16, 4, 3).mean(axis=(1, 3))  # 升目 1 つに入る参照画像の平均
+    inner = (slice(2, -2), slice(2, -2))                                          # 縁の升目は除く
+    assert np.abs(smooth - ideal)[inner].mean() < 0.5 * np.abs(plain - ideal)[inner].mean()   # 線を拾う・拾わないの縞が減る
+    assert np.ptp(smooth[inner][..., 0]) < 0.3 * np.ptp(plain[inner][..., 0])
+    edge, _, _ = project(mesh, reference=diagonal(), base=gray(16), prefilter="auto")
+    assert np.allclose(edge[1, 14], [220, 30, 30]) and np.allclose(edge[14, 1], [30, 30, 220])   # 境から遠い所の色は変わらない
+
+
+def test_prefilter_scales_with_the_alignment_and_takes_a_fixed_sigma():
+    mesh = mesh_of(quad())
+    matrix, offset, _ = texture.alignment([[0.0, 0.0], [64.0, 0.0]], [[0.0, 0.0], [128.0, 0.0]])   # 参照画像の 2 画素 = 視点の 1 画素
+    _, _, report = texture.project_reference(mesh, gray(16), np.repeat(np.repeat(diagonal(), 2, axis=0), 2, axis=1), FRONT, matrix, offset,
+                                             expand=0.0, prefilter="auto")
+    assert report["prefilter"]["sigma_view_px"] == 2.0 and report["prefilter"]["sigma_reference_px"] == 4.0
+    fixed, _, fixed_report = project(mesh, reference=diagonal(), base=gray(16), prefilter=0)
+    assert np.array_equal(fixed, project(mesh, reference=diagonal(), base=gray(16))[0])   # σ 0 は、ならさないのと同じ
+    assert fixed_report["prefilter"] == {"mode": "sigma", "sigma_reference_px": 0.0, "sigma_view_px": 0.0}
+
+
+def test_prefilter_keeps_transparent_colours_out_of_the_edge():
+    reference = halves()
+    reference[:, 40:, :3] = [0, 255, 0]                                          # 透明な所の色（写らない色）
+    reference[:, 40:, 3] = 0
+    smooth, _, _ = project(mesh_of(quad()), reference=reference, base=gray(16), prefilter=3.0)
+    assert smooth[:, :9, 1].max() < 40                                           # 緑が、見える所へにじまない（アルファを掛けてならす）
+
+
+def test_prefilter_setting_is_checked():
+    from model3d.ops.texture_ops import projection_settings
+    base = {"view": FRONT, "alignment": {"model": IDENTITY[0], "reference": IDENTITY[1]}}
+    assert projection_settings({**base, "prefilter": "auto"})[2]["prefilter"] == "auto"
+    assert projection_settings({**base, "prefilter": 1.5})[2]["prefilter"] == 1.5
+    assert "prefilter" not in projection_settings(base)[2]                                     # 省けば今までと同じ
+    for value in ("Auto", -1, True, float("nan")):
+        with pytest.raises(ToolError, match="prefilter"):
+            projection_settings({**base, "prefilter": value})

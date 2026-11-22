@@ -11,7 +11,11 @@
 - uv が島をまたいで引き伸ばされた三角形（継ぎ目の頂点を結合したときなど）は塗らない。繰り返しの uv で 1 をまたぐ三角形は、
   重なる 1 枚ごとに基本の 1 枚へずらして塗る（描画の sample(wrap=True) と同じ画素に当たる）。
 - 三角形の塗りつぶしは numpy でまとめて行う（大きさごとに束ねる）。同じ入力なら同じ出力。
+- 写す前のならし（prefilter。任意）: 参照画像が色の絵の升目より細かいと、升目ごとに 1 点だけ引くので、ふちがぎざぎざになる。
+  写す前に、参照画像を升目の大きさ（auto は升目 1 つの半分の σ）でならす。
 """
+import math
+
 import numpy as np
 from PIL import Image, ImageFilter
 
@@ -278,6 +282,60 @@ def sample(image, xy, wrap=False):
     return color, outside
 
 
+def blur(image, sigma):
+    """画像 (H,W) か (H,W,C) を σ sigma 画素のガウスでならす（窓は ±ceil(3σ)、縁は鏡写しで端の画素を重ねない。行と列に分けて掛ける）。
+    σ が 0.05 以下なら、そのまま返す（4 作目の 3D のダンスの写す台本と同じ窓）。"""
+    image = np.asarray(image, dtype=np.float64)
+    if sigma <= 0.05:
+        return image
+    reach = int(math.ceil(3 * sigma))
+    offsets = np.arange(-reach, reach + 1)
+    kernel = np.exp(-0.5 * (offsets / sigma) ** 2)
+    kernel /= kernel.sum()
+    out = image
+    for axis in (0, 1):
+        length = out.shape[axis]
+        index = np.arange(-reach, length + reach)
+        if length > 1:                                   # 鏡写し（窓が絵より広いときは折り返す）
+            period = 2 * (length - 1)
+            index = index % period
+            index = np.where(index >= length, period - index, index)
+        else:
+            index = np.zeros_like(index)
+        padded = np.take(out, index, axis=axis)
+        out = sum(kernel[k] * np.take(padded, range(k, k + length), axis=axis) for k in range(len(kernel)))
+    return out
+
+
+def texel_size(points, corners, triangles=None):
+    """色の絵の升目 1 つが、視点の何画素にあたるか（三角形ごとの √(視点の面積 / 色の絵の面積) の中央値）と、数えた三角形の数。
+    points は三角形の角の視点の画素 (T,3,2)、corners は色の絵の画素 (T,3,2)。triangles（番号）で数える三角形を選べる。
+    色の絵の面積が 1e-6 画素² 以下の三角形は数えない。数える三角形が無ければ (None, 0)。"""
+    points, corners = np.asarray(points, dtype=np.float64), np.asarray(corners, dtype=np.float64)
+    if triangles is not None:
+        points, corners = points[triangles], corners[triangles]
+
+    def area(p):
+        return 0.5 * np.abs((p[:, 1, 0] - p[:, 0, 0]) * (p[:, 2, 1] - p[:, 0, 1]) - (p[:, 2, 0] - p[:, 0, 0]) * (p[:, 1, 1] - p[:, 0, 1]))
+
+    tex, seen = area(corners), area(points)
+    usable = tex > 1e-6
+    if not usable.any():
+        return None, 0
+    return float(np.median(np.sqrt(seen[usable] / tex[usable]))), int(usable.sum())
+
+
+def prefiltered(reference, sigma):
+    """参照画像を σ sigma 画素でならした物（アルファがあれば、色はアルファを掛けてからならして割り戻す。アルファは変えない）。"""
+    if reference.shape[2] != 4:
+        return blur(reference, sigma)
+    alpha = reference[..., 3:4] / 255.0
+    weight = blur(alpha, sigma)
+    color = blur(reference[..., :3] * alpha, sigma) / np.maximum(weight, 1e-6)
+    color = np.where(weight > 1e-6, color, reference[..., :3])
+    return np.concatenate([color, reference[..., 3:4]], axis=2)
+
+
 def texel_coordinates(uv, width, height):
     """uv (…,2) をテクスチャの画素の座標へ（v は上が 1。繰り返しは折り返さない。引くときに sample の wrap で回す）。"""
     uv = np.asarray(uv, dtype=np.float64)
@@ -422,7 +480,7 @@ def soft_ellipses(px, py, shapes, inner_default=0.7):
 
 def project_reference(mesh, texture, reference, view, matrix, offset, faces=None, mask=None, min_facing=0.2,
                       facing_ramp=0.3, depth_tolerance=0.002, expand=1.0, max_stretch=8.0, occlusion=None, visibility=True,
-                      two_sided_depth=None, core=None, regions=None):
+                      two_sided_depth=None, core=None, regions=None, prefilter=None):
     """参照画像をテクスチャへ写した新しいテクスチャ（texture と同じ (H,W,3) か (H,W,4)。アルファは変えない）、画素ごとの重み (H,W)、報告。
 
     faces（面の番号）があれば、その面の上の画素だけを塗る（見え隠れはメッシュ全体で判定する）。matrix・offset は
@@ -438,6 +496,9 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     - core（{"center", "radius", "inner"}。視点の画素）: この楕円の中は、面の向きで弱めない（鼻のわき・唇の下など下や横を向いた面にも
       写す。真裏（向きの余弦 −0.2 以下）は除く）。inner の既定は 0.75。
     - regions（core と同じ形の並び。視点の画素）: 写す範囲を、縁をなめらかにぼかした楕円の集まり（重みに掛ける）。inner の既定は 0.7。
+    - prefilter（"auto" か、参照画像の画素の σ）: 写す前に参照画像をならす（升目より細かい絵の、ふちのぎざぎざを防ぐ）。auto は、写す重みの
+      ある三角形（見え隠れ・面の向き・範囲・マスクで決まる。参照画像の色とアルファは見ない）の、色の絵の升目 1 つが視点の何画素かの中央値の
+      半分を σ にし、位置合わせの倍率で参照画像の画素へ直す。省けば今までとファイルまで同じ。
     """
     if mesh.uv is None:
         raise ToolError("メッシュに頂点ごとの uv がありません（テクスチャへ写せません）")
@@ -522,6 +583,20 @@ def project_reference(mesh, texture, reference, view, matrix, offset, faces=None
     weight = visible * facing * ~outside
     if regions is not None:                              # 写す範囲（視点の画素の、縁をぼかした楕円の集まり）
         weight = weight * soft_ellipses(at[:, 0], at[:, 1], regions)
+    if prefilter is not None:                            # 写す前に、参照画像を升目の大きさでならす
+        scale = math.sqrt(abs(float(np.linalg.det(matrix))))   # 参照画像の 1 画素が、視点の何画素か
+        if prefilter == "auto":
+            reach = weight if mask is None else weight * sample(mask[..., None], source)[0][:, 0]
+            painted_triangles = np.unique(index[reach > 0])
+            view_corners = points[candidates]
+            texel, counted = texel_size(view_corners, corners, painted_triangles)
+            sigma = 0.5 * texel / scale if texel is not None else 0.0
+            report["prefilter"] = {"mode": "auto", "texel_view_px": None if texel is None else round(texel, 4), "triangles": counted,
+                                   "sigma_view_px": None if texel is None else round(0.5 * texel, 4), "sigma_reference_px": round(sigma, 4)}
+        else:
+            sigma = float(prefilter)
+            report["prefilter"] = {"mode": "sigma", "sigma_reference_px": round(sigma, 4), "sigma_view_px": round(sigma * scale, 4)}
+        color, _ = sample(prefiltered(reference, sigma), source)
     if reference.shape[2] == 4:
         weight = weight * color[:, 3] / 255.0
     if mask is not None:
