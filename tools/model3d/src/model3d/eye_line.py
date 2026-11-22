@@ -33,7 +33,7 @@ DEFAULTS = {"sag": 21.0, "thickness": 13.0, "outer_bias": 0.25,
 # 肌で埋める消し方の、計算の作りの既定（重みの強さ・範囲の縁のぼかし。台本を 0.1 mm/画素の描画で回したときの値で、base_width で伸ばす）。
 # 顔と目の大きさに寄る値（枠 boxes・肌らしさの決まり skin・肌の色を探す広さ sigmas・肌の色を取らない幅 exclude・枠を広げる幅 grow）は
 # 既定を置かず、工程で必ず書く。
-SKIN_FILL_DEFAULTS = {"keep_dark_below": None, "gain": 8.0, "feather": 7.0, "soften": 1.5}
+SKIN_FILL_DEFAULTS = {"keep_dark_below": None, "gain": 8.0, "feather": 7.0, "soften": 1.5, "exclude_all": False}
 SKIN_FILL_REQUIRED = ("boxes", "skin", "sigmas", "exclude", "grow")
 STROKE_DEFAULTS = {"curve": False, "samples": 120, "span": None, "color": None}
 
@@ -211,7 +211,10 @@ def skin_fill(image, settings, scale):
     sigmas = [s * scale for s in fill["sigmas"]]
     for k, box in enumerate(fill["boxes"]):
         x0, y0, x1, y1 = (int(round(v * scale)) for v in box)
-        ex0, ey0, ex1, ey1 = (int(round(v * scale)) for v in (fill.get("exclude_boxes") or fill["boxes"])[k])
+        excluded = fill.get("exclude_boxes") or fill["boxes"]
+        # 肌の色を取らない枠: 台本と同じく今の目の枠だけ（既定）か、exclude_all で全部の枠（ぼかしの窓がもう片方の目に届くと、その白目が
+        # 肌らしい画素として混ざり、白い斑になるため）
+        skip = excluded if fill.get("exclude_all") else [excluded[k]]
         reach = (int(round(feather * 8 + 1)) | 1) // 2 + (int(round(soften * 8 + 1)) | 1) // 2 + grow + 2
         top, bottom = max(y0 - reach, 0), min(y1 + reach, height)        # 埋める範囲が届く所
         left, right = max(x0 - reach, 0), min(x1 + reach, width)
@@ -220,7 +223,9 @@ def skin_fill(image, settings, scale):
         far = (int(round(max(sigmas) * 8 + 1)) | 1) // 2 + 1              # ぼかしの窓が届く所
         sy0, sy1, sx0, sx1 = max(top - far, 0), min(bottom + far, height), max(left - far, 0), min(right + far, width)
         valid = skin[sy0:sy1, sx0:sx1].copy()
-        valid[max(ey0 - exclude - sy0, 0):max(ey1 + exclude - sy0, 0), max(ex0 - exclude - sx0, 0):max(ex1 + exclude - sx0, 0)] = False
+        for other in skip:
+            ex0, ey0, ex1, ey1 = (int(round(v * scale)) for v in other)
+            valid[max(ey0 - exclude - sy0, 0):max(ey1 + exclude - sy0, 0), max(ex0 - exclude - sx0, 0):max(ex1 + exclude - sx0, 0)] = False
         valid = valid.astype(np.float64)
         source = base[sy0:sy1, sx0:sx1] * valid[..., None]
         filled = np.zeros(source.shape)

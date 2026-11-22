@@ -395,7 +395,7 @@ def project_reference(inputs, parameters, outputs, context):
 EYE_LINE_PARAMETERS = {"eyes", "end_y", "erase_rows", "erase_columns", "sag", "thickness", "outer_bias", "wing", "lashes", "color",
                        "supersample", "close_px", "close_blur", "band_blur", "base_width", "strokes", "skin_fill"}
 STROKE_KEYS = ["color", "curve", "name", "points", "samples", "span", "widths"]
-SKIN_FILL_KEYS = ["boxes", "exclude", "exclude_boxes", "feather", "gain", "grow", "keep_dark_below", "sigmas", "skin", "soften"]
+SKIN_FILL_KEYS = ["boxes", "exclude", "exclude_all", "exclude_boxes", "feather", "gain", "grow", "keep_dark_below", "sigmas", "skin", "soften"]
 SKIN_RULE_KEYS = ["red_at_least_blue", "red_minus_green_below", "rgb_min"]
 
 
@@ -493,6 +493,8 @@ def skin_fill_settings(value):
         raise ToolError(f"skin_fill.skin.red_at_least_blue は true か false にしてください: {rule['red_at_least_blue']!r}")
     if merged["keep_dark_below"] is not None:
         _finite(merged["keep_dark_below"], "skin_fill.keep_dark_below", 0.0)
+    if not isinstance(merged["exclude_all"], bool):
+        raise ToolError(f"skin_fill.exclude_all は true か false にしてください: {merged['exclude_all']!r}")
     sigmas = merged["sigmas"]
     if not isinstance(sigmas, list) or not sigmas:
         raise ToolError(f"skin_fill.sigmas はぼかしの広さ（画素）の並びにしてください: {sigmas!r}")
@@ -630,3 +632,118 @@ def closed_eye_line(inputs, parameters, outputs, context):
     unresolved = [] if report["line_pixels"] else ["線が 1 画素も描けませんでした（eyes・end_y・base_width を確かめてください）"]
     return StepResult(observations=[{k: report[k] for k in ("kind", "size", "changed_box", "changed_pixels", "line_pixels")}],
                       unresolved=unresolved, review=bool(unresolved))
+
+
+WARP_MOUTH_PARAMETERS = ["bulge", "corner_lift", "corner_mark", "inside_color", "jaw", "level_tilt", "line", "lips", "open", "scale", "scale_x",
+                         "tilt_after_stretch",
+                         "tongue_color", "upper_arch", "upper_sag", "window"]
+
+
+def _rgb(value, where):
+    if not isinstance(value, list) or len(value) != 3 or not all(
+            not isinstance(v, bool) and isinstance(v, (int, float)) and 0 <= v <= 255 for v in value):
+        raise ToolError(f"{where} は色 [R, G, B]（0〜255）にしてください: {value!r}")
+    return value
+
+
+def warp_mouth_settings(parameters):
+    """texture.warp_mouth のパラメーターを確かめ、mouth_warp.warp の設定にする。計算の作りの長さ（mouth_warp.LENGTHS・JAW）は scale 倍。
+    顔の形に寄る長さ（lips・jaw の必須のキー）は、書いた値のまま（scale は掛けない）。"""
+    from .. import color_marks, mouth_warp
+    _refuse_unknown(parameters, WARP_MOUTH_PARAMETERS, "texture.warp_mouth")
+    window = parameters.get("window")
+    if (not isinstance(window, list) or len(window) != 4 or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in window)
+            or window[0] >= window[2] or window[1] >= window[3]):
+        raise ToolError(f"window はもとの口を探す範囲 [x0, y0, x1, y1]（0 以上の整数の画素、x0 < x1、y0 < y1）にしてください: {window!r}")
+    line = parameters.get("line")
+    if not isinstance(line, dict) or line.get("red_minus_green_above") is None:
+        raise ToolError("line にもとの口の線の色の決まり {\"red_minus_green_above\": 数, \"red_above\": 数, \"green_below\": 数} を書いてください"
+                        f"（既定は無い）: {line!r}")
+    _refuse_unknown(line, list(color_marks.RULE_KEYS), "texture.warp_mouth の line")
+    line = {key: _finite(line[key], f"line.{key}") for key in color_marks.RULE_KEYS if line.get(key) is not None}
+    scale = _finite(parameters.get("scale", 1.0), "scale", 0.0, True)
+    settings = {"window": window, "line": line, "scale": scale,
+                "scale_x": _finite(parameters.get("scale_x", 1.0), "scale_x", 0.0, True),
+                "corner_lift": _finite(parameters.get("corner_lift", 0.0), "corner_lift"),
+                "upper_sag": _finite(parameters.get("upper_sag", 0.0), "upper_sag"),
+                "upper_arch": _finite(parameters.get("upper_arch", 0.0), "upper_arch"),
+                "open": _finite(parameters.get("open", 0.0), "open", 0.0),
+                "bulge": _finite(parameters.get("bulge", 2.0), "bulge", 0.0, True),
+                "level_tilt": parameters.get("level_tilt", True),
+                "tilt_after_stretch": parameters.get("tilt_after_stretch", False),
+                "lengths": {key: value * scale for key, value in mouth_warp.LENGTHS.items()}}
+    lips = parameters.get("lips")                        # 顔の形に寄る長さ（唇の高さ）。既定は無い
+    if not isinstance(lips, dict) or set(lips) != set(mouth_warp.LIPS_KEYS):
+        raise ToolError("lips に、口の線のまわりの唇の高さ（画素）{\"above\": 線の上で横に伸ばしきる幅, \"below\": 線の下で横に伸ばしきる幅, "
+                        "\"upper_keep\": 上を動かしきる幅, \"lower_keep\": 下を動かしきる幅（下唇の赤みと光）} を全部書いてください"
+                        f"（既定は無い）: {lips!r}")
+    settings["lengths"].update({key: _finite(lips[key], f"lips.{key}", 0.0) for key in mouth_warp.LIPS_KEYS})
+    if not isinstance(settings["level_tilt"], bool):
+        raise ToolError(f"level_tilt は true か false にしてください: {settings['level_tilt']!r}")
+    if not isinstance(settings["tilt_after_stretch"], bool):
+        raise ToolError(f"tilt_after_stretch は true か false にしてください: {settings['tilt_after_stretch']!r}")
+    needs_mark = settings["open"] > 0 or settings["upper_arch"] != 0 or settings["corner_lift"] < 0
+    if parameters.get("corner_mark") is not None:
+        settings["corner_mark"] = _finite(parameters["corner_mark"], "corner_mark", 0.0)
+    elif needs_mark:
+        raise ToolError("open・upper_arch・負の corner_lift には、口角の印の長さ corner_mark（画素。すき間はこの内側で 0 になる）が要ります")
+    if settings["open"] > 0:
+        for key in ("inside_color", "tongue_color"):
+            if parameters.get(key) is None:
+                raise ToolError(f"開ける口（open > 0）には {key}（[R, G, B]）が要ります（既定は無い）")
+            settings[key] = _rgb(parameters[key], key)
+    jaw = parameters.get("jaw")
+    if jaw is not None:
+        if not isinstance(jaw, dict) or any(jaw.get(key) is None for key in mouth_warp.JAW_KEYS):
+            raise ToolError("jaw は {\"green_below\": 首の色の緑の値の上限, \"start_below_line\": 口の線の何画素下から探すか, "
+                            "\"keep_above\": 動きを 0 に戻すあごの線からの高さ, \"mask_above\": 写さないあごの線からの高さ} にしてください"
+                            f"（既定は無い）: {jaw!r}")
+        _refuse_unknown(jaw, [*mouth_warp.JAW_KEYS, *mouth_warp.JAW], "texture.warp_mouth の jaw")
+        merged = {**{key: value * scale for key, value in mouth_warp.JAW.items()}, **jaw}
+        settings["jaw"] = {key: _finite(merged[key], f"jaw.{key}", 0.0) for key in merged}
+        if settings["jaw"]["blur"] <= 0 or settings["jaw"]["mask_fade"] <= 0:
+            raise ToolError("jaw.blur と jaw.mask_fade は 0 より大きくしてください")
+    return settings
+
+
+@register("texture.warp_mouth", inputs=("image",), outputs=("image", "mask", "report"),
+          summary="顔が絵のモデルの正面の描画の上で、口の表情を、もとの口の絵を変形して作る（Blender なし）: もとの口の線を色（line）で測り"
+                  "（window の中のいちばん大きいかたまり）、横に scale_x 倍し、線を境に上と下を別々に上下へ動かす（口角 corner_lift・上唇の"
+                  "真ん中 upper_sag・upper_arch・開ける量 open。線から離れるほど 0 へ戻す）。すき間は口の中の色（inside_color）と舌"
+                  "（tongue_color）で埋め、口角の印（corner_mark）の内側で 0 にする。jaw であごの線の内側に収める。mask に写す範囲。"
+                  "texture.project_reference で色の絵へ写す")
+def warp_mouth(inputs, parameters, outputs, context):
+    from PIL import Image
+    import numpy as np
+    from .. import mouth_warp
+    require(inputs, ("image",), "texture.warp_mouth")
+    for key in ("image", "mask"):
+        if key not in outputs:
+            raise ToolError(f"texture.warp_mouth には outputs の {key} が要ります")
+        if Path(outputs[key]).suffix.lower() != ".png":
+            raise ToolError(f"texture.warp_mouth の outputs の {key} は .png にしてください: {Path(outputs[key]).name}")
+    settings = warp_mouth_settings(parameters)
+    loaded = texture.load_texture(inputs["image"])
+    image = loaded[..., :3]
+    x0, y0, x1, y1 = settings["window"]
+    if x1 > image.shape[1] or y1 > image.shape[0]:
+        raise ToolError(f"window {settings['window']} が、絵（{image.shape[1]}×{image.shape[0]}）の外にはみ出しています")
+    try:
+        warped, mask, report = mouth_warp.warp(image, settings)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    pixels = np.clip(warped + 0.5, 0, 255).astype(np.uint8)
+    if loaded.shape[2] == 4:
+        pixels = np.dstack([pixels, loaded[..., 3].astype(np.uint8)])
+    Image.fromarray(pixels).save(outputs["image"], format="PNG")
+    Image.fromarray(np.clip(mask * 255 + 0.5, 0, 255).astype(np.uint8), "L").save(outputs["mask"], format="PNG")
+    report = {"kind": "warp_mouth", "size": [int(image.shape[1]), int(image.shape[0])], **report, "settings": settings}
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    unresolved = []
+    if report["mask_box"] is None:
+        unresolved.append("口が 1 画素も動きませんでした（scale_x・corner_lift・open などを確かめてください）")
+    if report["columns_not_above_jaw"]:
+        unresolved.append(f"あごの線の上で動きを 0 に戻せない列が {report['columns_not_above_jaw']} あります（あごの線を越えて動かしています）")
+    return StepResult(observations=[{k: report[k] for k in ("kind", "size", "left", "right", "centre_x", "line_y_mean", "mask_box",
+                                                            "opened_pixels")}], unresolved=unresolved, review=bool(unresolved))
