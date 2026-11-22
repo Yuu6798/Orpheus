@@ -7,6 +7,7 @@
 - check.twist: 骨の軸のまわりのねじれの角をコマごとに測る。
 - model.recolor_part・model.recolor: 色の絵を、部品の uv の範囲だけ・色相の範囲だけ塗り替える。model.remove_parts: 部品を外す。
 - model.smooth_skin・model.clean_skin: 肌の島の色の絵を、頂点の色をならして塗り直す（溝と焼き込まれた明暗・外した部品の下のしみ）。
+- model.split_material: 1 つの部品の中の選んだ面（顔の面など）を、材質の写しの新しい枠に分ける。
 - model.face_shape: 顔の形を参照の絵の比率へ寄せる（目より下を上げ、あごを細く）。
 - model.closed_eye_key: 目を閉じたとき用の形状キー（目の穴をふさぎ、まつ毛を引っ込める）を頭に足す。
 """
@@ -683,6 +684,83 @@ def clean_skin(inputs, parameters, outputs, context):
         unresolved.append("塗り直す頂点がありません（island_groups・region_groups を確かめてください）")
     if report.get("not_filled"):
         unresolved.append(f"きれいな肌の色で埋めきれない頂点が {report['not_filled']} あります（fill_iterations を増やすか、範囲を確かめてください）")
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+SPLIT_MATERIAL_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "split_material.py"
+
+
+def _box(value, where):
+    """世界の座標の箱 {"x": [下, 上], "y": …, "z": …}（m。省いた軸と null の端は限らない）。"""
+    if not isinstance(value, dict) or not value:
+        raise ToolError(f"{where} は箱 {{\"x\": [下, 上], \"y\": [下, 上], \"z\": [下, 上]}}（m。null の端は限らない）にしてください: {value!r}")
+    _refuse_unknown(value, ("x", "y", "z"), where)
+    for axis, span in value.items():
+        if (not isinstance(span, list) or len(span) != 2
+                or any(v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)) for v in span)
+                or (None not in span and span[0] >= span[1])):
+            raise ToolError(f"{where}.{axis} は [下, 上]（m。下 < 上、端は null でもよい）にしてください: {span!r}")
+    return value
+
+
+def split_material_settings(parameters):
+    """model.split_material のパラメーターを確かめて、split_material.py の設定にする。"""
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"object", "material", "source_slot", "image", "region", "color", "boxes"},
+                    "model.split_material")
+    settings = {"object": _name(parameters.get("object"), "object"), "material": _name(parameters.get("material"), "material"),
+                "source_slot": number(parameters, "source_slot", 0, minimum=0, integer=True),
+                "region": _box(parameters.get("region"), "region")}
+    if parameters.get("image") is not None:
+        settings["image"] = _name(parameters["image"], "image")
+    color = parameters.get("color")
+    if color is not None:
+        if not isinstance(color, dict) or "rgb_min" not in color:
+            raise ToolError(f"color は {{\"rgb_min\": [R, G, B]（0〜1。画像の画素の値）, \"red_at_least_blue\": true, …}} にしてください: {color!r}")
+        _refuse_unknown(color, ("rgb_min", "red_at_least_blue", "red_at_least_green"), "color")
+        low = color["rgb_min"]
+        if not isinstance(low, list) or len(low) != 3 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1
+                                                              for v in low):
+            raise ToolError(f"color.rgb_min は [R, G, B]（0〜1）にしてください: {low!r}")
+        for key in ("red_at_least_blue", "red_at_least_green"):
+            if not isinstance(color.get(key, False), bool):
+                raise ToolError(f"color.{key} は true か false にしてください: {color[key]!r}")
+        settings["color"] = color
+    boxes = parameters.get("boxes")
+    if boxes is not None:
+        if not isinstance(boxes, list) or not boxes:
+            raise ToolError(f"boxes は箱の並びにしてください: {boxes!r}")
+        settings["boxes"] = [_box(box, f"boxes[{k}]") for k, box in enumerate(boxes)]
+    if "color" not in settings and "boxes" not in settings:
+        raise ToolError("model.split_material には、面を選ぶ color（色の絵の色）か boxes（箱）の少なくとも 1 つが要ります")
+    if "image" in settings and "color" not in settings:
+        raise ToolError("image は color（色の絵の色で選ぶ）と一緒に使ってください")
+    return settings
+
+
+@register("model.split_material", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="1 つの部品（object）の中の選んだ面を、材質の写し（material）の新しい枠に分ける（Blender の中で）: 面の中心が箱 region の中で、"
+                  "(a) 色の絵の、面の uv の中心の画素が color の決まりに入る面 か (b) boxes のどれかの箱の中の面。材質の枠 source_slot（既定 0）"
+                  "を使う面だけを移す。顔の面だけを別の材質にして、look.lit で段をやわらかくするためなど。元のファイルは変えない")
+def split_material(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    require(inputs, ("blend",), "model.split_material")
+    settings = split_material_settings(parameters)
+    _outputs(outputs, ("blend", "report"), "model.split_material")
+    blender = _blender(parameters, context, "model.split_material")
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "split_material_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, SPLIT_MATERIAL_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                         "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "split_material", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report.get(key) for key in ("object", "faces", "chosen_faces", "by_color", "by_box_only", "moved_faces", "material")}}
+    unresolved = [] if report.get("moved_faces") else ["分けた面がありません（region・color・boxes・source_slot を確かめてください）"]
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
 
 
