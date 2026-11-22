@@ -1,7 +1,7 @@
 """段取り: 曲の音から光のキーを作り（plan.light_keys）、段取り表と光のキーと骨の通り道から、render.stage が描くトラックを
 作る（plan.stage）。動きと違う fps で描くコマの並び（小数のコマ）も作る（plan.retime）。踊り手を中心にした極座標のカメラの
 キーから、render.passes が描くコマごとのカメラを作る（plan.orbit）。拍ごとの姿勢を数方向から見る下見のカメラも作る（plan.scout）。
-どれも計算だけ（Blender は使わない）。"""
+決めた踊りのコマを 1 つずつ見る見本のカメラと光の値も作る（plan.stills）。どれも計算だけ（Blender は使わない）。"""
 from ..io import ToolError, atomic_json
 from . import StepResult, number, register, require
 
@@ -258,4 +258,142 @@ def scout(inputs, parameters, outputs, context):
         atomic_json(outputs["report"], report)
     observation = {"kind": "scout_plan", "frames": report["frames"], "rows": len(report["rows"]), "columns": report["columns"],
                    "f": [report["rows"][0]["f"], report["rows"][-1]["f"]], "outside_samples": report["outside"]}
+    return StepResult(observations=[observation])
+
+
+STILLS_PARAMETERS = {"shots", "lights", "base", "fps", "camera", "clip_m"}
+SHOT_KEYS = {"name", "f", "offset", "aim", "dz", "lens", "fstop", "focus", "lights"}
+
+
+def _real(value, where, minimum=None, exclusive=False):
+    """有限の数（minimum があれば、それ以上か、exclusive ならそれより大きい）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+        raise ToolError(f"plan.stills の {where} は数にしてください: {value!r}")
+    if minimum is not None and ((value <= minimum) if exclusive else (value < minimum)):
+        raise ToolError(f"plan.stills の {where} は {minimum} {'より大きく' if exclusive else '以上に'}してください: {value!r}")
+    return float(value)
+
+
+def _light_values(values, where):
+    """光の値 {名前: 数か 3 つの数}。flash・fade は 0 以上の数、flash_color は 3 つの数（光のトラックの契約と同じ）。"""
+    if not isinstance(values, dict) or not all(isinstance(k, str) and k for k in values):
+        raise ToolError(f"plan.stills の {where} は {{値の名前: 数か [R, G, B]}} にしてください: {values!r}")
+    out = {}
+    for name, value in values.items():
+        if isinstance(value, list):
+            if len(value) != 3:
+                raise ToolError(f"plan.stills の {where}.{name} は数か 3 つの数にしてください: {value!r}")
+            out[name] = [_real(v, f"{where}.{name}") for v in value]
+        else:
+            out[name] = _real(value, f"{where}.{name}")
+    for name in ("flash", "fade"):
+        if name in out and (isinstance(out[name], list) or out[name] < 0):
+            raise ToolError(f"plan.stills の {where}.{name} は 0 以上の数にしてください: {out[name]!r}")
+    if "flash_color" in out and not isinstance(out["flash_color"], list):
+        raise ToolError(f"plan.stills の {where}.flash_color は 3 つの数にしてください: {out['flash_color']!r}")
+    return out
+
+
+def _stills_shot(shot, where, names, frames):
+    """見本 1 つを確かめる。"""
+    if not isinstance(shot, dict):
+        raise ToolError(f"plan.stills の {where} は辞書にしてください: {shot!r}")
+    unknown = set(shot) - SHOT_KEYS
+    if unknown:
+        raise ToolError(f"plan.stills の {where} の知らない鍵: {sorted(unknown)}（使えるのは {sorted(SHOT_KEYS)}）")
+    missing = [key for key in ("name", "f", "offset", "aim", "lens") if key not in shot]
+    if missing:
+        raise ToolError(f"plan.stills の {where} には {', '.join(missing)} が要ります")
+    if not isinstance(shot["name"], str) or not shot["name"] or shot["name"] in names:
+        raise ToolError(f"plan.stills の {where}.name は、空でない・重ならない名前にしてください: {shot['name']!r}")
+    f = shot["f"]
+    if isinstance(f, bool) or not isinstance(f, int):
+        raise ToolError(f"plan.stills の {where}.f（踊りのコマ）は整数にしてください: {f!r}")
+    if f in frames:
+        raise ToolError(f"plan.stills: 同じ踊りのコマ {f} の見本が 2 つあります（render.show は、T の順に動きのコマが増える並びだけを"
+                        "描くので、1 つの踊りのコマは 1 回だけ使えます）")
+    offset = shot["offset"]
+    if not isinstance(offset, list) or len(offset) != 3:
+        raise ToolError(f"plan.stills の {where}.offset は [x, y, z]（m）にしてください: {offset!r}")
+    for key in ("aim", "focus"):
+        if key in shot and (not isinstance(shot[key], str) or not shot[key]):
+            raise ToolError(f"plan.stills の {where}.{key} は点の名前（骨の通り道の points か bones）にしてください: {shot[key]!r}")
+    if "focus" in shot and "fstop" not in shot:
+        raise ToolError(f"plan.stills の {where}.focus（ピントの点）は fstop（絞り）といっしょに書いてください")
+    item = {"name": shot["name"], "f": f, "offset": [_real(v, f"{where}.offset") for v in offset], "aim": shot["aim"],
+            "dz": _real(shot.get("dz", 0.0), f"{where}.dz"), "lens": _real(shot["lens"], f"{where}.lens", 0, True),
+            "lights": _light_values(shot.get("lights", {}), f"{where}.lights")}
+    if "fstop" in shot:
+        item["fstop"] = _real(shot["fstop"], f"{where}.fstop", 0, True)
+    if "focus" in shot:
+        item["focus"] = shot["focus"]
+    names.add(shot["name"])
+    frames.add(f)
+    return item
+
+
+def _stills_settings(parameters):
+    """plan.stills のパラメーターを確かめ、既定を足す（stills_plan.DEFAULTS）。"""
+    from ..stills_plan import DEFAULTS
+    unknown = set(parameters) - STILLS_PARAMETERS
+    if unknown:
+        raise ToolError(f"plan.stills の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(STILLS_PARAMETERS)}）")
+    shots = parameters.get("shots")
+    if not isinstance(shots, list) or not shots:
+        raise ToolError("plan.stills には shots（見本の並び。1 つ以上）が要ります")
+    names, frames = set(), set()
+    s = {"shots": [_stills_shot(shot, f"shots[{n}]", names, frames) for n, shot in enumerate(shots)],
+         "lights": _light_values(parameters.get("lights", {}), "lights"), "base": DEFAULTS["base"], "fps": DEFAULTS["fps"],
+         "camera": dict(DEFAULTS["camera"]), "clip_m": None}
+    if "base" in parameters:
+        if not isinstance(parameters["base"], str) or not parameters["base"]:
+            raise ToolError(f"plan.stills の base は点の名前にしてください: {parameters['base']!r}")
+        s["base"] = parameters["base"]
+    if "fps" in parameters:
+        s["fps"] = _real(parameters["fps"], "fps", 0, True)
+    camera = parameters.get("camera", {})
+    if not isinstance(camera, dict) or set(camera) - {"resolution", "sensor_height"}:
+        raise ToolError(f"plan.stills の camera は {{\"resolution\": [幅, 高さ], \"sensor_height\": mm}} にしてください: {camera!r}")
+    if "resolution" in camera:
+        resolution = camera["resolution"]
+        if (not isinstance(resolution, list) or len(resolution) != 2
+                or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in resolution)):
+            raise ToolError(f"plan.stills の camera.resolution は [幅, 高さ]（1 以上の整数）にしてください: {resolution!r}")
+        s["camera"]["resolution"] = resolution
+    if "sensor_height" in camera:
+        s["camera"]["sensor_height"] = _real(camera["sensor_height"], "camera.sensor_height", 0, True)
+    if parameters.get("clip_m") is not None:
+        clip = parameters["clip_m"]
+        if not isinstance(clip, list) or len(clip) != 2:
+            raise ToolError(f"plan.stills の clip_m は [近く, 遠く]（m）にしてください: {clip!r}")
+        near, far = _real(clip[0], "clip_m", 0, True), _real(clip[1], "clip_m", 0, True)
+        if not near < far:
+            raise ToolError(f"plan.stills の clip_m は近くを遠くより小さくしてください: {clip!r}")
+        s["clip_m"] = [near, far]
+    return s
+
+
+@register("plan.stills", inputs=("bones",), outputs=("cameras", "track", "lights", "report"),
+          summary="見本のコマ: 決めた踊りのコマ（shots の f）を 1 つずつ、足もと（base の点。既定 hips）の真下の床からの位置 offset に置いた"
+                  "カメラで、骨の通り道（bones）の狙う点 aim（＋ dz）を傾けずに見るカメラ（cameras。model3d-cameras/0.1。レンズ lens、絞り fstop と"
+                  "ピントの点 focus）と、コマの並び（track。T と動きのコマ f）と、そのコマの光の値（lights。model3d-light-track/0.1。lights に"
+                  "見本ごとの lights を重ねる）を作る。T は f の小さい順に 1 から。同じ f の見本は止める。plan.orbit は T から時刻を決めるので、"
+                  "ばらばらの踊りのコマの見本には、こちらを使う。render.show でそのまま描く。report は T と見本の名前の表。計算だけ")
+def stills(inputs, parameters, outputs, context):
+    from .. import contracts
+    from ..stills_plan import build
+    require(inputs, ("bones",), "plan.stills")
+    missing = [name for name in ("cameras", "lights") if name not in outputs]
+    if missing:
+        raise ToolError(f"plan.stills には outputs の {', '.join(missing)} が要ります")
+    settings = _stills_settings(parameters)
+    cameras, track, lights, report = build(settings, contracts.load("bone-path", inputs["bones"]))
+    atomic_json(outputs["cameras"], contracts.validate("cameras", cameras))
+    atomic_json(outputs["lights"], contracts.validate("light-track", lights))
+    if "track" in outputs:
+        atomic_json(outputs["track"], contracts.validate("stage-track", track))
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    observation = {"kind": "stills_plan", "frames": report["frames"], "f": [report["shots"][0]["f"], report["shots"][-1]["f"]],
+                   "dof_frames": sum(1 for row in report["shots"] if row["dof"]), "outside_samples": report["outside"]}
     return StepResult(observations=[observation])
