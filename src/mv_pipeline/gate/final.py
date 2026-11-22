@@ -8,19 +8,21 @@
 絵の良し悪しは判定しない。
 
 - 動画の構造（大きさ・fps・コマの数・音・BT.709 の印・復号）は、fx の `probe.check_video`（technical_pass）に任せる。
+  期待の大きさ・fps・コマの数は、省くと `--show` の報告から埋める（大きさと fps はどれも同じとき、幅と高さは別々に。コマの数は
+  描いた T を合わせた数が 1 ずつ続くとき）。コマの数と fps が分かれば、音の長さも コマの数 ÷ fps と比べる。
+  分からないまま見なかった期待があれば、構造の行は `partial`（全体は `incomplete`。合格扱いにしない）。
 - 3D の側の行は、model3d の工程が書いたファイルを読む（mv_pipeline は model3d を import しない。逆も同じ。つなぎはファイルだけ）。
   - `--video-frames`: model3d の `check.video_frames` の報告（動画から取り出したコマが、仕上げたコマの同じ T に合うか）。
-    報告の動画が、検査する動画と同じファイル（sha256）でなければ不合格（別の動画の報告で合格にしない）。
+    報告の `video_sha256` が、検査する動画の sha256 と違えば不合格（同じ名前に書き出し直した動画を、古い報告で合格にしない）。
+    `video_sha256` の無い報告は、どの動画と比べたか分からないので `not_recorded`。
   - `--show`: model3d の `render.show` の報告（`model3d-show-render/0.1`。区切って描いたなら全部）。影の領域のあふれの行数
-    （`shadow_overflow.lines`）の和が 0 でなければ不合格。あふれを数える前の報告（`shadow_overflow` が無い）は「記録なし」。
+    （`shadow_overflow.lines`）の和が 0 でなければ不合格。あふれを数える前の報告（`shadow_overflow` が無い）は `not_recorded`。
     描画の秒（`seconds`）と描いたコマの数は、数だけ。
 - 最後のコマの明るさ（R・G・B の平均。0〜1）が `--min-last-mean`（既定 0.02。黒に近い）より小さければ不合格（暗転していない
   ことを確かめる。暗転で終わる動画では `--min-last-mean 0`）。
-- 期待の大きさ・fps は、省くと `--show` の報告の値（どれも同じとき）。コマの数は `--frames` を渡したときだけ比べる
-  （`--frames` と fps があれば、音の長さも コマの数 ÷ fps と比べる）。
 
-全体の `status`: どれかの行が不合格なら `fail`（終了コード 1）。不合格が無く、渡していない行（未実施）か記録の無い行があれば
-`incomplete`（終了コード 0。合格扱いにしない）。全部の行が合格なら `pass`。
+全体の `status`: どれかの行が不合格なら `fail`（終了コード 1）。不合格が無く、渡していない行（`not_run`）か記録の無い行
+（`not_recorded`）か見ていない期待のある行（`partial`）があれば `incomplete`（終了コード 0。合格扱いにしない）。全部の行が合格なら `pass`。
 出力（既定は動画の隣の `<動画の名前>_final_report/`）は final_report.json（`gate-final-report/0.1`）。
 """
 import json
@@ -33,7 +35,8 @@ SCHEMA = "gate-final-report/0.1"
 REPORT_NAME = "final_report.json"
 SHOW_SCHEMA = "model3d-show-render/0.1"
 MIN_LAST_MEAN = 0.02
-NOTE = "書き出しの検査の数と合否の表です。絵の良し悪しは判定しません。未実施の行は合格に数えません。"
+UNFINISHED = {"not_run", "not_recorded", "partial"}
+NOTE = "書き出しの検査の数と合否の表です。絵の良し悪しは判定しません。未実施・記録なし・見ていない期待のある行は合格に数えません。"
 
 
 def _positive(value, name, integer=False):
@@ -45,33 +48,30 @@ def _positive(value, name, integer=False):
     return int(value) if integer else float(value)
 
 
-def _same_file(a, b):
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except OSError:
-        return False
+def _report(path, what):
+    """報告の JSON（辞書）。無い・JSON でない・辞書でなければ PipelineError。"""
+    data = read_json_file(path, f"{what}の報告が見つかりません: {path}", f"{what}の報告が JSON ではありません: {path}")
+    if not isinstance(data, dict):
+        raise PipelineError(f"{what}の報告の形が違います（JSON の辞書ではありません）: {path}")
+    return data
 
 
-def video_frames_row(path, video, video_sha):
+def video_frames_row(path, video_sha):
     """check.video_frames の報告の行。"""
     if path is None:
         return {"check": "video_frames", "status": "not_run", "summary": "--video-frames を渡していません（check.video_frames の報告）"}
-    report = read_json_file(path, f"check.video_frames の報告が見つかりません: {path}", f"check.video_frames の報告が JSON ではありません: {path}")
+    report = _report(path, "check.video_frames ")
     if report.get("check") != "video_frames":
         raise PipelineError(f"--video-frames は model3d の check.video_frames の報告にしてください: {path}")
-    named = Path(str(report.get("video", "")))
-    if _same_file(named, video):
-        same = True
-    elif named.is_file():
-        same = sha256(named) == video_sha
-    else:
-        same = None
-    row = {"check": "video_frames", "report": str(path), "video": str(named), "pass": report.get("pass"),
+    row = {"check": "video_frames", "report": str(path), "video": str(report.get("video")), "video_sha256": report.get("video_sha256"),
+           "pass": report.get("pass"),
            **{key: report.get(key) for key in ("samples", "matched", "mismatched", "indistinct", "shifts", "same_mean_abs")}}
-    if same is False:
-        return {**row, "status": "fail", "summary": f"報告の動画（{named.name}）が、検査する動画と違うファイルです"}
-    if same is None:
-        return {**row, "status": "fail", "summary": f"報告の動画が見つからず、検査する動画と同じか確かめられません: {named}"}
+    recorded = report.get("video_sha256")
+    if not isinstance(recorded, str):
+        return {**row, "status": "not_recorded",
+                "summary": "報告に比べた動画の sha256（video_sha256）が無いので、検査する動画と同じか確かめられません（今の check.video_frames で回し直す）"}
+    if recorded != video_sha:
+        return {**row, "status": "fail", "summary": "報告の動画（sha256）が、検査する動画と違います（書き出し直したなら check.video_frames も回し直す）"}
     if report.get("pass") is True:
         return {**row, "status": "pass", "summary": report.get("reason") or "取り出したコマが、同じ T のもとのコマに合います"}
     if report.get("pass") is False:
@@ -79,26 +79,37 @@ def video_frames_row(path, video, video_sha):
     return {**row, "status": "not_run", "summary": report.get("reason") or "check.video_frames が比べられませんでした（未実施）"}
 
 
+def _worst(value):
+    return value if (isinstance(value, list) and len(value) == 2
+                     and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)) else None
+
+
 def show_rows(paths):
-    """render.show の報告（区切りごと）から、影の領域のあふれの行と、描画の秒の行。"""
+    """render.show の報告（区切りごと）から、影の領域のあふれの行と、描画の秒の行と、報告ごとの数。"""
     if not paths:
         missing = "--show を渡していません（render.show の報告）"
         return ({"check": "shadow_overflow", "status": "not_run", "summary": missing},
                 {"check": "render_seconds", "status": "not_run", "summary": missing}, [])
     parts, unrecorded = [], []
     for path in paths:
-        report = read_json_file(path, f"render.show の報告が見つかりません: {path}", f"render.show の報告が JSON ではありません: {path}")
+        report = _report(path, "render.show ")
         if report.get("schema_version") != SHOW_SCHEMA:
             raise PipelineError(f"--show は model3d の render.show の報告（{SHOW_SCHEMA}）にしてください: {path}")
         overflow = report.get("shadow_overflow")
-        if not isinstance(overflow, dict) or not isinstance(overflow.get("lines"), int):
+        if not isinstance(overflow, dict) or isinstance(overflow.get("lines"), bool) or not isinstance(overflow.get("lines"), int):
             unrecorded.append(str(path))
             overflow = None
-        parts.append({"report": str(path), "rendered": len(report.get("rendered") or []), "seconds": report.get("seconds"),
+        else:
+            overflow = {"lines": overflow["lines"], "worst": _worst(overflow.get("worst")), "action": overflow.get("action")}
+        rendered = report.get("rendered")
+        rendered = [T for T in rendered if isinstance(T, int) and not isinstance(T, bool)] if isinstance(rendered, list) else []
+        seconds = report.get("seconds")
+        parts.append({"report": str(path), "rendered": len(rendered), "Ts": rendered,
+                      "seconds": seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None,
                       "seconds_per_frame": report.get("seconds_per_frame"), "resolution": report.get("resolution"),
                       "fps": report.get("fps"), "shadow_overflow": overflow})
     lines = sum(p["shadow_overflow"]["lines"] for p in parts if p["shadow_overflow"])
-    worst = [p["shadow_overflow"].get("worst") for p in parts if p["shadow_overflow"] and p["shadow_overflow"].get("worst")]
+    worst = [p["shadow_overflow"]["worst"] for p in parts if p["shadow_overflow"] and p["shadow_overflow"]["worst"]]
     shadow = {"check": "shadow_overflow", "lines": lines, "worst": max(worst, key=lambda w: w[0]) if worst else None,
               "with_lines": [p["report"] for p in parts if p["shadow_overflow"] and p["shadow_overflow"]["lines"]],
               "unrecorded": unrecorded}
@@ -109,8 +120,7 @@ def show_rows(paths):
     else:
         shadow.update(status="pass", summary="影の領域のあふれは 0 行")
     frames = sum(p["rendered"] for p in parts)
-    seconds = [p["seconds"] for p in parts if isinstance(p["seconds"], (int, float))]
-    total = round(sum(seconds), 1) if len(seconds) == len(parts) else None
+    total = round(sum(p["seconds"] for p in parts), 1) if all(p["seconds"] is not None for p in parts) else None
     timing = {"check": "render_seconds", "status": "info", "reports": len(parts), "frames": frames, "seconds": total,
               "seconds_per_frame": round(total / frames, 2) if total is not None and frames else None,
               "summary": (f"{frames} コマを {total} 秒で描きました" if total is not None else "描画の秒が無い報告があります")}
@@ -133,15 +143,24 @@ def last_frame_row(video, frames, min_mean):
     return {**row, "status": "pass", "summary": f"最後のコマの明るさの平均 {mean:.3f}"}
 
 
-def expected_from(parts, width, height, fps):
-    """省いた大きさと fps を、render.show の報告から（どれも同じ値のときだけ）。"""
+def expected_from(parts, width, height, fps, frames):
+    """省いた期待の大きさ・fps・コマの数を、render.show の報告から埋める。大きさと fps はどの報告も同じとき（幅と高さは別々に）、
+    コマの数は描いた T を合わせた数が 1 ずつ続くとき。どこから来たかも返す。"""
     sizes = {tuple(p["resolution"]) for p in parts if isinstance(p.get("resolution"), list) and len(p["resolution"]) == 2}
-    rates = {float(p["fps"]) for p in parts if isinstance(p.get("fps"), (int, float))}
-    if width is None and height is None and len(sizes) == 1:
-        width, height = next(iter(sizes))
+    rates = {float(p["fps"]) for p in parts if isinstance(p.get("fps"), (int, float)) and not isinstance(p.get("fps"), bool)}
+    source = {}
+    if len(sizes) == 1:
+        w, h = next(iter(sizes))
+        if width is None:
+            width, source["width"] = w, "show"
+        if height is None:
+            height, source["height"] = h, "show"
     if fps is None and len(rates) == 1:
-        fps = next(iter(rates))
-    return width, height, fps
+        fps, source["fps"] = next(iter(rates)), "show"
+    Ts = sorted({T for p in parts for T in p["Ts"]})
+    if frames is None and Ts and Ts == list(range(Ts[0], Ts[0] + len(Ts))):
+        frames, source["frames"] = len(Ts), "show"
+    return width, height, fps, frames, source
 
 
 def measure(video, video_frames=None, shows=(), width=None, height=None, fps=None, frames=None, audio=True, min_last_mean=MIN_LAST_MEAN):
@@ -155,24 +174,31 @@ def measure(video, video_frames=None, shows=(), width=None, height=None, fps=Non
         raise PipelineError(f"--min-last-mean は 0〜1 の数にしてください: {min_last_mean!r}")
     digest = sha256(video)
     shadow, timing, parts = show_rows([Path(p) for p in shows])
-    width, height, fps = expected_from(parts, width, height, fps)
+    width, height, fps, frames, filled = expected_from(parts, width, height, fps, frames)
     audio_s = frames / fps if audio and frames and fps else None
     checks = probe.check_video(video, width=width, height=height, fps=fps, frames=frames, audio=audio, audio_s=audio_s, bt709=True)
     video_info = checks.get("video") or {}
-    structure = {"check": "structure", "status": "pass" if checks["pass"] else "fail",
-                 "summary": "動画の構造は期待どおり（technical_pass）" if checks["pass"] else "; ".join(checks["failures"]),
-                 "expected": {"width": width, "height": height, "fps": fps, "frames": frames, "audio": audio, "audio_s": audio_s,
-                              "bt709": True},
-                 "technical_pass": checks}
+    expected = {"width": width, "height": height, "fps": fps, "frames": frames, "audio": audio, "audio_s": audio_s, "bt709": True}
+    unchecked = [key for key in ("width", "height", "fps", "frames") if expected[key] is None]
+    if audio and audio_s is None:
+        unchecked.append("audio_s")
+    if not checks["pass"]:
+        status, summary = "fail", "; ".join(checks["failures"])
+    elif unchecked:
+        status, summary = "partial", f"見た所は期待どおりですが、見ていない期待があります: {'・'.join(unchecked)}（--width・--height・--fps・--frames か --show）"
+    else:
+        status, summary = "pass", "動画の構造は期待どおり（technical_pass）"
+    structure = {"check": "structure", "status": status, "summary": summary, "expected": expected, "filled_from": filled,
+                 "unchecked": unchecked, "technical_pass": checks}
     last = last_frame_row(video, checks.get("frames"), float(min_last_mean)) if checks.get("decode_ok") else {
         "check": "last_frame", "status": "fail", "summary": "動画を復号できないので、最後のコマを読めません"}
-    rows = [structure, video_frames_row(Path(video_frames) if video_frames else None, video, digest), last, shadow, timing]
+    rows = [structure, video_frames_row(Path(video_frames) if video_frames else None, digest), last, shadow, timing]
     statuses = [row["status"] for row in rows]
-    overall = "fail" if "fail" in statuses else ("incomplete" if {"not_run", "not_recorded"} & set(statuses) else "pass")
+    overall = "fail" if "fail" in statuses else ("incomplete" if UNFINISHED & set(statuses) else "pass")
     return {"schema_version": SCHEMA,
             "video": {"name": video.name, "sha256": digest, "width": video_info.get("width"), "height": video_info.get("height"),
                       "fps": video_info.get("fps"), "frames": checks.get("frames"), "audio": checks.get("audio") is not None},
-            "status": overall, "checks": rows, "renders": parts, "note": NOTE}
+            "status": overall, "checks": rows, "renders": [{k: v for k, v in p.items() if k != "Ts"} for p in parts], "note": NOTE}
 
 
 def run(video, out=None, video_frames=None, shows=(), width=None, height=None, fps=None, frames=None, audio=True,

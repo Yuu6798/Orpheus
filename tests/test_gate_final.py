@@ -9,7 +9,7 @@ from fx_synth import run_cli
 
 from mv_pipeline import encode, media
 from mv_pipeline.gate import final
-from mv_pipeline.io import PipelineError, atomic_json
+from mv_pipeline.io import PipelineError, atomic_json, sha256
 
 FPS, SIZE, COUNT = 10, (32, 48), 12
 
@@ -49,8 +49,10 @@ def _show(path, lines=0, overflow=True, seconds=6.0, rendered=COUNT, resolution=
     return path
 
 
-def _video_frames(path, video, passed=True):
-    atomic_json(path, {"check": "video_frames", "status": "done", "pass": passed, "video": str(video), "matched": 8 if passed else 6,
+def _video_frames(path, video, passed=True, digest=True):
+    """check.video_frames の報告（video_sha256 は、書いたときの video の中身の sha256）。"""
+    record = {"video_sha256": sha256(video)} if digest and video.is_file() else {}
+    atomic_json(path, {"check": "video_frames", "status": "done", "pass": passed, "video": str(video), **record, "matched": 8 if passed else 6,
                        "mismatched": [] if passed else [5, 9], "indistinct": [], "shifts": [] if passed else [1],
                        "reason": "取り出したコマは、どれも同じ T のもとのコマにいちばん近い" if passed else "動画のコマが、もとのコマと合わない",
                        "samples": [1, 4, 8, 12]})
@@ -83,7 +85,7 @@ def test_a_video_without_sound_fails(tmp_path):
     video = _video(tmp_path / "mute.mp4", audio=False)
     report, _ = final.run(video, tmp_path / "out")
     assert report["status"] == "fail" and "音声ストリームがありません" in _rows(report)["structure"]["summary"]
-    allowed, _ = final.run(video, tmp_path / "out2", audio=False)                      # 音の無い動画と決めたなら通る
+    allowed, _ = final.run(video, tmp_path / "out2", audio=False, width=32, height=48, fps=FPS, frames=COUNT)   # 音の無い動画と決めたなら通る
     assert _rows(allowed)["structure"]["status"] == "pass"
 
 
@@ -107,6 +109,8 @@ def test_missing_reports_make_the_table_incomplete_not_pass(tmp_path):
     rows = _rows(report)
     assert report["status"] == "incomplete"
     assert rows["video_frames"]["status"] == rows["shadow_overflow"]["status"] == rows["render_seconds"]["status"] == "not_run"
+    assert rows["structure"]["status"] == "partial"                                      # 期待を渡していないので、見ていない所がある
+    assert rows["structure"]["unchecked"] == ["width", "height", "fps", "frames", "audio_s"]
     old, _ = final.run(video, tmp_path / "out2", _video_frames(tmp_path / "vf.json", video), [_show(tmp_path / "s.json", overflow=False)])
     assert old["status"] == "incomplete" and _rows(old)["shadow_overflow"]["status"] == "not_recorded"   # あふれを数える前の報告
 
@@ -123,15 +127,19 @@ def test_shadow_overflow_lines_fail(tmp_path):
 def test_the_video_frames_report_must_be_for_this_video(tmp_path):
     video, other = _video(tmp_path / "v.mp4"), _video(tmp_path / "w.mp4", last=255)
     report, _ = final.run(video, tmp_path / "out", _video_frames(tmp_path / "vf.json", other))
-    assert _rows(report)["video_frames"]["status"] == "fail" and "違うファイル" in _rows(report)["video_frames"]["summary"]
-    gone, _ = final.run(video, tmp_path / "out2", _video_frames(tmp_path / "vf2.json", tmp_path / "nowhere.mp4"))
-    assert _rows(gone)["video_frames"]["status"] == "fail"
+    assert _rows(report)["video_frames"]["status"] == "fail" and "違います" in _rows(report)["video_frames"]["summary"]
     failed, _ = final.run(video, tmp_path / "out3", _video_frames(tmp_path / "vf3.json", video, passed=False))
     assert failed["status"] == "fail" and _rows(failed)["video_frames"]["mismatched"] == [5, 9]
     copy = tmp_path / "copy.mp4"                                                         # 同じ中身の写しの報告は同じ動画とみなす
     copy.write_bytes(video.read_bytes())
     same, _ = final.run(video, tmp_path / "out4", _video_frames(tmp_path / "vf4.json", copy))
     assert _rows(same)["video_frames"]["status"] == "pass"
+    old = _video_frames(tmp_path / "vf5.json", video)                                    # 同じ名前に書き出し直すと、古い報告は合わない
+    _video(video, last=255)
+    stale, _ = final.run(video, tmp_path / "out5", old)
+    assert _rows(stale)["video_frames"]["status"] == "fail"
+    bare, _ = final.run(video, tmp_path / "out6", _video_frames(tmp_path / "vf6.json", video, digest=False))
+    assert _rows(bare)["video_frames"]["status"] == "not_recorded" and bare["status"] in ("incomplete", "fail")   # sha256 の無い報告
 
 
 def test_the_expected_size_and_frames_are_checked(tmp_path):
@@ -140,6 +148,14 @@ def test_the_expected_size_and_frames_are_checked(tmp_path):
     assert "寸法が違います" in _rows(report)["structure"]["summary"]                   # show の大きさと違う
     counted, _ = final.run(video, tmp_path / "out2", frames=COUNT + 1, fps=FPS)
     assert "フレーム数が違います" in _rows(counted)["structure"]["summary"]
+    short, _ = final.run(video, tmp_path / "out3", shows=[_show(tmp_path / "t.json", rendered=COUNT - 2)])
+    assert "フレーム数が違います" in _rows(short)["structure"]["summary"]              # コマの数も show の描いた T から
+    filled, _ = final.run(video, tmp_path / "out4", shows=[_show(tmp_path / "u.json")])
+    structure = _rows(filled)["structure"]
+    assert structure["status"] == "pass" and structure["filled_from"] == {"width": "show", "height": "show", "fps": "show", "frames": "show"}
+    wide, _ = final.run(video, tmp_path / "out5", shows=[_show(tmp_path / "w.json", resolution=(32, 96))], width=32)
+    assert "寸法が違います" in _rows(wide)["structure"]["summary"]                     # 幅だけ渡しても、高さは show から埋める
+    assert _rows(wide)["structure"]["expected"]["height"] == 96
 
 
 def test_bad_inputs_stop(tmp_path):
@@ -151,6 +167,13 @@ def test_bad_inputs_stop(tmp_path):
         final.run(video, tmp_path / "out", shows=[tmp_path / "x.json"])
     with pytest.raises(PipelineError, match="check.video_frames"):
         final.run(video, tmp_path / "out", tmp_path / "x.json")
+    (tmp_path / "list.json").write_text("[1, 2]", encoding="utf-8")
+    (tmp_path / "text.json").write_text('"report"', encoding="utf-8")
+    for bad in ("list.json", "text.json"):                                               # 辞書でない JSON は分かる言葉で止める
+        with pytest.raises(PipelineError, match="形が違います"):
+            final.run(video, tmp_path / "out", tmp_path / bad)
+        with pytest.raises(PipelineError, match="形が違います"):
+            final.run(video, tmp_path / "out", shows=[tmp_path / bad])
     with pytest.raises(PipelineError, match="min-last-mean"):
         final.run(video, tmp_path / "out", min_last_mean=2)
     with pytest.raises(PipelineError, match="--frames"):

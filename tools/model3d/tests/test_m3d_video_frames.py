@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from model3d.io import ToolError, atomic_json
+from model3d.io import ToolError, atomic_json, sha256
 from model3d.ops import assemble_ops, video_ops
 
 imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
@@ -62,6 +62,7 @@ def test_a_video_of_these_frames_matches(tmp_path):
     result, report = _run(tmp_path, video, {"frames_dir": str(frames), "count": 6, "offset": 3})
     assert result["status"] == "succeeded", result["error"]
     assert report["pass"] is True and report["matched"] == 6 and report["samples"] == [1, 6, 10, 15, 19, 24]
+    assert report["video_sha256"] == sha256(video)                                         # どの動画と比べたか（mv gate final が見る）
     row = report["rows"][1]
     assert row["T"] == 6 and row["video_frame"] == 5 and row["best_T"] == 6 and row["status"] == "matched"
     assert row["same_mean_abs"] < 0.5 * row["nearest_other"]["mean_abs"]                # 同じコマはほかのコマより十分近い
