@@ -297,6 +297,104 @@ def check_frames(inputs, parameters, outputs, context):
     return _finish(summary, {k: v for k, v in outputs.items() if k != "report"}, parameters, "コマの比べ")
 
 
+DRAWN_MARK_PARAMETERS = {"window", "reference_rule", "mark_rule", "close", "search_margin", "change_threshold", "allowed_margin",
+                         "metres_per_pixel", "max_centre_shift_px", "max_top_shift_px", "max_outside_pixels", "strict", "report_only"}
+
+
+def drawn_mark_settings(parameters):
+    """check.drawn_mark のパラメーターを確かめて、color_marks.mark_shift の設定にする。"""
+    import math
+    from .. import color_marks
+    from . import number
+    unknown = set(parameters) - DRAWN_MARK_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.drawn_mark の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(DRAWN_MARK_PARAMETERS)}）")
+
+    def rule(value, where):
+        if not isinstance(value, dict) or value.get("red_minus_green_above") is None:
+            raise ToolError(f"{where} は印の色の決まり {{\"red_minus_green_above\": 数, \"red_above\": 数, \"green_below\": 数}} にしてください"
+                            f"（既定は無い）: {value!r}")
+        unknown_keys = set(value) - set(color_marks.RULE_KEYS)
+        if unknown_keys:
+            raise ToolError(f"{where} の知らないキー: {sorted(unknown_keys)}")
+        for key, v in value.items():
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)):
+                raise ToolError(f"{where}.{key} は有限の数にしてください: {v!r}")
+        return value
+
+    def margins(value, where):
+        if (not isinstance(value, list) or len(value) != 4
+                or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value)):
+            raise ToolError(f"{where} は、もとの印の枠から広げる [左, 上, 右, 下]（0 以上の整数の画素）にしてください: {value!r}")
+        return value
+
+    window = parameters.get("window")
+    if (not isinstance(window, list) or len(window) != 4 or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in window)
+            or window[0] >= window[2] or window[1] >= window[3]):
+        raise ToolError(f"window はもとの印を探す範囲 [x0, y0, x1, y1]（0 以上の整数の画素、x0 < x1、y0 < y1）にしてください: {window!r}")
+    reference_rule = rule(parameters.get("reference_rule"), "reference_rule")
+    settings = {"window": window, "reference_rule": reference_rule,
+                "mark_rule": rule(parameters["mark_rule"], "mark_rule") if parameters.get("mark_rule") is not None else reference_rule,
+                "close": number(parameters, "close", 5, minimum=1, integer=True),
+                "search_margin": margins(parameters.get("search_margin", [0, 0, 0, 0]), "search_margin"),
+                "change_threshold": number(parameters, "change_threshold", 0, minimum=0)}
+    if parameters.get("allowed_margin") is not None:
+        settings["allowed_margin"] = margins(parameters["allowed_margin"], "allowed_margin")
+    if parameters.get("metres_per_pixel") is not None:
+        settings["metres_per_pixel"] = number(parameters, "metres_per_pixel", minimum=0, exclusive=True)
+    if parameters.get("max_outside_pixels") is not None and "allowed_margin" not in settings:
+        raise ToolError("max_outside_pixels（許す枠の外で変わった画素の上限）は allowed_margin と一緒に使ってください")
+    return settings
+
+
+@register("check.drawn_mark", inputs=("reference", "image"), outputs=("report",),
+          summary="描いた印（口など）のずれを、目で読まずに色で測る（Blender なし）: もとの絵の window の中の印の色（reference_rule）の"
+                  "いちばん大きいかたまりと、描いた絵のそのまわり（もとの印の枠を search_margin 広げた枠。端を含む）の印の色（mark_rule）の"
+                  "かたまりの、左右の端・中心・真ん中の"
+                  "列の上の縁を比べ、中心の横のずれ・上の縁の縦のずれ・幅の比を出す（metres_per_pixel があれば mm も）。2 枚の差が"
+                  "change_threshold より大きい画素の数と枠、allowed_margin の外で変わった画素の数（0 のはず）。しきい値（max_centre_shift_px・"
+                  "max_top_shift_px・max_outside_pixels）を渡したときだけ合否を出す。好みは判定しない")
+def check_drawn_mark(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+    from .. import color_marks
+    from . import number
+    require(inputs, ("reference", "image"), "check.drawn_mark")
+    settings = drawn_mark_settings(parameters)
+    pictures = {}
+    for side in ("reference", "image"):
+        with Image.open(inputs[side]) as picture:
+            pictures[side] = np.asarray(picture.convert("RGB"), dtype=np.float64)
+    if pictures["reference"].shape != pictures["image"].shape:
+        raise ToolError(f"reference と image の大きさが違います: {pictures['reference'].shape[1::-1]} と {pictures['image'].shape[1::-1]}")
+    height, width = pictures["reference"].shape[:2]
+    if settings["window"][2] > width or settings["window"][3] > height:
+        raise ToolError(f"window {settings['window']} が、絵（{width}×{height}）の外にはみ出しています")
+    try:
+        report = color_marks.mark_shift(pictures["reference"], pictures["image"], settings)
+    except ValueError as error:
+        raise ToolError(str(error)) from error
+    report = {"check": "drawn_mark", "status": "done", "reference": str(inputs["reference"]), "image": str(inputs["image"]), **report,
+              "settings": settings}
+    thresholds = {key: number(parameters, key, minimum=0) for key in ("max_centre_shift_px", "max_top_shift_px", "max_outside_pixels")
+                  if parameters.get(key) is not None}
+    if not thresholds:
+        report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
+    else:
+        failures = []
+        if report["drawn"] is None:
+            failures.append("描いた絵に、印の色のかたまりがありません")
+        else:
+            if "max_centre_shift_px" in thresholds and abs(report["centre_dx_px"]) > thresholds["max_centre_shift_px"]:
+                failures.append(f"中心の横のずれ {report['centre_dx_px']:g} 画素が {thresholds['max_centre_shift_px']:g} を超えます")
+            if "max_top_shift_px" in thresholds and abs(report["top_dy_px"]) > thresholds["max_top_shift_px"]:
+                failures.append(f"上の縁の縦のずれ {report['top_dy_px']:g} 画素が {thresholds['max_top_shift_px']:g} を超えます")
+        if "max_outside_pixels" in thresholds and report["changed_outside"] > thresholds["max_outside_pixels"]:
+            failures.append(f"許す枠の外で変わった画素が {report['changed_outside']}（上限 {thresholds['max_outside_pixels']:g}）")
+        report.update({"pass": not failures, "failures": failures})
+    return _finish(report, outputs, parameters, "描いた印の検査")
+
+
 BLEND_MATCH_PARAMETERS = {"frames", "pose_frames", "evaluate", "attributes", "samples", "objects", "armature", "tolerance",
                           "blender", "timeout", "strict", "report_only"}
 SNAPSHOT_SCRIPT = __import__("pathlib").Path(__file__).resolve().parents[1] / "blender_adapter" / "snapshot_blend.py"
