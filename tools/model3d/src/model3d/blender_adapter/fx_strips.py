@@ -18,6 +18,7 @@ import numpy as np
 
 UP = np.array([0.0, 0.0, 1.0])
 X = np.array([1.0, 0.0, 0.0])
+Y = np.array([0.0, 1.0, 0.0])
 QUAD_UV = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
 TINY = 1e-9
 ZERO = 1e-12        # これより短い向きは 0 とみなす（長さ 0 の帯は、幅も 0 の四角形になる）
@@ -30,21 +31,41 @@ def unit(v):
     return v / length if length > ZERO else np.zeros(3)
 
 
+def perpendicular(v):
+    """v に垂直な、長さ 1 の向き（v × 上。v が上と平行なら v × y。v が 0 なら x）。"""
+    for other in (UP, Y):
+        side = unit(np.cross(v, other))
+        if float(np.linalg.norm(side)) > 0.0:
+            return side
+    return X.copy()
+
+
 def sides(points, widths, camera, flat=False, untwist=False):
     """点ごとの幅の半分の向き (n, 3)。flat=True は面に寝た帯（幅の向き = 接線 × 上）。untwist=True は、向きが前の点と逆を向いたら
-    返す（急に折り返す線で、帯が蝶ネクタイの形にねじれない。model3d.bone_ribbon の帯と同じ）。"""
+    返す（急に折り返す線で、帯が蝶ネクタイの形にねじれない。model3d.bone_ribbon の帯と同じ）。
+    同じ点が続いて接線が 0 の所は、前（無ければ後ろ）の点の接線を使う。どの点の接線も 0（長さ 0 の帯）なら、幅も 0。
+    接線 × 視線も 接線 × x も 0 なら（線がカメラと x の向きに並ぶ）、視線 × 上、それも 0 なら 接線に垂直な向き。"""
     points = np.asarray(points, float)
     n = len(points)
     out = np.zeros((n, 3))
     camera = np.asarray(camera, float)
+    tangents = [points[min(i + 1, n - 1)] - points[max(i - 1, 0)] for i in range(n)]
+    known = [i for i in range(n) if float(np.linalg.norm(tangents[i])) > ZERO]
+    if not known:
+        return out
     previous = None
     for i in range(n):
-        tangent = points[min(i + 1, n - 1)] - points[max(i - 1, 0)]
+        if i not in known:
+            before = [j for j in known if j < i]
+            tangents[i] = tangents[before[-1] if before else known[0]]
+        tangent = tangents[i]
         normal = UP if flat else camera - points[i]
         side = np.cross(tangent, normal)
         if float(np.linalg.norm(side)) < TINY:
             side = np.cross(tangent, X)
-        side = unit(side)
+        if float(np.linalg.norm(side)) < TINY:
+            side = np.cross(normal, UP)
+        side = unit(side) if float(np.linalg.norm(side)) >= TINY else perpendicular(tangent)
         if untwist and previous is not None and float(side @ previous) < 0.0:
             side = -side
         if float(np.linalg.norm(side)) > 0.0:
@@ -99,11 +120,15 @@ class Quads:
         return n - 1
 
     def dot(self, centre, size, value, right=None, up=None):
-        """カメラを向いた四角形（一辺 size）。right・up を渡せば、その向き（長さは問わない）。"""
+        """カメラを向いた四角形（一辺 size）。right・up を渡せば、その向き（長さは問わない）。カメラが点の真上・真下なら、
+        右は 視線 × y（fx_strips.perpendicular）。"""
         p = np.asarray(centre, float)
         to_camera = unit(self.camera - p)
-        right = unit(np.cross(to_camera, UP) if right is None else right) * (size * 0.5)
-        up = unit(np.cross(right, to_camera) if up is None else up) * (size * 0.5)
+        right = (perpendicular(to_camera) if right is None else unit(right)) * (size * 0.5)
+        up = unit(np.cross(right, to_camera) if up is None else up)
+        if float(np.linalg.norm(up)) == 0.0:                               # カメラが点と同じ所
+            up = perpendicular(right)
+        up = up * (size * 0.5)
         self._co.append(np.array([p - right - up, p + right - up, p + right + up, p - right + up]))
         self._value.append((float(value),) * 4)
         return 1

@@ -92,3 +92,23 @@ def test_bone_ribbon_takes_any_polyline():
         polyline_ribbon_vertices(points, [0.1, 0.2], CAMERA)
     with pytest.raises(ToolError, match="有限"):
         polyline_ribbon_vertices(points, -0.1, CAMERA)
+
+
+def test_repeated_points_borrow_the_tangent_and_a_line_along_x_toward_the_camera_still_has_width():
+    """同じ点が続く所（接線 0）は前か後ろの接線を使い、線が x の向きでカメラも x の上にある所は、視線 × 上の向きに幅を取る。"""
+    points = [[0, 0, 1], [0, 0, 1], [0, 0, 1], [1, 0, 1]]
+    widths = np.linalg.norm(fx_strips.sides(points, [0.04] * 4, CAMERA), axis=1) * 2
+    assert np.allclose(widths, 0.04)
+    verts = polyline_ribbon_vertices(points, 0.04, CAMERA)
+    assert np.allclose(np.linalg.norm(verts[1::2] - verts[0::2], axis=1), 0.04)
+    along = fx_strips.sides([[0, 0, 0], [1, 0, 0], [2, 0, 0]], [0.1] * 3, [-5, 0, 0])
+    assert np.allclose(np.linalg.norm(along, axis=1), 0.05) and np.allclose(along[:, 0], 0)
+    assert np.allclose(fx_strips.sides([[1, 1, 1], [1, 1, 1]], [0.1, 0.1], CAMERA), 0)      # 長さ 0 の帯は幅も 0
+
+
+def test_dot_right_under_or_over_the_camera_keeps_its_size():
+    for camera in ([0, 0, 10], [0, 0, -10], [0, 0, 0]):
+        quads = fx_strips.Quads(camera)
+        quads.dot([0, 0, 0], 0.5, 1.0)
+        co = quads.arrays()[0][0]
+        assert np.linalg.norm(co[1] - co[0]) == pytest.approx(0.5) and np.linalg.norm(co[3] - co[0]) == pytest.approx(0.5)
