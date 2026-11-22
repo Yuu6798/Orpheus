@@ -1,6 +1,7 @@
 """レシピの実行器: 依存順・参照・key・再利用・失敗・needs_review・記録。"""
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -338,3 +339,78 @@ def test_execute_interface_rejects_wrong_return(monkeypatch, tmp_path):
     context = executor.Context(tmp_path, tmp_path, tmp_path)
     with pytest.raises(ToolError, match="StepResult"):
         executor.execute("test.bad", {}, {}, context, {})
+
+
+# ---- 工程の実行中の入力の見張り（InputWatch） ----
+
+# 外のプロセスのまね: 自分の入力を書き換え（mode が edit なら中身を、touch なら同じ中身で更新時刻だけ）、run.log に知らせが出るまで
+# 待ってから（最大 10 秒）、見えたかどうかを出力に書く。知らせが工程の終わる前に出ることを確かめる
+WATCHED = r"""
+import glob, os, sys, time
+from pathlib import Path
+source, out, artifact, mode = sys.argv[1:5]
+data = Path(source).read_bytes()
+time.sleep(0.2)
+if mode == "edit":
+    Path(source).write_bytes(data + b" ")
+else:
+    Path(source).write_bytes(data)
+    os.utime(source, ns=(time.time_ns(), time.time_ns() + 5_000_000_000))
+seen = "late"
+for _ in range(100 if mode == "edit" else 10):
+    if any("実行中に変わりました" in Path(p).read_text(encoding="utf-8") for p in glob.glob(os.path.join(out, "*", "run.log"))):
+        seen = "noticed"
+        break
+    time.sleep(0.1)
+Path(artifact).write_text(seen, encoding="utf-8")
+"""
+
+
+def _watched_recipe(tmp_path, mode):
+    (tmp_path / "panel.txt").write_text("panel", encoding="utf-8")
+    script = tmp_path / "watched.py"
+    script.write_text(WATCHED, encoding="utf-8")
+    argv = [sys.executable, str(script), "{source}", str(tmp_path / "runs"), "{artifact}", mode]
+    steps = [{"id": "long", "operation": "external.run", "inputs": {"source": "$inputs.panel"}, "outputs": {"artifact": "seen.txt"},
+              "parameters": {"config": {"tool": "test", "version": "1", "argv": argv}}}]
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "watched",
+                                           "inputs": {"panel": {"path": "panel.txt"}}, "steps": steps})
+    return tmp_path / "recipe.json"
+
+
+def test_an_input_changed_while_the_step_runs_is_reported_before_the_step_ends(tmp_path, monkeypatch):
+    monkeypatch.setattr(executor, "WATCH_INTERVAL_S", 0.05)
+    said = []
+    result = executor.run_recipe(_watched_recipe(tmp_path, "edit"), tmp_path / "runs", progress=said.append)
+    assert result["status"] == "failed" and "変わりました" in result["error"]
+    assert "残っています" in result["error"] and "索引には載せません" in result["error"]       # 出力の残る場所を書く
+    run_dir = Path(result["run_dir"])
+    assert (run_dir / "long" / "seen.txt").read_text(encoding="utf-8") == "noticed"          # 工程が終わる前に、run.log に出た
+    assert any("実行中に変わりました" in w for w in result["warnings"])
+    assert any("実行中に変わりました" in m for m in said)
+    assert read_json(tmp_path / "runs" / "index.json")["steps"] == {}
+
+
+def test_touching_an_input_without_changing_it_is_not_reported(tmp_path, monkeypatch):
+    monkeypatch.setattr(executor, "WATCH_INTERVAL_S", 0.05)
+    result = executor.run_recipe(_watched_recipe(tmp_path, "touch"), tmp_path / "runs")
+    assert result["status"] == "succeeded", result["error"]
+    assert result["warnings"] == [] and (Path(result["run_dir"]) / "long" / "seen.txt").read_text(encoding="utf-8") == "late"
+
+
+def test_the_watch_reports_each_input_once_and_a_removed_input_too(tmp_path):
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_text("a", encoding="utf-8")
+    b.write_text("b", encoding="utf-8")
+    notes = []
+    watch = executor.InputWatch({"x": a, "y": b}, {"x": sha256(a), "y": sha256(b)}, {"x": "first", "y": "second"}, "step", notes.append,
+                                interval=3600)
+    watch.poll()
+    assert notes == []
+    a.write_text("changed", encoding="utf-8")
+    b.unlink()
+    watch.poll()
+    watch.poll()
+    assert len(notes) == 2 and "first" in notes[0] and "変わりました" in notes[0] and "second" in notes[1] and "消えました" in notes[1]
+    with watch:                                            # 入力の無い工程でも、始めて止められる
+        pass

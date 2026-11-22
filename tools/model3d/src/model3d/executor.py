@@ -11,12 +11,16 @@
   前の生成物がハッシュまで揃っているときだけ。ファイルがあるだけでは再利用しない。別プロセスを呼ぶ操作
   （external.run・blender.run_script）は設定が参照する実行ファイルや素材を知らないので、毎回実行する（索引にも載せない）。
 - 入力の sha256 が recipe の宣言と違えば実行しない。未確認の役割・観測不足は unresolved に残し、成功扱いにしない。
+- 工程の実行中は、その工程の recipe の入力（$inputs）を数秒おきに見張り、変わったらすぐ run.log・画面・記録の warnings に知らせる
+  （終わってから失敗になることを、長い工程の途中で分かるように。止めはしない。外のプロセスは始めに入力を読むことが多く、
+  描いた絵は正しいことがあるため）。終わったあとの確かめ（check_unchanged）は今のまま: 変わった入力の結果は失敗にし、索引に載せない。
 - 工程の select（{"<入力名>": "<役割>"}）は、対応表でその入力メッシュの名前と頂点構成に結び付いた面領域（か同じ名前の面集合）を
   選んで操作に渡す。別の部品の面領域・古い対応（頂点構成の違う面領域）・当たる面の無い役割では工程を止め、メッシュ全体へ黙って当てない。
 """
 import platform
 import shutil
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -31,6 +35,7 @@ from .io import ToolError, atomic_json, directory_lock, now, read_json, resolve_
 from .mesh import Mesh
 
 INDEX_SCHEMA = "model3d-index/0.1"
+_RECORD_LOCK = threading.Lock()   # 見張りのスレッドが記録を書くときの待ち合わせ
 STATES = ("pending", "running", "succeeded", "needs_review", "failed")
 
 
@@ -49,12 +54,75 @@ class Context:
     selections: dict = field(default_factory=dict)   # 工程の select で選んだ面領域（入力名 -> semantic.select の結果）
 
 
-def check_unchanged(paths, hashes, pinned):
+def check_unchanged(paths, hashes, pinned, kept=None):
     """recipe の入力（$inputs）が、読み込んだときの sha256 のままか。変わっていれば止める
-    （変わった中身で作った結果を、古い sha256 の名で記録・再利用しないため）。"""
+    （変わった中身で作った結果を、古い sha256 の名で記録・再利用しないため）。kept は、実行した後に確かめるときの工程のフォルダ
+    （出力はそこに残るが、記録と索引には載せない、と文に書く）。"""
     for name, source in pinned.items():
         if sha256(paths[name]) != hashes[name]:
-            raise ToolError(f"入力 {source}（{paths[name]}）が recipe を読み込んだ後に変わりました。run をやり直してください")
+            left = (f"。工程の出力は {kept} に残っていますが、変わった中身で作ったかもしれないので、記録と再利用の索引には載せません"
+                    if kept is not None else "")
+            raise ToolError(f"入力 {source}（{paths[name]}）が recipe を読み込んだ後に変わりました{left}。run をやり直してください")
+
+
+WATCH_INTERVAL_S = 2.0   # 工程の実行中に入力を見張る間隔（秒）
+
+
+def _stamp(path):
+    """見張りの目印: (大きさ, 更新時刻 ns)。無ければ None。"""
+    try:
+        status = Path(path).stat()
+    except OSError:
+        return None
+    return status.st_size, status.st_mtime_ns
+
+
+class InputWatch:
+    """工程の実行中に、recipe の入力（$inputs）を見張る（別のスレッド）。大きさか更新時刻が変わった入力は sha256 で確かめ、読み込んだ
+    ときと違えば、入力ごとに 1 回だけ notify(文) を呼ぶ。止めはしない（終わった後の check_unchanged が失敗にする）。"""
+
+    def __init__(self, paths, hashes, pinned, step_id, notify, interval=None):
+        self.items = [(name, source, Path(paths[name]), hashes[name]) for name, source in sorted(pinned.items())]
+        self.step_id, self.notify = step_id, notify
+        self.interval = WATCH_INTERVAL_S if interval is None else interval
+        self.seen = {name: _stamp(path) for name, _, path, _ in self.items}
+        self.changed = []
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name=f"model3d-watch-{step_id}", daemon=True)
+
+    def __enter__(self):
+        if self.items:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join()
+        return False
+
+    def _loop(self):
+        while not self._stop.wait(self.interval):
+            self.poll()
+
+    def poll(self):
+        for name, source, path, expected in self.items:
+            if name in self.changed:
+                continue
+            now_stamp = _stamp(path)
+            if now_stamp == self.seen[name]:
+                continue
+            self.seen[name] = now_stamp
+            try:
+                same = now_stamp is not None and sha256(path) == expected
+            except OSError:
+                same = False
+            if same:                                     # 触っただけ（中身は同じ）
+                continue
+            self.changed.append(name)
+            what = "消えました" if now_stamp is None else "変わりました"
+            self.notify(f"入力 {source}（{path}）が、工程 {self.step_id} の実行中に{what}。この工程は、終わっても失敗になります"
+                        "（変わった中身で作った結果を、古い sha256 の名で残さないため）。やり直すなら、工程を止めて run をやり直してください")
 
 
 def library_versions():
@@ -329,8 +397,16 @@ def _reuse_or_execute(s, step, entry, step_inputs, hashes, pinned, key, cacheabl
         run.log(f"{step['id']}: run {step['operation']}")
         context = Context(run.dir, step_dir, s.base, s.preset, s.semantic_map, s.tools, run.log, {"force": s.force},
                           step.get("space"), tuple(step.get("applies_to", [])), selections)
-        result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
-        check_unchanged(step_inputs, hashes, pinned)   # 実行中に変わった入力の結果も残さない
+        def notify(message):                             # 見張りのスレッドから: すぐ記録と画面に出す
+            run.log(f"{step['id']}: warning: {message}")
+            s.say(f"[model3d] {step['id']}: {message}")
+            with _RECORD_LOCK:
+                run.record["warnings"].append(message)
+                run.save()
+
+        with InputWatch(step_inputs, hashes, pinned, step["id"], notify):
+            result = execute(step["operation"], step_inputs, step.get("parameters", {}), context, outputs)
+        check_unchanged(step_inputs, hashes, pinned, kept=step_dir)   # 実行中に変わった入力の結果も残さない
         entry["observations"] = chosen_notes + list(result.observations)
         unresolved.extend(result.unresolved)
         if result.review:
