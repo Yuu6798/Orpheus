@@ -9,9 +9,9 @@
     draw(table, event, f, camera, quads, gain=1.0)
 
 出来事の欄（既定の無い欄は書く）:
-- `at`: 出どころ（始まりのコマの点）。`count`: 粒の数。`speed`: 速さの範囲 [下, 上]（m/s）。
+- `at`: 出どころ（始まりのコマの点。世界の座標か骨の点。カメラから見た点は使えない）。`count`: 粒の数。`speed`: 速さの範囲 [下, 上]（m/s）。
 - `up`: 向きの上への寄せ（標準正規の向きの z に足す。負なら下へ）。`life`: 寿命の目安（秒。粒ごとに × 0.5〜1.6）。
-- `drag`: 空気の抵抗（1/s）。`gravity`: 重力の加速度（m/s²）。`floor`: これより下へは行かない高さ（m。省くと止めない）。
+- `drag`: 空気の抵抗（1/s。0 以上。0 なら抵抗なし）。`gravity`: 重力の加速度（m/s²）。`floor`: これより下へは行かない高さ（m。省くと止めない）。
 - `streak`: 筋の長さ（何秒前の位置からの筋か）。`size`: 粒の大きさ（m）。`seed`: 種（整数）。`gain`: 強さの倍率（既定 1）。
 
 効く間は、始まりから life × 1.6 秒。粒の明るさは (1 − 年齢 ÷ その粒の寿命)^0.7。
@@ -40,11 +40,16 @@ def draw(table, event, f, camera, quads, gain=1.0):
     if not table.within(event, f, 0.0, life(event)):
         return 0
     age = table.age(event, f)
-    origin = table.point(fx_events.need(event, "at"), table.start(event), camera)
-    rng = fx_events.rng(int(fx_events.need(event, "seed")), 8)
+    spec = fx_events.need(event, "at")
+    if not table.fixed(spec):                                             # 今のコマのカメラで読むと、出どころがカメラと動く
+        raise fx_events.EventError(f"飛び散る粒の出どころに、カメラから見た点は使えません（始まりのコマの点に止めるため）: {spec!r}")
+    origin = table.point(spec, table.start(event))
+    rng = fx_events.rng(fx_events.need(event, "seed"), 8)
     low, high = (float(v) for v in fx_events.need(event, "speed"))
     up, span = float(fx_events.need(event, "up")), float(event["life"])
     drag, gravity = float(fx_events.need(event, "drag")), float(fx_events.need(event, "gravity"))
+    if not drag >= 0.0:
+        raise fx_events.EventError(f"飛び散る粒の drag は 0 以上にしてください: {drag!r}")
     floor, streak, size = event.get("floor"), float(fx_events.need(event, "streak")), float(fx_events.need(event, "size"))
     level0 = float(event.get("gain", 1.0)) * gain
     drawn = 0
@@ -56,7 +61,7 @@ def draw(table, event, f, camera, quads, gain=1.0):
             continue
 
         def where(tau):
-            travel = (1.0 - math.exp(-drag * tau)) / drag
+            travel = (1.0 - math.exp(-drag * tau)) / drag if drag > 0.0 else tau        # 抵抗が無ければ、まっすぐ進む
             p = origin + direction * speed * travel + np.array([0.0, 0.0, -0.5 * gravity * tau * tau])
             if floor is not None:
                 p[2] = max(p[2], float(floor))
