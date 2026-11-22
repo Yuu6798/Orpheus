@@ -252,7 +252,7 @@ def show_manifest(report, frames_dir):
                                          "fps": report["fps"], "resolution": report["resolution"], "frames": frames, "missing": missing})
 
 
-@register("render.show", inputs=("blend", "cameras", "lights", "hooks"), outputs=("frames", "report"), cacheable=False,
+@register("render.show", inputs=("blend", "cameras", "lights", "hooks", "hook_config"), outputs=("frames", "report"), cacheable=False,
           summary="演出版を、Blender 5.x の EEVEE で 1 回でコマごとに PNG に描く（3 作目の VRM のダンスの演出版の描き方）。カメラ"
                   "（cameras。model3d-cameras/0.1）は全部のコマをキーにして置き、カットの最後のキー（cuts の 1 つ前のコマ）を止めるので、"
                   "動きのぶれ（motion_blur。コマから後ろ）がカットをまたがない。fstop と focus_m のコマは被写界深度。光の値"
@@ -262,6 +262,7 @@ def show_manifest(report, frames_dir):
                   "Blender の記録に影の領域のあふれ（Shadow buffer full）があれば、既定で工程を失敗にする（shadow.overflow を warn に"
                   "すると報告に書くだけ）。作品ごとの舞台は、"
                   "フック（hooks。Python の台本。レシピに明示したときだけ実行し、sha256 を報告に残す）の build と frame で作って動かす。"
+                  "フックの値（hook_config。JSON の辞書。中の鍵はフックの物なので確かめない）は ctx.config で読め、sha256 を報告に残す。"
                   "描いたコマは毎回描き直す（とばさない）。frames は描いたコマの一覧（model3d-frames/0.1）。Blender が要り、再利用しない（毎回実行）")
 def show_render(inputs, parameters, outputs, context):
     from .. import contracts
@@ -287,6 +288,12 @@ def show_render(inputs, parameters, outputs, context):
         seen.add(frame["T"])
     if inputs.get("lights") is not None:
         contracts.load("light-track", inputs["lights"])
+    if inputs.get("hook_config") is not None:
+        if inputs.get("hooks") is None:
+            raise ToolError("render.show の入力 hook_config（フックの値）は、入力 hooks（フックの台本）と組で渡してください")
+        config = read_json(inputs["hook_config"])
+        if not isinstance(config, dict):
+            raise ToolError(f"render.show の入力 hook_config は JSON の辞書にしてください（フックが ctx.config で読む）: {inputs['hook_config']}")
     blender = _blender(parameters, context, "render.show")
     step = Path(context.step_dir)
     settings_path = step / "show_settings.json"
@@ -298,6 +305,8 @@ def show_render(inputs, parameters, outputs, context):
         args += ["--lights", inputs["lights"]]
     if inputs.get("hooks") is not None:
         args += ["--hooks", inputs["hooks"]]
+    if inputs.get("hook_config") is not None:
+        args += ["--hook-config", inputs["hook_config"]]
     log = step / "blender.log"
     record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=log, timeout=_timeout(parameters))
     report = read_json(outputs["report"])
@@ -320,5 +329,8 @@ def show_render(inputs, parameters, outputs, context):
                    "motion_blur_frames": (report.get("motion_blur") or {}).get("frames"),
                    "held_camera_keys": len((report.get("camera") or {}).get("held") or []),
                    "shadow_overflow": {"lines": overflow["lines"], "worst": overflow["worst"]},
-                   "hooks": {"path": str(inputs["hooks"]), "sha256": sha256(inputs["hooks"])} if inputs.get("hooks") is not None else None}
+                   "hooks": ({"path": str(inputs["hooks"]), "sha256": sha256(inputs["hooks"]),
+                              "config": ({"path": str(inputs["hook_config"]), "sha256": sha256(inputs["hook_config"])}
+                                         if inputs.get("hook_config") is not None else None)}
+                             if inputs.get("hooks") is not None else None)}
     return StepResult(observations=[observation])

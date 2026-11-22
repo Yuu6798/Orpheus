@@ -1,7 +1,7 @@
 """Blender の中で動かす: 演出版を、EEVEE で 1 回でコマごとに PNG に描く（render.show の描く側。.blend は保存しない）。
 
     blender --background --factory-startup --python show_render.py -- --blend in.blend --settings settings.json \
-        --cameras cameras.json --frames-dir frames --report report.json [--lights track.json] [--hooks stage.py]
+        --cameras cameras.json --frames-dir frames --report report.json [--lights track.json] [--hooks stage.py] [--hook-config values.json]
 
 3 作目の VRM のダンスの演出版（リポジトリ外の台本。Blender 5.2 の EEVEE で 1 回で描いた）の描き方を移した。舞台の形は作品ごとに
 違うので、フック（--hooks。Python の台本）で作って動かす。この台本が持つのは、どの作品にも要る所:
@@ -23,7 +23,8 @@
   フックの build の後で入れる（フックが作った光と物体も指せる）。幕だけを照らし、踊り手だけが影を落とす光など。
 - フック（--hooks）: 舞台を作る build(ctx) をカメラを置く前に 1 回、コマごとに動かす frame(ctx) を描く直前に呼ぶ（どちらも任意）。
   ctx: bpy・scene・unit（scale_length）・settings・track（光の値 {T: {名前: 値}}）・cameras（{T: カメラのコマ}）・state（フックが
-  使ってよい辞書）、コマごとに T・f・t（秒）・values（そのコマの光の値）・camera（そのコマのカメラ。position は m）。
+  使ってよい辞書）・config（フックの値のファイル --hook-config の中身。無ければ空の辞書。中の鍵はフックの物なので確かめない）、
+  コマごとに T・f・t（秒）・values（そのコマの光の値）・camera（そのコマのカメラ。position は m）。
 描く設定: EEVEE（samples・raytracing・shadows。影の領域 shadow の pool_size・resolution_scale は、書いたときだけ入れ、描いたときの値を
 報告の eevee に残す。あふれの知らせの数え方は shadow_overflow。数えて止めるのは工程の側。霧 volumetric の鍵も、書いたときだけ入れ、
 描いたときの値を eevee に残す）、色の変換は view_transform（既定 Standard。Look・ガンマ・カーブは無し。露出は exposure、省くと 0）、
@@ -88,6 +89,7 @@ def parse_args(argv):
     ap.add_argument("--report", required=True)
     ap.add_argument("--lights")
     ap.add_argument("--hooks")
+    ap.add_argument("--hook-config")
     return ap.parse_args(argv)
 
 
@@ -276,6 +278,14 @@ def apply_links(bpy, links, character):
     return report
 
 
+def read_hook_config(path):
+    """フックの値のファイル → (中身, sha256)。BOM つきの UTF-8 も読む（工程の側の read_json と同じ。sha256 はもとのバイト）。"""
+    import hashlib
+    with open(path, "rb") as stream:
+        raw = stream.read()
+    return json.loads(raw.decode("utf-8-sig")), hashlib.sha256(raw).hexdigest()
+
+
 def report_value(value):
     """報告に書く Blender の値: 数の列挙（"1024" など）は数に、float は 6 桁に丸める。ほかはそのまま。"""
     if isinstance(value, str) and value.isdigit():
@@ -402,10 +412,12 @@ def main(argv=None):
         raise SystemExit("ambient を渡しましたが、光を受ける塗り（look.lit）の材質がありません")
     # 踊り手（links の "character"）: .blend にもとからある、描画に出るメッシュ（フックが作る舞台の物は入れない）
     character = [o for o in bpy.data.objects if o.type == "MESH" and toon_look.rendered(o, sc.view_layers)]
-    hooks, hooks_sha = None, None
-    ctx = Context(bpy=bpy, scene=sc, unit=unit, settings=settings, track=track, cameras=cameras)
+    hooks, hooks_sha, config, config_sha = None, None, {}, None
+    import hashlib
+    if a.hook_config:                                    # フックの値（作品ごとの値）。レシピの入力なので sha256 が実行の記録にも残る
+        config, config_sha = read_hook_config(a.hook_config)
+    ctx = Context(bpy=bpy, scene=sc, unit=unit, settings=settings, track=track, cameras=cameras, config=config)
     if a.hooks:
-        import hashlib
         with open(a.hooks, "rb") as stream:
             hooks_sha = hashlib.sha256(stream.read()).hexdigest()
         hooks = load_hooks(a.hooks)
@@ -565,7 +577,9 @@ def main(argv=None):
                        "exposure": round(float(sc.view_settings.exposure), 6)},
               "lights": sorted(settings["lights"]), "lit_materials": len(lit), "links": links,
               "character": [o.name for o in character],
-              "hooks": {"path": os.path.abspath(a.hooks), "sha256": hooks_sha} if a.hooks else None,
+              "hooks": ({"path": os.path.abspath(a.hooks), "sha256": hooks_sha,
+                         "config": {"path": os.path.abspath(a.hook_config), "sha256": config_sha} if a.hook_config else None}
+                        if a.hooks else None),
               "render_changes": render_changes, "key_changes": key_report, "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
