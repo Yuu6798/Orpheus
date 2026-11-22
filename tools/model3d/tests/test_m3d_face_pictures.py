@@ -36,12 +36,12 @@ def test_a_combination_without_a_picture_stops_and_says_when():
 
 def test_seconds_are_turned_into_frames_before_they_are_compared():
     """表の秒を丸めて書いても（3 桁に丸めると、コマの時刻より 0.3 ミリ秒あとになることがある）、そのコマから始まる。"""
-    start = round(884 / 30, 3)                                   # 29.467 は、コマ 884 の時刻 29.4666… より後ろ
-    assert start > 884 / 30
+    start = round(71 / 30, 3)                                    # 2.367 は、コマ 71 の時刻 2.3666… より後ろ
+    assert start > 71 / 30
     events = face_pictures.check_events({"mouth": [[0.0, ""], [start, "smile"]]})
-    names = face_pictures.frames(events, 30.0, 890, NAMES)
-    assert names[883] == "" and names[884] == "smile"
-    assert face_pictures.times(names, 30.0) == [[0.0, ""], [884 / 30, "smile"]]
+    names = face_pictures.frames(events, 30.0, 80, NAMES)
+    assert names[70] == "" and names[71] == "smile"
+    assert face_pictures.times(names, 30.0) == [[0.0, ""], [71 / 30, "smile"]]
 
 
 @pytest.mark.parametrize("events, message", [
@@ -55,9 +55,9 @@ def test_bad_event_tables_are_named(events, message):
 
 
 def test_a_picture_is_picked_with_half_a_frame_of_slack():
-    times = [[0.0, ""], [round(884 / 30, 3), "smile"]]
-    assert show_render.picture_at(times, 884 / 30, 30.0) == "smile"           # 丸めた秒の後ろでも、そのコマで始まる
-    assert show_render.picture_at(times, 883 / 30, 30.0) == ""
+    times = [[0.0, ""], [round(71 / 30, 3), "smile"]]
+    assert show_render.picture_at(times, 71 / 30, 30.0) == "smile"           # 丸めた秒の後ろでも、そのコマで始まる
+    assert show_render.picture_at(times, 70 / 30, 30.0) == ""
     assert show_render.picture_at([[1.0, "a"], [2.0, "b"]], 0.0, 30.0) == "a"  # 最初の秒より前は最初の名前
 
 
