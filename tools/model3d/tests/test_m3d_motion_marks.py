@@ -29,15 +29,15 @@ LANDING = {"points": ["foot_l", "foot_r"], "drop": 0.05, "fall": 0.5, "still": 0
 
 
 def test_marks_find_landings_extremes_and_first_frames():
-    settings = event_ops.marks_settings({"landing": LANDING, "hits": [0.5, 29.467 - 28.0, 1.0 / 3 + 0.01],
+    settings = event_ops.marks_settings({"landing": LANDING, "hits": [0.5, 1.367, 1.0 / 3 + 0.01],
                                          "extremes": [{"name": "low", "point": "hips", "axis": [0, 0, 1], "kind": "min", "prominence": 0.1, "gap": 0.3},
                                                       {"name": "front", "point": "hand", "axis": [0, -1, 0], "kind": "max", "prominence": 0.1, "gap": 0.3}]})
     report = motion_marks.build(settings, _path())
     assert [(m["point"], m["frame"]) for m in report["landings"]] == [("foot_l", 21.0), ("foot_r", 41.0)]
     assert report["landings"][0]["t"] == pytest.approx(20 / FPS)
     assert [m["frame"] for m in report["extremes"]["low"]] == [31.0] and [m["frame"] for m in report["extremes"]["front"]] == [46.0]
-    # 0.5 秒 → コマ 16。小数 3 桁に丸めた 1.467 秒（コマ 45 の 1.4666… 秒の 0.01 コマ後）→ コマ 45。0.3433… 秒 → コマ 12（0.3 コマ後は次）
-    assert [h["frame"] for h in report["hits"]] == [16, 45, 12]
+    # 0.5 秒 → コマ 16。小数 3 桁に丸めた 1.367 秒（コマ 42 の 1.3666… 秒の 0.01 コマ後）→ コマ 42。0.3433… 秒 → コマ 12（0.3 コマ後は次）
+    assert [h["frame"] for h in report["hits"]] == [16, 42, 12]
     assert report["counts"] == {"landings": 2, "extremes": {"low": 1, "front": 1}, "hits": 3}
 
 
