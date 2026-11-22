@@ -373,3 +373,35 @@ def test_the_settings_pass_exposure_and_fog(tmp_path):
     call(tmp_path, {"exposure": -0.5, "volumetric": {"tile_size": 2, "samples": 40, "end": 25, "shadows": False}})
     settings = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["settings"]
     assert settings["exposure"] == -0.5 and settings["volumetric"] == {"tile_size": 2, "samples": 40, "end": 25.0, "shadows": False}
+
+
+# ---- フックの値（hook_config） ----
+
+def test_the_hook_config_is_passed_and_its_sha256_is_kept(tmp_path):
+    (tmp_path / "stage.py").write_text("def build(ctx):\n    pass\n", encoding="utf-8")
+    atomic_json(tmp_path / "values.json", {"glow": 2.0, "anything": [1, 2]})
+    inputs = {"blend": tmp_path / "show.blend", "cameras": tmp_path / "cameras.json", "hooks": tmp_path / "stage.py",
+              "hook_config": tmp_path / "values.json"}
+    result = call(tmp_path, {}, inputs=inputs)
+    args = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["argv"]
+    assert Path(args[args.index("--hook-config") + 1]).name == "values.json"
+    from model3d.io import sha256
+    assert result.observations[0]["hooks"]["config"] == {"path": str(tmp_path / "values.json"), "sha256": sha256(tmp_path / "values.json")}
+
+
+def test_without_a_hook_config_the_hooks_record_has_none(tmp_path):
+    (tmp_path / "stage.py").write_text("", encoding="utf-8")
+    result = call(tmp_path, {}, inputs={"blend": tmp_path / "show.blend", "cameras": tmp_path / "cameras.json", "hooks": tmp_path / "stage.py"})
+    args = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["argv"]
+    assert "--hook-config" not in args and result.observations[0]["hooks"]["config"] is None
+
+
+def test_a_hook_config_needs_hooks_and_a_dictionary(tmp_path):
+    atomic_json(tmp_path / "values.json", {"glow": 2.0})
+    with pytest.raises(ToolError, match="組で"):
+        call(tmp_path, {}, inputs={"blend": tmp_path / "show.blend", "cameras": tmp_path / "cameras.json", "hook_config": tmp_path / "values.json"})
+    (tmp_path / "stage.py").write_text("", encoding="utf-8")
+    atomic_json(tmp_path / "list.json", [1, 2])
+    with pytest.raises(ToolError, match="辞書"):
+        call(tmp_path, {}, inputs={"blend": tmp_path / "show.blend", "cameras": tmp_path / "cameras.json", "hooks": tmp_path / "stage.py",
+                                    "hook_config": tmp_path / "list.json"})
