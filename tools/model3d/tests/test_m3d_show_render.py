@@ -107,12 +107,20 @@ settings = json.load(open(value("--settings"), encoding="utf-8"))
 frames_dir = value("--frames-dir")
 os.makedirs(frames_dir, exist_ok=True)
 planned = [{"T": fr["T"], "f": fr.get("f", fr["T"])} for fr in cameras["frames"] if not settings.get("only") or fr["T"] in settings["only"]]
+skipped = []
 for item in planned:
-    png(os.path.join(frames_dir, "f%04d.png" % item["T"]))
-if open(value("--blend"), "rb").read() == b"overflow":   # 影の領域があふれた場面のまね（EEVEE は標準エラーに書き、描くのは続ける）
+    path = os.path.join(frames_dir, "f%04d.png" % item["T"])
+    if "--skip-existing" in args and os.path.exists(path):
+        skipped.append(item["T"])
+        continue
+    png(path)
+if open(value("--blend"), "rb").read() in (b"overflow", b"overflow_crash"):   # 影の領域があふれた場面のまね（EEVEE は標準エラーに書き、描くのは続ける）
     for need in (3494, 6252):
         sys.stderr.write("Error: Shadow buffer full, may result in missing shadows and lower performance. (%d / 4096)\n" % need)
-json.dump({"schema_version": "model3d-show-render/0.1", "planned": planned, "rendered": [p["T"] for p in planned], "fps": 30,
+if open(value("--blend"), "rb").read() == b"overflow_crash":                    # あふれたあと、報告を書く前に落ちる
+    sys.exit(3)
+json.dump({"schema_version": "model3d-show-render/0.1", "planned": planned, "rendered": [p["T"] for p in planned if p["T"] not in skipped],
+           "skipped_existing": skipped, "fps": 30,
            "resolution": [2, 2], "camera": {"held": [2]}, "motion_blur": {"frames": len(planned)}, "argv": args, "settings": settings},
           open(value("--report"), "w"))
 '''
@@ -416,3 +424,134 @@ def test_the_blender_side_reads_a_hook_config_with_a_bom(tmp_path):
     (tmp_path / "values.json").write_bytes(raw)
     assert read_json(tmp_path / "values.json") == {"glow": 2.0}
     assert show_render.read_hook_config(tmp_path / "values.json") == ({"glow": 2.0}, hashlib.sha256(raw).hexdigest())
+
+
+# ---- 区切って描いて集める・続きから描く（frames_dir） ----
+
+HOOKS = "def build(ctx):\n    pass\n"
+
+
+def _recipe(tmp_path, parameters, hooks=HOOKS):
+    (tmp_path / "show.blend").write_bytes(b"lit")
+    atomic_json(tmp_path / "cameras.json", _cameras(4))
+    (tmp_path / "stage.py").write_text(hooks, encoding="utf-8")
+    params = {"blender": str(stand_in_executable(tmp_path, "blender", STAND_IN)), "samples": 8, "frames_dir": "frames_all", **parameters}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "show",
+                                           "inputs": {"blend": {"path": "show.blend"}, "cameras": {"path": "cameras.json"},
+                                                      "hooks": {"path": "stage.py"}},
+                                           "steps": [{"id": "show", "operation": "render.show",
+                                                      "inputs": {"blend": "$inputs.blend", "cameras": "$inputs.cameras", "hooks": "$inputs.hooks"},
+                                                      "parameters": params, "outputs": {"frames": "frames.json", "report": "report.json"}}]})
+    return tmp_path / "recipe.json"
+
+
+def test_chunks_are_drawn_into_one_folder_and_drawn_frames_are_skipped(tmp_path):
+    from model3d import executor
+    first = executor.run_recipe(_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert first["status"] == "succeeded", first["error"]
+    assert first["steps"]["show"]["observations"][0]["rendered"] == 2
+    second = executor.run_recipe(_recipe(tmp_path, {"only": [2, 3, 4]}), tmp_path / "runs")   # 区切りが重なっても、描いたコマはとばす
+    observation = second["steps"]["show"]["observations"][0]
+    assert second["status"] == "succeeded" and observation["rendered"] == 2 and observation["skipped_existing"] == 1
+    assert observation["inputs"]["kept"] == 1
+    assert sorted(p.name for p in (tmp_path / "frames_all").glob("f*.png")) == ["f0001.png", "f0002.png", "f0003.png", "f0004.png"]
+    frames = contracts.load("frames", second["steps"]["show"]["artifacts"]["frames"])
+    assert [fr["T"] for fr in frames["frames"]] == [2, 3, 4] and frames["missing"] == []
+
+
+def test_changed_inputs_stop_before_drawing_into_the_same_folder(tmp_path):
+    from model3d import executor
+    assert executor.run_recipe(_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")["status"] == "succeeded"
+    changed = executor.run_recipe(_recipe(tmp_path, {"only": [3, 4]}, hooks=HOOKS + "# 書き換えた\n"), tmp_path / "runs")
+    assert changed["status"] == "failed" and "フック" in changed["error"]     # 描いてないコマでも、別の入力で描いたフォルダには描かない
+    other = executor.run_recipe(_recipe(tmp_path, {"only": [3, 4], "samples": 16}), tmp_path / "runs")
+    assert other["status"] == "failed" and "設定（samples）" in other["error"]
+    ok = executor.run_recipe(_recipe(tmp_path, {"only": [3, 4], "shadow": {"overflow": "warn"}}), tmp_path / "runs")
+    assert ok["status"] == "succeeded", ok["error"]                         # あふれの扱いは、描く絵を変えない
+
+
+def test_frames_drawn_outside_the_control_record_stop_the_resume(tmp_path):
+    from model3d import executor
+    (tmp_path / "frames_all").mkdir()
+    (tmp_path / "frames_all" / "f0001.png").write_bytes(b"old")
+    result = executor.run_recipe(_recipe(tmp_path, {}), tmp_path / "runs")
+    assert result["status"] == "failed" and "入力の控え" in result["error"]
+
+
+def _overflow_recipe(tmp_path, parameters):
+    recipe = _recipe(tmp_path, parameters)
+    (tmp_path / "show.blend").write_bytes(b"overflow")            # 代役が影の領域のあふれを記録に書く
+    return recipe
+
+
+def test_frames_from_an_overflowing_render_are_not_silently_reused(tmp_path):
+    """あふれて失敗した描画のコマは、同じ入力で続きから描いても、とばして通さない（あふれの知らせは描いた回の記録にしか出ない）。"""
+    from model3d import executor
+    first = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert first["status"] == "failed" and "Shadow buffer full" in first["error"]
+    marks = json.loads((tmp_path / "frames_all" / "model3d_show_overflow.json").read_text(encoding="utf-8"))["frames"]
+    assert sorted(marks) == ["f0001.png", "f0002.png"] and marks["f0001.png"]["worst"] == [6252, 4096]
+    again = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert again["status"] == "failed" and "前の描画で影の領域があふれた" in again["error"] and "2 個のコマ" in again["error"]
+    warned = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2], "shadow": {"overflow": "warn"}}), tmp_path / "runs")
+    assert warned["status"] == "succeeded", warned["error"]
+    report = json.loads(Path(warned["steps"]["show"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["shadow_overflow"]["reused"] == 2 and report["shadow_overflow"]["lines"] == 2
+
+
+def test_switching_from_warn_to_fail_still_finds_the_overflowing_frames(tmp_path):
+    from model3d import executor
+    warned = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1], "shadow": {"overflow": "warn"}}), tmp_path / "runs")
+    assert warned["status"] == "succeeded", warned["error"]
+    failing = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert failing["status"] == "failed" and "1 個のコマ（f0001.png）" in failing["error"]
+
+
+def test_a_clean_redraw_clears_the_overflow_record(tmp_path):
+    from model3d import executor
+    from model3d.ops import show_ops
+    (tmp_path / "frames_all").mkdir()
+    show_ops._write_overflow_marks(tmp_path / "frames_all", {"f0003.png": {"lines": 1, "worst": None}})
+    result = executor.run_recipe(_recipe(tmp_path, {"only": [3]}), tmp_path / "runs")          # まだ無いコマなので描き直す
+    assert result["status"] == "succeeded", result["error"]
+    assert not (tmp_path / "frames_all" / "model3d_show_overflow.json").exists()
+
+
+def test_frames_left_by_an_interrupted_overflowing_render_are_marked_too(tmp_path):
+    """あふれたあと Blender が落ちても（報告を書く前）、今回描けたコマを控えるので、同じ入力の続きの描画でとばして通さない。"""
+    from model3d import executor
+    recipe = _recipe(tmp_path, {"only": [1, 2]})
+    (tmp_path / "show.blend").write_bytes(b"overflow_crash")
+    crashed = executor.run_recipe(recipe, tmp_path / "runs")
+    assert crashed["status"] == "failed" and "終了コード 3" in crashed["error"]
+    marks = json.loads((tmp_path / "frames_all" / "model3d_show_overflow.json").read_text(encoding="utf-8"))["frames"]
+    assert sorted(marks) == ["f0001.png", "f0002.png"]
+    again = executor.run_recipe(recipe, tmp_path / "runs")              # 同じ入力: 描く前に、あふれたコマで止まる
+    assert again["status"] == "failed" and "前の描画で影の領域があふれた" in again["error"]
+
+
+def test_a_hook_with_a_bom_can_be_fingerprinted_for_resuming(tmp_path):
+    """Python は BOM つきの台本を読むので、続きから描く入力のまとまりの台本の sha256 でも読む（隣の台本の import もたどる）。"""
+    import codecs
+    from model3d import render_inputs
+    (tmp_path / "helper.py").write_bytes(codecs.BOM_UTF8 + "X = 1\n".encode("utf-8"))
+    (tmp_path / "stage.py").write_bytes(codecs.BOM_UTF8 + "# 舞台\nimport helper\n\ndef build(ctx):\n    pass\n".encode("utf-8"))
+    assert sorted(render_inputs.scripts(tmp_path / "stage.py")) == ["helper.py", "stage.py"]
+
+
+def test_the_overflow_record_is_updated_inside_the_folder_lock(tmp_path):
+    """同じフォルダへ同時に描く区切りどうしで、ほかの区切りの控えを消さない（読んで書き換えて書くまでを待ち合わせの中で）。"""
+    import threading
+    from model3d import render_inputs
+    from model3d.ops import show_ops
+    folder = tmp_path / "frames_all"
+    show_ops._write_overflow_marks(folder.mkdir() or folder, {"f0001.png": {"lines": 1, "worst": None}})
+    lock = render_inputs._locked(folder)
+    worker = threading.Thread(target=show_ops._update_overflow_marks,
+                              args=(folder, lambda marks: marks.update({"f0005.png": {"lines": 2, "worst": [9, 8]}})))
+    worker.start()
+    worker.join(0.3)
+    assert worker.is_alive()                                       # 待ち合わせを持っている間は書かない
+    lock.__exit__(None, None, None)
+    worker.join(10)
+    assert sorted(show_ops._overflow_marks(folder)) == ["f0001.png", "f0005.png"]

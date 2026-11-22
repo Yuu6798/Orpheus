@@ -2,7 +2,7 @@
 演出版を Blender 5.x の EEVEE で 1 回でコマごとに描く（render.show）。"""
 from pathlib import Path
 
-from ..io import ToolError, atomic_json, sha256
+from ..io import ToolError, atomic_json, resolve_path, sha256
 from . import StepResult, number, register, require
 
 
@@ -35,7 +35,7 @@ def plan_lights(inputs, parameters, outputs, context):
 
 SHOW_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "show_render.py"
 SHOW_PARAMETERS = {"blender", "timeout", "resolution", "samples", "raytracing", "shadows", "view_transform", "camera", "motion_blur",
-                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links", "shadow", "exposure", "volumetric"}
+                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links", "shadow", "exposure", "volumetric", "frames_dir"}
 CAMERA_KEYS = {"sensor_height", "clip"}
 SHADOW_KEYS = {"pool_size", "resolution_scale", "overflow"}
 OVERFLOW = ("fail", "warn")
@@ -237,6 +237,61 @@ def _expressions(value):
     return {"objects": objects, "values": values}
 
 
+OVERFLOW_NAME = "model3d_show_overflow.json"   # frames_dir の控え: 影の領域があふれた描画で描いたコマ（ファイル → 行の数・必要 / 上限）
+
+
+def _overflow_marks(frames_dir):
+    """frames_dir の、影の領域があふれた描画で描いたコマの控え {ファイル: {lines, worst}}（無ければ空）。"""
+    from ..io import read_json
+    path = Path(frames_dir) / OVERFLOW_NAME
+    if not path.is_file():
+        return {}
+    record = read_json(path)
+    if not isinstance(record, dict) or not isinstance(record.get("frames"), dict):
+        raise ToolError(f"影の領域のあふれの控えが読めません: {path}")
+    return dict(record["frames"])
+
+
+def _update_overflow_marks(frames_dir, change):
+    """控えを、フォルダの待ち合わせ（render_inputs と同じ .lock）の中で読んで change(marks) で書き換えて書く（同じフォルダへ同時に
+    描く区切りどうしで、ほかの区切りの控えを消さない）。"""
+    from .. import render_inputs
+    lock = render_inputs._locked(Path(frames_dir))
+    try:
+        marks = _overflow_marks(frames_dir)
+        change(marks)
+        _write_overflow_marks(frames_dir, marks)
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def _write_overflow_marks(frames_dir, marks):
+    path = Path(frames_dir) / OVERFLOW_NAME
+    if marks:
+        atomic_json(path, {"schema_version": "model3d-show-overflow/0.1", "frames": dict(sorted(marks.items()))})
+    elif path.is_file():
+        path.unlink()
+
+
+PICTURE_FREE = {"only"}                                  # 描く絵を変えない設定（コマのフォルダの入力の控えの key に入れない）
+
+
+def _show_key(inputs, settings, blender):
+    """render.show の入力のまとまり（コマのフォルダの入力の控え。render_inputs）。描く絵を変えない only と、あふれの扱い
+    （shadow.overflow）は除く。フックは、台本と、それが読む同じフォルダの台本の sha256。"""
+    from .. import render_inputs
+    from ..blender_adapter import launcher
+    kept = {k: v for k, v in settings.items() if k not in PICTURE_FREE}
+    shadow = {k: v for k, v in kept.pop("shadow", {}).items() if k != "overflow"}
+    if shadow:
+        kept["shadow"] = shadow
+    return {"operation": "render.show", "blend": render_inputs.file_sha(inputs["blend"]), "cameras": render_inputs.file_sha(inputs["cameras"]),
+            "track": render_inputs.file_sha(inputs.get("lights")),
+            "hooks": render_inputs.scripts(inputs["hooks"]) if inputs.get("hooks") is not None else None,
+            "hook_config": render_inputs.file_sha(inputs.get("hook_config")), "settings": kept,
+            "scripts": render_inputs.scripts(SHOW_SCRIPT), "blender": launcher.blender_version(blender)}
+
+
 def show_manifest(report, frames_dir):
     """描くコマの並び（報告の planned）のうち、ファイルのあるコマの sha256 と大きさ。無いコマは missing。"""
     from .. import contracts
@@ -263,7 +318,9 @@ def show_manifest(report, frames_dir):
                   "すると報告に書くだけ）。作品ごとの舞台は、"
                   "フック（hooks。Python の台本。レシピに明示したときだけ実行し、sha256 を報告に残す）の build と frame で作って動かす。"
                   "フックの値（hook_config。JSON の辞書。中の鍵はフックの物なので確かめない）は ctx.config で読め、sha256 を報告に残す。"
-                  "描いたコマは毎回描き直す（とばさない）。frames は描いたコマの一覧（model3d-frames/0.1）。Blender が要り、再利用しない（毎回実行）")
+                  "描いたコマは毎回描き直す（とばさない）。frames_dir を書くと、そのフォルダへ描き、もうあるコマはとばす（区切って描いて集める・"
+                  "続きから描く）。とばせるのは、フォルダの入力の控え（model3d_inputs.json）がいまの入力と同じコマだけで、違うコマ・控えの"
+                  "無いコマ・別の入力で描くと控えたコマがあれば描く前に止める（render.stage と同じ）。frames は描いたコマの一覧（model3d-frames/0.1）。Blender が要り、再利用しない（毎回実行）")
 def show_render(inputs, parameters, outputs, context):
     from .. import contracts
     from ..blender_adapter import launcher
@@ -298,7 +355,30 @@ def show_render(inputs, parameters, outputs, context):
     step = Path(context.step_dir)
     settings_path = step / "show_settings.json"
     atomic_json(settings_path, settings)
-    frames_dir = step / "frames"                         # 実行ごとに新しいフォルダ（前の描画のコマは残らない）
+    resume = None
+    if parameters.get("frames_dir"):                     # 区切って描いて集める・続きから描く（とばすのは、控えが同じコマだけ）
+        from .. import render_inputs
+        frames_dir = resolve_path(context.recipe_dir, parameters["frames_dir"])
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        from ..blender_adapter.show_render import frame_name
+        only = set(settings.get("only") or [])
+        files = [frame_name(fr["T"]) for fr in cameras["frames"] if not only or fr["T"] in only]
+        key = _show_key(inputs, settings, blender)
+        # 確かめと同じ待ち合わせの中で、描く前に控える（途中で止まっても、描いたコマには控えがある）
+        # 前の描画で影の領域があふれたコマは、同じ入力でも、とばすとあふれたコマのまま残る（あふれの知らせは描いた回の記録にしか出ない）
+        marks = _overflow_marks(frames_dir)
+        tainted = sorted(name for name in files if name in marks and (frames_dir / name).is_file())
+        if tainted and (settings.get("shadow") or {}).get("overflow", "fail") == "fail":
+            shown = ", ".join(tainted[:5]) + (" …" if len(tainted) > 5 else "")
+            raise ToolError(f"render.show: コマのフォルダ {frames_dir} の {len(tainted)} 個のコマ（{shown}）は、前の描画で影の領域があふれた"
+                            "とき（Shadow buffer full）に描いたコマです。続きから描くと、そのコマはあふれた影のまま残ります。そのコマを消して"
+                            "描き直すか（影の細かさなど入力を変えるなら、別のフォルダへ）、知らせるだけで通すなら shadow.overflow を \"warn\" "
+                            f"にします（控えは {frames_dir / OVERFLOW_NAME}）")
+        # 1 つのフォルダには 1 つの描画だけ（whole）: 別の入力で描いた区切りが、描かないコマとして混ざらない
+        _, kept = render_inputs.check(frames_dir, key, files, "render.show", claim=True, whole=True)
+        resume = {"key": render_inputs.key_id(key), "kept": kept, "reused_overflow": len(tainted)}
+    else:
+        frames_dir = step / "frames"                     # 実行ごとに新しいフォルダ（前の描画のコマは残らない）
     args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--cameras", inputs["cameras"], "--frames-dir", str(frames_dir),
             "--report", outputs["report"]]
     if inputs.get("lights") is not None:
@@ -307,12 +387,39 @@ def show_render(inputs, parameters, outputs, context):
         args += ["--hooks", inputs["hooks"]]
     if inputs.get("hook_config") is not None:
         args += ["--hook-config", inputs["hook_config"]]
+    if resume is not None:
+        args += ["--skip-existing"]
     log = step / "blender.log"
-    record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=log, timeout=_timeout(parameters))
+    before = {name for name in files if (frames_dir / name).is_file()} if resume is not None else set()
+    try:
+        record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=log, timeout=_timeout(parameters))
+    except BaseException:
+        if resume is not None:                           # 途中で止まった描画: 書けた記録にあふれがあれば、今回描けたコマを控える
+            try:
+                partial = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
+                if partial["lines"]:
+                    def mark(marks):
+                        for name in files:
+                            if name not in before and (frames_dir / name).is_file():
+                                marks[name] = {"lines": partial["lines"], "worst": partial["worst"]}
+                    _update_overflow_marks(frames_dir, mark)
+            except (OSError, ToolError):
+                pass
+        raise
     report = read_json(outputs["report"])
     # 影の領域のあふれ: Blender は記録に書くだけで、描くのは続ける（あふれたコマは、描くたびに影が変わる）
     overflow = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
     overflow["action"] = (settings.get("shadow") or {}).get("overflow", "fail")
+    if resume is not None:                               # frames_dir: 今回描いたコマの、あふれの控えを書き直す
+        from ..blender_adapter.show_render import frame_name
+        def rewrite(marks):
+            for T in report.get("rendered") or []:
+                if overflow["lines"]:
+                    marks[frame_name(T)] = {"lines": overflow["lines"], "worst": overflow["worst"]}
+                else:
+                    marks.pop(frame_name(T), None)
+        _update_overflow_marks(frames_dir, rewrite)
+        overflow["reused"] = resume["reused_overflow"]   # 前の描画であふれたまま、とばしたコマの数（warn のときだけ 0 でない）
     report["shadow_overflow"] = overflow
     atomic_json(outputs["report"], report)
     manifest = show_manifest(report, frames_dir)
@@ -325,7 +432,8 @@ def show_render(inputs, parameters, outputs, context):
                         f"\"warn\" にします。描いたコマは {frames_dir} に残っています（記録は {log}）")
     observation = {"kind": "show_render", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "planned": len(report.get("planned") or []),
-                   "rendered": len(report.get("rendered") or []), "missing": len(manifest["missing"]),
+                   "rendered": len(report.get("rendered") or []), "skipped_existing": len(report.get("skipped_existing") or []),
+                   "missing": len(manifest["missing"]), "inputs": resume,
                    "motion_blur_frames": (report.get("motion_blur") or {}).get("frames"),
                    "held_camera_keys": len((report.get("camera") or {}).get("held") or []),
                    "shadow_overflow": {"lines": overflow["lines"], "worst": overflow["worst"]},
