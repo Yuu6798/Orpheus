@@ -3,8 +3,7 @@
 import pytest
 
 from model3d.blender_adapter import fx_sequence
-from model3d.blender_adapter.fx_events import Table
-
+from model3d.blender_adapter.fx_events import EventError, Table
 
 ON = {"frame": 11, "group": "row", "from": 0.1, "to": 1.0, "step": 2 / 30, "order": [2, 0, 1, 3], "flicker": 0.1, "seed": 6,
       "over": 0.2, "surge": 1.0}
@@ -31,3 +30,12 @@ def test_parts_come_on_in_order_with_flicker_then_surge():
 def test_no_events_means_fully_on():
     table = Table({"fps": 30, "events": []})
     assert fx_sequence.levels(table, [], 3, 5) == [1.0, 1.0, 1.0]
+
+
+def test_order_takes_whole_numbers_only():
+    assert _levels(11, ({**ON, "order": [2.0, 0, 1, 3]}, OFF)) == _levels(11)
+    for order, message in (([1.5, 0], "整数"), ([-1], "整数"), ("21", "並び")):
+        with pytest.raises(EventError, match=message):
+            _levels(11, ({**ON, "order": order}, OFF))
+    with pytest.raises(EventError, match="整数"):
+        _levels(11, ({**ON, "seed": "6"}, OFF))

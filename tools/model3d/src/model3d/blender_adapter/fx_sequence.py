@@ -8,7 +8,7 @@ Blender の側は、物体ごとの明るさを物体の属性に書き、材質
     values = levels(table, events, count, f)    部品 count 個の、そのコマの明るさ
 
 出来事の欄（events は 1 つの並びの出来事。表の始まりの順に後の物が上書きする）:
-- `to`: 明るさ。`step`: 次の部品までの秒。`order`: 部品の番号の順（省くと 0, 1, 2, …）。
+- `to`: 明るさ。`step`: 次の部品までの秒。`order`: 部品の番号の順（0 以上の整数。省くと 0, 1, 2, …。並びの数を超える番号はとばす）。
 - `from`: まだどの出来事も届いていない部品の明るさ（いちばん早い出来事に書く。書かなければ 0。並びに出来事が 1 つも無ければ 1）。
 - `flicker`: 点きはじめのちらつきの秒（0.25〜1 倍の乱数を掛ける。コマごとに替わる）。`seed`: ちらつきの種（flicker があるとき）。
 - `over`・`surge`: 点いた直後の over 秒、明るさを 1 + surge 倍から 1 倍へ下げる。
@@ -24,6 +24,21 @@ except ImportError:   # Blender が台本として動かすとき
     import fx_events
 
 
+def _order(event, count):
+    """部品の番号の順（0 以上の整数。整数に等しい数も受ける）。"""
+    order = event.get("order")
+    if not order:
+        return list(range(count))
+    if not isinstance(order, (list, tuple)):
+        raise fx_events.EventError(f"order は部品の番号の並びにしてください: {order!r}")
+    out = []
+    for index in order:
+        if isinstance(index, bool) or not isinstance(index, (int, float)) or index != int(index) or index < 0:
+            raise fx_events.EventError(f"order の部品の番号は 0 以上の整数にしてください: {index!r}")
+        out.append(int(index))
+    return out
+
+
 def levels(table, events, count, f):
     """部品 count 個の明るさ（list）。events は table.events の中の、この並びの出来事。"""
     mine = [e for e in table.events if any(e is x for x in events)]
@@ -31,7 +46,7 @@ def levels(table, events, count, f):
     for event in mine:
         if f < table.start(event) - fx_events.EPS:
             continue
-        order = event.get("order") or list(range(count))
+        order = _order(event, count)
         step = float(fx_events.need(event, "step")) * table.fps
         for rank, index in enumerate(order):
             if index >= count:
@@ -44,7 +59,7 @@ def levels(table, events, count, f):
             flicker, over = float(event.get("flicker", 0.0)), float(event.get("over", 0.0))
             if flicker and age < flicker:
                 tick = int(math.floor(frames + fx_events.EPS))
-                value *= 0.25 + 0.75 * fx_events.rng(int(fx_events.need(event, "seed")), index, tick).random()
+                value *= 0.25 + 0.75 * fx_events.rng(fx_events.need(event, "seed"), index, tick).random()
             elif over and age < over:
                 value *= 1.0 + float(fx_events.need(event, "surge")) * (1.0 - age / over)
             level[index] = value
