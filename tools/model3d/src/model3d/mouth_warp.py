@@ -17,7 +17,8 @@
 写す範囲をその内側に収める（収めないと、あごの線がずれて、首に顔の肌色がはみ出す）。
 出すのは、描いた絵と、写す範囲（動かした画素とすき間を 13 画素ふくらませ、σ 4 でぼかす）。
 台本は OpenCV（remap の 3 次の補間・ぼかし・ふくらませ）で書いた。ここでは同じ計算を numpy で書いた。
-長さの既定（ならしの幅、戻す距離など）は、0.1 mm/画素の正面の描画で決めた台本の値。scale で全部の長さを伸ばせる。
+計算の作りの長さ（ならしの幅・なだらかに戻す距離・写す範囲のふくらませとぼかし。LENGTHS・JAW）は、台本を 0.1 mm/画素の正面の描画で
+回したときの値を既定にし、scale で伸ばす。顔の形に寄る長さ（唇の高さ lips、あごの線 jaw の探し始め・収める高さ）は既定を置かない。
 """
 import numpy as np
 
@@ -25,9 +26,13 @@ from .color_marks import color_rule, largest_component
 from .eye_line import gaussian
 
 A = -0.75                                                              # 3 次の補間の係数（OpenCV と同じ）
-LENGTHS = {"smooth": 25, "core": 12, "fall": 100.0, "above": 30, "above_fade": 50, "below": 70, "below_fade": 60,
-           "upper_keep": 10, "upper_fade": 60, "lower_keep": 40, "lower_fade": 150.0, "mask_grow": 13, "mask_blur": 4.0}
-JAW = {"start_below_line": 60, "blur": 1.5, "erode": 13, "keep_above": 34, "mask_above": 22, "mask_fade": 6}
+# 計算の作りの長さ（画素。ならしの幅・なだらかに戻す距離・写す範囲のふくらませとぼかし）。台本を 0.1 mm/画素の描画で回したときの値で、
+# scale で伸ばす。顔の形に寄る長さ（唇の高さ lips・あごの線 jaw）は既定を置かず、工程で必ず書く。
+LENGTHS = {"smooth": 25, "core": 12, "fall": 100.0, "above_fade": 50, "below_fade": 60, "upper_fade": 60, "lower_fade": 150.0,
+           "mask_grow": 13, "mask_blur": 4.0}
+JAW = {"blur": 1.5, "erode": 13, "mask_fade": 6}
+LIPS_KEYS = ("above", "below", "upper_keep", "lower_keep")              # 顔の形に寄る長さ（必須）
+JAW_KEYS = ("green_below", "start_below_line", "keep_above", "mask_above")   # あごの線を測るときに必須
 
 
 def cubic_weights(fraction):
@@ -87,7 +92,7 @@ def measure(image, settings):
     line_y = np.array([rows[found[:, x - x0]].mean() if found[:, x - x0].any() else np.nan for x in range(lx, rx + 1)])
     known = ~np.isnan(line_y)
     line_y = np.interp(line_x, line_x[known], line_y[known])
-    width = int(round(settings["lengths"]["smooth"]))
+    width = max(int(round(settings["lengths"]["smooth"])), 1) | 1        # 奇数の幅（両側に同じだけ広げて、長さを変えない）
     pad = np.pad(line_y, width // 2, mode="edge")
     line_y = np.convolve(pad, np.ones(width) / width, mode="valid")
     tilt = float(np.polyfit(line_x - centre, line_y, 1)[0])
@@ -139,6 +144,8 @@ def warp(image, settings):
         scaled = remap_cubic(f, map_x, ident_y)
     lift, sag, arch, drop, full = (settings[key] for key in ("corner_lift", "upper_sag", "upper_arch", "open", "bulge"))
     mark = settings.get("corner_mark") or 0.0
+    if mark >= hw0:
+        raise ValueError(f"口角の印の長さ corner_mark（{mark:g} 画素）が、測った口の幅の半分（{hw0:g} 画素）以上です（すき間が作れません）")
     hw, open_hw = hw0 * k, (hw0 - mark) * k
     u, uo = (XS - cx) / hw, (XS - cx) / max(open_hw, 1e-9)
     yl = np.interp(cx + (XS - cx) / k, m["line_x"], m["line_y"])        # 横に伸び縮みさせたあとの、線の高さ

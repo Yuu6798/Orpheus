@@ -12,6 +12,8 @@ from model3d.io import ToolError
 
 SKIN, LINE, MARK = [240.0, 200.0, 180.0], [200.0, 90.0, 90.0], [150.0, 50.0, 60.0]
 RULE = {"red_minus_green_above": 45, "red_above": 120, "green_below": 190}
+LIPS = {"above": 30, "below": 70, "upper_keep": 10, "lower_keep": 40}           # 合成の顔の唇の高さ（画素）
+JAW = {"green_below": 185, "start_below_line": 60, "keep_above": 34, "mask_above": 22}
 
 
 def face(width=300, height=260, neck=None):
@@ -27,7 +29,7 @@ def face(width=300, height=260, neck=None):
 
 def settings(**extra):
     from model3d.ops.texture_ops import warp_mouth_settings
-    return warp_mouth_settings({"window": [60, 70, 240, 140], "line": RULE, **extra})
+    return warp_mouth_settings({"window": [60, 70, 240, 140], "line": RULE, "lips": LIPS, **extra})
 
 
 def test_components_and_the_largest_one_match_opencv():
@@ -94,7 +96,7 @@ def test_a_smile_raises_the_corners_and_a_wider_scale_moves_them_out():
 
 def test_the_jaw_line_keeps_the_change_above_the_neck():
     image = face(neck=200)                                                     # 線（y 100）の 60 画素下から探す
-    opened = settings(open=12, corner_mark=8, inside_color=[100, 30, 50], tongue_color=[200, 110, 120], jaw={"green_below": 185})
+    opened = settings(open=12, corner_mark=8, inside_color=[100, 30, 50], tongue_color=[200, 110, 120], jaw=JAW)
     warped, mask, report = mouth_warp.warp(image, opened)
     assert report["jaw_y_at_centre"] == 199.0                                  # σ 1.5 でならした緑が 185 を切る所（首の 1 画素上）
     assert mask[199 - 22:, :].max() == 0                                        # あごの線の 22 画素上から下は写さない
@@ -115,7 +117,7 @@ def test_warp_mouth_step_writes_the_picture_the_mask_and_the_report(tmp_path):
     from model3d import executor
     from model3d.io import atomic_json
     Image.fromarray(face().astype(np.uint8)).save(tmp_path / "front.png")
-    parameters = {"window": [60, 70, 240, 140], "line": RULE, "scale_x": 0.8, "corner_lift": -4, "open": 18, "corner_mark": 8,
+    parameters = {"window": [60, 70, 240, 140], "line": RULE, "lips": LIPS, "scale_x": 0.8, "corner_lift": -4, "open": 18, "corner_mark": 8,
                   "inside_color": [100, 30, 50], "tongue_color": [200, 110, 120]}
     atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "mouth", "inputs": {"front": {"path": "front.png"}},
                                            "steps": [{"id": "open", "operation": "texture.warp_mouth", "inputs": {"image": "$inputs.front"},
@@ -132,16 +134,23 @@ def test_warp_mouth_step_writes_the_picture_the_mask_and_the_report(tmp_path):
     assert again["steps"]["open"]["reused_from"]                                   # 同じ絵と設定なら再利用する
 
 
+GOOD = {"window": [60, 70, 240, 140], "line": RULE, "lips": LIPS}
+
+
 @pytest.mark.parametrize("parameters, message", [
-    ({"line": RULE}, "window"),
-    ({"window": [60, 70, 240, 140]}, "line"),
-    ({"window": [60, 70, 240, 140], "line": {"red_above": 3}}, "line"),
-    ({"window": [60, 70, 240, 140], "line": RULE, "open": 10}, "corner_mark"),
-    ({"window": [60, 70, 240, 140], "line": RULE, "open": 10, "corner_mark": 8}, "inside_color"),
-    ({"window": [60, 70, 240, 140], "line": RULE, "scale_x": 0}, "scale_x"),
-    ({"window": [60, 70, 240, 140], "line": RULE, "jaw": {"start_below_line": 3}}, "jaw"),
-    ({"window": [60, 70, 240, 140], "line": RULE, "smile": 1}, "知らないパラメーター"),
-    ({"window": [60, 70, 400, 140], "line": RULE}, "はみ出し"),
+    ({"line": RULE, "lips": LIPS}, "window"),
+    ({"window": [60, 70, 240, 140], "lips": LIPS}, "line"),
+    ({**GOOD, "line": {"red_above": 3}}, "line"),
+    ({"window": [60, 70, 240, 140], "line": RULE}, "lips"),
+    ({**GOOD, "lips": {"above": 30}}, "lips"),
+    ({**GOOD, "open": 10}, "corner_mark"),
+    ({**GOOD, "open": 10, "corner_mark": 8}, "inside_color"),
+    ({**GOOD, "scale_x": 0}, "scale_x"),
+    ({**GOOD, "jaw": {"green_below": 185}}, "jaw"),
+    ({**GOOD, "jaw": {**JAW, "tilt": 3}}, "知らないパラメーター"),
+    ({**GOOD, "smile": 1}, "知らないパラメーター"),
+    ({**GOOD, "window": [60, 70, 400, 140]}, "はみ出し"),
+    ({**GOOD, "open": 10, "corner_mark": 50, "inside_color": [100, 30, 50], "tongue_color": [200, 110, 120]}, "半分"),
 ])
 def test_warp_mouth_rejects_bad_settings(tmp_path, parameters, message):
     from model3d.ops import get
@@ -149,3 +158,19 @@ def test_warp_mouth_rejects_bad_settings(tmp_path, parameters, message):
     with pytest.raises(ToolError, match=message):
         get("texture.warp_mouth").function({"image": tmp_path / "front.png"}, parameters,
                                            {"image": tmp_path / "o.png", "mask": tmp_path / "m.png"}, Context(tmp_path))
+
+
+@pytest.mark.parametrize("scale", [0.5, 1.2, 2.0])
+def test_other_scales_stretch_the_lengths_without_breaking(scale):
+    image = face()
+    opened = settings(scale=scale, open=12, corner_mark=8, inside_color=[100, 30, 50], tongue_color=[200, 110, 120])
+    assert opened["lengths"]["smooth"] == 25 * scale and opened["lengths"]["lower_keep"] == 40   # 顔の形に寄る長さは書いた値のまま
+    warped, mask, report = mouth_warp.warp(image, opened)
+    assert report["left"] == 100 and report["right"] == 200 and abs(report["tilt"]) < 1e-6 and report["opened_pixels"] > 100
+    assert np.isfinite(warped).all() and np.isfinite(mask).all()
+
+
+def test_a_corner_mark_as_wide_as_half_the_mouth_is_refused():
+    opened = settings(open=10, corner_mark=50, inside_color=[100, 30, 50], tongue_color=[200, 110, 120])
+    with pytest.raises(ValueError, match="半分"):
+        mouth_warp.warp(face(), opened)

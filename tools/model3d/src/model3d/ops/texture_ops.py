@@ -626,7 +626,7 @@ def closed_eye_line(inputs, parameters, outputs, context):
                       unresolved=unresolved, review=bool(unresolved))
 
 
-WARP_MOUTH_PARAMETERS = ["bulge", "corner_lift", "corner_mark", "inside_color", "jaw", "level_tilt", "line", "open", "scale", "scale_x",
+WARP_MOUTH_PARAMETERS = ["bulge", "corner_lift", "corner_mark", "inside_color", "jaw", "level_tilt", "line", "lips", "open", "scale", "scale_x",
                          "tongue_color", "upper_arch", "upper_sag", "window"]
 
 
@@ -638,7 +638,8 @@ def _rgb(value, where):
 
 
 def warp_mouth_settings(parameters):
-    """texture.warp_mouth のパラメーターを確かめ、mouth_warp.warp の設定にする。長さの既定は mouth_warp.LENGTHS と JAW を scale 倍。"""
+    """texture.warp_mouth のパラメーターを確かめ、mouth_warp.warp の設定にする。計算の作りの長さ（mouth_warp.LENGTHS・JAW）は scale 倍。
+    顔の形に寄る長さ（lips・jaw の必須のキー）は、書いた値のまま（scale は掛けない）。"""
     from .. import color_marks, mouth_warp
     _refuse_unknown(parameters, WARP_MOUTH_PARAMETERS, "texture.warp_mouth")
     window = parameters.get("window")
@@ -661,6 +662,12 @@ def warp_mouth_settings(parameters):
                 "bulge": _finite(parameters.get("bulge", 2.0), "bulge", 0.0, True),
                 "level_tilt": parameters.get("level_tilt", True),
                 "lengths": {key: value * scale for key, value in mouth_warp.LENGTHS.items()}}
+    lips = parameters.get("lips")                        # 顔の形に寄る長さ（唇の高さ）。既定は無い
+    if not isinstance(lips, dict) or set(lips) != set(mouth_warp.LIPS_KEYS):
+        raise ToolError("lips に、口の線のまわりの唇の高さ（画素）{\"above\": 線の上で横に伸ばしきる幅, \"below\": 線の下で横に伸ばしきる幅, "
+                        "\"upper_keep\": 上を動かしきる幅, \"lower_keep\": 下を動かしきる幅（下唇の赤みと光）} を全部書いてください"
+                        f"（既定は無い）: {lips!r}")
+    settings["lengths"].update({key: _finite(lips[key], f"lips.{key}", 0.0) for key in mouth_warp.LIPS_KEYS})
     if not isinstance(settings["level_tilt"], bool):
         raise ToolError(f"level_tilt は true か false にしてください: {settings['level_tilt']!r}")
     needs_mark = settings["open"] > 0 or settings["upper_arch"] != 0 or settings["corner_lift"] < 0
@@ -675,9 +682,11 @@ def warp_mouth_settings(parameters):
             settings[key] = _rgb(parameters[key], key)
     jaw = parameters.get("jaw")
     if jaw is not None:
-        if not isinstance(jaw, dict) or jaw.get("green_below") is None:
-            raise ToolError(f"jaw は {{\"green_below\": 首の色の緑の値の上限, …}} にしてください（既定は無い）: {jaw!r}")
-        _refuse_unknown(jaw, ["green_below", *mouth_warp.JAW], "texture.warp_mouth の jaw")
+        if not isinstance(jaw, dict) or any(jaw.get(key) is None for key in mouth_warp.JAW_KEYS):
+            raise ToolError("jaw は {\"green_below\": 首の色の緑の値の上限, \"start_below_line\": 口の線の何画素下から探すか, "
+                            "\"keep_above\": 動きを 0 に戻すあごの線からの高さ, \"mask_above\": 写さないあごの線からの高さ} にしてください"
+                            f"（既定は無い）: {jaw!r}")
+        _refuse_unknown(jaw, [*mouth_warp.JAW_KEYS, *mouth_warp.JAW], "texture.warp_mouth の jaw")
         merged = {**{key: value * scale for key, value in mouth_warp.JAW.items()}, **jaw}
         settings["jaw"] = {key: _finite(merged[key], f"jaw.{key}", 0.0) for key in merged}
         if settings["jaw"]["blur"] <= 0 or settings["jaw"]["mask_fade"] <= 0:
