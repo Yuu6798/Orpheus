@@ -159,7 +159,7 @@ def plain_skin(size=200):
 
 
 def stroke_settings(*strokes):
-    return {**eye_line.DEFAULTS, "erase_rows": [0, 1], "erase_columns": [0, 1], "eyes": None,
+    return {**eye_line.DEFAULTS, "eyes": None,                              # 消す帯なしで、線だけを描く
             "strokes": [{**eye_line.STROKE_DEFAULTS, **stroke} for stroke in strokes]}
 
 
@@ -196,7 +196,7 @@ def face_with_eye_and_hair(size=200):
 
 def fill_settings(**extra):
     fill = {**eye_line.SKIN_FILL_DEFAULTS, "boxes": [[60, 70, 140, 110]], "skin": SKIN_RULE, "keep_dark_below": 100,
-            "sigmas": [6.0, 12.0], "feather": 2.0, "soften": 1.0, **extra}
+            "sigmas": [6.0, 12.0], "exclude": 6, "grow": 4, "feather": 2.0, "soften": 1.0, **extra}
     return {**eye_line.DEFAULTS, "eyes": None, "skin_fill": fill}
 
 
@@ -236,7 +236,8 @@ def test_wide_gaussian_is_the_same_blur():
 def test_closed_eye_line_step_with_strokes_skin_fill_and_mask(tmp_path):
     from model3d.ops import get
     Image.fromarray(face_with_eye_and_hair().astype(np.uint8)).save(tmp_path / "face.png")
-    parameters = {"skin_fill": {"boxes": [[60, 70, 140, 110]], "skin": SKIN_RULE, "keep_dark_below": 100, "sigmas": [6, 12]},
+    parameters = {"skin_fill": {"boxes": [[60, 70, 140, 110]], "skin": SKIN_RULE, "keep_dark_below": 100, "sigmas": [6, 12],
+                                "exclude": 6, "grow": 4},
                   "strokes": [{"points": [[58, 104], [100, 112], [142, 104]], "curve": True, "widths": {"middle": 6, "ends": 2},
                                "name": "閉じ目"}]}
     get("texture.closed_eye_line").function({"image": tmp_path / "face.png"}, parameters,
@@ -250,6 +251,7 @@ def test_closed_eye_line_step_with_strokes_skin_fill_and_mask(tmp_path):
 
 
 GOOD_STROKE = {"points": [[1, 1], [2, 2]], "widths": [[0, 1], [1, 1]]}
+FILL = {"boxes": [[1, 1, 5, 5]], "skin": SKIN_RULE, "sigmas": [4], "exclude": 1, "grow": 1}
 
 
 @pytest.mark.parametrize("parameters, message", [
@@ -258,11 +260,12 @@ GOOD_STROKE = {"points": [[1, 1], [2, 2]], "widths": [[0, 1], [1, 1]]}
     ({"strokes": [{**GOOD_STROKE, "widths": {"middle": 2}}], "erase_rows": [1, 2], "erase_columns": [1, 2]}, "弓"),
     ({"strokes": [{**GOOD_STROKE, "glow": 1}], "erase_rows": [1, 2], "erase_columns": [1, 2]}, "知らないパラメーター"),
     ({"strokes": [GOOD_STROKE], "erase_rows": [1, 2], "erase_columns": [1, 2], "end_y": 3}, "end_y"),
-    ({"strokes": [GOOD_STROKE], "erase_rows": [1, 2], "erase_columns": [1, 2], "skin_fill": {"boxes": [[1, 1, 5, 5]], "skin": SKIN_RULE}},
+    ({"strokes": [GOOD_STROKE], "erase_rows": [1, 2], "erase_columns": [1, 2], "skin_fill": FILL},
      "一緒に使えません"),
-    ({"strokes": [GOOD_STROKE], "skin_fill": {"boxes": [[1, 1, 5, 5]]}}, "rgb_min"),
-    ({"strokes": [GOOD_STROKE], "skin_fill": {"boxes": [[5, 1, 1, 5]], "skin": SKIN_RULE}}, "boxes"),
-    ({"strokes": [GOOD_STROKE], "skin_fill": {"boxes": [[1, 1, 5, 5]], "exclude_boxes": [], "skin": SKIN_RULE}}, "exclude_boxes"),
+    ({"strokes": [GOOD_STROKE], "skin_fill": {**FILL, "skin": {"red_at_least_blue": True}}}, "rgb_min"),
+    ({"strokes": [GOOD_STROKE], "skin_fill": {"boxes": [[1, 1, 5, 5]], "skin": SKIN_RULE}}, "sigmas, exclude, grow"),
+    ({"strokes": [GOOD_STROKE], "skin_fill": {**FILL, "boxes": [[5, 1, 1, 5]]}}, "boxes"),
+    ({"strokes": [GOOD_STROKE], "skin_fill": {**FILL, "exclude_boxes": []}}, "exclude_boxes"),
 ])
 def test_closed_eye_line_rejects_bad_strokes_and_fills(tmp_path, parameters, message):
     from model3d.ops import get
@@ -270,3 +273,35 @@ def test_closed_eye_line_rejects_bad_strokes_and_fills(tmp_path, parameters, mes
     with pytest.raises(ToolError, match=message):
         get("texture.closed_eye_line").function({"image": tmp_path / "closed.png"}, parameters,
                                                 {"image": tmp_path / "o.png", "report": tmp_path / "r.json"}, Context(tmp_path))
+
+
+def test_the_step_with_the_old_settings_writes_the_same_pixels_as_before(tmp_path):
+    import hashlib
+    from model3d.ops import get
+    Image.fromarray(skin_with_thin_lines().astype(np.uint8)).save(tmp_path / "closed.png")
+    parameters = {k: SETTINGS[k] for k in ("eyes", "end_y", "erase_rows", "erase_columns", "sag", "thickness", "wing", "lashes", "close_px")}
+    get("texture.closed_eye_line").function({"image": tmp_path / "closed.png"}, parameters, {"image": tmp_path / "o.png"}, Context(tmp_path))
+    with Image.open(tmp_path / "o.png") as out:                                 # 設定の組み立てから通しても、足す前と画素まで同じ
+        assert hashlib.sha256(np.asarray(out).tobytes()).hexdigest() == MAIN_DIGEST
+
+
+def test_strokes_alone_need_no_erase_band(tmp_path):
+    from model3d.ops import get
+    image = skin_with_thin_lines()
+    image[0:3, 0:3] = [10, 200, 10]                                            # 角の画素（消す帯があれば、ぼかしで変わっていた）
+    Image.fromarray(image.astype(np.uint8)).save(tmp_path / "face.png")
+    get("texture.closed_eye_line").function({"image": tmp_path / "face.png"}, {"strokes": [{"points": [[40, 120], [160, 120]],
+                                                                                           "widths": [[0, 4], [1, 4]]}]},
+                                            {"image": tmp_path / "o.png", "mask": tmp_path / "m.png", "report": tmp_path / "r.json"},
+                                            Context(tmp_path))
+    with Image.open(tmp_path / "o.png") as out, Image.open(tmp_path / "m.png") as mask:
+        drawn, weights = np.asarray(out, dtype=np.float64), np.asarray(mask)
+    assert (drawn[:100] == image[:100]).all() and drawn[120, 100].max() < 60   # 線の外は元のまま（元の細い線も残る）
+    assert weights[120, 100] == 255 and weights[:100].max() == 0
+    assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["erase"] == "none"
+
+
+def test_skin_fill_without_skin_within_reach_is_refused():
+    image = np.full((120, 120, 3), [128.0, 128.0, 128.0])                     # 肌らしい画素が 1 つも無い
+    with pytest.raises(ValueError, match="肌らしい画素"):
+        eye_line.draw(image, fill_settings(boxes=[[40, 40, 80, 80]]))

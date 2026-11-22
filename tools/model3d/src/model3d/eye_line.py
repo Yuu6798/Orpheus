@@ -30,9 +30,11 @@ DEFAULTS = {"sag": 21.0, "thickness": 13.0, "outer_bias": 0.25,
             "wing": {"length": 17.0, "angle_deg": 28.0, "width": 6.0},
             "lashes": {"at": [0.05, 0.30, 0.52, 0.70, 0.86], "length": [8, 10, 12, 12, 10], "width": 4.0, "lean_deg": 22.0},
             "color": [44, 24, 22], "supersample": 4, "close_px": 21, "close_blur": 1.2, "band_blur": 3.0, "base_width": None}
-# 肌で埋める消し方の既定（4 作目の 3D のダンスの台本の値。0.1 mm/画素の正面の描画で決めた。肌らしさの決まりと枠は既定にしない）
-SKIN_FILL_DEFAULTS = {"keep_dark_below": None, "sigmas": [25.0, 50.0, 100.0], "exclude": 6, "gain": 8.0, "grow": 4, "feather": 7.0,
-                      "soften": 1.5}
+# 肌で埋める消し方の、計算の作りの既定（重みの強さ・範囲の縁のぼかし。台本を 0.1 mm/画素の描画で回したときの値で、base_width で伸ばす）。
+# 顔と目の大きさに寄る値（枠 boxes・肌らしさの決まり skin・肌の色を探す広さ sigmas・肌の色を取らない幅 exclude・枠を広げる幅 grow）は
+# 既定を置かず、工程で必ず書く。
+SKIN_FILL_DEFAULTS = {"keep_dark_below": None, "gain": 8.0, "feather": 7.0, "soften": 1.5}
+SKIN_FILL_REQUIRED = ("boxes", "skin", "sigmas", "exclude", "grow")
 STROKE_DEFAULTS = {"curve": False, "samples": 120, "span": None, "color": None}
 
 
@@ -229,6 +231,10 @@ def skin_fill(image, settings, scale):
             w = np.clip(v * fill["gain"], 0, 1) * (1 - np.clip(weight, 0, 1))
             filled += c / np.maximum(v, 1e-4)[..., None] * w[..., None]
             weight += w
+        inside = weight[max(y0, 0) - sy0:min(y1, height) - sy0, max(x0, 0) - sx0:min(x1, width) - sx0]
+        if inside.size and inside.min() < 1e-3:                         # 肌らしい画素が、ぼかしの届く所に無い（黒へ寄せてしまう）
+            raise ValueError(f"skin_fill の枠 {list(box)} の中に、肌らしい画素（skin）がぼかしの届く所（sigmas）に無い画素があります"
+                             "（skin の決まりか sigmas を確かめてください）")
         filled = (filled / np.maximum(weight, 1e-4)[..., None])[top - sy0:bottom - sy0, left - sx0:right - sx0]
         area = np.zeros((bottom - top, right - left))
         area[max(0, y0 - grow - top):max(y1 + grow - top, 0), max(0, x0 - grow - left):max(x1 + grow - left, 0)] = 1.0
@@ -322,8 +328,10 @@ def draw(image, settings, with_mask=False):
     scale = width / (settings.get("base_width") or width)
     if settings.get("skin_fill") is not None:
         base, erased = skin_fill(image, settings, scale)
-    else:
+    elif settings.get("erase_rows") is not None:
         base, erased = erase_band(image, settings, scale), None
+    else:                                                               # 消さずに、線だけを描く（strokes だけのとき）
+        base, erased = image.astype(np.float64), np.zeros((height, width))
     result = base
     alpha = np.zeros((height, width, 1))
     if settings.get("eyes"):
@@ -341,8 +349,10 @@ def draw(image, settings, with_mask=False):
               "thickness": settings["thickness"], "sag": settings["sag"], "scale": scale}
     if settings.get("strokes"):
         report["strokes"] = len(settings["strokes"])
-    if erased is not None:
+    if settings.get("skin_fill") is not None:
         report.update(erase="skin_fill", filled_pixels=int((erased > 0.5).sum()))
+    elif settings.get("erase_rows") is None:
+        report["erase"] = "none"
     if not with_mask:
         return result, report
     if erased is None:                                                  # 消す帯の重み（erase_band と同じ帯とぼかし）

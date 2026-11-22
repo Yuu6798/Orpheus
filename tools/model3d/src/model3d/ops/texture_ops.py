@@ -459,6 +459,10 @@ def skin_fill_settings(value):
     if not isinstance(value, dict):
         raise ToolError(f"skin_fill は {{\"boxes\": [[x0, y0, x1, y1], …], \"skin\": {{\"rgb_min\": [R, G, B], …}}}} にしてください: {value!r}")
     _refuse_unknown(value, SKIN_FILL_KEYS, "texture.closed_eye_line の skin_fill")
+    missing = [key for key in eye_line.SKIN_FILL_REQUIRED if value.get(key) is None]
+    if missing:                                          # 顔と目の大きさに寄る値は既定を置かない
+        raise ToolError(f"skin_fill に {', '.join(missing)} を書いてください（既定は無い。boxes: 目の枠、skin: 肌らしい画素の決まり、"
+                        "sigmas: 肌の色を探すぼかしの広さ（画素）の並び、exclude: 枠のまわりの肌の色を取らない幅、grow: 埋める範囲を枠から広げる幅）")
     merged = {**eye_line.SKIN_FILL_DEFAULTS, **value}
     boxes = merged.get("boxes")
     if not isinstance(boxes, list) or not boxes:
@@ -532,9 +536,11 @@ def eye_line_settings(parameters):
         if parameters.get("erase_rows") is not None or parameters.get("erase_columns") is not None:
             raise ToolError("skin_fill（目の枠を肌の色で埋める）と、消す帯（erase_rows・erase_columns）は一緒に使えません（消し方はどちらか 1 つ）")
         settings["skin_fill"] = skin_fill_settings(parameters["skin_fill"])
-    else:
+    elif eyes is not None or parameters.get("erase_rows") is not None or parameters.get("erase_columns") is not None:
         settings.update(erase_rows=_span(parameters.get("erase_rows"), "erase_rows"),
                         erase_columns=_span(parameters.get("erase_columns"), "erase_columns"))
+    else:                                                # strokes だけなら、消さずに線だけを描ける
+        settings.update(erase_rows=None, erase_columns=None)
     if strokes is not None:
         settings["strokes"] = stroke_settings(strokes)
     if parameters.get("sag") is not None:                 # 負なら上へたわむ弧（笑顔の閉じ目）
