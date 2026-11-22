@@ -69,7 +69,7 @@ def _section(parameters, key, allowed):
     return section
 
 
-def _show_settings(parameters):
+def _show_settings(parameters, recipe_dir=None):
     """render.show の設定を確かめる。省いたものは書かない（Blender の側の既定で埋める）。"""
     s = {}
     if "resolution" in parameters:
@@ -206,7 +206,7 @@ def _show_settings(parameters):
                     raise ToolError(f"bloom.{key} は 0〜1 にしてください: {value!r}")
                 s["bloom"][key] = value
     if parameters.get("expressions") is not None:
-        s["expressions"] = _expressions(parameters["expressions"])
+        s["expressions"] = _expressions(parameters["expressions"], recipe_dir)
     if parameters.get("only") is not None:
         s["only"] = _frames(parameters["only"], "only")
     if parameters.get("links") is not None:
@@ -218,13 +218,68 @@ def _show_settings(parameters):
     return s
 
 
-def _expressions(value):
-    """表情: {objects: 物体の名前の並び, values: {形状キー: [[秒, 値], …]（秒の小さい順）}}（render.passes の values と同じ書き方）。"""
-    if not isinstance(value, dict) or set(value) != {"objects", "values"}:
-        raise ToolError(f"expressions は {{objects: 物体の名前の並び, values: {{形状キー: [[秒, 値], …]}}}} にしてください")
-    objects, values = value["objects"], value["values"]
-    if not isinstance(objects, list) or not objects or not all(isinstance(n, str) and n for n in objects) or len(set(objects)) != len(objects):
-        raise ToolError(f"expressions.objects は物体の名前（重ならない）の並びにしてください: {objects!r}")
+EXPRESSION_KEYS = {"objects", "values", "images", "times", "events", "materials", "clock", "frame0"}
+CLOCKS = ("T", "frame")
+
+
+def _names_list(value, where):
+    if not isinstance(value, list) or not value or not all(isinstance(n, str) and n for n in value) or len(set(value)) != len(value):
+        raise ToolError(f"{where} は名前（空でない・重ならない）の並びにしてください: {value!r}")
+    return list(value)
+
+
+def _expressions(value, recipe_dir=None):
+    """表情: {objects: 物体の名前の並び, values: {形状キー: [[秒, 値], …]}（形状キー。render.passes の values と同じ書き方）,
+    images: {絵の名前: 絵の道}, times: [[秒, 絵の名前], …] か events: 出来事の表（face_pictures）, materials: 差し替える材質の名前の並び,
+    clock: "T"（既定。時刻は (T − 1) / fps）か "frame"（動きのコマ f から (f − frame0) / fps。見本のコマでも踊りの時刻の表情）}。
+    values か images のどちらかが要る。images には times か events のどちらか 1 つ。"""
+    if not isinstance(value, dict) or "objects" not in value or not ({"values", "images"} & set(value)) or set(value) - EXPRESSION_KEYS:
+        raise ToolError(f"expressions は {{objects: 物体の名前の並び, values: {{形状キー: [[秒, 値], …]}}}} か、絵の差し替えの "
+                        f"{{objects, images: {{絵の名前: 道}}, times か events}} にしてください（使える鍵は {sorted(EXPRESSION_KEYS)}）")
+    objects = _names_list(value["objects"], "expressions.objects")
+    out = {"objects": objects, "values": _shape_values(value["values"]) if "values" in value else {}, "images": {}, "times": None,
+           "events": None, "materials": None, "clock": value.get("clock", "T"), "frame0": 1}
+    if out["clock"] not in CLOCKS:
+        raise ToolError(f"expressions.clock は {CLOCKS} のどれかにしてください（T: 描くコマの番号、frame: 動きのコマ）: {out['clock']!r}")
+    if "frame0" in value:
+        if out["clock"] != "frame":
+            raise ToolError('expressions.frame0 は clock が "frame" のときだけ書いてください')
+        out["frame0"] = number(value, "frame0", minimum=0, integer=True)
+    if "images" in value:
+        from .. import face_pictures
+        images = value["images"]
+        if not isinstance(images, dict) or not images or not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in images.items()):
+            raise ToolError(f"expressions.images は {{絵の名前: 絵の道}} にしてください: {images!r}")
+        for name, path in images.items():
+            full = resolve_path(recipe_dir, path) if recipe_dir is not None else Path(path)
+            if not Path(full).is_file():
+                raise ToolError(f"expressions.images の絵がありません（{name}）: {full}")
+            out["images"][name] = str(Path(full).resolve())
+        if ("times" in value) == ("events" in value):
+            raise ToolError("expressions.images には、times（[[秒, 絵の名前], …]）か events（出来事の表）のどちらか 1 つを書いてください")
+        if "times" in value:
+            times = value["times"]
+            if (not isinstance(times, list) or not times
+                    or not all(isinstance(e, list) and len(e) == 2 and isinstance(e[0], (int, float)) and not isinstance(e[0], bool)
+                               and isinstance(e[1], str) for e in times)):
+                raise ToolError(f'expressions.times は [[秒, 絵の名前], …]（"" はもとの絵）にしてください: {times!r}')
+            if any(b[0] < a[0] for a, b in zip(times, times[1:])):
+                raise ToolError("expressions.times は秒の小さい順にしてください")
+            unknown = sorted({name for _, name in times if name and name not in out["images"]})
+            if unknown:
+                raise ToolError(f"expressions.times に、images に無い絵があります: {unknown}")
+            out["times"] = [[float(t), name] for t, name in times]
+        else:
+            out["events"] = face_pictures.check_events(value["events"])
+        if "materials" in value:
+            out["materials"] = _names_list(value["materials"], "expressions.materials")
+    elif {"times", "events", "materials"} & set(value):
+        raise ToolError("expressions の times・events・materials は、images（絵の差し替え）といっしょに使ってください")
+    return out
+
+
+def _shape_values(values):
+    """expressions.values（{形状キー: [[秒, 値], …]}。秒の小さい順）を確かめる。"""
     if not isinstance(values, dict) or not values:
         raise ToolError("expressions.values は {形状キー: [[秒, 値], …]} にしてください")
     for key, points in values.items():
@@ -234,7 +289,26 @@ def _expressions(value):
             raise ToolError(f"expressions.values.{key} は [[秒, 値], …] にしてください")
         if any(b[0] < a[0] for a, b in zip(points, points[1:])):
             raise ToolError(f"expressions.values.{key} の秒は小さい順にしてください")
-    return {"objects": objects, "values": values}
+    return values
+
+
+def _face_times(expressions, cameras):
+    """絵の差し替えの表情の出来事の表（events）を、コマごとの絵の名前と times にする（times は settings に書き足す）。
+    → 観測用の {changes: 絵の変わる回数, pictures: 使う絵の名前}（絵の差し替えが無ければ None）。"""
+    from .. import face_pictures
+    if not expressions or not expressions["images"]:
+        return None
+    if expressions["events"] is not None:
+        fps = cameras.get("fps")
+        if not fps:
+            raise ToolError("expressions.events には、cameras の fps が要ります（秒をコマに直すため）")
+        if expressions["clock"] == "T":
+            count = max(fr["T"] for fr in cameras["frames"])
+        else:
+            count = max(int(round(fr.get("f", fr["T"]))) for fr in cameras["frames"]) - expressions["frame0"] + 1
+        names = face_pictures.frames(expressions["events"], float(fps), count, expressions["images"])
+        expressions["times"] = face_pictures.times(names, float(fps))
+    return {"changes": len(expressions["times"]), "pictures": sorted({name for _, name in expressions["times"]})}
 
 
 OVERFLOW_NAME = "model3d_show_overflow.json"   # frames_dir の控え: 影の領域があふれた描画で描いたコマ（ファイル → 行の数・必要 / 上限）
@@ -289,6 +363,8 @@ def _show_key(inputs, settings, blender):
             "track": render_inputs.file_sha(inputs.get("lights")),
             "hooks": render_inputs.scripts(inputs["hooks"]) if inputs.get("hooks") is not None else None,
             "hook_config": render_inputs.file_sha(inputs.get("hook_config")), "settings": kept,
+            "images": ({name: render_inputs.file_sha(path) for name, path in settings["expressions"]["images"].items()}
+                       if (settings.get("expressions") or {}).get("images") else None),
             "scripts": render_inputs.scripts(SHOW_SCRIPT), "blender": launcher.blender_version(blender)}
 
 
@@ -334,7 +410,7 @@ def show_render(inputs, parameters, outputs, context):
     missing = [name for name in ("frames", "report") if name not in outputs]
     if missing:
         raise ToolError(f"render.show には outputs の {', '.join(missing)} が要ります")
-    settings = _show_settings(parameters)
+    settings = _show_settings(parameters, context.recipe_dir)
     if (settings.get("lights") or settings.get("ambient")) and inputs.get("lights") is None:
         raise ToolError("render.show の lights・ambient には、入力 lights（plan.lights の光のトラック）が要ります")
     cameras = contracts.load("cameras", inputs["cameras"])
@@ -345,6 +421,7 @@ def show_render(inputs, parameters, outputs, context):
         seen.add(frame["T"])
     if inputs.get("lights") is not None:
         contracts.load("light-track", inputs["lights"])
+    pictures = _face_times(settings.get("expressions"), cameras)
     if inputs.get("hook_config") is not None:
         if inputs.get("hooks") is None:
             raise ToolError("render.show の入力 hook_config（フックの値）は、入力 hooks（フックの台本）と組で渡してください")
@@ -437,6 +514,9 @@ def show_render(inputs, parameters, outputs, context):
                    "motion_blur_frames": (report.get("motion_blur") or {}).get("frames"),
                    "held_camera_keys": len((report.get("camera") or {}).get("held") or []),
                    "shadow_overflow": {"lines": overflow["lines"], "worst": overflow["worst"]},
+                   "face_pictures": ({**pictures, "images": {name: {"path": path, "sha256": sha256(path)}
+                                                             for name, path in settings["expressions"]["images"].items()}}
+                                     if pictures else None),
                    "hooks": ({"path": str(inputs["hooks"]), "sha256": sha256(inputs["hooks"]),
                               "config": ({"path": str(inputs["hook_config"]), "sha256": sha256(inputs["hook_config"])}
                                          if inputs.get("hook_config") is not None else None)}

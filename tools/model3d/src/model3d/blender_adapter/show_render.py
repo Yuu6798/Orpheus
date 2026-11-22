@@ -15,6 +15,9 @@
 - 光（lights）: 光の物体の名前 → {energy: 光のトラックの値の名前, base: W, color: 値の名前}。強さは base × 値（シーンの単位で直す）。
 - 光を受ける塗り（look.lit）のまわりの明るさ（ambient: 光のトラックの値の名前）: 印のある材質ごとに、値 × model3d_lit_ambient_scale。
 - 表情（expressions）: objects の物体の形状キーを、values（{形状キー: [[秒, 値], …]}）を直線でつないだ値にする（render.passes と同じ）。
+  絵の差し替え（images と times。events は工程の側で times にしてある）: objects の材質（materials があればその材質だけ）の画像ノードの
+  絵を、その時刻の絵（times の、半コマのゆとりを持たせて時刻までで最後の名前。"" はもとの絵）に差し替える。時刻は clock が "T" なら
+  (T − 1) / fps、"frame" なら (f − frame0) / fps（見本のコマでも、踊りの時刻の表情になる）。
   入れる値が効くように、この場で（保存しない）ミュートを外し、範囲を広げ、ピン（形状キーを 1 つだけ見せる設定）を切り、形状キーの
   アニメーションとドライバーを外す（render.face_sheet と同じ手当て。報告の key_changes）。絶対の形状キーと基準のキーは止める。
 - 空（world: [R, G, B] 線形。省くと .blend の空）、にじみ（bloom: Glare の Bloom を合成で。省くと切る）。
@@ -312,6 +315,23 @@ def shadow_overflow(text):
     return {"lines": lines, "worst": worst}
 
 
+def expression_time(T, f, fps, expressions):
+    """表情の時刻（秒）: clock が "frame" なら動きのコマ f から (f − frame0) / fps、ほか（"T"）は (T − 1) / fps。"""
+    if expressions.get("clock") == "frame":
+        return (f - expressions.get("frame0", 1)) / fps
+    return (T - 1) / fps
+
+
+def picture_at(times, t, fps):
+    """時刻 t の絵の名前: times（[[秒, 名前], …]。秒の小さい順）の、t + 半コマまでで最後の名前（最初の秒より前は最初の名前）。
+    半コマのゆとりは、表の秒を丸めて書いたときに、そのコマで「まだ始まっていない」にしないため（秒の小数のままは比べない）。"""
+    name, slack = times[0][1], 0.5 / fps
+    for start, value in times:
+        if start <= t + slack:
+            name = value
+    return name
+
+
 def version_problem(version):
     """この描き方が動かない Blender の版なら、その理由（5.x の EEVEE の名前と合成の API で書いた。5.2.4 で確かめた）。"""
     if tuple(version[:2]) < (5, 0):
@@ -435,9 +455,9 @@ def main(argv=None):
     expressions = settings["expressions"]
     fps = record.get("fps") or sc.render.fps / sc.render.fps_base
     shape_targets, key_report = [], {}
-    if expressions:
+    if expressions and expressions["values"]:
         # 入れる値が描くときに効くように、この場で（保存しない）形状キーを整える（render.face_sheet と同じ手当て）
-        combos = [(T, pass_render.expression_values(expressions["values"], (T - 1) / fps)) for T, _ in plan]
+        combos = [(T, pass_render.expression_values(expressions["values"], expression_time(T, f, fps, expressions))) for T, f in plan]
         for name in expressions["objects"]:
             ob = bpy.data.objects.get(name)
             if ob is None or ob.data is None or getattr(ob.data, "shape_keys", None) is None:
@@ -466,6 +486,41 @@ def main(argv=None):
                 keys.animation_data_clear()
             key_report[name] = change
             shape_targets.append(keys.key_blocks)
+
+    face_nodes, face_images, face_shown = [], {}, {}
+    if expressions and expressions.get("images"):         # 絵の差し替えの表情: 絵を読み、差し替える画像ノードを集める
+        targets = []
+        for name in expressions["objects"]:
+            ob = bpy.data.objects.get(name)
+            if ob is None or ob.type != "MESH":
+                raise SystemExit(f"expressions の物体（メッシュ）がありません: {name}")
+            targets.append(ob)
+        wanted = set(expressions.get("materials") or [])
+        materials = []
+        for ob in targets:
+            for slot in ob.material_slots:
+                material = slot.material
+                if material is None or material.node_tree is None or material in materials or (wanted and material.name not in wanted):
+                    continue
+                materials.append(material)
+        absent = sorted(wanted - {m.name for m in materials})
+        if absent:
+            raise SystemExit(f"expressions.materials の材質が、objects の物体にありません: {absent}")
+        for name, path in expressions["images"].items():
+            face_images[name] = bpy.data.images.load(path, check_existing=True)
+        for material in materials:
+            for node in material.node_tree.nodes:
+                if node.type == "TEX_IMAGE" and node.image is not None:
+                    face_nodes.append((node, node.image))
+                    for image in face_images.values():   # 色の空間は、もとの絵に合わせる
+                        image.colorspace_settings.name = node.image.colorspace_settings.name
+        if not face_nodes:
+            raise SystemExit(f"expressions の物体 {expressions['objects']} の材質に、差し替える画像ノード（絵のある）がありません")
+        others = sorted({f"{m.name}（{o.name}）" for m in materials for o in bpy.data.objects
+                         if o.type == "MESH" and o not in targets and m in [s.material for s in o.material_slots]})
+        if others:                                       # 材質の画像ノードを差し替えるので、分け合う物体の絵まで変わる
+            raise SystemExit("expressions の材質を、ほかの物体も使っています（絵を差し替えると、その物体の絵も変わる。材質を"
+                             f"その物体だけのものにするか、materials で絞ってください）: {others}")
 
     # ---- カメラ: 全部のコマのキー（動きのぶれにカメラの動きも入る）。カットの最後のキーは止める ----
     sensor = float(record.get("sensor_height_mm") or settings["camera"]["sensor_height"])
@@ -555,8 +610,15 @@ def main(argv=None):
         if dof is not None:
             cam_d.dof.aperture_fstop, cam_d.dof.focus_distance = dof[0], dof[1] / unit
             dof_frames.append(T)
-        if expressions:
-            for key, value in pass_render.expression_values(expressions["values"], (T - 1) / fps).items():
+        if face_nodes:
+            name = picture_at(expressions["times"], expression_time(T, f, fps, expressions), fps)
+            face_shown[T] = name
+            for node, base in face_nodes:
+                image = face_images[name] if name else base
+                if node.image != image:
+                    node.image = image
+        if expressions and expressions["values"]:
+            for key, value in pass_render.expression_values(expressions["values"], expression_time(T, f, fps, expressions)).items():
                 for blocks in shape_targets:
                     blocks[key].value = value
         if hooks is not None and hasattr(hooks, "frame"):
@@ -585,7 +647,9 @@ def main(argv=None):
               "hooks": ({"path": os.path.abspath(a.hooks), "sha256": hooks_sha,
                          "config": {"path": os.path.abspath(a.hook_config), "sha256": config_sha} if a.hook_config else None}
                         if a.hooks else None),
-              "render_changes": render_changes, "key_changes": key_report, "seconds": round(seconds, 1),
+              "render_changes": render_changes, "key_changes": key_report,
+              "face_pictures": ({"nodes": len(face_nodes), "shown": {str(T): name for T, name in sorted(face_shown.items())}}
+                                if face_nodes else None), "seconds": round(seconds, 1),
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
