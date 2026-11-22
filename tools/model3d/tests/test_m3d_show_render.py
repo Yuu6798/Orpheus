@@ -114,9 +114,11 @@ for item in planned:
         skipped.append(item["T"])
         continue
     png(path)
-if open(value("--blend"), "rb").read() == b"overflow":   # 影の領域があふれた場面のまね（EEVEE は標準エラーに書き、描くのは続ける）
+if open(value("--blend"), "rb").read() in (b"overflow", b"overflow_crash"):   # 影の領域があふれた場面のまね（EEVEE は標準エラーに書き、描くのは続ける）
     for need in (3494, 6252):
         sys.stderr.write("Error: Shadow buffer full, may result in missing shadows and lower performance. (%d / 4096)\n" % need)
+if open(value("--blend"), "rb").read() == b"overflow_crash":                    # あふれたあと、報告を書く前に落ちる
+    sys.exit(3)
 json.dump({"schema_version": "model3d-show-render/0.1", "planned": planned, "rendered": [p["T"] for p in planned if p["T"] not in skipped],
            "skipped_existing": skipped, "fps": 30,
            "resolution": [2, 2], "camera": {"held": [2]}, "motion_blur": {"frames": len(planned)}, "argv": args, "settings": settings},
@@ -513,3 +515,16 @@ def test_a_clean_redraw_clears_the_overflow_record(tmp_path):
     result = executor.run_recipe(_recipe(tmp_path, {"only": [3]}), tmp_path / "runs")          # まだ無いコマなので描き直す
     assert result["status"] == "succeeded", result["error"]
     assert not (tmp_path / "frames_all" / "model3d_show_overflow.json").exists()
+
+
+def test_frames_left_by_an_interrupted_overflowing_render_are_marked_too(tmp_path):
+    """あふれたあと Blender が落ちても（報告を書く前）、今回描けたコマを控えるので、同じ入力の続きの描画でとばして通さない。"""
+    from model3d import executor
+    recipe = _recipe(tmp_path, {"only": [1, 2]})
+    (tmp_path / "show.blend").write_bytes(b"overflow_crash")
+    crashed = executor.run_recipe(recipe, tmp_path / "runs")
+    assert crashed["status"] == "failed" and "終了コード 3" in crashed["error"]
+    marks = json.loads((tmp_path / "frames_all" / "model3d_show_overflow.json").read_text(encoding="utf-8"))["frames"]
+    assert sorted(marks) == ["f0001.png", "f0002.png"]
+    again = executor.run_recipe(recipe, tmp_path / "runs")              # 同じ入力: 描く前に、あふれたコマで止まる
+    assert again["status"] == "failed" and "前の描画で影の領域があふれた" in again["error"]

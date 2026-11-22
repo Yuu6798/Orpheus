@@ -377,7 +377,22 @@ def show_render(inputs, parameters, outputs, context):
     if resume is not None:
         args += ["--skip-existing"]
     log = step / "blender.log"
-    record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=log, timeout=_timeout(parameters))
+    before = {name for name in files if (frames_dir / name).is_file()} if resume is not None else set()
+    try:
+        record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=log, timeout=_timeout(parameters))
+    except BaseException:
+        if resume is not None:                           # 途中で止まった描画: 書けた記録にあふれがあれば、今回描けたコマを控える
+            try:
+                partial = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
+                if partial["lines"]:
+                    marks = _overflow_marks(frames_dir)
+                    for name in files:
+                        if name not in before and (frames_dir / name).is_file():
+                            marks[name] = {"lines": partial["lines"], "worst": partial["worst"]}
+                    _write_overflow_marks(frames_dir, marks)
+            except (OSError, ToolError):
+                pass
+        raise
     report = read_json(outputs["report"])
     # 影の領域のあふれ: Blender は記録に書くだけで、描くのは続ける（あふれたコマは、描くたびに影が変わる）
     overflow = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
