@@ -1,5 +1,7 @@
 # model3d（自作の 3D モデリングツール・Orpheus の外部ツール）
 
+キャラクター改訂の確認は [立ち絵・修正前後の6方向比較と配布GLBの読み戻し](character-review.md) を参照。
+
 成熟度は操作ごとに、実制作検証済みと実験的を分ける。2 作目・3 作目の VRM のダンスなどから持ち帰った
 現行実装の照合範囲は [機能の成熟度](maturity.md) と `orpheus show model3d.OPERATION` で確認する。
 

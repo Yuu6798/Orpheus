@@ -534,6 +534,31 @@ def _ops_command(args):
     return ops.describe()
 
 
+def _character_args(commands, name, description):
+    sub = commands.add_parser(name, help=description)
+    sub.add_argument("spec", type=Path, help="local JSON configuration")
+    sub.add_argument("--out", type=Path, required=True)
+    sub.add_argument("--blender", type=Path, required=True, help="Blender executable")
+
+
+def _review_parser(commands):
+    _character_args(commands, "character-review", "render six matched character views and a local comparison sheet")
+
+
+def _review_command(args):
+    from .character_review import run
+    return run(args.spec, args.out, args.blender)
+
+
+def _roundtrip_parser(commands):
+    _character_args(commands, "character-roundtrip", "compare animated limb sections and expressions in a blend and its GLB")
+
+
+def _roundtrip_command(args):
+    from .character_roundtrip import run
+    return run(args.spec, args.out, args.blender)
+
+
 COMMANDS = {   # 命令の名前 → (組み立て, 処理)。この並びが help の並び
     "demo": (_demo_parser, _demo_command),
     "dance-recipe": (_dance_recipe_parser, _dance_recipe_command),
@@ -550,6 +575,8 @@ COMMANDS = {   # 命令の名前 → (組み立て, 処理)。この並びが he
     "rea": (_rea_parser, _rea_command),
     "blender": (_blender_parser, _blender_command),
     "frames": (_frames_parser, _frames_command),
+    "character-review": (_review_parser, _review_command),
+    "character-roundtrip": (_roundtrip_parser, _roundtrip_command),
     "ops": (_ops_parser, _ops_command),
 }
 

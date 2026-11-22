@@ -1,10 +1,10 @@
 ==== model3d
-usage: model3d [-h] [--version] {demo,dance-recipe,run,accept,edit,manifest,semantic,validate,check,mesh,generate,handoff,rea,blender,frames,ops} ...
+usage: model3d [-h] [--version] {demo,dance-recipe,run,accept,edit,manifest,semantic,validate,check,mesh,generate,handoff,rea,blender,frames,character-review,character-roundtrip,ops} ...
 
 self-made 3D modeling tool: recipes, semantic parts, checks, run records
 
 positional arguments:
-  {demo,dance-recipe,run,accept,edit,manifest,semantic,validate,check,mesh,generate,handoff,rea,blender,frames,ops}
+  {demo,dance-recipe,run,accept,edit,manifest,semantic,validate,check,mesh,generate,handoff,rea,blender,frames,character-review,character-roundtrip,ops}
     demo                write synthetic inputs, preset, semantic map and a recipe
     dance-recipe        connect a private recovered dance worker bundle to RecipeGraph
     run                 execute a recipe and write a run record
@@ -20,6 +20,9 @@ positional arguments:
     rea                 turn REA analysis outputs into recipe evidence
     blender             run Blender in the background (unverified on this machine)
     frames              compare two folders of rendered frames (f<T>.png) or two frames lists
+    character-review    render six matched character views and a local comparison sheet
+    character-roundtrip
+                        compare animated limb sections and expressions in a blend and its GLB
     ops                 list the registered operations
 
 options:
@@ -28,7 +31,7 @@ options:
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--version"], "dest": "version", "action": "_VersionAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "dance-recipe", "run", "accept", "edit", "manifest", "semantic", "validate", "check", "mesh", "generate", "handoff", "rea", "blender", "frames", "ops"], "required": true, "metavar": null}
+{"options": [], "dest": "command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "dance-recipe", "run", "accept", "edit", "manifest", "semantic", "validate", "check", "mesh", "generate", "handoff", "rea", "blender", "frames", "character-review", "character-roundtrip", "ops"], "required": true, "metavar": null}
 ==== model3d demo
 usage: model3d demo [-h] [--clearance CLEARANCE] [--resolution RESOLUTION] dir
 
@@ -662,6 +665,36 @@ options:
 {"options": ["--max-differing-pixels"], "dest": "max_differing_pixels", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--max-channel-diff"], "dest": "max_channel_diff", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--max-mean-abs"], "dest": "max_mean_abs", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+==== model3d character-review
+usage: model3d character-review [-h] --out OUT --blender BLENDER spec
+
+positional arguments:
+  spec               local JSON configuration
+
+options:
+  -h, --help         show this help message and exit
+  --out OUT
+  --blender BLENDER  Blender executable
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--blender"], "dest": "blender", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+==== model3d character-roundtrip
+usage: model3d character-roundtrip [-h] --out OUT --blender BLENDER spec
+
+positional arguments:
+  spec               local JSON configuration
+
+options:
+  -h, --help         show this help message and exit
+  --out OUT
+  --blender BLENDER  Blender executable
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "spec", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--blender"], "dest": "blender", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 ==== model3d ops
 usage: model3d ops [-h]
 
