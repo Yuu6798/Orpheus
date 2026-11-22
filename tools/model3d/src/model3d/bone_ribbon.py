@@ -128,3 +128,30 @@ def compute_ribbon_vertices(
         verts[i * 2 + 1] = p + side * width
 
     return verts, float(speed_fac)
+
+
+def polyline_ribbon_vertices(points, widths, camera_pos, flat=False):
+    """任意の折れ線 `points` `(n, 3)`（n ≥ 2）を、カメラを向いた帯の頂点 `(n * 2, 3)` にする（節 i の左端 `2*i`・右端 `2*i + 1`。
+    `build_ribbon_topology(n - 1)` の面と UV でメッシュにできる）。
+
+    `widths`: 節ごとの幅（m。数なら全部の節で同じ）。幅の向きは 接線（前後の節の差）× 視線（節からカメラへ）で、急に折り返しても
+    ねじれないよう、前の節と逆を向いたら返す（`compute_ribbon_vertices` と同じ考え）。`flat=True` は面に寝た帯（接線 × 上）。
+    計算は `blender_adapter.fx_strips.sides`（出来事の形の帯と同じ）。
+    """
+    from .blender_adapter.fx_strips import sides
+    pts = np.asarray(points, dtype=np.float64)
+    cam = np.asarray(camera_pos, dtype=np.float64).reshape(-1)
+    if pts.ndim != 2 or pts.shape[1] != 3 or len(pts) < 2:
+        raise ToolError(f"points の形は (n, 3)（n は 2 以上）にしてください: {pts.shape}")
+    if len(cam) != 3:
+        raise ToolError(f"camera_pos は 3 要素にしてください: {cam.shape}")
+    w = np.broadcast_to(np.asarray(widths, dtype=np.float64), (len(pts),)) if np.ndim(widths) == 0 else np.asarray(widths, dtype=np.float64)
+    if w.shape != (len(pts),):
+        raise ToolError(f"widths は数か、点の数（{len(pts)}）の並びにしてください: {w.shape}")
+    if not (np.isfinite(pts).all() and np.isfinite(cam).all() and np.isfinite(w).all()) or (w < 0).any():
+        raise ToolError("points・camera_pos・widths は有限の値（幅は 0 以上）にしてください")
+    half = sides(pts, w, cam, flat=flat, untwist=True)
+    verts = np.empty((len(pts) * 2, 3), dtype=np.float64)
+    verts[0::2] = pts - half
+    verts[1::2] = pts + half
+    return verts
