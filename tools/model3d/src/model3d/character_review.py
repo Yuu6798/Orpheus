@@ -114,7 +114,7 @@ def _resolve_events(events, report, source, blender, stage):
     peak_values = {}
     if peaks:
         job, output = stage / "peaks-job.json", stage / "peaks.json"
-        atomic_json(job, {"armature": source["armature"], "events": peaks})
+        atomic_json(job, {"armature": source["armature"], "scene": source.get("scene"), "events": peaks})
         launcher.run_blender(blender, SCRIPTS / "character_review_peaks.py", source["path"],
                              [str(job), str(output)], log=stage / "peaks.log")
         peak_values = read_json(output)
@@ -175,6 +175,12 @@ def run(spec, out, blender, *, roundtrip_report=None):
             raise ToolError("Roundtrip report does not match the after model")
         if not isinstance(report.get("delivered_sha256"), str) or not re.fullmatch("[0-9a-f]{64}", report["delivered_sha256"]):
             raise ToolError("Missing delivered model identity in roundtrip report")
+        if "native_scene" in report:
+            scene = _name(report["native_scene"], "roundtrip native_scene")
+            sources["after"]["scene"] = scene
+            # An identical before file has the same measured scene and timeline.
+            if identities["before"]["sha256"] == identities["after"]["sha256"]:
+                sources["before"]["scene"] = scene
     scale, offset, size = data.get("scale"), data.get("offset_z", 0), data.get("size", 512)
     if not all(type(n) in (int, float) and math.isfinite(n) for n in (scale, offset)) or scale <= 0:
         raise ToolError("Provide positive scale and a finite offset_z in metres")
@@ -219,6 +225,8 @@ def run(spec, out, blender, *, roundtrip_report=None):
         if report is not None:
             provenance["roundtrip"] = {"native_sha256": report["native_sha256"],
                                        "delivered_sha256": report["delivered_sha256"]}
+            if "native_scene" in report:
+                provenance["roundtrip"]["native_scene"] = report["native_scene"]
         atomic_json(stage / "sources.json", provenance)
         (stage / "render-job.json").unlink()
         # Rename the staging directory within the same filesystem; keep the report's links relative.

@@ -38,7 +38,7 @@ uv run model3d character-review views.json --blender /path/to/blender --out revi
 - `disable` は修正後の同じ姿勢で1項目を切った列を足す。形状キーのほか、`{"object":"Body","modifier":"Outline"}` または `{"object":"OutlineMesh","hide":true}` を指定できる。`focus_view` は特定の向きの比較行へ直接移動するリンクになる。
 - 別の検査で測った値はイベントの `measurements` に `[{"label":"手と衣装の交差","value":8,"unit":"三角形ペア"}]` の形式で添えられる。ページには入力した測定値として表示する。交差が衣装の内側に隠れる場合もあるため、指定時刻の写真で輪郭や指先への影響を確認する。
 
-標準出力の `index` に各イベントの秒・フレーム・部位と画像へのリンクが並ぶ。立ち絵は同梱し、振付動画には元のローカルファイルへのリンクを貼る。各回の画像とカメラ行列（`views/cameras.json`）は個別のフォルダに保存する。
+標準出力の `index` に各イベントのシーン開始からの秒数、フレーム、部位、画像へのリンクが並ぶ。立ち絵は同梱し、振付動画には元のローカルファイルへのリンクを貼る。各回の画像とカメラ行列（`views/cameras.json`）は個別のフォルダに保存する。
 
 ## 実際の配布 GLB を読み戻す
 
@@ -75,7 +75,7 @@ uv run model3d character-roundtrip portable.json --blender /path/to/blender --ou
  "finding":{"kind":"sections","label":"左前腕"}}
 ```
 
-この比較ページの画像は修正前後の **Blender 原本**。GLB の結果は同じコマに付く測定メモで確認できる。`kind: "expressions"` で表情の差からも選べる。比較ページから全測定値の JSON を開ける。比較に使った原本の名前、SHA-256 と Blender の版は `sources.json` に残る。
+この比較ページの画像は修正前後の **Blender 原本**。レポートに測定シーンが記録されていれば修正後の描画に使う。GLB の結果は同じコマに付く測定メモで確認できる。`kind: "expressions"` で表情の差からも選べる。比較ページから全測定値の JSON を開ける。JSON の秒数は読み戻しの同期起点 `native_start` を基準にする。比較に使った原本の名前、SHA-256 と Blender の版は `sources.json` に残る。
 
 ## RecipeGraph から使う
 

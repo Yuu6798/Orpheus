@@ -91,7 +91,7 @@ def test_character_review_cli_six_views_at_expression_peak_and_neighboring_pose(
         assert mask.any()
         return np.where(mask)[0].mean()
 
-    # Turning the key off lowers the pin in the close-up. The next pose must
-    # retain its partially raised pin under the original, wider framing.
-    assert green_pin_row("blink", "after") + 5 < green_pin_row("blink", "disabled")
+    # The positive slider minimum would leave 25% displacement if the control
+    # used a value of zero. The next pose still has its partially raised pin.
+    assert green_pin_row("blink", "after") + 9 < green_pin_row("blink", "disabled")
     assert green_pin_row("turn", "after") == pytest.approx(green_pin_row("turn", "before"), abs=.5)

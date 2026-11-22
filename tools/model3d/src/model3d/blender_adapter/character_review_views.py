@@ -6,11 +6,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 if __package__:
-    from .face_sheet import DISPLAY_FIXED, IMAGE_FIXED, RENDER_FIXED, VIEW_FIXED
+    from .face_sheet import DISPLAY_FIXED, IMAGE_FIXED, RENDER_FIXED, VIEW_FIXED, hidden_paths
     from .vrm_apply_motion import use_scene_of
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from face_sheet import DISPLAY_FIXED, IMAGE_FIXED, RENDER_FIXED, VIEW_FIXED
+    from face_sheet import DISPLAY_FIXED, IMAGE_FIXED, RENDER_FIXED, VIEW_FIXED, hidden_paths
     from vrm_apply_motion import use_scene_of
 
 
@@ -59,8 +59,14 @@ def subject_objects(scene, rig, model):
     return objects
 
 
+def renderable_mesh(scene, obj):
+    return obj.type == "MESH" and not obj.hide_render and any(
+        layer.use and [] in hidden_paths(layer.layer_collection, obj.name) for layer in scene.view_layers
+    )
+
+
 def camera_setup(bpy, scene, objects, size):
-    if not any(obj.type == "MESH" and not obj.hide_render for obj in objects):
+    if not any(renderable_mesh(scene, obj) for obj in objects):
         raise ValueError("character contains no renderable meshes")
     for obj in scene.objects:
         if obj.type == "LIGHT" or (obj not in objects and (obj.type not in {"ARMATURE", "EMPTY"} or obj.is_instancer)):
@@ -143,7 +149,7 @@ def disabled(objects, control):
         name = control["shape_key"]
         if not keys or not keys.use_relative or name not in keys.key_blocks or name == keys.reference_key.name:
             raise ValueError(f"{obj.name}: unknown or non-relative shape key {name!r}")
-        owner, attribute, off = keys.key_blocks[name], "value", 0.0
+        owner, attribute, off = keys.key_blocks[name], "mute", True
     elif "modifier" in control:
         mod = obj.modifiers.get(control["modifier"])
         if mod is None:
@@ -167,6 +173,20 @@ def draw(bpy, scene, path):
     bpy.ops.render.render(write_still=True, scene=scene.name)
 
 
+def use_review_scene(bpy, rig, scene_name):
+    if scene_name is None:
+        return use_scene_of(bpy, rig)
+    scene = bpy.data.scenes.get(scene_name)
+    if scene is None or scene.objects.get(rig.name) != rig:
+        raise ValueError(f"roundtrip scene {scene_name!r} does not contain armature {rig.name!r}")
+    if bpy.context.scene != scene:
+        window = bpy.context.window or next(iter(bpy.context.window_manager.windows), None)
+        if window is None:
+            raise ValueError(f"cannot switch to roundtrip scene {scene_name!r}: no Blender window")
+        window.scene = scene
+    return scene
+
+
 def render_job(job):
     import bpy
     from mathutils import Vector
@@ -182,7 +202,7 @@ def render_job(job):
         rig = bpy.data.objects.get(model["armature"])
         if rig is None or rig.type != "ARMATURE":
             raise ValueError(f"unknown armature: {model['armature']!r}")
-        scene = use_scene_of(bpy, rig)
+        scene = use_review_scene(bpy, rig, model.get("scene"))
         if variant == "before":
             report.update(timing(scene))
         elif report["first_frame"] != scene.frame_start or report["fps"] != timing(scene)["fps"]:

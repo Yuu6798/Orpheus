@@ -23,8 +23,8 @@ end.head, end.tail = root.tail, (0, 1.3, 0)
 end.parent, end.use_connect = root, True
 bpy.ops.object.mode_set(mode="OBJECT")
 count = 16
-points = [(.1*math.cos(i*math.tau/count), y, .1*math.sin(i*math.tau/count))
-          for y in (0, .5, 1) for i in range(count)]
+points = [(radius*math.cos(i*math.tau/count), y, radius*math.sin(i*math.tau/count))
+          for y, radius in ((0, .14), (.5, .1), (1, .14)) for i in range(count)]
 faces = [(j*count+i, j*count+(i+1)%count, (j+1)*count+(i+1)%count, (j+1)*count+i)
          for j in range(2) for i in range(count)]
 mesh = bpy.data.meshes.new("Tube")
@@ -76,12 +76,38 @@ stage = bpy.data.scenes.new("Stage")
 stage.render.fps, stage.frame_end = 60, 3
 bpy.context.window.scene = stage
 bpy.ops.wm.save_as_mainfile(filepath=str(dst/"native.blend"))
+# Match the GLB's linear skinning so any difference here comes from the saved pose display.
+mod.use_deform_preserve_volume = False
+arm_data.pose_position = "REST"
+bpy.ops.wm.save_as_mainfile(filepath=str(dst/"rest.blend"))
+arm_data.pose_position = "POSE"
+mod.use_deform_preserve_volume = True
 blink.mute = True
 bpy.ops.wm.save_as_mainfile(filepath=str(dst/"muted.blend"))
 blink.mute = False
 mesh.shape_keys.use_relative = False
 bpy.ops.wm.save_as_mainfile(filepath=str(dst/"absolute.blend"))
 mesh.shape_keys.use_relative = True
+
+# Order points across all three rings by their posed X coordinate while keeping their number.
+tree = bpy.data.node_groups.new("Sort sleeve points", "GeometryNodeTree")
+tree.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+tree.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+incoming = tree.nodes.new("NodeGroupInput")
+outgoing = tree.nodes.new("NodeGroupOutput")
+position = tree.nodes.new("GeometryNodeInputPosition")
+components = tree.nodes.new("ShaderNodeSeparateXYZ")
+sort = tree.nodes.new("GeometryNodeSortElements")
+sort.domain = "POINT"
+tree.links.new(incoming.outputs["Geometry"], sort.inputs["Geometry"])
+tree.links.new(position.outputs["Position"], components.inputs["Vector"])
+tree.links.new(components.outputs["X"], sort.inputs["Sort Weight"])
+tree.links.new(sort.outputs["Geometry"], outgoing.inputs["Geometry"])
+reorder = ob.modifiers.new("Reorder vertices", "NODES")
+reorder.node_group = tree
+bpy.ops.wm.save_as_mainfile(filepath=str(dst/"reordered.blend"))
+ob.modifiers.remove(reorder)
+
 alternate = bpy.data.scenes.new("Second performance")
 alternate.collection.objects.link(ob)
 alternate.collection.objects.link(rig)

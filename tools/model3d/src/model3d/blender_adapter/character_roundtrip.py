@@ -76,12 +76,49 @@ def section(scene, row, side, aliases):
     return obj, rig, bone, tip, indices, length
 
 
+def tag_bind_vertices(mesh):
+    # The loaded scene is disposable. Preserve the bind indices through evaluation,
+    # including modifiers that reorder vertices without changing their count.
+    indices = np.arange(len(mesh.vertices), dtype=np.int32)
+    attribute = mesh.attributes.new("model3d_bind_vertex", "INT", "POINT")
+    attribute.data.foreach_set("value", indices)
+    mesh.update()
+    return attribute.name, indices
+
+
+def points_in_bind_order(obj, graph, tracking, side, frame):
+    evaluated = obj.evaluated_get(graph)
+    name, expected = tracking
+    mesh = evaluated.data
+    if len(mesh.vertices) != len(expected):
+        raise ValueError(f"{side}.{obj.name}: evaluated mesh changes topology at frame {frame}")
+    attribute = mesh.attributes.get(name)
+    message = f"{side}.{obj.name}: cannot track bind vertices at frame {frame}"
+    if attribute is None or attribute.domain != "POINT" or attribute.data_type != "INT":
+        raise ValueError(message)
+    indices = np.empty_like(expected)
+    attribute.data.foreach_get("value", indices)
+    points = world_points(evaluated)
+    if np.array_equal(indices, expected):
+        return points
+    order = np.argsort(indices)
+    if not np.array_equal(indices[order], expected):
+        raise ValueError(message)
+    return points[order]
+
+
 def sample_scene(bpy, settings, side, times, seconds):
     scene = bpy.context.scene
     origin = settings[f"{side}_start"]
     set_frame(scene, origin)
     aliases = settings["node_meshes"] if side == "delivered" else {}
     sections = {r["label"]: section(scene, r, side, aliases) for r in settings["sections"]}
+    tracking = {}
+    for obj, rig, *_ in sections.values():
+        # A saved REST display must not suppress the animation under measurement.
+        rig.data.pose_position = "POSE"
+        if obj.data not in tracking:
+            tracking[obj.data] = tag_bind_vertices(obj.data)
     expressions = {}
     for r in settings["expressions"]:
         binding = r[side]
@@ -103,10 +140,7 @@ def sample_scene(bpy, settings, side, times, seconds):
         row = {"frame": frame, "seconds": sec, "sections": {}, "expressions": {}}
         for label, (obj, rig, bone, tip, ids, length) in sections.items():
             if obj.name not in coords:
-                evaluated = obj.evaluated_get(dg)
-                if len(evaluated.data.vertices) != len(obj.data.vertices):
-                    raise ValueError(f"{side}.{obj.name}: evaluated mesh changes topology at frame {frame}")
-                coords[obj.name] = world_points(evaluated)
+                coords[obj.name] = points_in_bind_order(obj, dg, tracking[obj.data], side, frame)
             arm = rig.evaluated_get(dg)
             axis = np.array(arm.matrix_world.to_3x3() @ (arm.pose.bones[tip].head - arm.pose.bones[bone].head))
             dist = np.linalg.norm(axis)

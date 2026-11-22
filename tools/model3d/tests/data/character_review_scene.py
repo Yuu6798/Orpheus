@@ -50,6 +50,7 @@ for point in key.data:
 for frame, value in [(1, 0), (2, 1), (3, .5), (4, 0)]:
     key.value = value
     key.keyframe_insert("value", frame=frame)
+key.slider_min = .25
 
 limb = box("limb", (.4, 0, -.2), .25, (.05, .23, .4))
 limb.parent = rig

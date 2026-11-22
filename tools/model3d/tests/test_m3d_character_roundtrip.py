@@ -112,6 +112,25 @@ def test_samples_outside_positive_clip_refuse_clamping(tmp_path, real_assets, or
     assert not (tmp_path / "report.json").exists()
 
 
+def test_native_saved_in_rest_position_still_samples_animation(tmp_path, real_assets):
+    source = real_assets / "rest.blend"
+    original = source.read_bytes()
+    report = replay(tmp_path, real_assets, native=source.name)
+    rest, _, twisted = report["frames"]
+    arm_rest = rest["sections"]["arm"]["native"]
+    arm_twisted = twisted["sections"]["arm"]
+    assert arm_twisted["native"] == pytest.approx(arm_rest * .5, abs=.002)
+    assert arm_twisted["ratio"] == pytest.approx(1, abs=.02)
+    assert source.read_bytes() == original
+
+
+def test_section_tracks_bind_vertices_through_evaluated_reordering(tmp_path, real_assets):
+    baseline = replay(tmp_path, real_assets)
+    reordered = replay(tmp_path, real_assets, native="reordered.blend")
+    for expected, actual in zip(baseline["frames"], reordered["frames"], strict=True):
+        assert actual["sections"]["arm"] == pytest.approx(expected["sections"]["arm"])
+
+
 def test_muted_expression_and_unsupported_native_scenes(tmp_path, real_assets):
     report = replay(tmp_path, real_assets, native="muted.blend")
     assert report["frames"][1]["expressions"]["blink"] == pytest.approx({"native": 0, "delivered": 1, "delta": 1})

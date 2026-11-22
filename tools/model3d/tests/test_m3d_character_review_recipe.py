@@ -14,6 +14,12 @@ from model3d.io import atomic_json, read_json
 def test_roundtrip_measurement_drives_review_frames_and_links(tmp_path):
     blender = os.environ["MODEL3D_BLENDER"]
     run_blender(blender, Path(__file__).parent / "data" / "make_roundtrip_tube.py", args=[tmp_path])
+    # Both scenes contain the rig, but only Performance contains the measured mesh.
+    link_stage = tmp_path / "link_stage.py"
+    link_stage.write_text("import bpy\n"
+                          "bpy.data.scenes['Stage'].collection.objects.link(bpy.data.objects['Rig'])\n"
+                          "bpy.ops.wm.save_as_mainfile(filepath=bpy.data.filepath)\n", encoding="utf-8")
+    run_blender(blender, link_stage, tmp_path / "native.blend")
     Image.new("RGB", (32, 32), "#394e42").save(tmp_path / "guide.png")
     section = {"mesh": "Sleeve", "bone": "Forearm", "tip": "Wrist"}
     atomic_json(tmp_path / "measure.json", {
@@ -46,6 +52,7 @@ def test_roundtrip_measurement_drives_review_frames_and_links(tmp_path):
     assert run["steps"]["review"]["status"] == run["status"] == "needs_review"
     run_dir = Path(run["run_dir"])
     measured = read_json(run_dir / "measure" / "measurement.json")
+    assert measured["native_scene"] == "Performance"
     worst = measured["worst"]["sections"]["arm"]
     assert worst["ratio"] == pytest.approx(.5, abs=.01)
     assert (worst["frame"], worst["seconds"]) == (13, .5)

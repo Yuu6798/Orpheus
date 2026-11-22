@@ -38,12 +38,12 @@ def measure(bpy, scene, events):
 if __name__ == "__main__":
     import bpy
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from vrm_apply_motion import use_scene_of
+    from character_review_views import use_review_scene
 
     config, output = map(Path, sys.argv[sys.argv.index("--") + 1:])
     job = json.loads(config.read_text(encoding="utf-8"))
     rig = bpy.data.objects.get(job["armature"])
     if rig is None or rig.type != "ARMATURE":
         raise ValueError(f"Unknown armature: {job['armature']}")
-    result = measure(bpy, use_scene_of(bpy, rig), job["events"])
+    result = measure(bpy, use_review_scene(bpy, rig, job.get("scene")), job["events"])
     output.write_text(json.dumps(result, allow_nan=False), encoding="utf-8")

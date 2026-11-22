@@ -22,8 +22,12 @@ def _prepare(inputs, parameters, outputs, context, name):
 def character_views(inputs, parameters, outputs, context):
     from ..character_review import run
     blender = _prepare(inputs, parameters, outputs, context, "review.character_views")
-    result = run(inputs["spec"], Path(context.step_dir) / "views", blender, roundtrip_report=inputs.get("roundtrip"))
-    atomic_json(outputs["report"], result)
+    report = Path(outputs["report"])
+    views = Path(context.step_dir) / "views"
+    if report.name.rstrip(".").casefold() == views.name:
+        views = report.with_name(report.name + ".views")
+    result = run(inputs["spec"], views, blender, roundtrip_report=inputs.get("roundtrip"))
+    atomic_json(report, result)
     return StepResult(observations=[{"kind": "character_review", **result}], review=True)
 
 

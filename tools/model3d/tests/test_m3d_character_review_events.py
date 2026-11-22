@@ -72,7 +72,30 @@ def test_roundtrip_findings_address_the_measured_pose_and_keep_the_full_report(t
     assert sources["models"]["after"]["sha256"] == report["native_sha256"]
 
 
-@pytest.mark.parametrize("error", ["missing", "stale", "unmeasured", "nonnumeric", "changed"])
+def test_measured_scene_is_used_for_after_renders_and_expression_peaks(tmp_path, monkeypatch):
+    spec, report = make_study(tmp_path)
+    config = read_json(spec)
+    config["events"].append({"id": "peak", "peak": {"object": "face", "shape_key": "blink", "range": [1, 4]}})
+    atomic_json(spec, config)
+    evidence = tmp_path / "evidence.json"
+    atomic_json(evidence, dict(report, native_scene="Performance"))
+
+    def blender_job(blender, script, blend, args, log):
+        job = read_json(args[0])
+        if script.name == "character_review_peaks.py":
+            assert job["scene"] == "Performance"
+            atomic_json(args[1], {"peak": {"frame": 2, "value": .8}})
+            return {"blender_version": "test"}
+        assert job["after"]["scene"] == "Performance" and "scene" not in job["before"]
+        assert next(e["frame"] for e in job["events"] if e["name"] == "peak") == 2
+        return fake_renderer(blender, script, blend, args, log)
+
+    monkeypatch.setattr(review.launcher, "run_blender", blender_job)
+    run = review.run(spec, tmp_path / "out", "blender", roundtrip_report=evidence)
+    assert read_json(Path(run["index"]).parent / "sources.json")["roundtrip"]["native_scene"] == "Performance"
+
+
+@pytest.mark.parametrize("error", ["missing", "stale", "unmeasured", "nonnumeric", "scene", "changed"])
 def test_invalid_or_changing_evidence_leaves_previous_package_intact(tmp_path, monkeypatch, error):
     spec, report = make_study(tmp_path)
     evidence = tmp_path / "evidence.json"
@@ -82,6 +105,8 @@ def test_invalid_or_changing_evidence_leaves_previous_package_intact(tmp_path, m
         report["worst"]["sections"] = {}
     elif error == "nonnumeric":
         report["worst"]["sections"]["ring"]["ratio"] = "unknown"
+    elif error == "scene":
+        report["native_scene"] = " "
     atomic_json(evidence, report)
     out = tmp_path / "out"
     previous = out / "review-prior" / "index.html"
