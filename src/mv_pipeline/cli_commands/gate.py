@@ -60,6 +60,20 @@ def _gate_parser(commands):
     tail.add_argument("--max-tail-s", type=float, help="warn when the picture goes on longer than this after the sound ends (default 1.0)")
     tail.add_argument("--window", type=float, help="loudness window in seconds (default 0.1)")
     tail.add_argument("--floor-db", type=float, help="a window sounds when within this many dB of the loudest (default -60)")
+    final = sub.add_parser("final", help="one table of export checks for a video drawn in 3D: structure (fx probe.check_video), "
+                                         "model3d check.video_frames, last frame brightness, render.show shadow overflow lines and "
+                                         "render seconds; exit code 1 when a row fails. Numbers only")
+    final.add_argument("video", type=Path)
+    final.add_argument("--video-frames", type=Path, help="report of model3d check.video_frames for this video")
+    final.add_argument("--show", type=Path, action="append", default=[], help="report of model3d render.show (repeatable: one per chunk)")
+    final.add_argument("--width", type=int, help="expected width (default: from the render.show reports)")
+    final.add_argument("--height", type=int, help="expected height (default: from the render.show reports)")
+    final.add_argument("--fps", type=float, help="expected fps (default: from the render.show reports)")
+    final.add_argument("--frames", type=int, help="expected frame count (with fps, also the sound length)")
+    final.add_argument("--no-audio", action="store_true", help="the video is meant to be silent")
+    final.add_argument("--min-last-mean", type=float, default=0.02,
+                       help="the last frame fails below this mean brightness 0-1 (default 0.02; 0 for videos that end in black)")
+    final.add_argument("--out", type=Path, help="default: <video stem>_final_report next to the video")
     voice = sub.add_parser("voice", help="numbers only: where the vocal stem has voice (segments and the gaps between them), "
                                          "to find line starts, ends and breaths")
     voice.add_argument("vocals", type=Path)
@@ -88,7 +102,7 @@ def _gate_parser(commands):
 
 
 def gate_command(args):
-    """gate サブコマンドを実行して結果の辞書を返す。check の不合格と、flashes の上限の超過は args.failed=1。"""
+    """gate サブコマンドを実行して結果の辞書を返す。check の不合格と、flashes の上限の超過と、final の不合格は args.failed=1。"""
     if args.gate_command == "lines":
         from ..gate import lines
         return lines.make_table(args.lines, args.out, args.vocals, args.window, args.offset)
@@ -118,6 +132,12 @@ def gate_command(args):
         from ..gate import tail
         report, out = tail.run(args.video, args.out, args.max_tail_s, args.window, args.floor_db)
         return tail.summary(report, out)
+    if args.gate_command == "final":
+        from ..gate import final
+        report, out = final.run(args.video, args.out, args.video_frames, args.show, args.width, args.height, args.fps, args.frames,
+                                not args.no_audio, args.min_last_mean)
+        args.failed = 1 if report["status"] == "fail" else 0
+        return final.summary(report, out)
     if args.gate_command in ("voice", "notes", "repeat"):
         from ..gate import vocals
         if args.gate_command == "voice":

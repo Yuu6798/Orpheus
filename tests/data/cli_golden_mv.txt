@@ -727,10 +727,10 @@ options:
 {"options": ["--by"], "dest": "by", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": true, "metavar": null}
 {"options": ["--note"], "dest": "note", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv gate
-usage: mv gate [-h] {check,lines,demo,faces,timeline,flashes,tail,voice,notes,repeat} ...
+usage: mv gate [-h] {check,lines,demo,faces,timeline,flashes,tail,final,voice,notes,repeat} ...
 
 positional arguments:
-  {check,lines,demo,faces,timeline,flashes,tail,voice,notes,repeat}
+  {check,lines,demo,faces,timeline,flashes,tail,final,voice,notes,repeat}
     check               run the checks; exit code 1 when any check fails
     lines               write the line/second table and lines_measured.json
     demo                write synthetic test material with known answers (vocals stand-in, lyrics, timeline, beats, expected.json)
@@ -738,6 +738,7 @@ positional arguments:
     timeline            measure a transparent PNG sequence (alpha) into a dance-timeline/0.1 for gate check
     flashes             count whole-frame brightness flashes in a finished video (no timeline); exit code 1 above --max-per-s. Not a compliance judgment
     tail                when the sound of a finished video ends and how long the picture goes on after it (no timeline); warns above --max-tail-s or when the sound is still on at the end. Numbers only
+    final               one table of export checks for a video drawn in 3D: structure (fx probe.check_video), model3d check.video_frames, last frame brightness, render.show shadow overflow lines and render seconds; exit code 1 when a row fails. Numbers only
     voice               numbers only: where the vocal stem has voice (segments and the gaps between them), to find line starts, ends and breaths
     notes               numbers only: sung notes (pYIN, semitones), onsets and level dips in a range
     repeat              numbers only: where the melody of --ref repeats inside --search (offset in seconds, match rate)
@@ -746,7 +747,7 @@ options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "gate_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "lines", "demo", "faces", "timeline", "flashes", "tail", "voice", "notes", "repeat"], "required": true, "metavar": null}
+{"options": [], "dest": "gate_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "lines", "demo", "faces", "timeline", "flashes", "tail", "final", "voice", "notes", "repeat"], "required": true, "metavar": null}
 ==== mv gate check
 usage: mv gate check [-h] [--out OUT] config
 
@@ -894,6 +895,37 @@ options:
 {"options": ["--max-tail-s"], "dest": "max_tail_s", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--window"], "dest": "window", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--floor-db"], "dest": "floor_db", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+==== mv gate final
+usage: mv gate final [-h] [--video-frames VIDEO_FRAMES] [--show SHOW] [--width WIDTH] [--height HEIGHT] [--fps FPS] [--frames FRAMES] [--no-audio] [--min-last-mean MIN_LAST_MEAN] [--out OUT] video
+
+positional arguments:
+  video
+
+options:
+  -h, --help            show this help message and exit
+  --video-frames VIDEO_FRAMES
+                        report of model3d check.video_frames for this video
+  --show SHOW           report of model3d render.show (repeatable: one per chunk)
+  --width WIDTH         expected width (default: from the render.show reports)
+  --height HEIGHT       expected height (default: from the render.show reports)
+  --fps FPS             expected fps (default: from the render.show reports)
+  --frames FRAMES       expected frame count (with fps, also the sound length)
+  --no-audio            the video is meant to be silent
+  --min-last-mean MIN_LAST_MEAN
+                        the last frame fails below this mean brightness 0-1 (default 0.02; 0 for videos that end in black)
+  --out OUT             default: <video stem>_final_report next to the video
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "video", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--video-frames"], "dest": "video_frames", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--show"], "dest": "show", "action": "_AppendAction", "nargs": null, "const": null, "default": [], "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--frames"], "dest": "frames", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--no-audio"], "dest": "no_audio", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--min-last-mean"], "dest": "min_last_mean", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.02, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 ==== mv gate voice
 usage: mv gate voice [-h] [--from START] [--to STOP] [--threshold-db THRESHOLD_DB] [--gap-s GAP_S] [--min-s MIN_S] [--out OUT] [--force] vocals
 

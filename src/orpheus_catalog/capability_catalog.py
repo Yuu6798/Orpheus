@@ -56,6 +56,7 @@ MV_RUNTIME.update({
     ("gate", "check"): {"external_process": "opt-in", "tools": ["ffmpeg"],
                          "external_process_note": "gate設定にvideo・master・flash・tailなど動画検査の材料がある場合に起動する"},
     ("gate", "tail"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("gate", "final"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("sheet",): {"external_process": "opt-in", "tools": ["ffmpeg"],
                  "external_process_note": "動画入力または並べた動画の出力でFFmpegを使う"},
     ("deliver", "join"): {"external_process": "always", "tools": ["ffmpeg"]},

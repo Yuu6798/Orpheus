@@ -3,7 +3,7 @@
 import math
 from pathlib import Path
 
-from ..io import ToolError, atomic_json, resolve_path
+from ..io import ToolError, atomic_json, resolve_path, sha256
 from . import register, require
 
 PARAMETERS = {"frames_dir", "range", "at", "count", "offset", "first", "ratio", "still", "max_mean_abs", "ffmpeg", "timeout",
@@ -92,7 +92,8 @@ def video_frames(inputs, parameters, outputs, context):
     size = (width, height)
     shown = decode(ffmpeg, inputs["video"], [T - first for T in samples], size, timeout=timeout, matrix=matrix, in_range=in_range)
     rows = compare(shown, files, samples, first, offset, limits["ratio"], limits["still"], limits["max_mean_abs"])
-    report = {"check": "video_frames", "status": "done", **summarize(rows), "video": str(inputs["video"]), "frames": str(source),
+    report = {"check": "video_frames", "status": "done", **summarize(rows), "video": str(inputs["video"]),
+              "video_sha256": sha256(inputs["video"]), "frames": str(source),
               "first": first, "offset": offset, **limits, "size": list(size), "color": {"matrix": matrix, "range": in_range},
               "samples": samples, "rows": rows}
     if "report" in outputs:
