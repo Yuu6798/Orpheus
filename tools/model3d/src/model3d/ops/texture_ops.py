@@ -389,7 +389,7 @@ def project_reference(inputs, parameters, outputs, context):
 EYE_LINE_PARAMETERS = {"eyes", "end_y", "erase_rows", "erase_columns", "sag", "thickness", "outer_bias", "wing", "lashes", "color",
                        "supersample", "close_px", "close_blur", "band_blur", "base_width", "strokes", "skin_fill"}
 STROKE_KEYS = ["color", "curve", "name", "points", "samples", "span", "widths"]
-SKIN_FILL_KEYS = ["boxes", "exclude", "exclude_boxes", "feather", "gain", "grow", "keep_dark_below", "sigmas", "skin", "soften"]
+SKIN_FILL_KEYS = ["boxes", "exclude", "exclude_all", "exclude_boxes", "feather", "gain", "grow", "keep_dark_below", "sigmas", "skin", "soften"]
 SKIN_RULE_KEYS = ["red_at_least_blue", "red_minus_green_below", "rgb_min"]
 
 
@@ -487,6 +487,8 @@ def skin_fill_settings(value):
         raise ToolError(f"skin_fill.skin.red_at_least_blue は true か false にしてください: {rule['red_at_least_blue']!r}")
     if merged["keep_dark_below"] is not None:
         _finite(merged["keep_dark_below"], "skin_fill.keep_dark_below", 0.0)
+    if not isinstance(merged["exclude_all"], bool):
+        raise ToolError(f"skin_fill.exclude_all は true か false にしてください: {merged['exclude_all']!r}")
     sigmas = merged["sigmas"]
     if not isinstance(sigmas, list) or not sigmas:
         raise ToolError(f"skin_fill.sigmas はぼかしの広さ（画素）の並びにしてください: {sigmas!r}")

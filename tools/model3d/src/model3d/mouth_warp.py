@@ -78,6 +78,14 @@ def ramp(t):
     return 0.5 * t + 0.5 * t * t * (3 - 2 * t)
 
 
+def upper_rows(rows, line, shift, keep, fade):
+    """線より上の行 rows（増える並び）を動かした先: 線から keep まではそのまま shift 動かし、その先でなだらかに 0 へ戻す。
+    ramp の傾きは最大 1.25 なので、上へ fade / 1.25 より大きく動かすと並びが折れ返る（顔の画素がとんだり重なったりする）。下と同じく、
+    戻す長さを動く量の 1.3 倍まで広げる（台本の値（動く量が fade の 0.8 倍まで）では、台本と同じ）。"""
+    reach = max(fade, 1.3 * abs(shift))
+    return rows + shift * (1 - ramp((line - rows - keep) / reach))
+
+
 def measure(image, settings):
     """もとの口の線を測る。戻り: 測った値の辞書（列ごとの線の高さ line_x・line_y を含む）。見つからなければ ValueError。"""
     x0, y0, x1, y1 = settings["window"]
@@ -170,7 +178,7 @@ def warp(image, settings):
         if abs(a[x]) < 0.01 and d[x] < 0.01:
             continue
         upper = np.concatenate([YS[YS < yl[x]], [yl[x]]])                # 線より上: upper_keep まではそのまま動かし、その先 upper_fade で 0 へ
-        upper_to = upper + a[x] * (1 - ramp((yl[x] - upper - lengths["upper_keep"]) / lengths["upper_fade"]))
+        upper_to = upper_rows(upper, yl[x], a[x], lengths["upper_keep"], lengths["upper_fade"])
         lower = np.concatenate([[yl[x]], YS[YS > yl[x]]])                # 線より下: lower_keep（下唇の赤みと光）まではそのまま、その先で 0 へ
         fall_here = min(fall_low, jaw[x] - keep - (yl[x] + lengths["lower_keep"]))   # あごの線の keep_above 画素上までに 0 へ
         if fall_here < 1.3 * abs(a[x] + d[x]):                           # 収まらない（折り返す）ときは、折り返さない長さを優先して数える

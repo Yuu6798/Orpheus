@@ -201,3 +201,17 @@ def test_a_stretched_tilted_smile_is_level_with_the_stretched_slope():
     assert abs(line_height(script, left) - line_height(script, right)) > 4       # × k は広げた口で直しすぎる
     same, _, _ = mouth_warp.warp(image, settings(corner_lift=4, tilt_after_stretch=True))
     assert np.array_equal(same, mouth_warp.warp(image, settings(corner_lift=4))[0])   # k = 1 なら、どちらも同じ
+
+
+def test_a_large_upward_move_does_not_fold_the_rows_above_the_line():
+    rows = np.concatenate([np.arange(100, dtype=float), [100.0]])              # 平らな線（y 100）より上の行
+    moved = mouth_warp.upper_rows(rows, 100.0, -30.0, 10, 30)                   # 戻す長さ 30 に、上へ 30（0.8 倍を超えて、折れ返る量）
+    assert np.diff(moved).min() > 0                                             # 増える並びのまま（とばない・重ならない）
+    assert moved[-1] == 70.0 and moved[0] == 0.0                                # 線のすぐ上は 30 上へ、遠い所は動かない
+    folded = rows - 30.0 * (1 - mouth_warp.ramp((100.0 - rows - 10) / 30))        # 戻す長さを広げないと、折れ返る
+    assert np.diff(folded).min() < 0
+    small = mouth_warp.upper_rows(rows, 100.0, -20.0, 10, 30)                   # 0.8 倍まで（台本の値の範囲）は、台本と同じ式
+    assert np.array_equal(small, rows - 20.0 * (1 - mouth_warp.ramp((100.0 - rows - 10) / 30)))
+    image = face()
+    warped, _, _ = mouth_warp.warp(image, settings(scale=0.5, upper_arch=30, corner_mark=8))
+    assert np.isfinite(warped).all()

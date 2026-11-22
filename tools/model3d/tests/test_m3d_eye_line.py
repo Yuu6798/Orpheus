@@ -266,6 +266,7 @@ FILL = {"boxes": [[1, 1, 5, 5]], "skin": SKIN_RULE, "sigmas": [4], "exclude": 1,
     ({"strokes": [GOOD_STROKE], "skin_fill": {"boxes": [[1, 1, 5, 5]], "skin": SKIN_RULE}}, "sigmas, exclude, grow"),
     ({"strokes": [GOOD_STROKE], "skin_fill": {**FILL, "boxes": [[5, 1, 1, 5]]}}, "boxes"),
     ({"strokes": [GOOD_STROKE], "skin_fill": {**FILL, "exclude_boxes": []}}, "exclude_boxes"),
+    ({"strokes": [GOOD_STROKE], "skin_fill": {**FILL, "exclude_all": 1}}, "exclude_all"),
 ])
 def test_closed_eye_line_rejects_bad_strokes_and_fills(tmp_path, parameters, message):
     from model3d.ops import get
@@ -305,3 +306,14 @@ def test_skin_fill_without_skin_within_reach_is_refused():
     image = np.full((120, 120, 3), [128.0, 128.0, 128.0])                     # 肌らしい画素が 1 つも無い
     with pytest.raises(ValueError, match="肌らしい画素"):
         eye_line.draw(image, fill_settings(boxes=[[40, 40, 80, 80]]))
+
+
+def test_exclude_all_keeps_the_other_eye_out_of_the_skin_sample():
+    image = plain_skin(200)
+    image[70:130, 30:90] = [255, 255, 255]                                      # 左の目（白目。肌らしい明るさ）
+    image[70:130, 100:170] = [255, 255, 255]                                    # 右の目（ぼかしの窓が届く近さ）
+    boxes = [[30, 70, 90, 130], [100, 70, 170, 130]]
+    script, _ = eye_line.draw(image, fill_settings(boxes=boxes, sigmas=[30.0], keep_dark_below=None))
+    exact, _ = eye_line.draw(image, fill_settings(boxes=boxes, sigmas=[30.0], keep_dark_below=None, exclude_all=True))
+    assert np.abs(exact[100, 85] - [240, 200, 180]).max() < 0.1                 # 全部の枠を外すと、まわりの肌の色だけ
+    assert script[100, 85, 2] > exact[100, 85, 2] + 20                           # 台本と同じ既定では、もう片方の白目が混ざる（白い斑）
