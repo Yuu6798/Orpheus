@@ -61,13 +61,19 @@ def largest_component(mask):
     return labels == 1 + int(np.argmax(areas))
 
 
-def measure_mark(image, rule, window, close_size=5):
+def measure_mark(image, rule, window, close_size=5, halo=False):
     """探す範囲 window（[x0, y0, x1, y1]。右と下は含まない）の中で、色の決まり rule に入る画素を close_size の窓で閉じ、いちばん大きいかたまりの
     左右・上下の端（画素。端を含む）・中心の x（左右の端の真ん中）・重心の y・真ん中の 2 割の列の上の縁と下の縁・幅・面積。無ければ None。"""
     x0, y0, x1, y1 = window
-    found = color_rule(image[y0:y1, x0:x1], rule)
+    # halo なら、閉じる処理は探す範囲の外に閉じる窓の大きさの縁を足した所でする（窓の外を「ある」とみなすので、狭い範囲の縁で閉じると、
+    # 浅い弧の線が塗りつぶした箱になる）。かたまりを選ぶのは、探す範囲の中だけ。既定は台本と同じ（探す範囲の中だけで閉じる）
+    halo = close_size if (halo and close_size > 1) else 0
+    X0, Y0 = max(x0 - halo, 0), max(y0 - halo, 0)
+    X1, Y1 = min(x1 + halo, image.shape[1]), min(y1 + halo, image.shape[0])
+    found = color_rule(image[Y0:Y1, X0:X1], rule)
     if close_size > 1:
         found = close(found, close_size)
+    found = found[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
     blob = largest_component(found)
     if blob is None:
         return None
@@ -85,12 +91,12 @@ def measure_mark(image, rule, window, close_size=5):
 
 def mark_shift(reference, image, settings):
     """描いた印のずれ（check.drawn_mark）。reference と image は同じ大きさの RGB。戻り: 報告。"""
-    original = measure_mark(reference, settings["reference_rule"], settings["window"], settings["close"])
+    original = measure_mark(reference, settings["reference_rule"], settings["window"], settings["close"], settings.get("close_halo", False))
     if original is None:
         raise ValueError(f"もとの絵の探す範囲 {settings['window']} に、印の色（reference_rule）の画素がありません")
     left, top, right, bottom = settings["search_margin"]
     near = [max(original["left"] - left, 0), max(original["top"] - top, 0), original["right"] + right + 1, original["bottom"] + bottom + 1]
-    drawn = measure_mark(image, settings["mark_rule"], near, settings["close"])
+    drawn = measure_mark(image, settings["mark_rule"], near, settings["close"], settings.get("close_halo", False))
     report = {"original": original, "search": near, "drawn": drawn}
     if drawn is not None:
         report.update(centre_dx_px=drawn["centre_x"] - original["centre_x"], top_dy_px=drawn["mid_top"] - original["mid_top"],

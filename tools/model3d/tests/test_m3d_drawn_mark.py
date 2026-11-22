@@ -130,3 +130,22 @@ def test_drawn_mark_stops_when_the_original_mark_is_missing(tmp_path):
     with pytest.raises(ToolError, match="もとの絵"):
         get("check.drawn_mark").function({"reference": before, "image": after}, {"window": [50, 60, 260, 140], "reference_rule": RULE},
                                          {"report": tmp_path / "r.json"}, Context(tmp_path))
+
+
+def test_a_tight_search_box_measures_the_same_line_as_the_wide_window():
+    from model3d.ops.check_ops import drawn_mark_settings
+    """close_halo なら、閉じる処理は探す範囲の外の縁も使うので、印のすぐ外まで狭めた範囲でも、広い範囲と同じ形に測る（浅い弧の線が、
+    狭い範囲の縁で塗りつぶした箱にならない）。既定は台本と同じ（探す範囲の中だけで閉じる）。"""
+    image = np.full((40, 60, 3), SKIN, dtype=np.uint8)
+    for i, x in enumerate(range(20, 41)):                                # 幅 21 の浅い U の線（両端 y=10、真ん中 y=12）
+        y = 10 + round(2 * (1 - ((x - 30) / 10) ** 2))
+        image[y, x] = (200, 60, 70)
+    wide = color_marks.measure_mark(image, RULE, [0, 0, 60, 40], halo=True)
+    box = [wide["left"], wide["top"], wide["right"] + 1, wide["bottom"] + 1]
+    tight = color_marks.measure_mark(image, RULE, box, halo=True)
+    assert tight["mid_top"] == wide["mid_top"] and tight["area"] == wide["area"] and tight["centroid_y"] == wide["centroid_y"]
+    script_like = color_marks.measure_mark(image, RULE, box)                 # 既定（台本と同じ）は、狭い範囲の縁で埋まる
+    assert script_like["area"] > wide["area"]
+    assert drawn_mark_settings({"window": [0, 0, 60, 40], "reference_rule": RULE, "close_halo": True})["close_halo"] is True
+    with pytest.raises(ToolError, match="close_halo"):
+        drawn_mark_settings({"window": [0, 0, 60, 40], "reference_rule": RULE, "close_halo": 1})

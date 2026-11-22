@@ -297,7 +297,7 @@ def check_frames(inputs, parameters, outputs, context):
     return _finish(summary, {k: v for k, v in outputs.items() if k != "report"}, parameters, "コマの比べ")
 
 
-DRAWN_MARK_PARAMETERS = {"window", "reference_rule", "mark_rule", "close", "search_margin", "change_threshold", "allowed_margin",
+DRAWN_MARK_PARAMETERS = {"window", "reference_rule", "mark_rule", "close", "close_halo", "search_margin", "change_threshold", "allowed_margin",
                          "metres_per_pixel", "max_centre_shift_px", "max_top_shift_px", "max_outside_pixels", "strict", "report_only"}
 
 
@@ -338,6 +338,10 @@ def drawn_mark_settings(parameters):
                 "close": number(parameters, "close", 5, minimum=1, integer=True),
                 "search_margin": margins(parameters.get("search_margin", [0, 0, 0, 0]), "search_margin"),
                 "change_threshold": number(parameters, "change_threshold", 0, minimum=0)}
+    if "close_halo" in parameters:
+        if not isinstance(parameters["close_halo"], bool):
+            raise ToolError(f"close_halo は true か false にしてください: {parameters['close_halo']!r}")
+        settings["close_halo"] = parameters["close_halo"]
     if parameters.get("allowed_margin") is not None:
         settings["allowed_margin"] = margins(parameters["allowed_margin"], "allowed_margin")
     if parameters.get("metres_per_pixel") is not None:
