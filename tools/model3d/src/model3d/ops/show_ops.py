@@ -237,6 +237,29 @@ def _expressions(value):
     return {"objects": objects, "values": values}
 
 
+OVERFLOW_NAME = "model3d_show_overflow.json"   # frames_dir の控え: 影の領域があふれた描画で描いたコマ（ファイル → 行の数・必要 / 上限）
+
+
+def _overflow_marks(frames_dir):
+    """frames_dir の、影の領域があふれた描画で描いたコマの控え {ファイル: {lines, worst}}（無ければ空）。"""
+    from ..io import read_json
+    path = Path(frames_dir) / OVERFLOW_NAME
+    if not path.is_file():
+        return {}
+    record = read_json(path)
+    if not isinstance(record, dict) or not isinstance(record.get("frames"), dict):
+        raise ToolError(f"影の領域のあふれの控えが読めません: {path}")
+    return dict(record["frames"])
+
+
+def _write_overflow_marks(frames_dir, marks):
+    path = Path(frames_dir) / OVERFLOW_NAME
+    if marks:
+        atomic_json(path, {"schema_version": "model3d-show-overflow/0.1", "frames": dict(sorted(marks.items()))})
+    elif path.is_file():
+        path.unlink()
+
+
 PICTURE_FREE = {"only"}                                  # 描く絵を変えない設定（コマのフォルダの入力の控えの key に入れない）
 
 
@@ -329,9 +352,18 @@ def show_render(inputs, parameters, outputs, context):
         files = [frame_name(fr["T"]) for fr in cameras["frames"] if not only or fr["T"] in only]
         key = _show_key(inputs, settings, blender)
         # 確かめと同じ待ち合わせの中で、描く前に控える（途中で止まっても、描いたコマには控えがある）
+        # 前の描画で影の領域があふれたコマは、同じ入力でも、とばすとあふれたコマのまま残る（あふれの知らせは描いた回の記録にしか出ない）
+        marks = _overflow_marks(frames_dir)
+        tainted = sorted(name for name in files if name in marks and (frames_dir / name).is_file())
+        if tainted and (settings.get("shadow") or {}).get("overflow", "fail") == "fail":
+            shown = ", ".join(tainted[:5]) + (" …" if len(tainted) > 5 else "")
+            raise ToolError(f"render.show: コマのフォルダ {frames_dir} の {len(tainted)} 個のコマ（{shown}）は、前の描画で影の領域があふれた"
+                            "とき（Shadow buffer full）に描いたコマです。続きから描くと、そのコマはあふれた影のまま残ります。そのコマを消して"
+                            "描き直すか（影の細かさなど入力を変えるなら、別のフォルダへ）、知らせるだけで通すなら shadow.overflow を \"warn\" "
+                            f"にします（控えは {frames_dir / OVERFLOW_NAME}）")
         # 1 つのフォルダには 1 つの描画だけ（whole）: 別の入力で描いた区切りが、描かないコマとして混ざらない
         _, kept = render_inputs.check(frames_dir, key, files, "render.show", claim=True, whole=True)
-        resume = {"key": render_inputs.key_id(key), "kept": kept}
+        resume = {"key": render_inputs.key_id(key), "kept": kept, "reused_overflow": len(tainted)}
     else:
         frames_dir = step / "frames"                     # 実行ごとに新しいフォルダ（前の描画のコマは残らない）
     args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--cameras", inputs["cameras"], "--frames-dir", str(frames_dir),
@@ -350,6 +382,16 @@ def show_render(inputs, parameters, outputs, context):
     # 影の領域のあふれ: Blender は記録に書くだけで、描くのは続ける（あふれたコマは、描くたびに影が変わる）
     overflow = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
     overflow["action"] = (settings.get("shadow") or {}).get("overflow", "fail")
+    if resume is not None:                               # frames_dir: 今回描いたコマの、あふれの控えを書き直す
+        from ..blender_adapter.show_render import frame_name
+        marks = _overflow_marks(frames_dir)
+        for T in report.get("rendered") or []:
+            if overflow["lines"]:
+                marks[frame_name(T)] = {"lines": overflow["lines"], "worst": overflow["worst"]}
+            else:
+                marks.pop(frame_name(T), None)
+        _write_overflow_marks(frames_dir, marks)
+        overflow["reused"] = resume["reused_overflow"]   # 前の描画であふれたまま、とばしたコマの数（warn のときだけ 0 でない）
     report["shadow_overflow"] = overflow
     atomic_json(outputs["report"], report)
     manifest = show_manifest(report, frames_dir)

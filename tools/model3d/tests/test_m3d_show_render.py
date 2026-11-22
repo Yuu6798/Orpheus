@@ -474,3 +474,42 @@ def test_frames_drawn_outside_the_control_record_stop_the_resume(tmp_path):
     (tmp_path / "frames_all" / "f0001.png").write_bytes(b"old")
     result = executor.run_recipe(_recipe(tmp_path, {}), tmp_path / "runs")
     assert result["status"] == "failed" and "入力の控え" in result["error"]
+
+
+def _overflow_recipe(tmp_path, parameters):
+    recipe = _recipe(tmp_path, parameters)
+    (tmp_path / "show.blend").write_bytes(b"overflow")            # 代役が影の領域のあふれを記録に書く
+    return recipe
+
+
+def test_frames_from_an_overflowing_render_are_not_silently_reused(tmp_path):
+    """あふれて失敗した描画のコマは、同じ入力で続きから描いても、とばして通さない（あふれの知らせは描いた回の記録にしか出ない）。"""
+    from model3d import executor
+    first = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert first["status"] == "failed" and "Shadow buffer full" in first["error"]
+    marks = json.loads((tmp_path / "frames_all" / "model3d_show_overflow.json").read_text(encoding="utf-8"))["frames"]
+    assert sorted(marks) == ["f0001.png", "f0002.png"] and marks["f0001.png"]["worst"] == [6252, 4096]
+    again = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert again["status"] == "failed" and "前の描画で影の領域があふれた" in again["error"] and "2 個のコマ" in again["error"]
+    warned = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2], "shadow": {"overflow": "warn"}}), tmp_path / "runs")
+    assert warned["status"] == "succeeded", warned["error"]
+    report = json.loads(Path(warned["steps"]["show"]["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["shadow_overflow"]["reused"] == 2 and report["shadow_overflow"]["lines"] == 2
+
+
+def test_switching_from_warn_to_fail_still_finds_the_overflowing_frames(tmp_path):
+    from model3d import executor
+    warned = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1], "shadow": {"overflow": "warn"}}), tmp_path / "runs")
+    assert warned["status"] == "succeeded", warned["error"]
+    failing = executor.run_recipe(_overflow_recipe(tmp_path, {"only": [1, 2]}), tmp_path / "runs")
+    assert failing["status"] == "failed" and "1 個のコマ（f0001.png）" in failing["error"]
+
+
+def test_a_clean_redraw_clears_the_overflow_record(tmp_path):
+    from model3d import executor
+    from model3d.ops import show_ops
+    (tmp_path / "frames_all").mkdir()
+    show_ops._write_overflow_marks(tmp_path / "frames_all", {"f0003.png": {"lines": 1, "worst": None}})
+    result = executor.run_recipe(_recipe(tmp_path, {"only": [3]}), tmp_path / "runs")          # まだ無いコマなので描き直す
+    assert result["status"] == "succeeded", result["error"]
+    assert not (tmp_path / "frames_all" / "model3d_show_overflow.json").exists()
