@@ -492,6 +492,8 @@ def compare_frames(left, right, thresholds=None, top=5, bands=FRAME_BANDS, zone=
     しきい値 max_outside_pixels は、範囲の外の数の上限（zone と一緒に使う）。"""
     from .io import sha256
     from PIL import Image
+    if thresholds and "max_outside_pixels" in thresholds and zone is None:   # 黙って無視しない
+        raise ToolError("max_outside_pixels（数える範囲の外の数の上限）は zone と一緒に使ってください")
     rows, missing_right, size_mismatch = [], [], []
     identical = pixels = differing_total = 0
     over = dict.fromkeys(bands, 0)

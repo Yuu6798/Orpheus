@@ -190,6 +190,8 @@ def test_one_pixel_outside_the_zone_is_counted_as_spilling(tmp_path):
     assert judged["pass"] is False and "はみ出し" in judged["failures"][0]
     assert checks.compare_frames(sides["l"], sides["r"], {"max_outside_pixels": 1}, zone=zone)["pass"] is True
     assert "zone" not in checks.compare_frames(sides["l"], sides["r"])["rows"][0]      # 省けば今までと同じ行
+    with pytest.raises(ToolError, match="zone と一緒に"):                       # 範囲なしの上限は、黙って無視しない
+        checks.compare_frames(sides["l"], sides["r"], {"max_outside_pixels": 0})
     same = checks.compare_frames(sides["l"], {1: sides["l"][1]}, zone=zone)
     assert same["rows"][0]["zone"] == {"changed": 0, "inside": 0, "outside": 0}
 
