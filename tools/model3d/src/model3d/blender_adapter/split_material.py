@@ -8,6 +8,7 @@
   選ぶ面 = 箱 region の中で、(a) 色の絵の、面の uv の中心の画素の色が color の決まりに入る面 か (b) boxes のどれかの箱の中の面。
   色は Blender の画像の画素の値（image.pixels）。uv の中心の画素は、u × 幅・v × 高さを切り捨てた画素（台本と同じ）。
 選んだ面のうち、材質の枠 source_slot（既定 0）を使う面だけを、その材質の写し（名前 material）の新しい枠へ移す。ほかの面は変えない。
+メッシュをほかの物体と分け合っている（リンクの複製）ときは止める（材質の枠と面の番号はメッシュの物で、ほかの物体まで変わるため）。
 **検証**: 本物の Blender 5.2.4 で、台本と面ごとに同じ材質の枠になることを確かめた（docs/model3d.md）。
 """
 import argparse
@@ -71,6 +72,12 @@ def choose(centres, colors, settings):
     return by_color | by_box, by_color, by_box & ~by_color
 
 
+def shared_with(body, objects):
+    """body のメッシュを使う、ほかの物体の名前の並び（リンクの複製など）。材質の枠と面の番号はメッシュの物なので、分け合うと
+    ほかの物体まで変わる。"""
+    return sorted(obj.name for obj in objects if obj is not body and getattr(obj, "data", None) is not None and obj.data == body.data)
+
+
 def color_image(material, pattern=None):
     """材質の色の絵: pattern（名前の一部）があれば、それを含む画像ノードの絵（1 つだけ）。無ければ、Principled BSDF の Base Color へ
     つながる画像ノードの絵。見つからなければ ValueError。"""
@@ -99,6 +106,10 @@ def main(argv=None):
     body = bpy.data.objects.get(settings["object"])
     if body is None or body.type != "MESH":
         raise SystemExit(f"object のメッシュがありません: {settings['object']}")
+    others = shared_with(body, bpy.data.objects)
+    if others:
+        raise SystemExit(f"{body.name} のメッシュ {body.data.name} を、ほかの物体（{', '.join(others)}）も使っています。材質の枠と面の番号は"
+                         "メッシュの物なので、分けるとそれらも変わります（先に、その物体のメッシュを単独の写しにしてください）")
     if bpy.data.materials.get(settings["material"]) is not None:
         raise SystemExit(f"材質 {settings['material']} はもうあります（別の名前にしてください）")
     slot = settings.get("source_slot", 0)

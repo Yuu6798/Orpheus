@@ -43,6 +43,16 @@ def test_faces_are_chosen_by_colour_or_by_box_inside_the_region():
     assert sm.choose(centres, colors, {"region": {"x": [-0.1, 0.1]}, "boxes": settings["boxes"]})[0].tolist() == [False, True, False, False]
 
 
+def test_a_mesh_shared_with_other_objects_is_found():
+    from types import SimpleNamespace as Thing
+    mesh, other_mesh = object(), object()
+    body = Thing(name="head", data=mesh)
+    objects = [body, Thing(name="head.001", data=mesh), Thing(name="hair", data=other_mesh), Thing(name="Camera", data=None),
+               Thing(name="head.002", data=mesh)]
+    assert sm.shared_with(body, objects) == ["head.001", "head.002"]           # リンクの複製（同じメッシュを使う物体）
+    assert sm.shared_with(objects[2], objects) == []                               # 自分だけが使うメッシュ
+
+
 STAND_IN = r'''
 import json, shutil, sys
 if "--version" in sys.argv:
@@ -52,6 +62,8 @@ args = sys.argv[sys.argv.index("--") + 1:]
 def value(flag):
     return args[args.index(flag) + 1]
 settings = json.load(open(value("--settings"), encoding="utf-8"))
+if settings["object"] == "linked":                                           # 本物の台本と同じく、分け合うメッシュは止める
+    raise SystemExit("linked のメッシュ linked_mesh を、ほかの物体（linked.001）も使っています")
 shutil.copyfile(value("--blend"), value("--out-blend"))
 moved = 0 if settings["material"] == "none" else 12
 json.dump({"x_settings": settings, "object": settings["object"], "faces": 40, "chosen_faces": moved, "by_color": moved, "by_box_only": 0,
@@ -110,3 +122,8 @@ def test_split_material_rejects_bad_settings(tmp_path, parameters, message):
     with pytest.raises(ToolError, match=message):
         get("model.split_material").function({"blend": tmp_path / "model.blend"}, {"blender": str(blender), **parameters},
                                              {"blend": tmp_path / "o.blend", "report": tmp_path / "r.json"}, Context(tmp_path))
+
+
+def test_split_material_stops_on_a_shared_mesh(tmp_path):
+    result = run(tmp_path, {**FACE, "object": "linked"})
+    assert result["status"] == "failed" and "linked.001" in result["steps"]["face"]["error"]
