@@ -341,3 +341,35 @@ def test_an_overflowing_render_fails_by_default_and_keeps_its_frames(tmp_path):
 def test_an_overflowing_render_only_warns_when_asked(tmp_path):
     result = call(tmp_path, {"shadow": {"overflow": "warn"}}, overflow=True)
     assert result.observations[0]["shadow_overflow"] == {"lines": 2, "worst": [6252, 4096]}
+
+
+# ---- 露出（exposure）と霧（volumetric） ----
+
+def test_exposure_and_fog_default_to_fixed_and_to_the_blend():
+    s = show_render.merged({"volumetric": {"tile_size": 8}})
+    assert s["exposure"] is None and s["volumetric"]["tile_size"] == 8 and s["volumetric"]["samples"] is None
+    assert show_render.DEFAULTS["volumetric"]["tile_size"] is None                # 既定は書き換えない
+
+
+def test_report_values_turn_number_enums_into_numbers():
+    assert show_render.report_value("1024") == 1024 and show_render.report_value(0.30000001192092896) == 0.3
+    assert show_render.report_value(True) is True and show_render.report_value("Standard") == "Standard"
+
+
+@pytest.mark.parametrize("parameters, message", [
+    ({"exposure": "dark"}, "exposure"), ({"exposure": 40}, "exposure"),
+    ({"volumetric": {"tile_size": 3}}, "volumetric.tile_size"), ({"volumetric": {"tile_size": True}}, "volumetric.tile_size"),
+    ({"volumetric": {"samples": 0}}, "samples"), ({"volumetric": {"samples": 300}}, "volumetric.samples"),
+    ({"volumetric": {"shadow_samples": 129}}, "volumetric.shadow_samples"), ({"volumetric": {"end": 0}}, "end"),
+    ({"volumetric": {"start": 5.0, "end": 2.0}}, "volumetric.start"), ({"volumetric": {"shadows": 1}}, "volumetric.shadows"),
+    ({"volumetric": {"density": 1}}, "知らない鍵"),
+])
+def test_bad_exposure_and_fog_settings_are_named(tmp_path, parameters, message):
+    with pytest.raises(ToolError, match=message):
+        call(tmp_path, parameters)
+
+
+def test_the_settings_pass_exposure_and_fog(tmp_path):
+    call(tmp_path, {"exposure": -0.5, "volumetric": {"tile_size": 2, "samples": 40, "end": 25, "shadows": False}})
+    settings = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["settings"]
+    assert settings["exposure"] == -0.5 and settings["volumetric"] == {"tile_size": 2, "samples": 40, "end": 25.0, "shadows": False}

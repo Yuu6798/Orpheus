@@ -25,7 +25,8 @@
   ctx: bpy・scene・unit（scale_length）・settings・track（光の値 {T: {名前: 値}}）・cameras（{T: カメラのコマ}）・state（フックが
   使ってよい辞書）、コマごとに T・f・t（秒）・values（そのコマの光の値）・camera（そのコマのカメラ。position は m）。
 描く設定: EEVEE（samples・raytracing・shadows。影の領域 shadow の pool_size・resolution_scale は、書いたときだけ入れ、描いたときの値を
-報告の eevee に残す。あふれの知らせの数え方は shadow_overflow。数えて止めるのは工程の側）、色の変換は view_transform（既定 Standard。Look・露出・ガンマ・カーブは無し）、
+報告の eevee に残す。あふれの知らせの数え方は shadow_overflow。数えて止めるのは工程の側。霧 volumetric の鍵も、書いたときだけ入れ、
+描いたときの値を eevee に残す）、色の変換は view_transform（既定 Standard。Look・ガンマ・カーブは無し。露出は exposure、省くと 0）、
 PNG の RGB 8 ビット。.blend から引き継ぐと絵をすり替えうる設定（シーケンサー・切り取り・画素の縦横比・多視点・透ける背景・
 表示の装置・出力の色の上書き・マーカーのカメラ）は決まった値にし、違っていたものは報告の render_changes に残す。画像に日時などの
 控えを書かない。描くファイルは frames-dir の f<T>.png。同じ名前のファイルがあっても、いつも描き直す（とばさない）。
@@ -55,12 +56,18 @@ DEFAULTS = {
     # 影の領域: pool_size（MB）と resolution_scale は、省くと .blend の値のまま。overflow は、あふれの知らせ（Shadow buffer full）が
     # Blender の記録にあったときの扱い（fail: 工程を失敗にする／warn: 報告に書くだけ）
     "shadow": {"pool_size": None, "resolution_scale": None, "overflow": "fail"},
+    # 露出（色の変換の Exposure。省くと 0 に決める）と霧（volumetric。書いた鍵だけ入れ、省いた鍵は .blend の値のまま）
+    "exposure": None,
+    "volumetric": {"tile_size": None, "samples": None, "start": None, "end": None, "shadows": None, "shadow_samples": None},
     "cuts": [], "lights": {}, "ambient": None, "world": None, "bloom": None, "expressions": None, "only": None, "links": [],
 }
 CHARACTER = "character"                                  # links で、踊り手（.blend にもとからある、描画に出るメッシュ）を指す名前
 LINK_KEYS = {"lights", "receivers", "exclude", "blockers"}
-SECTIONS = ("camera", "motion_blur", "shadow")
+SECTIONS = ("camera", "motion_blur", "shadow", "volumetric")
 SHADOW_POOL_SIZES = (16, 32, 64, 128, 256, 512, 1024, 1536, 2048)   # scene.eevee.shadow_pool_size の列挙（MB。Blender 5.2.4 で読んだ）
+VOLUMETRIC_TILES = (1, 2, 4, 8, 16)                      # scene.eevee.volumetric_tile_size の列挙（画素。Blender 5.2.4 で読んだ）
+VOLUMETRIC = {"tile_size": "volumetric_tile_size", "samples": "volumetric_samples", "start": "volumetric_start",
+              "end": "volumetric_end", "shadows": "use_volumetric_shadows", "shadow_samples": "volumetric_shadow_samples"}   # 設定の鍵 → EEVEE の属性
 SHADOW_FULL = re.compile(r"Shadow buffer full[^\n]*?\((\d+)\s*/\s*(\d+)\)")
 LIT_MARK, LIT_SCALE, LIT_AMBIENT = "model3d_lit", "model3d_lit_ambient_scale", "model3d_lit_ambient"   # look.lit の印
 RENDER_FIXED = {"use_sequencer": False, "use_border": False, "pixel_aspect_x": 1.0, "pixel_aspect_y": 1.0, "use_multiview": False,
@@ -269,6 +276,15 @@ def apply_links(bpy, links, character):
     return report
 
 
+def report_value(value):
+    """報告に書く Blender の値: 数の列挙（"1024" など）は数に、float は 6 桁に丸める。ほかはそのまま。"""
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    if isinstance(value, float):
+        return round(value, 6)
+    return value
+
+
 def shadow_overflow(text):
     """Blender の記録の文から、影の領域のあふれの知らせ（EEVEE の `Shadow buffer full, … (必要 / 上限)`）を数える。
     → {"lines": 行の数, "worst": [必要, 上限]（必要がいちばん大きい行。無ければ None）}。記録は Blender の終わったあとに標準出力・
@@ -351,6 +367,8 @@ def main(argv=None):
     render_changes["view"] = face_sheet.setting_changes({name: getattr(sc.view_settings, name) for name in VIEW_FIXED}, VIEW_FIXED)
     for name, (_, value) in render_changes["view"].items():
         setattr(sc.view_settings, name, value)
+    if settings["exposure"] is not None:                 # 露出だけは設定にする（Look・ガンマ・カーブは決め打ちのまま）
+        sc.view_settings.exposure = float(settings["exposure"])
     render_changes["marker_cameras"] = [marker.name for marker in sc.timeline_markers if marker.camera is not None]
     for marker in sc.timeline_markers:                   # マーカーに結んだカメラは、描くときにカメラを差し替える
         marker.camera = None
@@ -365,6 +383,10 @@ def main(argv=None):
         sc.eevee.shadow_pool_size = str(int(shadow["pool_size"]))
     if shadow["resolution_scale"] is not None:           # 影の細かさ（1 で既定。画面を 2 倍にしたら 0.5 倍で、下書きと同じ影）
         sc.eevee.shadow_resolution_scale = float(shadow["resolution_scale"])
+    for key, name in VOLUMETRIC.items():                  # 霧（ボリューム）の細かさ・標本・奥行き・影。升は画素の数
+        value = settings["volumetric"][key]
+        if value is not None:
+            setattr(sc.eevee, name, str(int(value)) if key == "tile_size" else value)
     blur = settings["motion_blur"]
     sc.render.motion_blur_shutter = blur["shutter"] if blur["shutter"] > 0 else 0.5
     sc.render.motion_blur_position = "START"             # コマ T の絵は、T から T + 開きまで（次のカットの姿を混ぜない）
@@ -537,8 +559,10 @@ def main(argv=None):
                          "dof_frames": len(dof_frames)},
               "motion_blur": {"shutter": blur["shutter"], "steps": blur["steps"], "position": "START", "frames": len(blurred),
                               "off": sorted(T for T in off if T in {p for p, _ in plan})},
-              "eevee": {"shadow_pool_size": int(sc.eevee.shadow_pool_size),
-                        "shadow_resolution_scale": round(float(sc.eevee.shadow_resolution_scale), 6)},
+              "eevee": {name: report_value(getattr(sc.eevee, name))
+                        for name in ("shadow_pool_size", "shadow_resolution_scale", *VOLUMETRIC.values())},
+              "view": {"view_transform": sc.view_settings.view_transform, "look": sc.view_settings.look,
+                       "exposure": round(float(sc.view_settings.exposure), 6)},
               "lights": sorted(settings["lights"]), "lit_materials": len(lit), "links": links,
               "character": [o.name for o in character],
               "hooks": {"path": os.path.abspath(a.hooks), "sha256": hooks_sha} if a.hooks else None,

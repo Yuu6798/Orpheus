@@ -4162,7 +4162,10 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 - `ctx`: `bpy`・`scene`・`unit`（`scale_length`）・`settings`・`track`（光の値 `{T: {名前: 値}}`）・`cameras`（`{T: カメラのコマ}`）・`state`（フックが使ってよい辞書）。`frame` では `T`・`f`・`t`（秒）・`values`（そのコマの光の値）・`camera`（そのコマのカメラ。`position` は m）も。
 - どちらの関数も省ける。`lights` の光の物体は、フックが作ってもよい（`build` の後で確かめる）。
 
-**描く設定**: EEVEE（`samples` 既定 64・`raytracing`・`shadows`）、色の変換は `view_transform`（既定 Standard。Look・露出・ガンマ・カーブは無し）、PNG の RGB 8 ビット、`resolution` 既定 1080×1920。
+**描く設定**: EEVEE（`samples` 既定 64・`raytracing`・`shadows`）、色の変換は `view_transform`（既定 Standard。Look・ガンマ・カーブは無し）、PNG の RGB 8 ビット、`resolution` 既定 1080×1920。
+- 露出（`exposure`。段。−32〜32）: 色の変換の Exposure。省くと 0 に決める（前と同じ）。Look・ガンマ・カーブは決め打ちのまま、露出だけを設定にした（フックで入れ直すと効くが、報告に残らなかった）。描いたときの値を報告の `view` に残す。
+- 霧（`volumetric`）: `tile_size`（升の大きさ。画素。1・2・4・8・16）・`samples`（1〜256）・`start`・`end`（m ではなくシーンの単位の奥行き。0 より大きく、start < end）・`shadows`（霧の中の影）・`shadow_samples`（1〜128）。書いた鍵だけシーンに入れ、省いた鍵は .blend の値のまま。描いたときの値を報告の `eevee` に残す。霧の場面（ボリュームの材質）が無ければ、絵は変わらない。
+  - 霧の升は画素の数なので、画面を 2 倍の大きさにしたら升も 2 倍にすると、同じ細かさのままで、時間が増えにくい（4 作目の 3D のダンスで、1080×1920 の升 8 が、540×960 の升 4 と同じ細かさ。1080×1920 で升 4 → 8 にすると、1 コマ 28.2 → 21.9 秒）。
 - 影の領域（`shadow`）: `pool_size`（影の領域の大きさ。MB。16・32・64・128・256・512・1024・1536・2048 のどれか。Blender 5.2.4 の列挙）と `resolution_scale`（影の細かさ。0 より大きく 1 以下）。書いたときだけシーンに入れ（省くと .blend の値のまま。新しいシーンの既定は 512 MB・1.0）、描いたときの値を報告の `eevee` に残す。
 - 影の領域のあふれ: EEVEE は、影の領域に入りきらないと、記録に `Shadow buffer full, may result in missing shadows and lower performance. (必要 / 上限)` と書き、そのまま描き続ける（あふれたコマは、描くたびに影が変わる）。描き終えたあと、Blender の記録（工程のフォルダの `blender.log`）からこの行を数え、報告の `shadow_overflow`（行の数・必要がいちばん大きい行の「必要 / 上限」・扱い）と観測に残す。
   - `shadow.overflow`: `"fail"`（既定）なら、1 行でもあれば工程を失敗にする。失敗の文に、行の数・「必要 / 上限」・直し方・描いたコマの場所を書く（コマとその一覧 `frames` は残る）。`"warn"` なら、報告と観測に書くだけで通す。
