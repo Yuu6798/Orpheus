@@ -278,6 +278,14 @@ def apply_links(bpy, links, character):
     return report
 
 
+def read_hook_config(path):
+    """フックの値のファイル → (中身, sha256)。BOM つきの UTF-8 も読む（工程の側の read_json と同じ。sha256 はもとのバイト）。"""
+    import hashlib
+    with open(path, "rb") as stream:
+        raw = stream.read()
+    return json.loads(raw.decode("utf-8-sig")), hashlib.sha256(raw).hexdigest()
+
+
 def report_value(value):
     """報告に書く Blender の値: 数の列挙（"1024" など）は数に、float は 6 桁に丸める。ほかはそのまま。"""
     if isinstance(value, str) and value.isdigit():
@@ -407,10 +415,7 @@ def main(argv=None):
     hooks, hooks_sha, config, config_sha = None, None, {}, None
     import hashlib
     if a.hook_config:                                    # フックの値（作品ごとの値）。レシピの入力なので sha256 が実行の記録にも残る
-        with open(a.hook_config, "rb") as stream:
-            raw = stream.read()
-        config_sha = hashlib.sha256(raw).hexdigest()
-        config = json.loads(raw.decode("utf-8"))
+        config, config_sha = read_hook_config(a.hook_config)
     ctx = Context(bpy=bpy, scene=sc, unit=unit, settings=settings, track=track, cameras=cameras, config=config)
     if a.hooks:
         with open(a.hooks, "rb") as stream:

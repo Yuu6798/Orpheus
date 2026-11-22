@@ -405,3 +405,14 @@ def test_a_hook_config_needs_hooks_and_a_dictionary(tmp_path):
     with pytest.raises(ToolError, match="辞書"):
         call(tmp_path, {}, inputs={"blend": tmp_path / "show.blend", "cameras": tmp_path / "cameras.json", "hooks": tmp_path / "stage.py",
                                     "hook_config": tmp_path / "list.json"})
+
+
+def test_the_blender_side_reads_a_hook_config_with_a_bom(tmp_path):
+    """工程の側（read_json）は BOM つきの JSON を読むので、Blender の側も同じに読む（BOM で止まると、確かめを通った値で描く前に落ちる）。"""
+    import codecs
+    import hashlib
+    from model3d.io import read_json
+    raw = codecs.BOM_UTF8 + json.dumps({"glow": 2.0}).encode("utf-8")
+    (tmp_path / "values.json").write_bytes(raw)
+    assert read_json(tmp_path / "values.json") == {"glow": 2.0}
+    assert show_render.read_hook_config(tmp_path / "values.json") == ({"glow": 2.0}, hashlib.sha256(raw).hexdigest())
