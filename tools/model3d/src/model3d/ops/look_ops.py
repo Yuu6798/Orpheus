@@ -214,9 +214,10 @@ def toon_look(inputs, parameters, outputs, context):
 
 
 LIT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "lit_look.py"
-LIT_PARAMETERS = {"blender", "meshes", "soft", "texture", "lit", "soft_lit", "extra", "floor", "ambient", "timeout"}
+LIT_PARAMETERS = {"blender", "meshes", "soft", "texture", "lit", "soft_lit", "extra", "floor", "ambient", "rim", "timeout"}
 LIT_SHADE_KEYS = {"band", "gain", "ambient"}
 EXTRA_KEYS = {"from", "to"}
+RIM_KEYS = {"left", "right", "edge", "gain", "amount", "materials", "side", "down", "blend"}
 
 
 def _pair(value, key, increasing=True):
@@ -227,6 +228,41 @@ def _pair(value, key, increasing=True):
     if increasing and not value[0] < value[1]:
         raise ToolError(f"{key} は下を上より小さくしてください: {value!r}")
     return [float(x) for x in value]
+
+
+def _material_numbers(value, key):
+    """元の材質の名前 → 0 以上の数。"""
+    if not isinstance(value, dict) or not all(isinstance(n, str) and n for n in value):
+        raise ToolError(f"{key} は {{元の材質の名前: 数}} にしてください: {value!r}")
+    out = {}
+    for name, amount in value.items():
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount != amount or amount in (float("inf"), float("-inf")) \
+                or amount < 0:
+            raise ToolError(f"{key} の {name!r} は 0 以上の数にしてください: {amount!r}")
+        out[name] = float(amount)
+    return out
+
+
+def _rim_settings(parameters):
+    """縁の光（rim）の設定。left・right・edge は必ず書く。省いた鍵は書かない（Blender の側の既定 RIM_DEFAULTS で埋める）。"""
+    rim = _section(parameters, "rim", RIM_KEYS)
+    missing = sorted({"left", "right", "edge"} - set(rim))
+    if missing:
+        raise ToolError(f"rim には {', '.join(missing)} が要ります（left・right は縁の色 [R, G, B]、edge は面が横を向く度合いの段 [下, 上]）")
+    out = {"left": [float(v) for v in _vector(rim["left"], "rim.left", lower=0)],
+           "right": [float(v) for v in _vector(rim["right"], "rim.right", lower=0)],
+           "edge": _pair(rim["edge"], "rim.edge")}
+    for key in ("gain", "amount"):
+        if key in rim:
+            out[key] = float(number(rim, key, minimum=0))
+    if "materials" in rim:
+        out["materials"] = _material_numbers(rim["materials"], "rim.materials")
+    for key in ("side", "down"):
+        if key in rim:
+            out[key] = _pair(rim[key], f"rim.{key}")
+    if "blend" in rim:
+        out["blend"] = _unit(rim, "blend", "rim.blend")
+    return out
 
 
 def _lit_settings(parameters):
@@ -265,6 +301,8 @@ def _lit_settings(parameters):
         out["floor"] = float(number(parameters, "floor", minimum=0, exclusive=True))
     if "ambient" in parameters:
         out["ambient"] = _vector(parameters["ambient"], "ambient", lower=0)
+    if "rim" in parameters:
+        out["rim"] = _rim_settings(parameters)
     return out
 
 
@@ -273,7 +311,9 @@ def _lit_settings(parameters):
                   "絵の色 ×（まわりの明るさ ＋ 光の当たり具合を 2 段に分けたもの × 光の色あい）を Emission で出す。光の当たり具合と"
                   "色あいは、白い Diffuse BSDF を Shader to RGB で読む（EEVEE でだけ働く）。元の材質は書き換えず、材質ごと新しく作って"
                   "枠に入れる。soft の材質（顔など）は段をやわらかく、まわりの明るさを多めに。まわりの明るさは、材質ごとの RGB ノード "
-                  "model3d_lit_ambient に、描く工程（render.show）がコマごとに入れる。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
+                  "model3d_lit_ambient に、描く工程（render.show）がコマごとに入れる。rim を書くと縁の光（面が横を向く所に、カメラから見て"
+                  "左と右で色を分けた光。真下を向く縁は弱める。材質ごとの割合）を足す。縁の光の色と強さは、全部の材質が見る 1 つの"
+                  "ノードグループ model3d_lit_rim にあり、コマごとに書き換えられる。Blender は外部の実行ファイルなので再利用しない（毎回実行）")
 def lit_look(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
     from ..io import read_json
@@ -300,4 +340,6 @@ def lit_look(inputs, parameters, outputs, context):
                    "materials": len(materials), "soft_materials": sum(1 for m in materials if m.get("soft")),
                    "object_slots": len(report.get("object_slots") or []),
                    "without_material": len(report.get("without_material") or [])}
+    if report.get("rim") is not None:
+        observation["rim_materials"] = report["rim"].get("materials")
     return StepResult(observations=[observation])
