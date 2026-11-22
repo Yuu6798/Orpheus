@@ -13,6 +13,8 @@ numpy だけを使う（render.show のフックが Blender の中で `import fx
 - `forks`: 枝の数。`fork_length`: 枝の長さの範囲（根もとと先の距離に対する割合 [下, 上]。forks が 0 なら要らない）。
 - `seed`: 種（整数）。`grow`・`hold`・`fade`: 伸びる・光る・消える秒。`every`: 細かい折れを替えるコマの数（既定 1）。
 - `halo`: にじみの帯の幅の倍率（省くと、にじみを作らない）。`gain`: 強さの倍率（既定 1）。
+- `branch_start`: 枝と孫の枝が出はじめる所の決め方。`index`（既定。台本と同じ。出どころの折れ目の番号の割合）か `length`（親の線の
+  道のりの割合。伸びる線の先端が出どころに届いたコマから出る）。
 - `light`: 光の強さ（W。省くと光を出さない）。`light_at`: 光を置く所（根もとからの割合）。`colour`: 光の色。
 - `when`: そのコマだけに出す値の名前（fx_events.Table.gated）。
 
@@ -71,8 +73,18 @@ def displace(points, rng, jag, levels, min_segment=FORM["min_segment"]):
     return points
 
 
-def strands(a, b, seed, tick, jag, levels, forks, width, fork_length=None):
-    """束の線の並び [{"points", "width", "taper", "start"}, …]。start は、幹の道のりのどこで枝が出るか（0〜1）。"""
+def _fraction(points, index):
+    """折れ線の、根もとから点 index までの道のりの割合（0〜1）。"""
+    total = fx_strips.path_length(points)
+    return fx_strips.path_length(points[:index + 1]) / total if total > 0.0 else 0.0
+
+
+def strands(a, b, seed, tick, jag, levels, forks, width, fork_length=None, branch_start="index"):
+    """束の線の並び [{"points", "width", "taper", "start"}, …]。start は、親の線の届く割合がいくつになったら出るか（0〜1）。
+    branch_start が "index"（既定。台本と同じ）なら、出どころの折れ目の番号の割合。"length" なら、描く親の線の道のりの割合で、
+    伸びる線の先端が出どころに届いたコマから出る（折れ目の間の長さはそろわないので、"index" では、先端の手前か通りすぎた所で出る）。"""
+    if branch_start not in ("index", "length"):
+        raise fx_events.EventError(f"branch_start は index か length にしてください: {branch_start!r}")
     f = FORM
     coarse, fine = levels
     shape, detail = fx_events.rng(seed, 1), fx_events.rng(seed, 2, tick)
@@ -87,17 +99,20 @@ def strands(a, b, seed, tick, jag, levels, forks, width, fork_length=None):
         side = fx_strips.unit(side * math.cos(shape.uniform(0, 6.283)) + np.cross(along, side) * math.sin(shape.uniform(0, 6.283)))
         angle = shape.uniform(*f["fork_angle"])
         length = max(f["fork_min"], span * shape.uniform(*fork_length) * (1.0 - f["fork_shorten"] * i / len(main)))
-        roots.append((i / (len(main) - 1), main[i], main[i] + (along * math.cos(angle) + side * math.sin(angle)) * length, k))
-    out = [{"points": displace(main, detail, jag * f["detail"], fine), "width": width, "taper": f["taper"][0], "start": 0.0}]
-    for start, base, end, k in roots:
+        roots.append((i, main[i], main[i] + (along * math.cos(angle) + side * math.sin(angle)) * length, k))
+    trunk = displace(main, detail, jag * f["detail"], fine)              # 幹の折れ目 i は、細かく折った幹の i × 2^fine 番目の点
+    out = [{"points": trunk, "width": width, "taper": f["taper"][0], "start": 0.0}]
+    for i, base, end, k in roots:
+        start = i / (len(main) - 1) if branch_start == "index" else _fraction(trunk, i * 2 ** fine)
         points = displace(displace([base, end], fx_events.rng(seed, 3, k), jag * f["fork_jag"], 2), detail, jag * f["detail"], 1)
         out.append({"points": points, "width": width * f["fork_width"], "taper": f["taper"][1], "start": start})
         if shape.random() < f["twig_chance"] and len(points) > 3:            # 孫の枝
             j = len(points) // 2
             reach = points[-1] - points[j]
             tip = points[j] + fx_strips.unit(np.cross(reach, UP)) * float(np.linalg.norm(reach)) * 0.5 + reach * 0.5
+            middle = 0.5 if branch_start == "index" else _fraction(points, j)
             out.append({"points": displace([points[j], tip], fx_events.rng(seed, 4, k), jag, 2), "width": width * f["twig_width"],
-                        "taper": f["taper"][2], "start": start + (1 - start) * 0.5})
+                        "taper": f["taper"][2], "start": start + (1 - start) * middle})
     return out
 
 
@@ -155,7 +170,7 @@ def draw(table, event, f, camera, core, halo=None, gain=1.0, values=None):
     forks = _whole(fx_events.need(event, "forks"), "forks")
     lines = strands(a, b, fx_events.need(event, "seed"), table.tick(f, event.get("every", 1)), float(fx_events.need(event, "jag")),
                     _levels(event, forks), forks, float(fx_events.need(event, "width")),
-                    tuple(fx_events.need(event, "fork_length")) if forks else None)
+                    tuple(fx_events.need(event, "fork_length")) if forks else None, event.get("branch_start", "index"))
     wide = event.get("halo")
     for line in lines:
         if reach <= line["start"]:
