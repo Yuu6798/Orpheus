@@ -80,3 +80,13 @@ def test_shooting_straight_up_still_has_a_ring_and_wraps():
 def test_bad_events_stop(change, message):
     with pytest.raises(EventError, match=message):
         _shot(31, event={**SHOT, **change})
+
+
+def test_stage_boundaries_are_compared_in_frames():
+    """秒で書いた出来事とコマで書いた出来事は、同じコマで同じ段になる（秒の小数の丸めで、撃つ段の最後のコマが余韻にならない）。"""
+    by_seconds = {k: v for k, v in SHOT.items() if k != "frame"} | {"t": 0.7}
+    by_frame = dict(SHOT, frame=22)                                       # t 0.7 秒 = コマ 22（frame0 1・30 fps）
+    assert (28 - 1) / 30 - 0.7 > 0.2                                      # 秒のままでは、撃つ段の終わり（0.2 秒）より後ろ
+    for event in (by_seconds, by_frame):
+        assert _shot(28, event=event)[1]["core"] > 0                      # どちらも撃つ段の最後のコマ
+        assert _shot(29, event=event)[1]["core"] == 0                     # 次のコマから余韻

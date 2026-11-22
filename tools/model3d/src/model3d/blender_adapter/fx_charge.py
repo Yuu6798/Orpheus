@@ -95,7 +95,7 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
         if layer is not None:
             getattr(layer, method)(*args, **kwargs)
 
-    if age < 0.0:                                                         # 溜め
+    if age * table.fps < -fx_events.EPS:                                  # 溜め（段の境はコマの番号で比べる。秒の小数の丸めで 1 コマずれない）
         k = 1.0 + age / charge
         if soft:
             size = (F["orb_charge"][0] + F["orb_charge"][1] * k * k) * s * (0.85 + 0.3 * rng.random())
@@ -115,7 +115,7 @@ def draw(table, event, f, camera, layers, gain=1.0, mono=0.0):
             add(motes, "strip", [tip + d * (dist + (lead + back * (1.0 - frac)) * s), tip + d * dist],
                 [F["mote_width"][0] * s, F["mote_width"][1] * s], [gain * 0.3 * k, gain * 1.2 * k * frac])
         return [(gain * power * 0.25 * k * (0.7 + 0.3 * rng.random()), tip + view * (F["glow_ahead"][0] * s), c_charge)]
-    if age <= hold:                                                       # 撃つ
+    if age * table.fps <= hold * table.fps + fx_events.EPS:               # 撃つ
         k = age / hold
         length = float(fx_events.need(event, "length"))
         width = float(fx_events.need(event, "width")) * (1.0 - 0.45 * k) * (0.75 + 0.5 * rng.random())
