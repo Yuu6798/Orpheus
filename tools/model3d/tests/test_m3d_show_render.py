@@ -109,6 +109,9 @@ os.makedirs(frames_dir, exist_ok=True)
 planned = [{"T": fr["T"], "f": fr.get("f", fr["T"])} for fr in cameras["frames"] if not settings.get("only") or fr["T"] in settings["only"]]
 for item in planned:
     png(os.path.join(frames_dir, "f%04d.png" % item["T"]))
+if open(value("--blend"), "rb").read() == b"overflow":   # 影の領域があふれた場面のまね（EEVEE は標準エラーに書き、描くのは続ける）
+    for need in (3494, 6252):
+        sys.stderr.write("Error: Shadow buffer full, may result in missing shadows and lower performance. (%d / 4096)\n" % need)
 json.dump({"schema_version": "model3d-show-render/0.1", "planned": planned, "rendered": [p["T"] for p in planned], "fps": 30,
            "resolution": [2, 2], "camera": {"held": [2]}, "motion_blur": {"frames": len(planned)}, "argv": args, "settings": settings},
           open(value("--report"), "w"))
@@ -166,9 +169,9 @@ class Context:
         self.recipe_dir = step_dir
 
 
-def call(tmp_path, parameters, inputs=None, outputs=None):
+def call(tmp_path, parameters, inputs=None, outputs=None, overflow=False):
     from model3d.ops import get
-    (tmp_path / "show.blend").write_bytes(b"lit")
+    (tmp_path / "show.blend").write_bytes(b"overflow" if overflow else b"lit")   # overflow: 代役が影の領域のあふれを記録に書く
     atomic_json(tmp_path / "cameras.json", _cameras())
     atomic_json(tmp_path / "lights.json", _track())
     given = {"blend": tmp_path / "show.blend", "cameras": tmp_path / "cameras.json"} if inputs is None else inputs
@@ -289,3 +292,52 @@ def test_the_operation_checks_and_passes_the_links(tmp_path):
     report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
     assert report["settings"]["links"] == links
 
+
+
+# ---- 影の領域（shadow）とあふれの知らせ ----
+
+FULL = "Error: Shadow buffer full, may result in missing shadows and lower performance. ({} / {})"
+
+
+def test_shadow_overflow_counts_the_lines_and_keeps_the_largest_need():
+    assert show_render.shadow_overflow("") == {"lines": 0, "worst": None}
+    assert show_render.shadow_overflow("T 1 f 1 2.0s\nT 2 f 2 4.1s\n") == {"lines": 0, "worst": None}
+    text = "\n".join(["T 1 f 1 2.0s", FULL.format(3494, 2048), FULL.format(6252, 4096), FULL.format(4100, 4096), "Error: Shadow buffer full"])
+    assert show_render.shadow_overflow(text) == {"lines": 4, "worst": [6252, 4096]}   # 数の無い行も 1 行に数える
+
+
+def test_shadow_settings_default_to_the_blend_and_to_failing():
+    s = show_render.merged({"shadow": {"resolution_scale": 0.5}})
+    assert s["shadow"] == {"pool_size": None, "resolution_scale": 0.5, "overflow": "fail"}
+    assert show_render.merged({})["shadow"] == {"pool_size": None, "resolution_scale": None, "overflow": "fail"}
+
+
+@pytest.mark.parametrize("shadow, message", [
+    ({"pool_size": 1000}, "shadow.pool_size"), ({"pool_size": "1024"}, "shadow.pool_size"), ({"pool_size": True}, "shadow.pool_size"),
+    ({"resolution_scale": 0}, "resolution_scale"), ({"resolution_scale": 1.5}, "resolution_scale"),
+    ({"overflow": "ignore"}, "shadow.overflow"), ({"tiles": 4}, "知らない鍵"),
+])
+def test_bad_shadow_settings_are_named(tmp_path, shadow, message):
+    with pytest.raises(ToolError, match=message):
+        call(tmp_path, {"shadow": shadow})
+
+
+def test_the_settings_pass_the_shadow_section(tmp_path):
+    call(tmp_path, {"shadow": {"pool_size": 1024, "resolution_scale": 0.5, "overflow": "warn"}})
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert report["settings"]["shadow"] == {"pool_size": 1024, "resolution_scale": 0.5, "overflow": "warn"}
+    assert report["shadow_overflow"] == {"lines": 0, "worst": None, "action": "warn"}
+
+
+def test_an_overflowing_render_fails_by_default_and_keeps_its_frames(tmp_path):
+    with pytest.raises(ToolError, match=r"Shadow buffer full）が 2 行.*6252 / 4096.*shadow.overflow"):
+        call(tmp_path, {}, overflow=True)
+    frames = contracts.load("frames", tmp_path / "frames.json")                    # 描いたコマの一覧は、失敗でも残す
+    assert [fr["T"] for fr in frames["frames"]] == [1, 2, 3]
+    report = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+    assert report["shadow_overflow"] == {"lines": 2, "worst": [6252, 4096], "action": "fail"}
+
+
+def test_an_overflowing_render_only_warns_when_asked(tmp_path):
+    result = call(tmp_path, {"shadow": {"overflow": "warn"}}, overflow=True)
+    assert result.observations[0]["shadow_overflow"] == {"lines": 2, "worst": [6252, 4096]}
