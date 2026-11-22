@@ -17,9 +17,10 @@ OVERHANG = 1 / 240          # 折れ線の左右の端を、画面の外へ出�
 
 
 def jagged(width, height, left, right, seed, steps, jag, jag_x, reference):
-    """境の折れ線の点（画素。整数へ切り捨て）。left・right は左右の端の高さ、jag は折れの上下の量（折れごとに上下が入れ替わり、
-    大きさは jag × 0.5〜1 の乱数）、jag_x は横の揺れ。どれも基準の高さ reference での数。乱数は random.Random(seed) で、
-    折れごとに 上下の量 → 上下の割合 → 横の揺れ の順に引く（台本と同じ。jag_x が 0 でも引く）。"""
+    """境の折れ線の点（画素。整数へ切り捨て）。left・right は左右の端の高さ、jag は折れの上下の量の上限（ずれ = −jag〜jag の乱数
+    × 0.5〜1 の乱数 × 折れごとに入れ替わる ±1。最初の乱数の符号も乱数なので、上下の向きは交互にならず、大きさは 0〜jag）、jag_x は
+    横の揺れ（−jag_x〜jag_x の乱数）。どれも基準の高さ reference での数。乱数は random.Random(seed) で、折れごとに 上下の量 →
+    上下の割合 → 横の揺れ の順に引く（台本と同じ式。jag_x が 0 でも引く）。"""
     s = height / reference
     o = reference * OVERHANG
     rng = random.Random(seed)

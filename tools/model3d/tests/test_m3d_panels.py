@@ -281,3 +281,26 @@ def test_frames_of_different_sizes_and_transparent_frames_are_refused(tmp_path):
     Image.new("RGBA", (48, 96), (0, 0, 0, 0)).save(tmp_path / "b" / "f0006.png")
     with pytest.raises(ToolError, match="透けた"):
         call(tmp_path, _parameters(out_dir="out2", panels=[TWO]))
+
+
+def test_copied_frames_are_checked_for_transparency_and_size_too(tmp_path):
+    from PIL import Image
+    _scene(tmp_path)
+    Image.new("RGBA", (48, 96), (0, 0, 0, 0)).save(tmp_path / "main" / "f0008.png")            # 区間の外のコマ
+    with pytest.raises(ToolError, match="透けた"):
+        call(tmp_path, _parameters(out_dir="out"))
+    Image.new("RGB", (40, 80), RED).save(tmp_path / "main" / "f0008.png")
+    with pytest.raises(ToolError, match="大きさ"):
+        call(tmp_path, _parameters(out_dir="out2"))
+    _solid(tmp_path / "main", [8], RED)
+    (tmp_path / "b" / "f0004.png").unlink()                                                   # b の無い T 4 は写すだけ
+    Image.new("RGBA", (48, 96), (0, 0, 0, 0)).save(tmp_path / "main" / "f0004.png")
+    with pytest.raises(ToolError, match="透けた"):
+        call(tmp_path, _parameters(out_dir="out3"))
+
+
+def test_the_line_is_thick_on_the_first_frame_that_is_really_split(tmp_path):
+    _scene(tmp_path, b_frames=[4, 5, 6, 7])                                                   # 区間の頭の T 3 は b が無くてとばす
+    _result, _step, _out, _listing, report = _run(tmp_path, _parameters(line=LINE))
+    assert report["panels"][0]["split"] == [4, 5] and report["skipped"][0]["T"] == 3
+    assert [(row["T"], row["fresh"]) for row in report["fresh"]] == [(4, 1.0), (5, 0.5), (6, 1.0), (7, 0.5)]

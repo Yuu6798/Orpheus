@@ -150,15 +150,29 @@ def other_frames(inputs, parameters, context, name, operation):
     return None, None
 
 
-def read_rgb(path, T, operation):
-    """コマを uint8 の RGB（高さ × 幅 × 3）で読む。透けた画素のあるコマは止める（書くコマは RGB なので透けが消える）。"""
+def _refuse(image, path, T, operation, size, what="コマ"):
+    """透けた画素のあるコマと、大きさの違うコマは止める（書くコマは RGB なので透けが消える。写すだけのコマも同じ）。"""
+    if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
+        if image.convert("RGBA").getchannel("A").getextrema()[0] < 255:
+            raise ToolError(f"{operation}: {what}に透けた画素があります（T {T}: {path}）。透けは残せないので、先に土台へ重ねてから掛けてください")
+    if size is not None and image.size != tuple(size):
+        raise ToolError(f"{operation}: {what}の大きさがそろっていません（T {T}: {image.size[0]}×{image.size[1]}、最初のコマ: {size[0]}×{size[1]}）")
+
+
+def read_rgb(path, T, operation, size=None, what="コマ"):
+    """コマを uint8 の RGB（高さ × 幅 × 3）で読む。透けた画素のあるコマと、size（幅, 高さ）と違うコマは止める。"""
     import numpy as np
     from PIL import Image
     with Image.open(path) as image:
-        if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
-            if image.convert("RGBA").getchannel("A").getextrema()[0] < 255:
-                raise ToolError(f"{operation}: コマに透けた画素があります（T {T}: {path}）。透けは残せないので、先に土台へ重ねてから掛けてください")
+        _refuse(image, path, T, operation, size, what)
         return np.asarray(image.convert("RGB"))
+
+
+def check_copy(path, T, operation, size):
+    """そのまま写すコマも、読むコマと同じく、透けと大きさを確かめる。"""
+    from PIL import Image
+    with Image.open(path) as image:
+        _refuse(image, path, T, operation, size)
 
 
 def checked(path, expected, T, what):
@@ -265,25 +279,21 @@ def render_panels(inputs, parameters, outputs, context):
             needed = sorted({b["source"] for b in panel["bands"]} - {"main"})
             absent = [name for name in needed if T not in others[name] or not others[name][T][0].is_file()]
         if i is None or absent:                       # 区間の外か、別のカメラのコマが無い T は、そのまま写す
+            check_copy(source, T, operation, (W, H))
             shutil.copyfile(source, target)
             listing.append({"T": T, "f": f, "file": target.name, "sha256": h, "bytes": target.stat().st_size})
             if absent:
                 skipped.append({"T": T, "panel": i, "missing": absent})
             continue
-        images = {"main": read_rgb(source, T, operation)}
-        if images["main"].shape[:2] != (H, W):
-            raise ToolError(f"{operation}: コマの大きさがそろっていません（T {T}: {images['main'].shape[1]}×{images['main'].shape[0]}、"
-                            f"最初のコマ: {W}×{H}）")
+        images = {"main": read_rgb(source, T, operation, (W, H))}
         for name in needed:
             path, listed = others[name][T]
             checked(path, listed, T, f"{name} のカメラのコマ")
-            images[name] = read_rgb(path, T, operation)
-            if images[name].shape[:2] != (H, W):
-                raise ToolError(f"{operation}: {name} のカメラのコマの大きさが、主のコマと違います（T {T}: "
-                                f"{images[name].shape[1]}×{images[name].shape[0]}、主のコマ: {W}×{H}）")
+            images[name] = read_rgb(path, T, operation, (W, H), f"{name} のカメラのコマ")
         picture = P.compose([images[b["source"]] for b in panel["bands"]], [b["shift"] * s for b in panel["bands"]], panel["lines"])
         if line is not None:
-            fresh = max(0.0, 1.0 - (T - panel["range"][0]) / line["settle"])
+            start = split[i][0] if split[i] else T     # 割れた最初のコマから数える（区間の頭の T をとばしても、最初に割れたコマで太い）
+            fresh = max(0.0, 1.0 - (T - start) / line["settle"])
             px = at_fresh(line, fresh, s)
             picture = P.gutter(picture, panel["lines"], line["glow_color"], px["glow_width"], px["glow_sigma"], px["glow_gain"],
                                line["core_color"], px["core_width"])
