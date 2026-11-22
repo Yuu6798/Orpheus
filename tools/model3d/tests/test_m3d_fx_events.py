@@ -32,13 +32,13 @@ def test_start_is_compared_in_frames():
 
 
 def test_seconds_rounded_after_a_frame_head_start_one_frame_late_and_are_noted():
-    """frame 885 の秒 29.4666… を 29.467 と書くと、コマ 885 ではまだ始まっていない（台本で 1 コマだけの出来事が出なかった）。"""
-    table = Table({"fps": 30, "frame0": 1, "events": [{"t": 29.467}, {"frame": 885}, {"t": 3.17}]})
-    rounded = next(e for e in table.events if e.get("t") == 29.467)
+    """コマ 72 の秒 2.3666… を 2.367 と書くと、コマ 72 ではまだ始まっていない（秒を丸めると、1 コマだけの出来事が出ないことがある）。"""
+    table = Table({"fps": 30, "frame0": 1, "events": [{"t": 2.367}, {"frame": 72}, {"t": 1.27}]})
+    rounded = next(e for e in table.events if e.get("t") == 2.367)
     frame = next(e for e in table.events if "frame" in e)
-    assert not table.within(rounded, 885, 0.0, 0.07) and table.within(rounded, 886, 0.0, 0.07)
-    assert table.within(frame, 885, 0.0, 0.07)
-    assert len(table.notes) == 1 and "29.467" in table.notes[0] and "885" in table.notes[0]   # 3.17 秒（0.1 コマ後）は書かない
+    assert not table.within(rounded, 72, 0.0, 0.07) and table.within(rounded, 73, 0.0, 0.07)
+    assert table.within(frame, 72, 0.0, 0.07)
+    assert len(table.notes) == 1 and "2.367" in table.notes[0] and "72" in table.notes[0]   # 1.27 秒（0.1 コマ後）は書かない
 
 
 def test_tick_and_gate():
@@ -87,3 +87,7 @@ def test_bad_points_stop():
         Table({"fps": 30, "events": []}).point({"point": "hand"}, 1)
     with pytest.raises(EventError, match="分かりません"):
         table.point({"where": 1}, 1)
+    camera = {"matrix": np.eye(4).tolist(), "position": [0, 0, 0]}
+    for spec in ({"camera": [0.5, 0.2]}, {"camera": "0, 0, 1"}, {"point": "hand", "offset": [0, 1]}):
+        with pytest.raises(EventError, match="3 つの数"):
+            table.point(spec, 1, camera)

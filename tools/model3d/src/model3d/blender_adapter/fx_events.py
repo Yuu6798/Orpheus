@@ -60,6 +60,12 @@ def _number(value, where):
     return float(value)
 
 
+def _triple(value, where):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise EventError(f"{where} は 3 つの数にしてください: {value!r}")
+    return [_number(v, where) for v in value]
+
+
 class Path:
     """骨の通り道の点を、動きのコマの番号で読む（いちばん近い標本。ならさない）。"""
 
@@ -155,7 +161,7 @@ class Table:
             if camera is None:
                 raise EventError(f"カメラから見た点を読むには、そのコマのカメラが要ります: {spec!r}")
             m = np.asarray(camera["matrix"], float)
-            r, u, forward = (_number(v, "camera の点") for v in spec["camera"])
+            r, u, forward = _triple(spec["camera"], "camera の点")
             return np.asarray(camera["position"], float) + m[:3, 0] * r + m[:3, 1] * u - m[:3, 2] * forward
         if "point" in spec:
             if self.path is None:
@@ -164,7 +170,7 @@ class Table:
                 raise EventError(f"骨の点のいつは frame か t のどちらか 1 つにしてください: {spec!r}")
             at = (_number(spec["frame"], "点の frame") if "frame" in spec else
                   self.frame0 + _number(spec["t"], "点の t") * self.fps if "t" in spec else f)
-            offset = np.array([_number(v, "点の offset") for v in spec.get("offset", (0.0, 0.0, 0.0))])
+            offset = np.array(_triple(spec.get("offset", (0.0, 0.0, 0.0)), "点の offset"))
             return self.path.at(spec["point"], at) + offset
         raise EventError(f"点の書き方が分かりません: {spec!r}")
 
