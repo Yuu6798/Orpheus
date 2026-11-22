@@ -1,16 +1,48 @@
 """look.lit の材質のノードの作りを、Blender なしで調べる代役。型の名前・設定・入れた値・つなぎを、作った順に控える。
-Blender 5.2 で同じ名前のソケットが型ごとにあるノード（Mix）は、名前で引くと最初の型（Float）のソケットが返るようにしてある
-（型の名前 identifier で引かないと、別の型のソケットにつないだことが分かる）。"""
+ノードの型ごとに、Blender 5.2 のソケットの名前と identifier を、同じ並びで持つ（SOCKETS）。知らない名前・範囲の外の番号で引くと
+止まる（つづりの間違いを CI で見つける）。同じ名前のソケットが型ごとにあるノード（Mix・Map Range）は、名前で引くと最初の型
+（Float）のソケットが返る（Blender と同じ。identifier で引かないと、別の型のソケットにつないだことが分かる）。
+ノードグループの出力（ShaderNodeGroup）とグループの出力ノード（NodeGroupOutput）のソケットは、グループの interface から作る。
+限界: ソケットの名前は look.lit が使う型だけを、Blender 5.2.4 で見た並びで書き写したもの。使っていないソケット（Weight など）や、
+ほかの型は入れていない（知らない型を作ると止まる）。"""
 import hashlib
 import json
 from types import SimpleNamespace
 
-PRESETS = {
+
+def _same(*names):
+    return [(name, name) for name in names]
+
+
+SOCKETS = {   # 型 → (入力の (名前, identifier) の並び, 出力の並び)
+    "ShaderNodeOutputMaterial": (_same("Surface", "Volume", "Displacement", "Thickness"), []),
+    "ShaderNodeTexImage": (_same("Vector"), _same("Color", "Alpha")),
+    "ShaderNodeRGB": ([], _same("Color")),
+    "ShaderNodeValue": ([], _same("Value")),
+    "ShaderNodeVertexColor": ([], _same("Color", "Alpha")),
+    "ShaderNodeBsdfDiffuse": (_same("Color", "Roughness", "Normal", "Weight"), _same("BSDF")),
+    "ShaderNodeShaderToRGB": (_same("Shader"), _same("Color", "Alpha")),
+    "ShaderNodeSeparateColor": (_same("Color"), _same("Red", "Green", "Blue")),
+    "ShaderNodeMath": ([("Value", "Value"), ("Value", "Value_001"), ("Value", "Value_002")], _same("Value")),
+    "ShaderNodeMapRange": ([("Value", "Value"), ("From Min", "From_Min"), ("From Max", "From_Max"), ("To Min", "To_Min"),
+                            ("To Max", "To_Max"), ("Steps", "Steps"), ("Vector", "Vector"), ("From Min", "From_Min_FLOAT3"),
+                            ("From Max", "From_Max_FLOAT3"), ("To Min", "To_Min_FLOAT3"), ("To Max", "To_Max_FLOAT3"),
+                            ("Steps", "Steps_FLOAT3")], _same("Result", "Vector")),
     "ShaderNodeVectorMath": ([("Vector", "Vector"), ("Vector", "Vector_001"), ("Vector", "Vector_002"), ("Scale", "Scale")],
-                             [("Vector", "Vector"), ("Value", "Value")]),
-    "ShaderNodeMix":([("Factor", "Factor_Float"), ("Factor", "Factor_Vector"), ("A", "A_Float"), ("B", "B_Float"),
-                       ("A", "A_Vector"), ("B", "B_Vector"), ("A", "A_Color"), ("B", "B_Color")],
-                      [("Result", "Result_Float"), ("Result", "Result_Vector"), ("Result", "Result_Color")]),
+                             _same("Vector", "Value")),
+    "ShaderNodeMix": ([("Factor", "Factor_Float"), ("Factor", "Factor_Vector"), ("A", "A_Float"), ("B", "B_Float"),
+                       ("A", "A_Vector"), ("B", "B_Vector"), ("A", "A_Color"), ("B", "B_Color"), ("A", "A_Rotation"),
+                       ("B", "B_Rotation")],
+                      [("Result", "Result_Float"), ("Result", "Result_Vector"), ("Result", "Result_Color"), ("Result", "Result_Rotation")]),
+    "ShaderNodeEmission": (_same("Color", "Strength", "Weight"), _same("Emission")),
+    "ShaderNodeLayerWeight": (_same("Blend", "Normal"), _same("Fresnel", "Facing")),
+    "ShaderNodeNewGeometry": ([], _same("Position", "Normal", "Tangent", "True Normal", "Incoming", "Parametric", "Backfacing",
+                                        "Pointiness", "Random Per Island")),
+    "ShaderNodeVectorTransform": (_same("Vector"), _same("Vector")),
+    "ShaderNodeSeparateXYZ": (_same("Vector"), _same("X", "Y", "Z")),
+    "ShaderNodeBsdfPrincipled": (_same("Base Color"), _same("BSDF")),
+    "ShaderNodeGroup": ([], []),                                  # 出力は node_tree を入れたときに、グループの interface から
+    "NodeGroupOutput": ([], []),                                  # 入力は、グループの interface から
 }
 TYPES = {"ShaderNodeEmission": "EMISSION", "ShaderNodeTexImage": "TEX_IMAGE", "ShaderNodeRGB": "RGB",
          "ShaderNodeBsdfPrincipled": "BSDF_PRINCIPLED", "ShaderNodeVertexColor": "VERTEX_COLOR", "ShaderNodeGroup": "GROUP"}
@@ -26,36 +58,59 @@ class Socket:
 
 
 class Sockets:
-    def __init__(self, node, preset=()):
-        self.node = node
+    """ソケットの並び。名前で引くと、その名前の最初のソケット。無い名前・範囲の外の番号は止める（KeyError・IndexError）。"""
+
+    def __init__(self, node, preset=(), side="inputs"):
+        self.node, self.side = node, side
         self._list = [Socket(node, name, ident) for name, ident in preset]
 
+    def _all(self):
+        if self.node.bl_idname == "NodeGroupOutput" and self.side == "inputs" and self.node.tree is not None:
+            known = {s.identifier for s in self._list}
+            for name, _, _ in self.node.tree.interface.sockets:
+                if name not in known:
+                    self._list.append(Socket(self.node, name))
+        return self._list
+
     def __getitem__(self, key):
+        sockets = self._all()
         if isinstance(key, int):
-            while len(self._list) <= key:
-                self._list.append(Socket(self.node, f"#{len(self._list)}"))
-            return self._list[key]
-        for socket in self._list:
+            return sockets[key]
+        for socket in sockets:
             if socket.name == key:
                 return socket
-        socket = Socket(self.node, key)
-        self._list.append(socket)
-        return socket
+        raise KeyError(f"{self.node.bl_idname} の {self.side} に {key!r} はありません（あるのは {[s.name for s in sockets]}）")
 
     def __iter__(self):
-        return iter(self._list)
+        return iter(self._all())
 
 
 class Node:
-    def __init__(self, kind):
-        self.bl_idname, self.type, self.name, self.label = kind, TYPES.get(kind, kind), kind, ""
-        inputs, outputs = PRESETS.get(kind, ((), ()))
-        self.inputs, self.outputs = Sockets(self, inputs), Sockets(self, outputs)
+    def __init__(self, kind, tree=None):
+        if kind not in SOCKETS:
+            raise KeyError(f"代役が知らないノードの型です: {kind}（SOCKETS に足す）")
+        self.bl_idname, self.type, self.name, self.label, self.tree = kind, TYPES.get(kind, kind), kind, "", tree
+        inputs, outputs = SOCKETS[kind]
+        self.inputs, self.outputs = Sockets(self, inputs, "inputs"), Sockets(self, outputs, "outputs")
+        self._node_tree = None
+
+    @property
+    def node_tree(self):
+        return self._node_tree
+
+    @node_tree.setter
+    def node_tree(self, group):                                   # グループのノード: 出力はグループの interface の OUTPUT
+        self._node_tree = group
+        self.outputs = Sockets(self, [(name, name) for name, side, _ in group.interface.sockets if side == "OUTPUT"], "outputs")
 
 
 class Nodes(list):
+    def __init__(self, tree=None):
+        super().__init__()
+        self.tree = tree
+
     def new(self, kind):
-        node = Node(kind)
+        node = Node(kind, self.tree)
         self.append(node)
         return node
 
@@ -99,7 +154,7 @@ class Interface:
 
 class Tree:
     def __init__(self, name=""):
-        self.name, self.nodes, self.links, self.interface = name, Nodes(), Links(), Interface()
+        self.name, self.nodes, self.links, self.interface = name, Nodes(self), Links(), Interface()
         self.props = {}
 
     def __setitem__(self, key, value):
@@ -150,7 +205,7 @@ def describe(tree):
     for n in tree.nodes:
         entry = {"type": n.bl_idname}
         for key in SETTINGS:
-            if hasattr(n, key):
+            if hasattr(n, key) and not (key == "node_tree" and n.bl_idname != "ShaderNodeGroup"):
                 entry[key] = _value(getattr(n, key))
         if n.name != n.bl_idname:
             entry["name"] = n.name

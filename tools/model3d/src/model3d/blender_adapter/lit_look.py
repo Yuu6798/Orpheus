@@ -151,11 +151,26 @@ def set_rim(bpy, left=None, right=None, gain=None):
     group = bpy.data.node_groups.get(RIM_GROUP)
     if group is None:
         raise SystemExit(f"縁の光のノードグループ {RIM_GROUP} がありません（look.lit の rim で作ります）")
+    colours = {}
     for name, value in (("left", left), ("right", right)):
-        if value is not None:
-            group.nodes[name].outputs[0].default_value = (*[float(v) for v in value][:3], 1.0)
+        if value is None:
+            continue
+        try:
+            rgb = [float(v) for v in value]
+        except (TypeError, ValueError):
+            rgb = None
+        if rgb is None or len(rgb) != 3:
+            raise SystemExit(f"set_rim の {name} は 3 つの数 [R, G, B] にしてください: {value!r}")
+        colours[name] = (*rgb, 1.0)
     if gain is not None:
-        group.nodes["gain"].outputs[0].default_value = float(gain)
+        try:
+            gain = float(gain)
+        except (TypeError, ValueError):
+            raise SystemExit(f"set_rim の gain は数にしてください: {gain!r}") from None
+    for name, rgba in colours.items():                    # 確かめてから書く（途中で止まって片方だけ変わらない）
+        group.nodes[name].outputs[0].default_value = rgba
+    if gain is not None:
+        group.nodes["gain"].outputs[0].default_value = gain
 
 
 def _socket(sockets, identifier):

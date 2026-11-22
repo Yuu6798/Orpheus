@@ -217,10 +217,10 @@ RIM = {"left": [0.2, 0.6, 1.0], "right": [1.0, 0.3, 0.1], "edge": [0.4, 0.9]}
 SOURCE = M(name="body", use_backface_culling=True)
 PICTURE = ("image", M(image=M(name="tex.png"), interpolation="Closest"))
 # 縁の光を足さないときの塗りのノード（型・設定・値・つなぎ）。縁の光を足す前の look.lit と同じ（19 個・23 本）
-UNCHANGED = {(False, "image"): "58d286fb0b7d1da462c564dc1d5de87b9487977fc7ad0b0c254a38096f78181e",
-             (False, "color"): "5fc0a2bbf87904ad2d941aeddfeaa438407f5938d2ebf3da52d1c8f5552b743c",
-             (True, "image"): "2bed158730abbec33139544c44cac2630f337a68fb77c2ce675125ed0ca87344",
-             (True, "color"): "e6c25ceb2c656d222bc23c5150cda79656728320daf1d7041dbb75a0b208f6b0"}
+UNCHANGED = {(False, "image"): "9dfedddb79a208da6dc2b239b42261379e125761e8009487ae1f5c49777f92e4",
+             (False, "color"): "d29858356875667926141696c2c71b7f010f2f1e7af2314a1164479aa7d5293c",
+             (True, "image"): "27a5207304a0289809a886388d36c82f1ac3681e8ae0e49b5589f6f7d7e6f648",
+             (True, "color"): "9d41dee2ab4735442e8ca473695310faded71041cfdb16d9bd416e452b8caa28"}
 
 
 @pytest.mark.parametrize("soft", [False, True])
@@ -267,6 +267,25 @@ def test_the_rim_control_group_holds_the_two_colours_and_the_gain():
         lit_look.rim_control(bpy, lit_look.rim_settings({"rim": RIM}))
     with pytest.raises(SystemExit, match="ありません"):
         lit_look.set_rim(fake_bpy(), gain=1.0)
+    for bad in ({"left": [1.0, 0.0]}, {"right": [1, 0, 0, 1]}, {"left": 1.0}, {"right": ["a", 0, 0]}, {"gain": "strong"}):
+        with pytest.raises(SystemExit, match="set_rim の"):
+            lit_look.set_rim(bpy, **bad)
+    with pytest.raises(SystemExit, match="set_rim の right"):                   # 確かめてから書くので、正しい left も変えない
+        lit_look.set_rim(bpy, left=[1.0, 1.0, 1.0], right=[1.0, 0.0])
+    assert group.nodes["left"].outputs[0].default_value == (0.0, 0.0, 1.0, 1.0)
+
+
+def test_the_stand_in_refuses_unknown_sockets_and_types():
+    """代役は、知らないソケットの名前・番号と知らない型で止まる（つづりの間違いを CI で見つける）。"""
+    tree = fake_bpy().data.materials.new("m").node_tree
+    mix = tree.nodes.new("ShaderNodeMix")
+    assert mix.inputs["A"].identifier == "A_Float"                        # 名前で引くと最初の型（Blender と同じ）
+    with pytest.raises(KeyError, match="From Mn"):
+        tree.nodes.new("ShaderNodeMapRange").inputs["From Mn"]
+    with pytest.raises(IndexError):
+        tree.nodes.new("ShaderNodeMath").inputs[3]
+    with pytest.raises(KeyError, match="知らないノードの型"):
+        tree.nodes.new("ShaderNodeMixRGB")
 
 
 def test_the_rim_adds_the_side_coloured_edge_to_the_emission():
@@ -290,20 +309,20 @@ def test_the_rim_adds_the_side_coloured_edge_to_the_emission():
     control = next(n for n in tree.nodes if n.bl_idname == "ShaderNodeGroup")
     assert control.node_tree is group
     links = {(k.from_socket.identifier, k.to_socket.identifier) for k in tree.links if k.to_node is mix}
-    assert links == {("left", "A_Color"), ("right", "B_Color"), ("#0", "Factor_Float")}   # 型の名前で引く（Float の A・B ではない）
+    assert links == {("left", "A_Color"), ("right", "B_Color"), ("Result", "Factor_Float")}   # 型の名前で引く（Float の A・B ではない）
     side, _ = feeding(tree, mix, "Factor_Float")
     assert (side.inputs["From Min"].default_value, side.inputs["From Max"].default_value) == (-0.3, 0.3)
     xyz, axis = feeding(tree, side, "Value")
     assert xyz.bl_idname == "ShaderNodeSeparateXYZ" and axis.name == "X"
-    to_camera, _ = feeding(tree, xyz, "#0")
+    to_camera, _ = feeding(tree, xyz, "Vector")
     assert (to_camera.vector_type, to_camera.convert_from, to_camera.convert_to) == ("NORMAL", "WORLD", "CAMERA")
-    assert feeding(tree, to_camera, "#0")[1].name == "Normal"
+    assert feeding(tree, to_camera, "Vector")[1].name == "Normal"
     strength, _ = feeding(tree, scaled, "Scale")
-    edge_and_down, _ = feeding(tree, strength, "#0")
-    gain_and_amount, _ = feeding(tree, strength, "#1")
-    assert feeding(tree, gain_and_amount, "#0")[1].name == "gain" and gain_and_amount.inputs[1].default_value == 0.35
-    edge, _ = feeding(tree, edge_and_down, "#0")
-    down, _ = feeding(tree, edge_and_down, "#1")
+    edge_and_down, _ = feeding(tree, strength, "Value")
+    gain_and_amount, _ = feeding(tree, strength, "Value_001")
+    assert feeding(tree, gain_and_amount, "Value")[1].name == "gain" and gain_and_amount.inputs[1].default_value == 0.35
+    edge, _ = feeding(tree, edge_and_down, "Value")
+    down, _ = feeding(tree, edge_and_down, "Value_001")
     assert (edge.inputs["From Min"].default_value, edge.inputs["From Max"].default_value) == (0.4, 0.9)
     assert feeding(tree, edge, "Value")[1].name == "Facing"
     assert feeding(tree, edge, "Value")[0].inputs["Blend"].default_value == 0.4
