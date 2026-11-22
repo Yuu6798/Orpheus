@@ -1,5 +1,7 @@
 """検査の操作。合否は report に残し、不合格は needs_review（strict なら失敗、report_only なら測るだけ）にする。
 未実施（材料が無い）は合格にしない: needs_review に残し、strict なら失敗にする。"""
+import math
+
 from .. import checks, semantic
 from ..io import ToolError, atomic_json, read_json
 from ..mesh import Mesh
@@ -414,7 +416,7 @@ def _color_items(value, side, parameters, recipe_dir):
             raise ToolError(f"check.colors の {where} は path（絵）か video（動画）と at（秒）のどちらか 1 つにしてください: {raw!r}")
         if "video" in item:
             at = item.get("at")
-            if isinstance(at, bool) or not isinstance(at, (int, float)) or not at >= 0:
+            if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) or not at >= 0:
                 raise ToolError(f"check.colors の {where}.at は動画の時刻（0 以上の秒）にしてください: {at!r}")
             source = resolve_path(recipe_dir, item["video"])
             name = item.get("name") or f"{Path(source).name}@{float(at):g}s"
@@ -460,9 +462,12 @@ def check_colors(inputs, parameters, outputs, context):
         timeout = number(parameters, "timeout", 600, minimum=0, exclusive=True)
         for video in videos:
             width, height, matrix, in_range = video_info(ffmpeg, video)
-            fps = color_stats.video_fps(ffmpeg, video)
-            wanted = {item["at"]: color_stats.video_index(item["at"], fps) for items in sides.values() for item in items
+            times, end = color_stats.video_frame_times(ffmpeg, video, timeout)
+            wanted = {item["at"]: color_stats.frame_at(times, end, item["at"]) for items in sides.values() for item in items
                       if item["video"] and item["source"] == video}
+            late = sorted(at for at, index in wanted.items() if index is None)
+            if late:
+                raise ToolError(f"check.colors: 動画 {video} の時刻 {late} 秒は、動画の終わり（{float(end):.3f} 秒）より後ろです")
             try:
                 got = decode(ffmpeg, video, sorted(set(wanted.values())), (width, height), timeout=timeout, matrix=matrix,
                              in_range=in_range)
@@ -472,14 +477,14 @@ def check_colors(inputs, parameters, outputs, context):
             for at, index in wanted.items():
                 if index not in got:
                     raise ToolError(f"check.colors: 動画 {video} の {at:g} 秒（コマ {index}）を取り出せません（動画より後ろ）")
-                frames[(video, at)] = (got[index], index, fps)
+                frames[(video, at)] = (got[index], index, float(times[index]))
     report = {"schema_version": "model3d-color-stats/0.1", "left": [], "right": []}
     for side, items in sides.items():
         for item in items:
             if item["video"]:
-                rgb, index, fps = frames[(item["source"], item["at"])]
+                rgb, index, shown = frames[(item["source"], item["at"])]
                 row = color_stats.measure(rgb, item)
-                row.update(video=item["source"], at=item["at"], index=index, fps=fps)
+                row.update(video=item["source"], at=item["at"], index=index, frame_time=shown)
             else:
                 row = color_stats.measure(color_stats.load(item["source"]), item)
                 row["path"] = item["source"]

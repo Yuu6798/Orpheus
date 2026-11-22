@@ -2,6 +2,7 @@
 切り抜き、動画の時刻 → コマの番号、組の平均と差、悪いパラメーター、工程の受け渡し。絵は作り物（どの作品とも関係ない）。
 照合の元（リポジトリ外の 4 作目の 3D のダンスの台本）との照合は docs/model3d.md。"""
 import json
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -24,17 +25,6 @@ def _two_tone(width=40, height=20, left=(200, 40, 40), right=(40, 40, 200)):
     return rgb
 
 
-def _opencv_s(rgb):
-    """OpenCV の RGB2HSV（8 ビット）の S の式を、画素ごとに写したもの（sdiv_table と hsv_shift 12）。"""
-    out = np.zeros(rgb.shape[:2], int)
-    for (y, x), _ in np.ndenumerate(out):
-        r, g, b = (int(v) for v in rgb[y, x])
-        v, vmin = max(r, g, b), min(r, g, b)
-        table = int(round((255 << 12) / v)) if v else 0
-        out[y, x] = ((v - vmin) * table + (1 << 11)) >> 12
-    return out
-
-
 def test_the_numbers_follow_the_display_values():
     rgb = _two_tone()
     s = color_stats.stats(rgb)
@@ -47,13 +37,24 @@ def test_the_numbers_follow_the_display_values():
     assert s["sat"] == pytest.approx(204 / 255, abs=1e-9)                         # (200 − 40) / 200 × 255 = 204
 
 
-def test_saturation_is_the_opencv_integer_formula():
+def test_saturation_is_the_opencv_hsv_s():
+    cv2 = pytest.importorskip("cv2", reason="OpenCV が無い（fx extra）")
     rng = np.random.default_rng(7)
-    rgb = rng.integers(0, 256, (24, 24, 3)).astype(np.uint8)
+    rgb = rng.integers(0, 256, (64, 64, 3)).astype(np.uint8)
     rgb[0, 0] = (0, 0, 0)                                                          # 最大 0 は 0
     rgb[0, 1] = (255, 255, 255)
-    assert np.array_equal(color_stats.saturation(rgb), _opencv_s(rgb))
-    assert color_stats.saturation(rgb)[0, 0] == 0 and color_stats.saturation(rgb)[0, 1] == 0
+    rgb[0, 2] = (1, 0, 0)
+    every = np.stack(np.meshgrid(np.arange(256), np.arange(256), indexing="ij"), axis=-1).reshape(-1, 2)
+    pairs = np.zeros((256, 256, 3), np.uint8)                                      # 最大と最小の組を全部（V と差の全部の組）
+    pairs[..., 0] = every[:, 0].reshape(256, 256)
+    pairs[..., 1] = np.minimum(every[:, 0], every[:, 1]).reshape(256, 256)
+    for picture in (rgb, pairs):
+        expected = cv2.cvtColor(np.ascontiguousarray(picture), cv2.COLOR_RGB2HSV)[..., 1]
+        assert np.array_equal(color_stats.saturation(picture), expected.astype(np.int64))
+
+
+def test_saturation_of_black_and_white_is_zero():
+    assert color_stats.saturation(np.array([[[0, 0, 0], [255, 255, 255], [7, 7, 7]]], np.uint8)).tolist() == [[0, 0, 0]]
 
 
 def test_a_black_picture_does_not_divide_by_zero():
@@ -83,10 +84,44 @@ def test_crop_measures_only_the_box_but_spots_use_the_whole_picture():
         color_stats.measure(rgb, {"name": "a", "crop": [0, 0, 50, 20]})
 
 
-def test_the_frame_shown_at_a_time():
-    assert color_stats.video_index(0.0, 30) == 0 and color_stats.video_index(40.5, 30) == 1215
-    assert color_stats.video_index(1 / 30 * 7, 30) == 7                            # 丸めで 6.999… になっても 7
-    assert color_stats.video_index(0.049, 30) == 1
+def _framemd5(base, step, count, start=0, b_frames=True):
+    """ffmpeg の framemd5 の表示（-c copy）の作り物: 時間の単位 base、コマの長さ step、count コマ（B フレームのある並びは、包みの順を入れ替える）。"""
+    lines = ["#format: frame checksums", "#version: 2", f"#tb 0: {base}", "#media_type 0: video",
+             "#stream#, dts,        pts, duration,     size, hash"]
+    order = list(range(count))
+    if b_frames:
+        order = [order[0]] + [k for pair in zip(order[2::2], order[1::2]) for k in pair] + (order[-1:] if count % 2 == 0 else [])
+    for n, k in enumerate(order):
+        lines.append(f"0, {start + (n - 2) * step:10d}, {start + k * step:10d}, {step:8d}, 100, 0")
+    return "\n".join(lines) + "\n"
+
+
+def test_the_frame_shown_at_a_time_uses_the_exact_frame_times():
+    times, end = color_stats.parse_frame_times(_framemd5("1/30000", 1001, 3100))   # 30000/1001（29.97）
+    assert times[:3] == [0, Fraction(1001, 30000), Fraction(2002, 30000)] and end == Fraction(3100 * 1001, 30000)
+    assert color_stats.frame_at(times, end, 1.001) == 30                            # 29.97 を掛けて切り捨てると 29
+    assert color_stats.frame_at(times, end, 100.1) == 3000                          # 同じく 2999
+    assert color_stats.frame_at(times, end, 1.0) == 29 and color_stats.frame_at(times, end, 0.0) == 0
+    assert color_stats.frame_at(times, end, float(end)) is None                     # 終わりより後ろ
+    times, end = color_stats.parse_frame_times(_framemd5("1/24000", 1001, 2600, start=2002))   # 24000/1001（23.976）。頭の pts が 0 でない
+    assert color_stats.frame_at(times, end, 100.1) == 2400 and color_stats.frame_at(times, end, 100.0) == 2397
+    times, end = color_stats.parse_frame_times(_framemd5("1/15360", 512, 100, b_frames=False))   # 30 fps
+    assert color_stats.frame_at(times, end, 40 / 30) == 40 and color_stats.frame_at(times, end, 0.049) == 1
+    with pytest.raises(ToolError, match="時刻が読めません"):
+        color_stats.parse_frame_times("#format: frame checksums\n")
+
+
+def test_the_frame_times_of_a_real_ntsc_video(tmp_path):
+    import subprocess
+    ffmpeg = pytest.importorskip("imageio_ffmpeg").get_ffmpeg_exe()
+    video = tmp_path / "ntsc.mp4"
+    run = subprocess.run([ffmpeg, "-hide_banner", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x32:rate=30000/1001:duration=4",
+                          "-pix_fmt", "yuv420p", "-c:v", "libx264", "-bf", "2", str(video)], capture_output=True)
+    if run.returncode:
+        pytest.skip("ffmpeg で H.264 の動画を作れない")
+    times, end = color_stats.video_frame_times(ffmpeg, video)
+    assert len(times) == 120 and times[30] == Fraction(1001, 1000) and end == Fraction(120 * 1001, 30000)
+    assert color_stats.frame_at(times, end, 1.001) == 30 and color_stats.frame_at(times, end, 4.1) is None
 
 
 class Context:
@@ -131,17 +166,19 @@ def test_the_operation_reads_a_video_frame_at_a_time(tmp_path, monkeypatch):
 
     monkeypatch.setattr(video_frames, "decode", decode)
     monkeypatch.setattr(video_frames, "video_info", lambda ffmpeg, path: (40, 20, "bt709", "tv"))
-    monkeypatch.setattr(color_stats, "video_fps", lambda ffmpeg, path: 30.0)
+    monkeypatch.setattr(color_stats, "video_frame_times", lambda ffmpeg, path, timeout=600: color_stats.parse_frame_times(
+        _framemd5("1/30", 1, 60, b_frames=False)))
     (tmp_path / "clip.mp4").write_bytes(b"video")
     (tmp_path / "ffmpeg.exe").write_bytes(b"")
     _run(tmp_path, {"left": [{"video": "clip.mp4", "at": 1.0}, {"video": "clip.mp4", "at": 0.5, "name": "half"}],
                     "ffmpeg": str(tmp_path / "ffmpeg.exe")})
     report = json.loads((tmp_path / "colors.json").read_text(encoding="utf-8"))
     assert asked == {"indices": [15, 30], "matrix": ("bt709", "tv")}
-    assert [(r["name"], r["index"], r["at"]) for r in report["left"]] == [("clip.mp4@1s", 30, 1.0), ("half", 15, 0.5)]
+    assert [(r["name"], r["index"], r["at"], r["frame_time"]) for r in report["left"]] == [("clip.mp4@1s", 30, 1.0, 1.0),
+                                                                                         ("half", 15, 0.5, 0.5)]
     assert report["left"][0]["rgb"] == pytest.approx([120 / 255] * 3, abs=1e-6) and report["left"][1]["mean"] == pytest.approx(60 / 255, abs=1e-6)
     assert report["right"] == [] and report["difference"] is None
-    with pytest.raises(ToolError, match="取り出せません"):
+    with pytest.raises(ToolError, match="終わり"):
         _run(tmp_path, {"left": [{"video": "clip.mp4", "at": 9.0}], "ffmpeg": str(tmp_path / "ffmpeg.exe")})
 
 
@@ -152,6 +189,8 @@ def test_the_operation_reads_a_video_frame_at_a_time(tmp_path, monkeypatch):
     ({"left": "a.png"}, "並び"),
     ({"left": [{"path": "a.png", "video": "a.png", "at": 1}]}, "どちらか 1 つ"),
     ({"left": [{"video": "a.png"}]}, "at"),
+    ({"left": [{"video": "a.png", "at": float("inf")}]}, "at"),
+    ({"left": [{"video": "a.png", "at": float("nan")}]}, "at"),
     ({"left": [{"path": "a.png", "at": 1}]}, "video といっしょ"),
     ({"left": ["a.png", "a.png"]}, "重なります"),
     ({"left": ["a.png"], "spots": [{"name": "s", "x": 1, "y": 1}]}, "spots"),

@@ -10,7 +10,8 @@
   いちばん大きい値、どれかの色が 254 以上の画素の割合（白飛び）。
 - 切り抜き（crop）: [x0, y0, x1, y1]（画素。x1・y1 は含まない）。決めた所の座標は、切り抜く前の絵の座標。
 """
-import math
+from bisect import bisect_right
+from fractions import Fraction
 
 import numpy as np
 from PIL import Image
@@ -99,20 +100,46 @@ def compare(left, right):
     return out
 
 
-def video_index(at, fps):
-    """動画の時刻 at 秒に映っているコマの番号（復号した順。0 から）: floor(at × fps + 1e-6)。"""
-    return int(math.floor(at * fps + 1e-6))
+AT_SLACK = Fraction(1, 1_000_000)                       # 時刻のゆとり（秒）。ちょうどコマの頭の時刻を、丸めで前のコマにしない
 
 
-def video_fps(ffmpeg, path):
-    """動画の映像の fps（ffmpeg -i の表示の「… fps」）。"""
-    import re
+def parse_frame_times(text):
+    """ffmpeg の framemd5（映像の 1 本目。-c copy）の表示から、コマの表示の時刻（秒の分数。最初のコマを 0。表示の順）と、
+    最後のコマの終わりの時刻。時間の単位（#tb）と pts・duration の整数のまま計算する（29.97 のような丸めた fps を使わない）。"""
+    base, rows = None, []
+    for line in text.splitlines():
+        if line.startswith("#tb 0:"):
+            num, den = line.split(":", 1)[1].strip().split("/")
+            base = Fraction(int(num), int(den))
+        elif line.strip() and not line.startswith("#"):
+            parts = [p.strip() for p in line.split(",")]
+            if parts[0] == "0":
+                rows.append((int(parts[2]), int(parts[3])))
+    if base is None or not rows:
+        raise ToolError("check.colors: 動画のコマの時刻が読めません（映像が無いか、ffmpeg の framemd5 の表示が読めない）")
+    rows.sort()
+    start = rows[0][0]
+    times = [(pts - start) * base for pts, _ in rows]
+    return times, times[-1] + max(rows[-1][1], 0) * base
+
+
+def frame_at(times, end, at):
+    """時刻 at 秒に映っているコマの番号（表示の順。0 から）: 頭の時刻が at（＋ 1e-6 秒）以下の、いちばん後ろのコマ。
+    動画の終わりより後ろなら None。"""
+    t = Fraction(at) + AT_SLACK
+    if Fraction(at) >= end:
+        return None
+    return bisect_right(times, t) - 1
+
+
+def video_frame_times(ffmpeg, path, timeout=600):
+    """動画の映像のコマの時刻（parse_frame_times。ffmpeg で包みを読むだけで、絵は戻さない）。"""
     import subprocess
-    run = subprocess.run([str(ffmpeg), "-hide_banner", "-i", str(path)], capture_output=True, text=True, encoding="utf-8",
-                         errors="replace")
-    for line in run.stderr.splitlines():
-        if "Video:" in line:
-            m = re.search(r"([\d.]+) fps", line)
-            if m:
-                return float(m.group(1))
-    raise ToolError(f"check.colors: 動画の fps が読めません: {path}")
+    argv = [str(ffmpeg), "-hide_banner", "-v", "error", "-i", str(path), "-map", "0:v:0", "-c", "copy", "-f", "framemd5", "-"]
+    try:
+        run = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise ToolError(f"check.colors: ffmpeg が timeout（{timeout} 秒）を超えました") from error
+    if run.returncode:
+        raise ToolError(f"check.colors: 動画のコマの時刻が読めません: {path}（{run.stderr.strip()[-300:]}）")
+    return parse_frame_times(run.stdout)
