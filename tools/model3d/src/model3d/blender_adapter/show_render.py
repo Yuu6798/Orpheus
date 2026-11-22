@@ -24,7 +24,8 @@
 - フック（--hooks）: 舞台を作る build(ctx) をカメラを置く前に 1 回、コマごとに動かす frame(ctx) を描く直前に呼ぶ（どちらも任意）。
   ctx: bpy・scene・unit（scale_length）・settings・track（光の値 {T: {名前: 値}}）・cameras（{T: カメラのコマ}）・state（フックが
   使ってよい辞書）、コマごとに T・f・t（秒）・values（そのコマの光の値）・camera（そのコマのカメラ。position は m）。
-描く設定: EEVEE（samples・raytracing・shadows）、色の変換は view_transform（既定 Standard。Look・露出・ガンマ・カーブは無し）、
+描く設定: EEVEE（samples・raytracing・shadows。影の領域 shadow の pool_size・resolution_scale は、書いたときだけ入れ、描いたときの値を
+報告の eevee に残す。あふれの知らせの数え方は shadow_overflow。数えて止めるのは工程の側）、色の変換は view_transform（既定 Standard。Look・露出・ガンマ・カーブは無し）、
 PNG の RGB 8 ビット。.blend から引き継ぐと絵をすり替えうる設定（シーケンサー・切り取り・画素の縦横比・多視点・透ける背景・
 表示の装置・出力の色の上書き・マーカーのカメラ）は決まった値にし、違っていたものは報告の render_changes に残す。画像に日時などの
 控えを書かない。描くファイルは frames-dir の f<T>.png。同じ名前のファイルがあっても、いつも描き直す（とばさない）。
@@ -35,6 +36,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -50,11 +52,16 @@ DEFAULTS = {
     "resolution": [1080, 1920], "samples": 64, "raytracing": True, "shadows": True, "view_transform": "Standard",
     "camera": {"sensor_height": 36.0, "clip": [0.1, 1000.0]},
     "motion_blur": {"shutter": 0.0, "steps": 1, "off": []},
+    # 影の領域: pool_size（MB）と resolution_scale は、省くと .blend の値のまま。overflow は、あふれの知らせ（Shadow buffer full）が
+    # Blender の記録にあったときの扱い（fail: 工程を失敗にする／warn: 報告に書くだけ）
+    "shadow": {"pool_size": None, "resolution_scale": None, "overflow": "fail"},
     "cuts": [], "lights": {}, "ambient": None, "world": None, "bloom": None, "expressions": None, "only": None, "links": [],
 }
 CHARACTER = "character"                                  # links で、踊り手（.blend にもとからある、描画に出るメッシュ）を指す名前
 LINK_KEYS = {"lights", "receivers", "exclude", "blockers"}
-SECTIONS = ("camera", "motion_blur")
+SECTIONS = ("camera", "motion_blur", "shadow")
+SHADOW_POOL_SIZES = (16, 32, 64, 128, 256, 512, 1024, 1536, 2048)   # scene.eevee.shadow_pool_size の列挙（MB。Blender 5.2.4 で読んだ）
+SHADOW_FULL = re.compile(r"Shadow buffer full[^\n]*?\((\d+)\s*/\s*(\d+)\)")
 LIT_MARK, LIT_SCALE, LIT_AMBIENT = "model3d_lit", "model3d_lit_ambient_scale", "model3d_lit_ambient"   # look.lit の印
 RENDER_FIXED = {"use_sequencer": False, "use_border": False, "pixel_aspect_x": 1.0, "pixel_aspect_y": 1.0, "use_multiview": False,
                 "film_transparent": False}
@@ -262,6 +269,21 @@ def apply_links(bpy, links, character):
     return report
 
 
+def shadow_overflow(text):
+    """Blender の記録の文から、影の領域のあふれの知らせ（EEVEE の `Shadow buffer full, … (必要 / 上限)`）を数える。
+    → {"lines": 行の数, "worst": [必要, 上限]（必要がいちばん大きい行。無ければ None）}。記録は Blender の終わったあとに標準出力・
+    標準エラーの順で書くので、どのコマであふれたかは行の順からは分からない（数と大きさだけ）。数の無い行も 1 行に数える。"""
+    lines, worst = 0, None
+    for line in (text or "").splitlines():
+        if "Shadow buffer full" not in line:
+            continue
+        lines += 1
+        m = SHADOW_FULL.search(line)
+        if m and (worst is None or int(m.group(1)) > worst[0]):
+            worst = [int(m.group(1)), int(m.group(2))]
+    return {"lines": lines, "worst": worst}
+
+
 def version_problem(version):
     """この描き方が動かない Blender の版なら、その理由（5.x の EEVEE の名前と合成の API で書いた。5.2.4 で確かめた）。"""
     if tuple(version[:2]) < (5, 0):
@@ -338,6 +360,11 @@ def main(argv=None):
     sc.eevee.taa_render_samples = settings["samples"]
     sc.eevee.use_raytracing = bool(settings["raytracing"])
     sc.eevee.use_shadows = bool(settings["shadows"])
+    shadow = settings["shadow"]
+    if shadow["pool_size"] is not None:                  # 影の領域の大きさ（MB）。大きい画面で影つきの光が多いと、あふれる
+        sc.eevee.shadow_pool_size = str(int(shadow["pool_size"]))
+    if shadow["resolution_scale"] is not None:           # 影の細かさ（1 で既定。画面を 2 倍にしたら 0.5 倍で、下書きと同じ影）
+        sc.eevee.shadow_resolution_scale = float(shadow["resolution_scale"])
     blur = settings["motion_blur"]
     sc.render.motion_blur_shutter = blur["shutter"] if blur["shutter"] > 0 else 0.5
     sc.render.motion_blur_position = "START"             # コマ T の絵は、T から T + 開きまで（次のカットの姿を混ぜない）
@@ -510,6 +537,8 @@ def main(argv=None):
                          "dof_frames": len(dof_frames)},
               "motion_blur": {"shutter": blur["shutter"], "steps": blur["steps"], "position": "START", "frames": len(blurred),
                               "off": sorted(T for T in off if T in {p for p, _ in plan})},
+              "eevee": {"shadow_pool_size": int(sc.eevee.shadow_pool_size),
+                        "shadow_resolution_scale": round(float(sc.eevee.shadow_resolution_scale), 6)},
               "lights": sorted(settings["lights"]), "lit_materials": len(lit), "links": links,
               "character": [o.name for o in character],
               "hooks": {"path": os.path.abspath(a.hooks), "sha256": hooks_sha} if a.hooks else None,

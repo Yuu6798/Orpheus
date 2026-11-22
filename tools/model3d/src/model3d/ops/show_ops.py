@@ -35,8 +35,10 @@ def plan_lights(inputs, parameters, outputs, context):
 
 SHOW_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "show_render.py"
 SHOW_PARAMETERS = {"blender", "timeout", "resolution", "samples", "raytracing", "shadows", "view_transform", "camera", "motion_blur",
-                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links"}
+                   "cuts", "lights", "ambient", "world", "bloom", "expressions", "only", "links", "shadow"}
 CAMERA_KEYS = {"sensor_height", "clip"}
+SHADOW_KEYS = {"pool_size", "resolution_scale", "overflow"}
+OVERFLOW = ("fail", "warn")
 BLUR_KEYS = {"shutter", "steps", "off"}
 LIGHT_KEYS = {"energy", "base", "color"}
 BLOOM_KEYS = {"quality", "threshold", "smoothness", "clamp", "maximum", "strength", "size"}
@@ -103,6 +105,25 @@ def _show_settings(parameters):
             s["motion_blur"]["steps"] = number(blur, "steps", minimum=1, integer=True)
         if "off" in blur:
             s["motion_blur"]["off"] = _frames(blur["off"], "motion_blur.off")
+    shadow = _section(parameters, "shadow", SHADOW_KEYS)
+    if shadow:
+        from ..blender_adapter.show_render import SHADOW_POOL_SIZES
+        s["shadow"] = {}
+        if "pool_size" in shadow:
+            if shadow["pool_size"] not in SHADOW_POOL_SIZES or isinstance(shadow["pool_size"], bool):
+                raise ToolError(f"shadow.pool_size は影の領域の大きさ（MB）{list(SHADOW_POOL_SIZES)} のどれかにしてください: "
+                                f"{shadow['pool_size']!r}")
+            s["shadow"]["pool_size"] = int(shadow["pool_size"])
+        if "resolution_scale" in shadow:
+            scale = float(number(shadow, "resolution_scale", minimum=0, exclusive=True))
+            if scale > 1:
+                raise ToolError(f"shadow.resolution_scale は 0 より大きく 1 以下にしてください: {scale!r}")
+            s["shadow"]["resolution_scale"] = scale
+        if "overflow" in shadow:
+            if shadow["overflow"] not in OVERFLOW:
+                raise ToolError(f"shadow.overflow は {OVERFLOW} のどれかにしてください（fail: あふれたら失敗、warn: 報告に書くだけ）: "
+                                f"{shadow['overflow']!r}")
+            s["shadow"]["overflow"] = shadow["overflow"]
     if "cuts" in parameters:
         s["cuts"] = _frames(parameters["cuts"], "cuts", minimum=2)
     if "lights" in parameters:
@@ -209,12 +230,15 @@ def show_manifest(report, frames_dir):
                   "動きのぶれ（motion_blur。コマから後ろ）がカットをまたがない。fstop と focus_m のコマは被写界深度。光の値"
                   "（lights。plan.lights の model3d-light-track/0.1）で、名前で指した光の強さと色、look.lit の塗りのまわりの明るさ"
                   "（ambient）をコマごとに入れる。表情の形状キー（expressions）、空（world）、にじみ（bloom）、光と影のつなぎ分け"
-                  "（links。幕だけを照らし、踊り手だけが影を落とす光など）。作品ごとの舞台は、"
+                  "（links。幕だけを照らし、踊り手だけが影を落とす光など）。影の領域（shadow の pool_size・resolution_scale）を入れ、"
+                  "Blender の記録に影の領域のあふれ（Shadow buffer full）があれば、既定で工程を失敗にする（shadow.overflow を warn に"
+                  "すると報告に書くだけ）。作品ごとの舞台は、"
                   "フック（hooks。Python の台本。レシピに明示したときだけ実行し、sha256 を報告に残す）の build と frame で作って動かす。"
                   "描いたコマは毎回描き直す（とばさない）。frames は描いたコマの一覧（model3d-frames/0.1）。Blender が要り、再利用しない（毎回実行）")
 def show_render(inputs, parameters, outputs, context):
     from .. import contracts
     from ..blender_adapter import launcher
+    from ..blender_adapter.show_render import shadow_overflow
     from ..io import read_json
     from .motion_ops import _blender, _timeout
     require(inputs, ("blend", "cameras"), "render.show")
@@ -246,14 +270,27 @@ def show_render(inputs, parameters, outputs, context):
         args += ["--lights", inputs["lights"]]
     if inputs.get("hooks") is not None:
         args += ["--hooks", inputs["hooks"]]
-    record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=step / "blender.log", timeout=_timeout(parameters))
+    log = step / "blender.log"
+    record = launcher.run_blender(blender, SHOW_SCRIPT, None, args, log=log, timeout=_timeout(parameters))
     report = read_json(outputs["report"])
+    # 影の領域のあふれ: Blender は記録に書くだけで、描くのは続ける（あふれたコマは、描くたびに影が変わる）
+    overflow = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
+    overflow["action"] = (settings.get("shadow") or {}).get("overflow", "fail")
+    report["shadow_overflow"] = overflow
+    atomic_json(outputs["report"], report)
     manifest = show_manifest(report, frames_dir)
     atomic_json(outputs["frames"], manifest)
+    if overflow["lines"] and overflow["action"] == "fail":
+        worst = f"（いちばん大きい 必要 / 上限: {overflow['worst'][0]} / {overflow['worst'][1]}）" if overflow["worst"] else ""
+        raise ToolError(f"render.show: Blender の記録に、影の領域があふれた知らせ（Shadow buffer full）が {overflow['lines']} 行あります"
+                        f"{worst}。あふれると、同じコマでも描くたびに影が変わります。直し方: shadow.resolution_scale を下げる（画面を 2 倍に"
+                        "したら 0.5 倍）、shadow.pool_size を大きくする、影つきの光を減らす。知らせるだけで通すなら shadow.overflow を "
+                        f"\"warn\" にします。描いたコマは {frames_dir} に残っています（記録は {log}）")
     observation = {"kind": "show_render", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "planned": len(report.get("planned") or []),
                    "rendered": len(report.get("rendered") or []), "missing": len(manifest["missing"]),
                    "motion_blur_frames": (report.get("motion_blur") or {}).get("frames"),
                    "held_camera_keys": len((report.get("camera") or {}).get("held") or []),
+                   "shadow_overflow": {"lines": overflow["lines"], "worst": overflow["worst"]},
                    "hooks": {"path": str(inputs["hooks"]), "sha256": sha256(inputs["hooks"])} if inputs.get("hooks") is not None else None}
     return StepResult(observations=[observation])
