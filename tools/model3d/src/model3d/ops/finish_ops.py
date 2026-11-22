@@ -367,6 +367,8 @@ def render_afterimage(inputs, parameters, outputs, context):
         raise ToolError(f"color は [r, g, b]（0〜1 の数）にしてください: {color!r}")
     min_amount = float(_real(parameters.get("min_amount", 0.0), "min_amount", 0))
     by_T = {T: (f, path, h) for T, f, path, h in frames}
+    if first <= source_T:
+        raise ToolError(f"span（{first}〜{last}）は、source の T {source_T} より後から始めてください（明るいコマの後に残る像）")
     if source_T not in by_T:
         raise ToolError(f"source の T {source_T} が、描いたコマにありません")
     if not any(first <= T <= last for T in by_T):
@@ -393,12 +395,11 @@ def render_afterimage(inputs, parameters, outputs, context):
         target = Path(out_dir) / path.name
         strength = A.strength(T, first, amount, decay) if first <= T <= last else 0.0
         if strength <= min_amount:                    # 区間の外と、薄すぎるコマは、そのまま写す
+            check_copy(path, T, operation, (W, H))
             shutil.copyfile(path, target)
             listing.append({"T": T, "f": f, "file": target.name, "sha256": h, "bytes": target.stat().st_size})
             continue
-        image = read_rgb(path, T, operation)
-        if image.shape[:2] != (H, W):
-            raise ToolError(f"{operation}: コマの大きさがそろっていません（T {T}: {image.shape[1]}×{image.shape[0]}、source のコマ: {W}×{H}）")
+        image = read_rgb(path, T, operation, (W, H))
         Image.fromarray(np.ascontiguousarray(A.add(image, picture, strength))).save(target)
         applied.append({"T": T, "amount": round(strength, 6)})
         listing.append({"T": T, "f": f, "file": target.name, "sha256": sha256(target), "bytes": target.stat().st_size})

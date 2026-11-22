@@ -112,6 +112,8 @@ def call(tmp_path, parameters, inputs=None):
     ({"source": None}, "source"),
     ({"span": [20, 30]}, "1 つもありません"),
     ({"span": [5, 4]}, "span"),
+    ({"span": [3, 12]}, "より後"),                                                        # source のコマから始まる
+    ({"span": [1, 2]}, "より後"),                                                         # source より前に終わる
     ({"amount": 0}, "amount"),
     ({"decay_frames": 0}, "decay_frames"),
     ({"threshold": 1.0}, "threshold"),
@@ -144,3 +146,18 @@ def test_the_rendered_frames_list_is_checked(tmp_path):
     atomic_json(tmp_path / "frames.json", listing)
     with pytest.raises(ToolError, match="違います"):
         call(tmp_path, dict(base, out_dir="out2"), {"frames": tmp_path / "frames.json"})
+
+
+def test_copied_frames_are_checked_for_transparency_and_size_too(tmp_path):
+    from PIL import Image
+    frames = _frames(tmp_path / "frames")
+    Image.new("RGBA", SIZE, (0, 0, 0, 0)).save(frames / "f0001.png")                     # span の外で、写すだけのコマ
+    with pytest.raises(ToolError, match="透けた"):
+        call(tmp_path, _parameters(out_dir="out"))
+    Image.new("RGB", (32, 48), (0, 0, 0)).save(frames / "f0001.png")
+    with pytest.raises(ToolError, match="大きさ"):
+        call(tmp_path, _parameters(out_dir="out2"))
+    _frames(frames)
+    Image.new("RGB", (32, 48), (0, 0, 0)).save(frames / "f0012.png")                     # 足すコマ
+    with pytest.raises(ToolError, match="大きさ"):
+        call(tmp_path, _parameters(out_dir="out3"))
