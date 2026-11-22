@@ -156,7 +156,10 @@ def warp(image, settings):
         lift_shape = np.where(au <= 1, np.clip(np.abs(uo), 0, 1) ** 2, lift_shape)
     a = sag * np.clip(1 - u * u, 0, 1) - lift * lift_shape - arch * np.clip(1 - uo * uo, 0, 1)   # 上唇の動き（+ = 下）
     if lift > 0 and settings["level_tilt"]:                              # 笑う口: もとの線の左右の傾きをならす
-        a = a - m["tilt"] * k * (XS - cx) * np.where(au <= 1, 1.0, beyond)
+        # 横に k 倍したあとの線の傾きは tilt / k。台本は tilt × k で引いていた（k ≠ 1 で、広げた口は直しすぎ、狭めた口は足りない）。
+        # 既定は台本と同じにし（照合を崩さない）、tilt_after_stretch で正しい傾きを選べる
+        slope = m["tilt"] / k if settings.get("tilt_after_stretch") else m["tilt"] * k
+        a = a - slope * (XS - cx) * np.where(au <= 1, 1.0, beyond)
     d = drop * np.clip(1 - np.abs(uo) ** full, 0, 1)                      # すき間の高さ（口角の印の内側で 0）
     top, bottom = yl + a, yl + a + d
     fall_low = max(lengths["lower_fade"], 1.7 * float(np.max(np.abs(a + d))))

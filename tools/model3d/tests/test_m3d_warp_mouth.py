@@ -149,6 +149,7 @@ GOOD = {"window": [60, 70, 240, 140], "line": RULE, "lips": LIPS}
     ({**GOOD, "jaw": {"green_below": 185}}, "jaw"),
     ({**GOOD, "jaw": {**JAW, "tilt": 3}}, "知らないパラメーター"),
     ({**GOOD, "smile": 1}, "知らないパラメーター"),
+    ({**GOOD, "tilt_after_stretch": "yes"}, "tilt_after_stretch"),
     ({**GOOD, "window": [60, 70, 400, 140]}, "はみ出し"),
     ({**GOOD, "open": 10, "corner_mark": 50, "inside_color": [100, 30, 50], "tongue_color": [200, 110, 120]}, "半分"),
 ])
@@ -174,3 +175,29 @@ def test_a_corner_mark_as_wide_as_half_the_mouth_is_refused():
     opened = settings(open=10, corner_mark=50, inside_color=[100, 30, 50], tongue_color=[200, 110, 120])
     with pytest.raises(ValueError, match="半分"):
         mouth_warp.warp(face(), opened)
+
+
+def tilted_face():
+    """右へ下がる口の線（傾き 0.1。x 100〜200、太さ 3 画素）。"""
+    image = np.full((260, 300, 3), SKIN)
+    for x in range(100, 201):
+        y = int(round(95 + 0.1 * (x - 100)))
+        image[y:y + 3, x] = LINE
+    return image
+
+
+def line_height(picture, x):
+    return np.nonzero(picture[:, x, 1] < 120)[0].mean()
+
+
+def test_a_stretched_tilted_smile_is_level_with_the_stretched_slope():
+    image = tilted_face()
+    smile = dict(corner_lift=4, scale_x=1.4)
+    exact, _, report = mouth_warp.warp(image, settings(**smile, tilt_after_stretch=True))
+    script, _, _ = mouth_warp.warp(image, settings(**smile))                      # 台本と同じ（傾き × k）
+    assert report["tilt"] > 0.08
+    left, right = 150 - 56, 150 + 56                                             # 横に広げたあとの、真ん中から同じ距離の 2 列
+    assert abs(line_height(exact, left) - line_height(exact, right)) < 1.5       # 傾き ÷ k で引くと、水平になる
+    assert abs(line_height(script, left) - line_height(script, right)) > 4       # × k は広げた口で直しすぎる
+    same, _, _ = mouth_warp.warp(image, settings(corner_lift=4, tilt_after_stretch=True))
+    assert np.array_equal(same, mouth_warp.warp(image, settings(corner_lift=4))[0])   # k = 1 なら、どちらも同じ

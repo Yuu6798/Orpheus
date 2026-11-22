@@ -627,6 +627,7 @@ def closed_eye_line(inputs, parameters, outputs, context):
 
 
 WARP_MOUTH_PARAMETERS = ["bulge", "corner_lift", "corner_mark", "inside_color", "jaw", "level_tilt", "line", "lips", "open", "scale", "scale_x",
+                         "tilt_after_stretch",
                          "tongue_color", "upper_arch", "upper_sag", "window"]
 
 
@@ -661,6 +662,7 @@ def warp_mouth_settings(parameters):
                 "open": _finite(parameters.get("open", 0.0), "open", 0.0),
                 "bulge": _finite(parameters.get("bulge", 2.0), "bulge", 0.0, True),
                 "level_tilt": parameters.get("level_tilt", True),
+                "tilt_after_stretch": parameters.get("tilt_after_stretch", False),
                 "lengths": {key: value * scale for key, value in mouth_warp.LENGTHS.items()}}
     lips = parameters.get("lips")                        # 顔の形に寄る長さ（唇の高さ）。既定は無い
     if not isinstance(lips, dict) or set(lips) != set(mouth_warp.LIPS_KEYS):
@@ -670,6 +672,8 @@ def warp_mouth_settings(parameters):
     settings["lengths"].update({key: _finite(lips[key], f"lips.{key}", 0.0) for key in mouth_warp.LIPS_KEYS})
     if not isinstance(settings["level_tilt"], bool):
         raise ToolError(f"level_tilt は true か false にしてください: {settings['level_tilt']!r}")
+    if not isinstance(settings["tilt_after_stretch"], bool):
+        raise ToolError(f"tilt_after_stretch は true か false にしてください: {settings['tilt_after_stretch']!r}")
     needs_mark = settings["open"] > 0 or settings["upper_arch"] != 0 or settings["corner_lift"] < 0
     if parameters.get("corner_mark") is not None:
         settings["corner_mark"] = _finite(parameters["corner_mark"], "corner_mark", 0.0)

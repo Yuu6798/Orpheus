@@ -2008,7 +2008,8 @@ VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model
 - 3. 線を境に、上（上唇の側）と下（下唇の側）を別々に上下へ動かす。上 = 口角を上げる `corner_lift`（負なら下げる。印の内側の端で最大にして、印は水平の
   まま下げる）・真ん中を下げる `upper_sag`・真ん中を上げる `upper_arch`。下 = さらに開ける量 `open`（真ん中。下の縁のふくらみ `bulge`、2 で放物線）だけ
   下げる。線から離れるほど 0 へ戻す（上は `lips.upper_keep`、下は `lips.lower_keep` までは、そのまま動かす）。口角を上げるときは、もとの線の左右の
-  傾きもならす（`level_tilt`、既定 true）。
+  傾きもならす（`level_tilt`、既定 true）。横に `scale_x` 倍したあとの線の傾きは「もとの傾き ÷ `scale_x`」だが、台本は「× `scale_x`」で
+  引いていた（広げた口は直しすぎ、狭めた口は足りない）。既定は台本と同じにし（照合を崩さない）、`tilt_after_stretch: true` で正しい ÷ を選べる。
 - 4. 上と下のすき間を、口の中の色 `inside_color`（上ほど暗い）で埋め、下に舌 `tongue_color`。すき間は口角の印 `corner_mark`（画素。測った口の幅の半分より小さく）の内側で 0 になる
   ので、口角はもとの絵の口角のまま細くとがる。`open`・`upper_arch`・負の `corner_lift` には `corner_mark` が、`open` には 2 つの色が要る（既定は無い）。
 - あごの線（`jaw`。任意。`green_below`・`start_below_line`・`keep_above`・`mask_above` が要る。既定は無い）: 列ごとに、口の線の `start_below_line` 画素下から、緑の値（σ 1.5 でならす）が `green_below` より小さくなる所（肌が首の色に
