@@ -528,3 +528,30 @@ def test_frames_left_by_an_interrupted_overflowing_render_are_marked_too(tmp_pat
     assert sorted(marks) == ["f0001.png", "f0002.png"]
     again = executor.run_recipe(recipe, tmp_path / "runs")              # 同じ入力: 描く前に、あふれたコマで止まる
     assert again["status"] == "failed" and "前の描画で影の領域があふれた" in again["error"]
+
+
+def test_a_hook_with_a_bom_can_be_fingerprinted_for_resuming(tmp_path):
+    """Python は BOM つきの台本を読むので、続きから描く入力のまとまりの台本の sha256 でも読む（隣の台本の import もたどる）。"""
+    import codecs
+    from model3d import render_inputs
+    (tmp_path / "helper.py").write_bytes(codecs.BOM_UTF8 + "X = 1\n".encode("utf-8"))
+    (tmp_path / "stage.py").write_bytes(codecs.BOM_UTF8 + "# 舞台\nimport helper\n\ndef build(ctx):\n    pass\n".encode("utf-8"))
+    assert sorted(render_inputs.scripts(tmp_path / "stage.py")) == ["helper.py", "stage.py"]
+
+
+def test_the_overflow_record_is_updated_inside_the_folder_lock(tmp_path):
+    """同じフォルダへ同時に描く区切りどうしで、ほかの区切りの控えを消さない（読んで書き換えて書くまでを待ち合わせの中で）。"""
+    import threading
+    from model3d import render_inputs
+    from model3d.ops import show_ops
+    folder = tmp_path / "frames_all"
+    show_ops._write_overflow_marks(folder.mkdir() or folder, {"f0001.png": {"lines": 1, "worst": None}})
+    lock = render_inputs._locked(folder)
+    worker = threading.Thread(target=show_ops._update_overflow_marks,
+                              args=(folder, lambda marks: marks.update({"f0005.png": {"lines": 2, "worst": [9, 8]}})))
+    worker.start()
+    worker.join(0.3)
+    assert worker.is_alive()                                       # 待ち合わせを持っている間は書かない
+    lock.__exit__(None, None, None)
+    worker.join(10)
+    assert sorted(show_ops._overflow_marks(folder)) == ["f0001.png", "f0005.png"]

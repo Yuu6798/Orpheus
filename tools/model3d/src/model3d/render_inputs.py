@@ -16,6 +16,7 @@ Blender の版）を変えたのに同じフォルダへ描くと、とばした
 """
 import ast
 import time
+import tokenize
 from pathlib import Path
 
 from .io import ToolError, atomic_json, canonical_json, directory_lock, read_json, sha256, sha256_text
@@ -37,7 +38,9 @@ def script_files(script):
         if path.name in found:
             continue
         found[path.name] = path
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        with tokenize.open(path) as stream:              # Python と同じ読み方（BOM・coding の行）。BOM つきの台本も読める
+            source = stream.read()
+        for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Import):
                 names = [alias.name.split(".")[0] for alias in node.names]
             elif isinstance(node, ast.ImportFrom):

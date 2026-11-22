@@ -252,6 +252,19 @@ def _overflow_marks(frames_dir):
     return dict(record["frames"])
 
 
+def _update_overflow_marks(frames_dir, change):
+    """控えを、フォルダの待ち合わせ（render_inputs と同じ .lock）の中で読んで change(marks) で書き換えて書く（同じフォルダへ同時に
+    描く区切りどうしで、ほかの区切りの控えを消さない）。"""
+    from .. import render_inputs
+    lock = render_inputs._locked(Path(frames_dir))
+    try:
+        marks = _overflow_marks(frames_dir)
+        change(marks)
+        _write_overflow_marks(frames_dir, marks)
+    finally:
+        lock.__exit__(None, None, None)
+
+
 def _write_overflow_marks(frames_dir, marks):
     path = Path(frames_dir) / OVERFLOW_NAME
     if marks:
@@ -385,11 +398,11 @@ def show_render(inputs, parameters, outputs, context):
             try:
                 partial = shadow_overflow(log.read_text(encoding="utf-8", errors="replace") if log.is_file() else "")
                 if partial["lines"]:
-                    marks = _overflow_marks(frames_dir)
-                    for name in files:
-                        if name not in before and (frames_dir / name).is_file():
-                            marks[name] = {"lines": partial["lines"], "worst": partial["worst"]}
-                    _write_overflow_marks(frames_dir, marks)
+                    def mark(marks):
+                        for name in files:
+                            if name not in before and (frames_dir / name).is_file():
+                                marks[name] = {"lines": partial["lines"], "worst": partial["worst"]}
+                    _update_overflow_marks(frames_dir, mark)
             except (OSError, ToolError):
                 pass
         raise
@@ -399,13 +412,13 @@ def show_render(inputs, parameters, outputs, context):
     overflow["action"] = (settings.get("shadow") or {}).get("overflow", "fail")
     if resume is not None:                               # frames_dir: 今回描いたコマの、あふれの控えを書き直す
         from ..blender_adapter.show_render import frame_name
-        marks = _overflow_marks(frames_dir)
-        for T in report.get("rendered") or []:
-            if overflow["lines"]:
-                marks[frame_name(T)] = {"lines": overflow["lines"], "worst": overflow["worst"]}
-            else:
-                marks.pop(frame_name(T), None)
-        _write_overflow_marks(frames_dir, marks)
+        def rewrite(marks):
+            for T in report.get("rendered") or []:
+                if overflow["lines"]:
+                    marks[frame_name(T)] = {"lines": overflow["lines"], "worst": overflow["worst"]}
+                else:
+                    marks.pop(frame_name(T), None)
+        _update_overflow_marks(frames_dir, rewrite)
         overflow["reused"] = resume["reused_overflow"]   # 前の描画であふれたまま、とばしたコマの数（warn のときだけ 0 でない）
     report["shadow_overflow"] = overflow
     atomic_json(outputs["report"], report)
