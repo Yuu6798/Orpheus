@@ -657,10 +657,13 @@ def clean_skin(inputs, parameters, outputs, context):
         if not isinstance(tone, dict):
             raise ToolError(f"tone は {{\"flat\": 寄せる割合, \"bins\": …}} にしてください: {tone!r}")
         _refuse_unknown(tone, ("flat", "bins", "min_vertices", "percentile", "light_bins"), "tone")
+        missing = [key for key in ("flat", "bins", "min_vertices", "light_bins") if tone.get(key) is None]
+        if missing:                                      # 部品の大きさと頂点の細かさに寄るので、既定を置かない
+            raise ToolError(f"tone に {', '.join(missing)} を書いてください（既定は無い。flat: 寄せる割合、bins: 軸に沿った区間の数、"
+                            "min_vertices: 使う区間のきれいな頂点の下限、light_bins: 明るい区間の数）")
         checked = {"flat": _real(tone.get("flat"), "tone.flat", 0.0, exclusive=True, maximum=1.0)}
         for key in ("bins", "min_vertices", "light_bins"):
-            if key in tone:
-                checked[key] = number(tone, key, minimum=1, integer=True)
+            checked[key] = number(tone, key, minimum=1, integer=True)
         if "percentile" in tone:
             checked["percentile"] = _real(tone["percentile"], "tone.percentile", 0.0, maximum=100.0)
         settings["tone"] = checked

@@ -83,6 +83,15 @@ def test_radius_edges_are_the_pairs_within_the_radius():
     assert roots[0] == roots[1] == roots[2] == roots[3] != roots[4]             # 近さで、切れた面どうしがつながる
 
 
+def test_light_tone_counts_the_vertex_at_the_far_end_of_the_axis():
+    x = np.arange(9, dtype=float)                                               # 2 区間に 4 頂点と 5 頂点（端の頂点は最後の区間に入る）
+    positions = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
+    colors = np.tile([0.9, 0.8, 0.8], (9, 1))
+    tone = {"bins": 2, "min_vertices": 5, "percentile": 0.0, "light_bins": 1}
+    light, report = sr.light_tone(positions, colors, np.ones(9, bool), np.ones(9, bool), tone)
+    assert report["bins_used"] == 1 and light == pytest.approx([0.9, 0.8, 0.8])  # 端を数えないと、どちらの区間も 4 頂点で足りない
+
+
 def test_light_tone_takes_the_bright_side_along_the_main_axis():
     x = np.linspace(0, 0.3, 240)
     positions = np.stack([x, np.zeros_like(x), np.zeros_like(x)], axis=1)
@@ -192,14 +201,14 @@ def test_skin_steps(tmp_path):
 
 def test_clean_skin_passes_the_wrapping_hue_neighbours_and_tone(tmp_path):
     blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
-    extra = {"skin": {**SKIN, "hue_deg": [335, 25]}, "neighbours": {"radius": 0.004}, "tone": {"flat": 0.95, "bins": 12}}
+    extra = {"skin": {**SKIN, "hue_deg": [335, 25]}, "neighbours": {"radius": 0.004}, "tone": {"flat": 0.95, "bins": 12, "min_vertices": 20, "light_bins": 4}}
     result = run_recipe(tmp_path, [{"id": "arms", "operation": "model.clean_skin", "inputs": {"blend": "$inputs.model"},
                                     "parameters": {"blender": blender, **CLEAN, **extra},
                                     "outputs": {"blend": "b.blend", "texture": "t.png", "report": "b.json"}}])
     assert result["status"] == "succeeded", result
     settings = json.loads(Path(result["steps"]["arms"]["artifacts"]["report"]).read_text(encoding="utf-8"))["x_settings"]
     assert settings["skin"]["hue_deg"] == [335, 25] and settings["neighbours"] == {"radius": 0.004}
-    assert settings["tone"] == {"flat": 0.95, "bins": 12}
+    assert settings["tone"] == {"flat": 0.95, "bins": 12, "min_vertices": 20, "light_bins": 4}
     (tmp_path / "plain").mkdir()
     plain = run_recipe(tmp_path / "plain", [{"id": "arms", "operation": "model.clean_skin", "inputs": {"blend": "$inputs.model"},
                                              "parameters": {"blender": blender, **CLEAN},
@@ -237,9 +246,10 @@ class Context:
     ("model.clean_skin", {**CLEAN, "skin": {**SKIN, "hue_deg": [370, 10]}}, "hue_deg"),
     ("model.clean_skin", {**CLEAN, "neighbours": {"radius": 0}}, "neighbours.radius"),
     ("model.clean_skin", {**CLEAN, "neighbours": {"radius": 0.004, "k": 3}}, "知らない設定"),
-    ("model.clean_skin", {**CLEAN, "tone": {"bins": 12}}, "tone.flat"),
-    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9, "percentile": 120}}, "percentile"),
-    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9, "bins": 0}}, "bins"),
+    ("model.clean_skin", {**CLEAN, "tone": {"bins": 12, "min_vertices": 20, "light_bins": 4}}, "flat"),
+    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9}}, "bins, min_vertices, light_bins"),
+    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9, "bins": 12, "min_vertices": 20, "light_bins": 4, "percentile": 120}}, "percentile"),
+    ("model.clean_skin", {**CLEAN, "tone": {"flat": 0.9, "bins": 0, "min_vertices": 20, "light_bins": 4}}, "bins"),
 ])
 def test_skin_ops_reject_bad_settings(tmp_path, operation, parameters, message):
     from model3d.ops import get

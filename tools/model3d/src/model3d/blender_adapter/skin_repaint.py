@@ -38,8 +38,9 @@ SMOOTH = {"z_range": None, "z_soft": 0.03, "x_min": None, "x_max": None, "x_soft
 SHAPE = {"iterations": 10, "factor": 0.5, "inflate": -0.53, "z_max": None, "z_soft": 0.02}
 CLEAN = {"armature": None, "island_groups": None, "island_min": 50, "region_groups": None, "fill_iterations": 300, "smooth_iterations": 25,
          "smooth_factor": 0.5, "paint_margin_px": 4.0, "neighbours": None, "tone": None}
-# 色むらを寄せる段の既定（4 作目の 3D のダンスの台本の値。寄せる割合 flat は既定にしない）
-TONE = {"bins": 12, "min_vertices": 20, "percentile": 60.0, "light_bins": 4}
+# 色むらを寄せる段の、計算の作りの既定（「明るい側」とみなす百分位）。区間の数・使う区間の頂点の下限・明るい区間の数・寄せる割合は、
+# 部品の大きさと頂点の細かさに寄るので既定を置かない（工程で必ず書く）
+TONE = {"percentile": 60.0}
 
 
 def parse_args(argv):
@@ -145,7 +146,8 @@ def light_tone(positions, colors, region, clean, tone):
     centres, tones = [], []
     for k in range(tone["bins"]):
         a, b = low + (high - low) * k / tone["bins"], low + (high - low) * (k + 1) / tone["bins"]
-        pick = good & (along >= a) & (along < b)
+        last = k == tone["bins"] - 1                                  # 最後の区間は、軸のいちばん端の頂点も含める
+        pick = good & (along >= a) & ((along <= high) if last else (along < b))
         if pick.sum() < tone["min_vertices"]:
             continue
         chosen = colors[pick]
