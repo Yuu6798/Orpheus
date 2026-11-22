@@ -1,5 +1,7 @@
 """検査の操作。合否は report に残し、不合格は needs_review（strict なら失敗、report_only なら測るだけ）にする。
 未実施（材料が無い）は合格にしない: needs_review に残し、strict なら失敗にする。"""
+import math
+
 from .. import checks, semantic
 from ..io import ToolError, atomic_json, read_json
 from ..mesh import Mesh
@@ -395,3 +397,132 @@ def check_blend_match(inputs, parameters, outputs, context):
     if "report" in outputs:
         atomic_json(outputs["report"], report)
     return _finish(summary, {k: v for k, v in outputs.items() if k != "report"}, parameters, ".blend の比べ")
+
+
+COLORS_PARAMETERS = {"left", "right", "spots", "crop", "ffmpeg", "timeout"}
+COLOR_ITEM_KEYS = {"path", "video", "at", "name", "spots", "crop"}
+
+
+def _color_box(value, where):
+    if (not isinstance(value, list) or len(value) != 4
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value)):
+        raise ToolError(f"check.colors の {where} は [x0, y0, x1, y1]（0 以上の整数の画素）にしてください: {value!r}")
+    return value
+
+
+def _color_spots(value, where):
+    if not isinstance(value, list):
+        raise ToolError(f"check.colors の {where} は決めた所の並び [{{\"name\", \"x\", \"y\", \"r\"}}, …] にしてください: {value!r}")
+    out, names = [], set()
+    for k, s in enumerate(value):
+        if not isinstance(s, dict) or set(s) != {"name", "x", "y", "r"}:
+            raise ToolError(f"check.colors の {where}[{k}] は {{\"name\", \"x\", \"y\", \"r\"}} にしてください: {s!r}")
+        if not isinstance(s["name"], str) or not s["name"] or s["name"] in names:
+            raise ToolError(f"check.colors の {where}[{k}].name は、空でない・重ならない名前にしてください: {s['name']!r}")
+        if not all(isinstance(s[key], int) and not isinstance(s[key], bool) and s[key] >= 0 for key in ("x", "y", "r")):
+            raise ToolError(f"check.colors の {where}[{k}] の x・y・r は 0 以上の整数（画素）にしてください: {s!r}")
+        names.add(s["name"])
+        out.append(dict(s))
+    return out
+
+
+def _color_items(value, side, parameters, recipe_dir):
+    """left / right の絵の並び: 文字列（絵のパス）か {path | video と at, name, spots, crop}。"""
+    from pathlib import Path
+    from ..io import resolve_path
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ToolError(f"check.colors の {side} は絵の並びにしてください: {value!r}")
+    shared = _color_spots(parameters.get("spots", []), "spots")
+    box = _color_box(parameters["crop"], "crop") if parameters.get("crop") is not None else None
+    items, names = [], set()
+    for k, raw in enumerate(value):
+        where = f"{side}[{k}]"
+        item = {"path": raw} if isinstance(raw, str) else raw
+        if not isinstance(item, dict) or set(item) - COLOR_ITEM_KEYS:
+            raise ToolError(f"check.colors の {where} は絵のパスか {{path か video と at, name, spots, crop}} にしてください: {raw!r}")
+        if ("path" in item) == ("video" in item):
+            raise ToolError(f"check.colors の {where} は path（絵）か video（動画）と at（秒）のどちらか 1 つにしてください: {raw!r}")
+        if "video" in item:
+            at = item.get("at")
+            if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) or not at >= 0:
+                raise ToolError(f"check.colors の {where}.at は動画の時刻（0 以上の秒）にしてください: {at!r}")
+            source = resolve_path(recipe_dir, item["video"])
+            name = item.get("name") or f"{Path(source).name}@{float(at):g}s"
+        else:
+            if "at" in item:
+                raise ToolError(f"check.colors の {where}.at は video といっしょに書いてください")
+            source = resolve_path(recipe_dir, item["path"])
+            name = item.get("name") or Path(source).name
+        if not Path(source).is_file():
+            raise ToolError(f"check.colors の {where} のファイルがありません: {source}")
+        if not isinstance(name, str) or not name or name in names:
+            raise ToolError(f"check.colors の {where} の名前が空か、ほかと重なります: {name!r}（name で分けてください）")
+        names.add(name)
+        spots = shared + _color_spots(item.get("spots", []), f"{where}.spots")
+        if len({s["name"] for s in spots}) != len(spots):
+            raise ToolError(f"check.colors の {where}.spots の名前が spots と重なります")
+        items.append({"name": name, "source": str(source), "video": "video" in item, "at": float(item["at"]) if "video" in item else None,
+                      "spots": spots, "crop": _color_box(item["crop"], f"{where}.crop") if item.get("crop") is not None else box})
+    return items
+
+
+@register("check.colors", outputs=("report",), cacheable=False,
+          summary="色の数を、絵の組で比べる: 参考の絵（left）とこちらの絵（right。どちらも絵のパスか、動画 video と時刻 at 秒のコマ）の、"
+                  "明るさ（0.2126 R + 0.7152 G + 0.0722 B。表示の値）の平均・5 %・50 %・95 %、R・G・B の平均、緑÷赤・青÷赤、彩度の平均"
+                  "（OpenCV の 8 ビットの HSV の S と同じ計算）、決めた所（spots。中心と半径の正方形）の色の平均・いちばん大きい値・白飛びの"
+                  "割合を測り、組ごとの平均と、その差（こちら − 参考）を出す。時刻の違う止め絵の組（参考の動画と、こちらの見本）を同じ物差しで"
+                  "見るため。合否は出さない（数だけ）。並べて見るのは mv sheet --with。絵と動画は隠れた入力なので再利用しない")
+def check_colors(inputs, parameters, outputs, context):
+    from .. import color_stats
+    from . import number
+    unknown = set(parameters) - COLORS_PARAMETERS
+    if unknown:
+        raise ToolError(f"check.colors の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(COLORS_PARAMETERS)}）")
+    sides = {side: _color_items(parameters.get(side), side, parameters, context.recipe_dir) for side in ("left", "right")}
+    if not sides["left"] and not sides["right"]:
+        raise ToolError("check.colors には left（参考の絵）か right（こちらの絵）が要ります")
+    frames = {}
+    videos = sorted({item["source"] for items in sides.values() for item in items if item["video"]})
+    if videos:
+        from ..video_frames import decode, video_info
+        from .assemble_ops import find_ffmpeg
+        ffmpeg = find_ffmpeg(parameters, context)
+        timeout = number(parameters, "timeout", 600, minimum=0, exclusive=True)
+        for video in videos:
+            width, height, matrix, in_range = video_info(ffmpeg, video)
+            times, end = color_stats.video_frame_times(ffmpeg, video, timeout)
+            wanted = {item["at"]: color_stats.frame_at(times, end, item["at"]) for items in sides.values() for item in items
+                      if item["video"] and item["source"] == video}
+            late = sorted(at for at, index in wanted.items() if index is None)
+            if late:
+                raise ToolError(f"check.colors: 動画 {video} の時刻 {late} 秒は、動画の終わり（{float(end):.3f} 秒）より後ろです")
+            try:
+                got = decode(ffmpeg, video, sorted(set(wanted.values())), (width, height), timeout=timeout, matrix=matrix,
+                             in_range=in_range)
+            except ToolError as error:
+                raise ToolError(f"check.colors: 動画 {video} の時刻 {sorted(wanted)} 秒のコマを取り出せません（動画より後ろの時刻か、"
+                                f"読めない動画）: {error}") from error
+            for at, index in wanted.items():
+                if index not in got:
+                    raise ToolError(f"check.colors: 動画 {video} の {at:g} 秒（コマ {index}）を取り出せません（動画より後ろ）")
+                frames[(video, at)] = (got[index], index, float(times[index]))
+    report = {"schema_version": "model3d-color-stats/0.1", "left": [], "right": []}
+    for side, items in sides.items():
+        for item in items:
+            if item["video"]:
+                rgb, index, shown = frames[(item["source"], item["at"])]
+                row = color_stats.measure(rgb, item)
+                row.update(video=item["source"], at=item["at"], index=index, frame_time=shown)
+            else:
+                row = color_stats.measure(color_stats.load(item["source"]), item)
+                row["path"] = item["source"]
+            report[side].append(row)
+    report["average"] = {side: color_stats.average(report[side]) for side in ("left", "right")}
+    report["difference"] = color_stats.compare(report["average"]["left"], report["average"]["right"])
+    if "report" in outputs:
+        atomic_json(outputs["report"], report)
+    summary = {"kind": "color_stats", "left": len(report["left"]), "right": len(report["right"]),
+               "average": report["average"], "difference": report["difference"]}
+    return StepResult(observations=[summary])
