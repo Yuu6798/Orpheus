@@ -78,3 +78,17 @@ def test_shape_does_not_depend_on_which_frame_builds_it():
     quads = fx_strips.Quads([0.0, -5.0, 2.0])
     tree.draw(table, 9, quads)
     assert np.array_equal(a, quads.arrays()[0])
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"speed": 0}, "speed"), ({"tail": 0}, "tail"), ({"light_decay": 0}, "light_decay"), ({"step": -0.1}, "step"),
+    ({"fade": -1}, "fade"), ({"seed": "3"}, "整数"), ({"seed": 3.7}, "整数"),
+])
+def test_bad_values_stop(change, message):
+    with pytest.raises(EventError, match=message):
+        _tree({**EVENT, **change})
+
+
+def test_zero_fade_vanishes_without_dividing_by_zero():
+    (co, _, value), light, _ = _draw(9, {**EVENT, "fade": 0})
+    assert len(co) > 0 and np.isfinite(value).all() and light is not None

@@ -51,8 +51,15 @@ class Tree:
         if not table.fixed(spec):
             raise fx_events.EventError(f"面を走る枝分かれの根もとに、カメラから見た点は使えません（形を 1 回だけ作るため）: {spec!r}")
         self.event = event
+        for key in ("radius", "step", "speed", "tail") + (("light_decay",) if event.get("light") else ()):
+            value = fx_events.need(event, key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+                raise fx_events.EventError(f"面を走る枝分かれの {key} は 0 より大きい数にしてください: {value!r}")
+        fade = fx_events.need(event, "fade")
+        if isinstance(fade, bool) or not isinstance(fade, (int, float)) or not fade >= 0:
+            raise fx_events.EventError(f"面を走る枝分かれの fade は 0 以上の数にしてください: {fade!r}")
         origin = table.point(spec, table.start(event))
-        rng = fx_events.rng(int(fx_events.need(event, "seed")), 11)
+        rng = fx_events.rng(fx_events.need(event, "seed"), 11)
         f = FORM
         radius, arms = float(fx_events.need(event, "radius")), int(fx_events.need(event, "arms"))
         step0, depth_max, branch = float(fx_events.need(event, "step")), int(fx_events.need(event, "depth")), float(fx_events.need(event, "branch"))
@@ -93,8 +100,8 @@ class Tree:
         speed, fade = float(e["speed"]), float(e["fade"])
         front = (age + 1.0 / table.fps) * speed
         done = max(0.0, age - float(e["radius"]) * FORM["spread_done"] / speed)
-        gain = float(e.get("gain", 1.0)) * gain * max(0.0, 1.0 - done / fade)
-        flick = 1.0 - FORM["flicker"] + FORM["flicker"] * fx_events.rng(int(e["seed"]), 12, int(f)).random()
+        gain = float(e.get("gain", 1.0)) * gain * max(0.0, 1.0 - done / max(fade, 1e-6))
+        flick = 1.0 - FORM["flicker"] + FORM["flicker"] * fx_events.rng(e["seed"], 12, table.tick(f)).random()
         inward = bool(e.get("inward"))
         tail, rest = float(fx_events.need(e, "tail")), float(fx_events.need(e, "rest"))
         for p, q, d0, d1, w0, w1 in self.segments:
