@@ -387,7 +387,114 @@ def project_reference(inputs, parameters, outputs, context):
 
 
 EYE_LINE_PARAMETERS = {"eyes", "end_y", "erase_rows", "erase_columns", "sag", "thickness", "outer_bias", "wing", "lashes", "color",
-                       "supersample", "close_px", "close_blur", "band_blur", "base_width"}
+                       "supersample", "close_px", "close_blur", "band_blur", "base_width", "strokes", "skin_fill"}
+STROKE_KEYS = ["color", "curve", "name", "points", "samples", "span", "widths"]
+SKIN_FILL_KEYS = ["boxes", "exclude", "exclude_boxes", "feather", "gain", "grow", "keep_dark_below", "sigmas", "skin", "soften"]
+SKIN_RULE_KEYS = ["red_at_least_blue", "red_minus_green_below", "rgb_min"]
+
+
+def _color(value, where):
+    if not isinstance(value, list) or len(value) != 3 or not all(
+            not isinstance(v, bool) and isinstance(v, (int, float)) and 0 <= v <= 255 for v in value):
+        raise ToolError(f"{where} は線の色 [R, G, B]（0〜255）にしてください: {value!r}")
+    return value
+
+
+def _point(value, where):
+    if not isinstance(value, list) or len(value) != 2:
+        raise ToolError(f"{where} は点 [x, y]（画素）にしてください: {value!r}")
+    return [_finite(v, where) for v in value]
+
+
+def stroke_settings(strokes):
+    """strokes（点の列に沿って太さの変わる線の並び）を確かめ、eye_line.STROKE_DEFAULTS で埋めた並びにする。"""
+    from .. import eye_line
+    if not isinstance(strokes, list) or not strokes:
+        raise ToolError(f"strokes は線 {{\"points\": [[x, y], …], \"widths\": …}} の並び（1 本以上）にしてください: {strokes!r}")
+    checked = []
+    for k, stroke in enumerate(strokes):
+        where = f"strokes[{k}]"
+        if not isinstance(stroke, dict):
+            raise ToolError(f"{where} は {{\"points\", \"widths\", \"curve\", \"samples\", \"span\", \"color\"}} にしてください: {stroke!r}")
+        _refuse_unknown(stroke, STROKE_KEYS, f"texture.closed_eye_line の {where}")
+        merged = {**eye_line.STROKE_DEFAULTS, **{key: v for key, v in stroke.items() if key != "name"}}
+        points = merged.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            raise ToolError(f"{where}.points は 2 点以上の [[x, y], …]（画素）にしてください: {points!r}")
+        merged["points"] = [_point(p, f"{where}.points") for p in points]
+        if not isinstance(merged["curve"], bool):
+            raise ToolError(f"{where}.curve は true か false にしてください: {merged['curve']!r}")
+        if merged["curve"] and len(points) != 3:
+            raise ToolError(f"{where}.curve は 3 点（始め・真ん中で通る点・終わり）のときだけ使えます: {len(points)} 点")
+        samples = merged["samples"]
+        if isinstance(samples, bool) or not isinstance(samples, int) or samples < 2:
+            raise ToolError(f"{where}.samples は 2 以上の整数にしてください: {samples!r}")
+        span = merged["span"]
+        if span is not None:
+            if not isinstance(span, list) or len(span) != 2 or not all(
+                    not isinstance(v, bool) and isinstance(v, (int, float)) and 0 <= v <= 1 for v in span) or span[0] >= span[1]:
+                raise ToolError(f"{where}.span は [始め, 終わり]（0〜1、始め < 終わり）にしてください: {span!r}")
+        widths = merged.get("widths")
+        if isinstance(widths, dict):
+            _refuse_unknown(widths, ["ends", "middle"], f"texture.closed_eye_line の {where}.widths")
+            if set(widths) != {"ends", "middle"}:
+                raise ToolError(f"{where}.widths の弓の形は {{\"middle\": 太さ, \"ends\": 太さ}} にしてください: {widths!r}")
+            merged["widths"] = {key: _finite(widths[key], f"{where}.widths.{key}", 0.0) for key in ("middle", "ends")}
+        elif isinstance(widths, list) and widths and all(isinstance(w, list) and len(w) == 2 for w in widths):
+            at = [_finite(w[0], f"{where}.widths の位置", 0.0) for w in widths]
+            if any(a > 1 for a in at) or any(b <= a for a, b in zip(at, at[1:])):
+                raise ToolError(f"{where}.widths の位置は 0〜1 で、増える順にしてください: {at!r}")
+            merged["widths"] = [[a, _finite(w[1], f"{where}.widths の太さ", 0.0)] for a, w in zip(at, widths)]
+        else:
+            raise ToolError(f"{where}.widths は [[位置 0〜1, 太さ], …] か {{\"middle\", \"ends\"}} にしてください: {widths!r}")
+        if merged["color"] is not None:
+            merged["color"] = _color(merged["color"], f"{where}.color")
+        checked.append(merged)
+    return checked
+
+
+def skin_fill_settings(value):
+    """skin_fill（目の枠を、まわりの肌の色で埋める消し方）を確かめ、eye_line.SKIN_FILL_DEFAULTS で埋める。"""
+    from .. import eye_line
+    if not isinstance(value, dict):
+        raise ToolError(f"skin_fill は {{\"boxes\": [[x0, y0, x1, y1], …], \"skin\": {{\"rgb_min\": [R, G, B], …}}}} にしてください: {value!r}")
+    _refuse_unknown(value, SKIN_FILL_KEYS, "texture.closed_eye_line の skin_fill")
+    missing = [key for key in eye_line.SKIN_FILL_REQUIRED if value.get(key) is None]
+    if missing:                                          # 顔と目の大きさに寄る値は既定を置かない
+        raise ToolError(f"skin_fill に {', '.join(missing)} を書いてください（既定は無い。boxes: 目の枠、skin: 肌らしい画素の決まり、"
+                        "sigmas: 肌の色を探すぼかしの広さ（画素）の並び、exclude: 枠のまわりの肌の色を取らない幅、grow: 埋める範囲を枠から広げる幅）")
+    merged = {**eye_line.SKIN_FILL_DEFAULTS, **value}
+    boxes = merged.get("boxes")
+    if not isinstance(boxes, list) or not boxes:
+        raise ToolError(f"skin_fill.boxes は目の枠 [x0, y0, x1, y1]（画素。右と下は含まない）の並びにしてください: {boxes!r}")
+    excluded = merged.get("exclude_boxes")
+    if excluded is not None and (not isinstance(excluded, list) or len(excluded) != len(boxes)):
+        raise ToolError(f"skin_fill.exclude_boxes は boxes と同じ数の枠（肌の色を取らない所）にしてください: {excluded!r}")
+    for name, group in (("boxes", boxes), ("exclude_boxes", excluded or [])):
+        for k, box in enumerate(group):
+            if (not isinstance(box, list) or len(box) != 4 or not all(not isinstance(v, bool) and isinstance(v, (int, float)) for v in box)
+                    or box[0] >= box[2] or box[1] >= box[3]):
+                raise ToolError(f"skin_fill.{name}[{k}] は [x0, y0, x1, y1]（x0 < x1、y0 < y1）にしてください: {box!r}")
+    rule = merged.get("skin")
+    if not isinstance(rule, dict) or "rgb_min" not in rule:
+        raise ToolError("skin_fill.skin に肌らしい画素の決まり {\"rgb_min\": [R, G, B], \"red_minus_green_below\": 数, "
+                        f"\"red_at_least_blue\": true}} を書いてください（既定は無い）: {rule!r}")
+    _refuse_unknown(rule, SKIN_RULE_KEYS, "texture.closed_eye_line の skin_fill.skin")
+    _color(rule["rgb_min"], "skin_fill.skin.rgb_min")
+    if rule.get("red_minus_green_below") is not None:
+        _finite(rule["red_minus_green_below"], "skin_fill.skin.red_minus_green_below")
+    if not isinstance(rule.get("red_at_least_blue", False), bool):
+        raise ToolError(f"skin_fill.skin.red_at_least_blue は true か false にしてください: {rule['red_at_least_blue']!r}")
+    if merged["keep_dark_below"] is not None:
+        _finite(merged["keep_dark_below"], "skin_fill.keep_dark_below", 0.0)
+    sigmas = merged["sigmas"]
+    if not isinstance(sigmas, list) or not sigmas:
+        raise ToolError(f"skin_fill.sigmas はぼかしの広さ（画素）の並びにしてください: {sigmas!r}")
+    merged["sigmas"] = [_finite(v, "skin_fill.sigmas", 0.0, True) for v in sigmas]
+    for key, minimum, exclusive in (("gain", 0.0, True), ("feather", 0.0, True), ("soften", 0.0, True), ("exclude", 0.0, False),
+                                    ("grow", 0.0, False)):
+        merged[key] = _finite(merged[key], f"skin_fill.{key}", minimum, exclusive)
+    return merged
 
 
 def _finite(value, where, minimum=None, exclusive=False):
@@ -409,16 +516,36 @@ def eye_line_settings(parameters):
     from .. import eye_line
     _refuse_unknown(parameters, sorted(EYE_LINE_PARAMETERS), "texture.closed_eye_line")
     eyes = parameters.get("eyes")
-    if not isinstance(eyes, list) or not eyes:
-        raise ToolError(f"eyes は目ごとの [目頭の x, 目尻の x]（画素）の並びにしてください: {eyes!r}")
-    for k, eye in enumerate(eyes):
-        if not isinstance(eye, list) or len(eye) != 2 or eye[0] == eye[1]:
-            raise ToolError(f"eyes[{k}] は [目頭の x, 目尻の x]（違う 2 つの数）にしてください: {eye!r}")
-        [_finite(v, f"eyes[{k}]") for v in eye]
-    settings = {**eye_line.DEFAULTS, "eyes": eyes, "end_y": _finite(parameters.get("end_y"), "end_y"),
-                "erase_rows": _span(parameters.get("erase_rows"), "erase_rows"),
-                "erase_columns": _span(parameters.get("erase_columns"), "erase_columns")}
-    for key, minimum, exclusive in (("sag", 0.0, False), ("thickness", 0.0, True), ("close_blur", 0.0, True), ("band_blur", 0.0, True),
+    strokes = parameters.get("strokes")
+    if eyes is None and strokes is None:
+        raise ToolError("texture.closed_eye_line には、弧を描く eyes（目ごとの [目頭の x, 目尻の x]）か、線の並び strokes の"
+                        "どちらかが要ります")
+    if eyes is not None:
+        if not isinstance(eyes, list) or not eyes:
+            raise ToolError(f"eyes は目ごとの [目頭の x, 目尻の x]（画素）の並びにしてください: {eyes!r}")
+        for k, eye in enumerate(eyes):
+            if not isinstance(eye, list) or len(eye) != 2 or eye[0] == eye[1]:
+                raise ToolError(f"eyes[{k}] は [目頭の x, 目尻の x]（違う 2 つの数）にしてください: {eye!r}")
+            [_finite(v, f"eyes[{k}]") for v in eye]
+    settings = {**eye_line.DEFAULTS, "eyes": eyes}
+    if eyes is not None:
+        settings["end_y"] = _finite(parameters.get("end_y"), "end_y")
+    elif parameters.get("end_y") is not None:
+        raise ToolError("end_y は弧の両端の高さです。eyes と一緒に書いてください")
+    if parameters.get("skin_fill") is not None:          # 消し方の選択肢: 目の枠を、まわりの肌の色で埋める
+        if parameters.get("erase_rows") is not None or parameters.get("erase_columns") is not None:
+            raise ToolError("skin_fill（目の枠を肌の色で埋める）と、消す帯（erase_rows・erase_columns）は一緒に使えません（消し方はどちらか 1 つ）")
+        settings["skin_fill"] = skin_fill_settings(parameters["skin_fill"])
+    elif eyes is not None or parameters.get("erase_rows") is not None or parameters.get("erase_columns") is not None:
+        settings.update(erase_rows=_span(parameters.get("erase_rows"), "erase_rows"),
+                        erase_columns=_span(parameters.get("erase_columns"), "erase_columns"))
+    else:                                                # strokes だけなら、消さずに線だけを描ける
+        settings.update(erase_rows=None, erase_columns=None)
+    if strokes is not None:
+        settings["strokes"] = stroke_settings(strokes)
+    if parameters.get("sag") is not None:                 # 負なら上へたわむ弧（笑顔の閉じ目）
+        settings["sag"] = _finite(parameters["sag"], "sag")
+    for key, minimum, exclusive in (("thickness", 0.0, True), ("close_blur", 0.0, True), ("band_blur", 0.0, True),
                                     ("base_width", 0.0, True)):
         if parameters.get(key) is not None:
             settings[key] = _finite(parameters[key], key, minimum, exclusive)
@@ -459,10 +586,12 @@ def eye_line_settings(parameters):
     return settings
 
 
-@register("texture.closed_eye_line", inputs=("image",), outputs=("image", "report"),
+@register("texture.closed_eye_line", inputs=("image",), outputs=("image", "report", "mask"),
           summary="目を閉じた顔の絵の、閉じた目の線を 2D の描き方で描き直す（Blender なし）: 消す帯（erase_rows × erase_columns）の中の元の線を"
-                  "まわりの肌の色で埋め、目ごと（eyes の [目頭の x, 目尻の x]）に、下にたわんだ太い弧（end_y・sag・thickness）・目尻のはね"
-                  "（wing）・下向きのまつ毛（lashes）を color で描く。長さと位置は幅 base_width（既定は絵の幅）の絵の画素。既定の線の形は試作の値")
+                  "まわりの肌の色で埋め、目ごと（eyes の [目頭の x, 目尻の x]）に、下にたわんだ太い弧（end_y・sag・thickness。sag が負なら上へ"
+                  "たわむ笑顔の弧）・目尻のはね（wing）・下向きのまつ毛（lashes）を color で描く。strokes で点の列に沿って太さの変わる線（しわ・"
+                  "涙袋・半目の縁）を重ね、skin_fill で目の枠をまわりの肌らしい画素から埋める消し方も選べる。mask に描き直した所の重みの PNG。"
+                  "長さと位置は幅 base_width（既定は絵の幅）の絵の画素。既定の線の形は試作の値")
 def closed_eye_line(inputs, parameters, outputs, context):
     from PIL import Image
     import numpy as np
@@ -475,14 +604,19 @@ def closed_eye_line(inputs, parameters, outputs, context):
     settings = eye_line_settings(parameters)
     loaded = texture.load_texture(inputs["image"])          # 透けのある絵は (H, W, 4)
     image = loaded[..., :3]
+    if "mask" in outputs and Path(outputs["mask"]).suffix.lower() != ".png":
+        raise ToolError(f"texture.closed_eye_line の outputs の mask は .png にしてください: {Path(outputs['mask']).name}")
     try:
-        result, report = eye_line.draw(image, settings)
+        drawn = eye_line.draw(image, settings, with_mask="mask" in outputs)
     except ValueError as error:
         raise ToolError(str(error)) from error
+    result, report = drawn[0], drawn[1]
     pixels = np.clip(result + 0.5, 0, 255).astype(np.uint8)   # 台本と同じ丸め（+0.5 を切り捨て）
     if loaded.shape[2] == 4:                              # 透けはそのまま残す（project_reference は参照の絵の透けを重みに使う）
         pixels = np.dstack([pixels, loaded[..., 3].astype(np.uint8)])
     Image.fromarray(pixels).save(outputs["image"], format="PNG")
+    if "mask" in outputs:                                 # 描き直した所の重み（0〜255。texture.project_reference の mask に渡せる）
+        Image.fromarray(np.clip(drawn[2] * 255 + 0.5, 0, 255).astype(np.uint8), "L").save(outputs["mask"], format="PNG")
     report = {"kind": "closed_eye_line", "size": [int(image.shape[1]), int(image.shape[0])], **report, "alpha_kept": loaded.shape[2] == 4,
               "settings": settings}
     if "report" in outputs:
