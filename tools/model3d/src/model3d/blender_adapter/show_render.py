@@ -1,7 +1,7 @@
 """Blender の中で動かす: 演出版を、EEVEE で 1 回でコマごとに PNG に描く（render.show の描く側。.blend は保存しない）。
 
     blender --background --factory-startup --python show_render.py -- --blend in.blend --settings settings.json \
-        --cameras cameras.json --frames-dir frames --report report.json [--lights track.json] [--hooks stage.py] [--hook-config values.json]
+        --cameras cameras.json --frames-dir frames --report report.json [--lights track.json] [--hooks stage.py] [--hook-config values.json] [--skip-existing]
 
 3 作目の VRM のダンスの演出版（リポジトリ外の台本。Blender 5.2 の EEVEE で 1 回で描いた）の描き方を移した。舞台の形は作品ごとに
 違うので、フック（--hooks。Python の台本）で作って動かす。この台本が持つのは、どの作品にも要る所:
@@ -30,7 +30,8 @@
 描いたときの値を eevee に残す）、色の変換は view_transform（既定 Standard。Look・ガンマ・カーブは無し。露出は exposure、省くと 0）、
 PNG の RGB 8 ビット。.blend から引き継ぐと絵をすり替えうる設定（シーケンサー・切り取り・画素の縦横比・多視点・透ける背景・
 表示の装置・出力の色の上書き・マーカーのカメラ）は決まった値にし、違っていたものは報告の render_changes に残す。画像に日時などの
-控えを書かない。描くファイルは frames-dir の f<T>.png。同じ名前のファイルがあっても、いつも描き直す（とばさない）。
+控えを書かない。描くファイルは frames-dir の f<T>.png。同じ名前のファイルがあっても、いつも描き直す（とばさない）。--skip-existing の
+ときだけ、もうファイルのあるコマをとばす（報告の skipped_existing。とばしてよいかは、工程の側がコマのフォルダの入力の控えで確かめる）。
 **検証**: 本物の Blender 5.2.4 で、3 作目の台本の絵と比べた（docs/model3d.md）。
 """
 import argparse
@@ -90,6 +91,7 @@ def parse_args(argv):
     ap.add_argument("--lights")
     ap.add_argument("--hooks")
     ap.add_argument("--hook-config")
+    ap.add_argument("--skip-existing", action="store_true")
     return ap.parse_args(argv)
 
 
@@ -526,9 +528,12 @@ def main(argv=None):
 
     os.makedirs(a.frames_dir, exist_ok=True)
     off = set(blur["off"])
-    rendered, blurred, dof_frames = [], [], []
+    rendered, blurred, dof_frames, existing = [], [], [], []
     began = time.time()
     for T, f in plan:
+        if a.skip_existing and os.path.exists(os.path.join(a.frames_dir, frame_name(T))):
+            existing.append(T)                           # 続きから描く: もうあるコマはとばす（フックの frame も呼ばない）
+            continue
         sc.frame_set(f)
         sc.render.use_motion_blur = blur["shutter"] > 0 and T not in off
         if sc.render.use_motion_blur:
@@ -565,7 +570,7 @@ def main(argv=None):
         print(f"T {T} f {f} {time.time() - began:.1f}s", flush=True)
     seconds = time.time() - began
     report = {"schema_version": "model3d-show-render/0.1", "blender": bpy.app.version_string,
-              "planned": [{"T": T, "f": f} for T, f in plan], "rendered": rendered, "fps": fps, "resolution": [width, height],
+              "planned": [{"T": T, "f": f} for T, f in plan], "rendered": rendered, "skipped_existing": existing, "fps": fps, "resolution": [width, height],
               "scale_length": unit, "engine": sc.render.engine, "samples": settings["samples"],
               "camera": {"keys": len(rows), "curves": curves, "held": sorted(held), "sensor_height_mm": sensor, "shift_keys": shifts,
                          "dof_frames": len(dof_frames)},
@@ -584,7 +589,7 @@ def main(argv=None):
               "seconds_per_frame": round(seconds / len(rendered), 2) if rendered else None, "settings": settings}
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
-    print(json.dumps({"planned": len(plan), "rendered": len(rendered)}))
+    print(json.dumps({"planned": len(plan), "rendered": len(rendered), "skipped_existing": len(existing)}))
 
 
 if __name__ == "__main__":

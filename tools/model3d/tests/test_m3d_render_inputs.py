@@ -98,6 +98,19 @@ def test_clips_drawn_with_other_inputs_share_the_folder(tmp_path):
     assert render_inputs.read(tmp_path) == saved
 
 
+def test_a_whole_folder_check_also_looks_at_the_frames_it_will_not_draw(tmp_path):
+    """1 つのフォルダに 1 つの描画だけを集めるとき（whole）: 描かないコマでも、別の入力で描いた・控えたコマがあれば止める。"""
+    other = {**KEY, "blend": "c" * 64}
+    render_inputs.claim(tmp_path, KEY, ["f0001.png", "f0002.png"])
+    _touch(tmp_path, "f0001.png")
+    assert render_inputs.check(tmp_path, other, ["f0003.png"], "test")[1] == 0          # 既定はコマごと（クリップごとに分けて描ける）
+    with pytest.raises(ToolError, match=r"1 個のコマ（f0001.png）は、別の入力で描いたもの.*\.blend"):
+        render_inputs.check(tmp_path, other, ["f0003.png"], "render.show", whole=True)
+    _touch(tmp_path, "f0002.png")
+    assert render_inputs.check(tmp_path, KEY, ["f0002.png", "f0003.png"], "render.show", whole=True)[1] == 1   # 同じ入力なら続きから
+    assert render_inputs.check(tmp_path, KEY, ["f0003.png"], "render.show", whole=True)[1] == 0    # 数えるのは描くコマだけ
+
+
 def test_a_frame_claimed_by_other_inputs_stops_even_before_it_is_drawn(tmp_path):
     other = {**KEY, "blend": "c" * 64}
     render_inputs.check(tmp_path, KEY, ["f0001.png", "f0002.png"], "test", claim=True)   # 確かめて、同じ待ち合わせの中で控える

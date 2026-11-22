@@ -24,7 +24,8 @@ NAME = "model3d_inputs.json"
 SCHEMA = "model3d-render-inputs/0.1"
 LOCK_WAIT_S = 10.0
 LABELS = {"operation": "工程", "blend": ".blend", "track": "トラック", "cameras": "カメラ（cameras）", "bones": "骨の通り道（bones）",
-          "settings": "設定", "scripts": "描く台本", "blender": "Blender の版", "addons": "アドオン", "images": "表情の絵"}
+          "settings": "設定", "scripts": "描く台本", "blender": "Blender の版", "addons": "アドオン", "images": "表情の絵",
+          "hooks": "フック（hooks と、それが読む同じフォルダの台本）", "hook_config": "フックの値（hook_config）"}
 
 
 def script_files(script):
@@ -106,12 +107,14 @@ def _reasons(record, groups, key):
     return "、".join(sorted({reason for recorded in groups for reason in differences(record["keys"].get(recorded), key)})) or "控えの番号"
 
 
-def check(directory, key, files, where, claim=False):
+def check(directory, key, files, where, claim=False, whole=False):
     """files（フォルダからの相対パス。/ 区切り）を key で描いてよいかを確かめる。次のどれかがあれば止める:
     - もうファイルがあるのに控えの無いコマ（どの入力で描いたか分からない）
     - もうファイルがあり、別のまとまりで描いたと控えたコマ（とばすと前の絵のまま残る）
     - まだファイルが無いが、別のまとまりで描くと控えたコマ（ほかのプロセスが描いている途中か、途中で止まった描画か、消したコマ。
       同じフォルダへ別の入力で同時に描くと、とばしたコマの持ち主が入れ替わるため）
+    whole なら、files の外でも、フォルダの控えにあるコマは全部同じまとまりでなければ止める（1 つのフォルダに 1 つの描画だけを
+    集めるとき。区切って描くと、別の入力で描いた区切りが混ざらない）。
     claim なら、確かめたのと同じ待ち合わせの中で、files を key で描くと控える（確かめてから控えるまでの間に、ほかのプロセスが割り込まない）。
     (控え, もうファイルのあるコマの数) を返す。"""
     directory = Path(directory)
@@ -120,10 +123,11 @@ def check(directory, key, files, where, claim=False):
         record = read(directory)
         current = key_id(key)
         present, unknown, drawn, claimed = 0, [], {}, {}
-        for name in files:
+        planned = set(files)
+        for name in (sorted(planned | set(record["files"])) if whole else files):
             exists = (directory / name).is_file()
             recorded = record["files"].get(name)
-            present += exists
+            present += exists and name in planned
             if exists and recorded is None:
                 unknown.append(name)
             elif recorded is not None and recorded != current:
