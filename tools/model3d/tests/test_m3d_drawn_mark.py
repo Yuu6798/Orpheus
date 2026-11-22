@@ -37,6 +37,16 @@ def test_the_mark_is_measured_by_colour_and_a_small_gap_is_closed():
     assert color_marks.measure_mark(np.full((50, 50, 3), SKIN), RULE, [0, 0, 50, 50]) is None
 
 
+@pytest.mark.parametrize("width", [1, 2, 3, 4, 5, 6])
+def test_thin_marks_use_the_middle_column(width):
+    image = np.full((40, 40, 3), SKIN)
+    image[10:20, 15:15 + width] = LINE
+    image[8:10, 15 + (width - 1) // 2] = LINE                                   # 真ん中の列（偶数の幅なら左の列）だけ上へ 2 画素
+    mark = color_marks.measure_mark(image, RULE, [0, 0, 40, 40], close_size=1)
+    assert mark["width"] == width and mark["centre_x"] == 15 + (width - 1) / 2
+    assert mark["mid_top"] == 8 and mark["mid_bottom"] == 19
+
+
 def test_measure_mark_matches_opencv():
     cv2 = pytest.importorskip("cv2")
     rng = np.random.default_rng(3)

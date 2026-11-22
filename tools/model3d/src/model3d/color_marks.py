@@ -74,8 +74,11 @@ def measure_mark(image, rule, window, close_size=5):
     ys, xs = np.nonzero(blob)
     left, right, top, bottom = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
     width = right - left + 1
-    middle = np.abs(xs - (left + width / 2)) < width * 0.1
-    return {"left": x0 + left, "right": x0 + right, "top": y0 + top, "bottom": y0 + bottom, "centre_x": x0 + left + (width - 1) / 2.0,
+    centre = left + (width - 1) / 2.0                                   # 左右の端の真ん中（centre_x と同じ所）
+    middle = np.abs(xs - centre) < width * 0.1
+    if not middle.any():                                                # 細い印（幅 5 以下）は、真ん中の列（偶数の幅なら 2 列）
+        middle = np.abs(xs - centre) <= 0.5
+    return {"left": x0 + left, "right": x0 + right, "top": y0 + top, "bottom": y0 + bottom, "centre_x": x0 + centre,
             "centroid_y": round(y0 + float(ys.mean()), 1), "mid_top": int(y0 + ys[middle].min()), "mid_bottom": int(y0 + ys[middle].max()),
             "width": int(width), "area": int(len(ys))}
 
