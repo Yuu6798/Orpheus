@@ -1,5 +1,6 @@
 """絵の中の色の印（口の線など）を、色の決まりと、つながった画素のかたまりで探す部品（Blender なし。numpy だけ）。
-texture.warp_mouth（もとの口の線を測る）が使う。目で読まず、色で測る（4 作目の 3D のダンスで、目で読んで口の中心を 5.7 mm ずらした）。"""
+texture.warp_mouth（もとの口の線を測る）と check.drawn_mark（描いた印のずれを測る）が使う。目で読まず、色で測る（4 作目の 3D のダンスで、
+目で読んで口の中心を 5.7 mm ずらした）。"""
 import numpy as np
 
 RULE_KEYS = ("red_minus_green_above", "red_above", "green_below")
@@ -58,6 +59,64 @@ def largest_component(mask):
         return None
     areas = np.bincount(labels.ravel(), minlength=count + 1)[1:]
     return labels == 1 + int(np.argmax(areas))
+
+
+def measure_mark(image, rule, window, close_size=5, halo=False):
+    """探す範囲 window（[x0, y0, x1, y1]。右と下は含まない）の中で、色の決まり rule に入る画素を close_size の窓で閉じ、いちばん大きいかたまりの
+    左右・上下の端（画素。端を含む）・中心の x（左右の端の真ん中）・重心の y・真ん中の 2 割の列の上の縁と下の縁・幅・面積。無ければ None。"""
+    x0, y0, x1, y1 = window
+    # halo なら、閉じる処理は探す範囲の外に閉じる窓の大きさの縁を足した所でする（窓の外を「ある」とみなすので、狭い範囲の縁で閉じると、
+    # 浅い弧の線が塗りつぶした箱になる）。かたまりを選ぶのは、探す範囲の中だけ。既定は台本と同じ（探す範囲の中だけで閉じる）
+    halo = close_size if (halo and close_size > 1) else 0
+    X0, Y0 = max(x0 - halo, 0), max(y0 - halo, 0)
+    X1, Y1 = min(x1 + halo, image.shape[1]), min(y1 + halo, image.shape[0])
+    found = color_rule(image[Y0:Y1, X0:X1], rule)
+    if close_size > 1:
+        found = close(found, close_size)
+    found = found[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+    blob = largest_component(found)
+    if blob is None:
+        return None
+    ys, xs = np.nonzero(blob)
+    left, right, top, bottom = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+    width = right - left + 1
+    centre = left + (width - 1) / 2.0                                   # 左右の端の真ん中（centre_x と同じ所）
+    middle = np.abs(xs - centre) < width * 0.1
+    if not middle.any():                                                # 細い印（幅 5 以下）は、真ん中の列（偶数の幅なら 2 列）
+        middle = np.abs(xs - centre) <= 0.5
+    return {"left": x0 + left, "right": x0 + right, "top": y0 + top, "bottom": y0 + bottom, "centre_x": x0 + centre,
+            "centroid_y": round(y0 + float(ys.mean()), 1), "mid_top": int(y0 + ys[middle].min()), "mid_bottom": int(y0 + ys[middle].max()),
+            "width": int(width), "area": int(len(ys))}
+
+
+def mark_shift(reference, image, settings):
+    """描いた印のずれ（check.drawn_mark）。reference と image は同じ大きさの RGB。戻り: 報告。"""
+    original = measure_mark(reference, settings["reference_rule"], settings["window"], settings["close"], settings.get("close_halo", False))
+    if original is None:
+        raise ValueError(f"もとの絵の探す範囲 {settings['window']} に、印の色（reference_rule）の画素がありません")
+    left, top, right, bottom = settings["search_margin"]
+    near = [max(original["left"] - left, 0), max(original["top"] - top, 0), original["right"] + right + 1, original["bottom"] + bottom + 1]
+    drawn = measure_mark(image, settings["mark_rule"], near, settings["close"], settings.get("close_halo", False))
+    report = {"original": original, "search": near, "drawn": drawn}
+    if drawn is not None:
+        report.update(centre_dx_px=drawn["centre_x"] - original["centre_x"], top_dy_px=drawn["mid_top"] - original["mid_top"],
+                      width_ratio=round(drawn["width"] / original["width"], 4), height_px=drawn["mid_bottom"] - drawn["mid_top"] + 1)
+        mpp = settings.get("metres_per_pixel")
+        if mpp is not None:
+            mm = mpp * 1000
+            report.update(centre_dx_mm=round(report["centre_dx_px"] * mm, 3), top_dy_mm=round(report["top_dy_px"] * mm, 3),
+                          width_mm=round(drawn["width"] * mm, 3), height_mm=round(report["height_px"] * mm, 3))
+    changed = np.abs(image.astype(np.float64) - reference.astype(np.float64)).max(axis=2) > settings["change_threshold"]
+    rows, cols = np.nonzero(changed)
+    report.update(changed_pixels=int(len(rows)),
+                  changed_box=[int(cols.min()), int(rows.min()), int(cols.max()), int(rows.max())] if len(rows) else None)
+    if settings.get("allowed_margin") is not None:                     # 印のまわりの許す枠の外で変わった画素（0 のはず）
+        left, top, right, bottom = settings["allowed_margin"]
+        allowed = [max(original["left"] - left, 0), max(original["top"] - top, 0), original["right"] + right + 1, original["bottom"] + bottom + 1]
+        far = changed.copy()
+        far[allowed[1]:allowed[3], allowed[0]:allowed[2]] = False
+        report.update(allowed=allowed, changed_outside=int(far.sum()))
+    return report
 
 
 def close(mask, size):

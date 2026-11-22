@@ -78,6 +78,15 @@ def ramp(t):
     return 0.5 * t + 0.5 * t * t * (3 - 2 * t)
 
 
+def side_shift(xs, centre, k, core, fall):
+    """横に k 倍する動き (W,)（列ごと）: 真ん中から core までは (k − 1) × 距離、その外でなだらかに 0 へ戻す。
+    smooth_step の傾きは最大 1.5 なので、広げる（k > 1）ときに戻す長さが (k − 1) × core × 1.5 より短いと、動かした先の並びが減って
+    逆に引けない。戻す長さを (k − 1) × core の 2 倍まで広げる（台本の値（k が 1.12 まで）では、台本と同じ式）。"""
+    t = np.abs(xs - centre)
+    reach = max(fall, 2.0 * abs(k - 1) * core)
+    return np.where(t <= core, (k - 1) * (xs - centre), np.sign(xs - centre) * (k - 1) * core * (1 - smooth_step((t - core) / reach)))
+
+
 def upper_rows(rows, line, shift, keep, fade):
     """線より上の行 rows（増える並び）を動かした先: 線から keep まではそのまま shift 動かし、その先でなだらかに 0 へ戻す。
     ramp の傾きは最大 1.25 なので、上へ fade / 1.25 より大きく動かすと並びが折れ返る（顔の画素がとんだり重なったりする）。下と同じく、
@@ -140,9 +149,7 @@ def warp(image, settings):
     map_x = ident_x.copy()
     scaled = f
     if abs(k - 1) >= 1e-3:                                             # 2. 横に伸び縮み（口のまわりだけ）
-        core, fall = hw0 + lengths["core"], lengths["fall"]
-        t = np.abs(XS - cx)
-        shift = np.where(t <= core, (k - 1) * (XS - cx), np.sign(XS - cx) * (k - 1) * core * (1 - smooth_step((t - core) / fall)))
+        shift = side_shift(XS, cx, k, hw0 + lengths["core"], lengths["fall"])
         dy = YS - line_mean
         weight_y = np.where(dy < 0, 1 - smooth_step((-dy - lengths["above"]) / lengths["above_fade"]),
                             1 - smooth_step((dy - lengths["below"]) / lengths["below_fade"]))
