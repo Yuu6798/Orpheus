@@ -74,6 +74,38 @@ def test_values_that_cannot_be_computed_stop_with_the_frame(value, message):
         _at(_plan({"key": value}), 1)
 
 
+# ---- 決まった乱数 rand ----
+
+def test_rand_is_decided_by_the_frame_and_the_seed():
+    import random
+    plan = _plan({"a": "rand(13)", "b": "rand(14)", "dim": "1 - 0.6 * rand(13)", "mixed": "mix(RED, WHITE, rand(2))"})
+    track, _ = light_plan.build(plan)
+    for frame in track["frames"]:
+        T, v = frame["T"], frame["values"]
+        assert v["a"] == random.Random(T * 7919 + 13).random()           # フックのちらつきと同じ式（T × 7919 + 種）
+        assert v["dim"] == 1 - 0.6 * random.Random(T * 7919 + 13).random()
+        assert 0 <= v["a"] < 1 and v["a"] != v["b"]
+        assert v["mixed"][0] == 1.0 and v["mixed"][1] == random.Random(T * 7919 + 2).random()
+    assert len({frame["values"]["a"] for frame in track["frames"]}) == 30          # コマごとに違う
+
+
+def test_rand_is_the_same_in_any_order_and_any_length():
+    plan = _plan({"a": "rand(0) + rand(7918)"})
+    whole, _ = light_plan.build(plan)
+    part, _ = light_plan.build({**plan, "frames": 12})                              # 短く作っても（区切って描いても）同じ
+    assert part["frames"] == whole["frames"][:12]
+    p = light_plan.Plan(plan)
+    backwards = [p.at(T)[0]["a"] for T in range(30, 0, -1)][::-1]                   # 求める順に寄らない（隠れた状態が無い）
+    assert backwards == [frame["values"]["a"] for frame in whole["frames"]]
+
+
+@pytest.mark.parametrize("text", ["rand('a')", "rand(t)", "rand(1.5)", "rand(-1)", "rand(7919)", "rand(True)", "rand()",
+                                  "rand(1, 2)", "rand(1 + 1)"])
+def test_rand_needs_one_whole_number_seed_written_as_it_is(text):
+    with pytest.raises(ToolError, match="rand"):
+        light_plan.Plan(_plan({"key": text}))
+
+
 # ---- 区間・let・set・閃光 ----
 
 def test_segments_let_and_set_override_the_defaults():
