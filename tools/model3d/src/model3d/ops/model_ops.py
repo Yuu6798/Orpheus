@@ -271,6 +271,22 @@ TWIST_BONES_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "
 TWIST_MEASURE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "twist_measure.py"
 
 
+def twist_spring_root_settings(rule, where, last_index):
+    if not isinstance(rule, dict):
+        raise ToolError(f"{where} は names または prefixes を含む辞書にしてください: {rule!r}")
+    _refuse_unknown(rule, ("names", "prefixes", "index"), where)
+    selectors = set(rule) & {"names", "prefixes"}
+    if len(selectors) != 1:
+        raise ToolError(f"{where} には names と prefixes のどちらか一方を指定してください")
+    selector, = selectors
+    _names(rule[selector], f"{where}.{selector}")
+    if "index" in rule:
+        index = rule["index"]
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= last_index:
+            raise ToolError(f"{where}.index は 0 以上 {last_index} 以下の整数にしてください: {index!r}")
+    return dict(rule)
+
+
 def twist_bones_settings(parameters):
     """model.twist_bones のパラメーターを確かめ、台本の settings にする。"""
     from ..blender_adapter.twist_bones import CONSTRAINT_MODES, additional_segment_names, check_roll, segment_fractions, segment_layout
@@ -286,16 +302,17 @@ def twist_bones_settings(parameters):
     for k, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ToolError(f"bones[{k}] は {{\"bone\": …, \"aim\": …}} にしてください: {entry!r}")
-        _refuse_unknown(entry, ("bone", "aim", "name", "roll", "segments"), f"bones[{k}]")
+        _refuse_unknown(entry, ("bone", "aim", "name", "roll", "segments", "spring_roots"), f"bones[{k}]")
         bone = _name(entry.get("bone"), f"bones[{k}].bone")
         aim = _name(entry.get("aim"), f"bones[{k}].aim") if mode == "aim" or "aim" in entry else None
         name = _name(entry.get("name", f"{bone}_swing"), f"bones[{k}].name")
         if len({bone, aim, name}) != 3:
             raise ToolError(f"bones[{k}] の bone・aim・name は別の骨にしてください: {entry!r}")
         bones.append({"bone": bone, "name": name} if aim is None else {"bone": bone, "aim": aim, "name": name})
+        segment_count = None
         if "segments" in entry:
             try:
-                segment_fractions(entry["segments"], f"bones[{k}].segments")
+                segment_count = len(segment_fractions(entry["segments"], f"bones[{k}].segments")) + 1
             except ValueError as error:
                 raise ToolError(str(error)) from error
             bones[-1]["segments"] = entry["segments"]
@@ -307,6 +324,9 @@ def twist_bones_settings(parameters):
             if roll["name"] in (bone, aim, name) or roll["from"] == bone:
                 raise ToolError(f"bones[{k}].roll の name は bone・aim・name と、from は bone と別の骨にしてください: {entry!r}")
             bones[-1]["roll"] = roll
+        if "spring_roots" in entry:
+            last_index = segment_count if segment_count is not None else 1 + ("roll" in bones[-1])
+            bones[-1]["spring_roots"] = twist_spring_root_settings(entry["spring_roots"], f"bones[{k}].spring_roots", last_index)
     added = [entry["name"] for entry in bones] + [entry["roll"]["name"] for entry in bones if "roll" in entry]
     follows_source = mode == "parented_roll"
     if follows_source or any("segments" in entry for entry in bones):
@@ -346,6 +366,7 @@ def twist_bones_settings(parameters):
                   "既定の拘束は VRM 1.0 の aim・roll として書き出せる形。constraint_mode: parented_roll は、"
                   "補助の骨を元の骨の下に置き、拘束を読まないアプリでも腕の曲げに付いて行かせる。"
                   "bones の segments は骨の全長に中間点を足し、その位置の割合だけねじれを受け持つ。"
+                  "spring_roots を指定した骨では、揺れものの鎖の根をねじれの補助骨に付け替えられる。"
                   "元のファイルは変えない")
 def twist_bones(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
