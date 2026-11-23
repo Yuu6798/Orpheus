@@ -1135,6 +1135,49 @@ T ポーズ）に左右されないよう、物差しは足の裏からウエス
   38 枚が画素まで同じで、4 枚（粘土の絵）は 1〜4 画素の揺れ。元絵と並べる絵の、元絵の倍率と上下のずれは台本と同じ式（正面の絵の範囲が広がった
   分だけ値は違う）。
 
+### MToon の影・縁の光・マットキャップを設定する（`vrm.mtoon_params`）
+
+入力 `blend` は VRM Add-on で MToon を有効にした材質が入った .blend。出力 `blend` には別名で保存し、`report`
+（`model3d-mtoon-params/0.1`）に指定した材質の前後の値、変更があった材質 `changed`、見つからなかった任意の材質 `skipped` を記録する。
+Blender と VRM Add-on が必要。
+
+工程の `parameters.materials` に Blender 上の材質名と、その材質に設定する項目を書く。指定した項目だけを設定する。
+材質が見つからない場合はエラー。`optional: true` の材質は見つからないときに飛ばす。見つかった材質には MToon が必要。
+
+| 項目 | 値 |
+| --- | --- |
+| `shade_color_factor`、`parametric_rim_color_factor`、`matcap_factor` | 直線 RGB（0〜1 の数 3 つ）か sRGB の `#RRGGBB`（直線 RGB に変換） |
+| `shading_toony_factor`、`rim_lighting_mix_factor` | 0〜1 |
+| `parametric_rim_fresnel_power_factor` | 0 以上 |
+| `shading_shift_factor`、`parametric_rim_lift_factor` | 有限の数 |
+| `matcap_texture` | 工程の `inputs` に追加した静止画像の入力名。画像を .blend に詰め込む |
+
+数は Blender の単精度の範囲で指定する。色の掛け率を補正するには [`vrm.color_factor`](#材質の色の掛け率を戻すvrmcolor_factor)、
+視線を設定するには [`vrm.look_at`](#目を動かせる作りにする) を使う。
+各項目の意味は [VRMC_materials_mtoon 1.0](https://github.com/vrm-c/vrm-specification/tree/master/specification/VRMC_materials_mtoon-1.0) を参照。
+
+```json
+{
+  "id": "shade",
+  "operation": "vrm.mtoon_params",
+  "inputs": {"blend": "$inputs.model", "reflection": "$inputs.reflection"},
+  "parameters": {
+    "materials": {
+      "Sample": {
+        "shade_color_factor": "#638C94",
+        "shading_toony_factor": 0.25,
+        "parametric_rim_color_factor": [0.125, 0.25, 0.375],
+        "matcap_texture": "reflection"
+      }
+    }
+  },
+  "outputs": {"blend": "shaded.blend", "report": "materials.json"}
+}
+```
+
+Blender 5.2.4 と VRM Add-on 4.10.5 で、同じ合成モデルと画像を使って試作と照合した。保存後に開き直し、8 材質の数値 112 個を比べた最大差は 0。
+マットキャップ画像のリンクは全材質で一致し、詰め込んだ画像 1 枚はバイトまで一致した。
+
 ### 材質の色の掛け率を戻す（`vrm.color_factor`）
 
 3 作目の VRM のダンスで受け取った VRM は、下半身の材質（脚・パンツ・裾など）だけ、色の掛け率（MToon の `baseColorFactor`）が 1 より小さく、

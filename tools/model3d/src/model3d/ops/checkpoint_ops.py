@@ -3,6 +3,7 @@
 リポジトリの外の台本でしていたもの）。測る工程は数と絵を出すだけで、良し悪しは決めない。
 
 - vrm.color_factor: VRM の材質（MToon）の色の掛け率を 1 に戻し、影の色も同じ割合で戻す。
+- vrm.mtoon_params: MToon の影・縁の光・マットキャップの設定を材質ごとに変える。
 - model.neck_junction: 首と頭のつなぎ目を直す（首の上の端を頭の骨へ付け替え、頭の中へ伸びる栓を足す）。
 - check.illustration: 立ち絵か T ポーズの体の絵の、人物の比率を測る（numpy と Pillow。model3d/checkpoint.py）。
 - check.body_image・check.face_image: 体の絵と顔の絵を、元絵と同じ物差しで比べる（numpy と Pillow）。
@@ -67,6 +68,45 @@ def color_factor(inputs, parameters, outputs, context):
                    "materials": {name: {"before": (report.get("before") or {}).get(name), "after": (report.get("after") or {}).get(name)}
                                  for name in settings["materials"]}}
     return StepResult(observations=[observation])
+
+
+MTOON_PARAMS_SCRIPT = COLOR_FACTOR_SCRIPT.with_name("mtoon_params.py")
+MTOON_PARAMS = {"materials", "blender", "addons", "blender_extensions", "timeout"}
+
+
+@register("vrm.mtoon_params", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="VRM の MToon 材質の影色・境目のかたさとずらし・縁の光・マットキャップを材質ごとに設定し、"
+                  "前後の値を JSON に記録する。マットキャップ画像は工程の追加の入力で渡す。Blender と VRM Add-on が必要",
+          capability={"aliases": ["MToon の影色と縁の光を変える", "マットキャップを材質に貼る", "MToon shading and rim"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def mtoon_params(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher, mtoon_params as adapter
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    from .vrm_ops import VRM_ADDON
+
+    operation = "vrm.mtoon_params"
+    require(inputs, ("blend",), operation)
+    _refuse_unknown(parameters, MTOON_PARAMS, operation)
+    _outputs(outputs, ("blend", "report"), operation)
+    try:
+        settings = adapter.compile_settings(parameters.get("materials"), inputs)
+    except ValueError as error:
+        raise ToolError(f"{operation}: {error}") from error
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "mtoon_params_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(
+        blender, MTOON_PARAMS_SCRIPT, None,
+        ["--blend", inputs["blend"], "--settings", settings_path, "--out-blend", outputs["blend"], "--report", outputs["report"]],
+        log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions,
+    )
+    report = read_json(outputs["report"])
+    return StepResult(observations=[{"kind": "mtoon_params", "changed": report["changed"], "skipped": report["skipped"],
+                                     "blender_version": record["blender_version"], "addons": record.get("addons")}])
 
 
 NECK_JUNCTION_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "neck_junction.py"
