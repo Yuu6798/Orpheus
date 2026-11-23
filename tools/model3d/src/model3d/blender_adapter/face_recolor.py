@@ -1,10 +1,14 @@
 """UV で選んだ画素を塗り、同じ絵を使う別の面を調べる。"""
+from pathlib import Path
+import sys
+
 import numpy as np
 
 if __package__:
     from .model_edit import islands, world_points
     from .split_material import in_box
 else:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from model_edit import islands, world_points
     from split_material import in_box
 
