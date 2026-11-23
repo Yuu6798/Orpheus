@@ -1405,6 +1405,36 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
       bufferView・JOINTS_0 の番号・node の children）が範囲の外なら不合格。node の親子の循環も不合格。sparse の accessor・GLB の外の
       バッファとファイル・BIN チャンクに収まらない値は読まずに `unread` に理由を書く（不合格にはしない）。
 
+#### VRM の roll 拘束を検算する（`check.vrm_roll`）
+
+`check.vrm_roll` は書き出した VRM（GLB）を読み、roll 拘束ごとに、元 node の軸まわりにねじってから軸を倒した姿勢を作る。
+送り先と元の基本姿勢のローカル回転から、[VRMC_node_constraint 1.0 の roll の式](https://github.com/vrm-c/vrm-specification/blob/master/specification/VRMC_node_constraint-1.0/README.md#roll-constraint)
+に従って、送り先の軸まわりに残ったねじれを計算する。Blender や再生アプリを起動せず、入力ファイルを書き換えない。
+基本姿勢は `rotation` または `matrix` から読み、指定がなければ単位回転とする。
+腕を倒すだけでねじれが出る場合は、この報告で該当する拘束を見つけられる。
+
+```json
+{
+  "id": "roll",
+  "operation": "check.vrm_roll",
+  "inputs": {"vrm": "$inputs.avatar"},
+  "parameters": {"tolerance_deg": 0.2},
+  "outputs": {"report": "roll.json"}
+}
+```
+
+- `twists_deg` は -180 度より大きく 180 度未満のねじれ角（省略時 -120・-60・0・60・120 度）。`swings_deg` は 0 度以上
+  180 度未満の倒す角（省略時 0・30・60・90・120 度）。いずれも 0 度を加え、重複を除く。倒す向きは両方の垂直軸の正負の 4 方向。
+- 報告には `max_error_deg`（重み × 元のねじれとの差の最大値）、`max_error_case`（その姿勢での計算値と狙い）、
+  `max_twist_when_only_swung_deg`（ねじれ 0 度で倒したときの不要なねじれ）を拘束ごとに残す。拘束の `weight` が未指定なら 1。
+- `tolerance_deg` を指定した場合だけ、角度差が許容値を超えると要確認。読めない roll も要確認、対象がなければ未実施。
+  `strict` では要確認と未実施が失敗、`report_only` では測るだけ。対象は単独の roll の計算で、拘束の連鎖や動画中の姿勢は検査しない。
+  aim・rotation 拘束を含む構造の一覧は `check.vrm` で読む。
+
+確かめたこと：合成 GLB の roll 5 件（X・Y・Z、軸がずれた 2 件）で、1 件あたり 96 姿勢を同じ入力で試作と比較した。
+最大角度差、倒しただけの最大ねじれ、基本姿勢の回転差の計 15 項目は、試作の報告精度（0.001 度）で差が 0 だった。
+合成のレシピでも、許容値の有無、要確認と報告のみの扱い、入力ファイルが変わらないことを確認した。
+
 **VRM に入らないもの**（2 作目の VRM のダンスで分かったこと）: 表情を頭の絵の差し替えで作ったもの（VRM の表情は形の変化。形状キーで作った表情は、
 `vrm.expressions` で割り当てれば入る。[表情を形で作る](#表情を形で作るvrm-に入る表情)）、布の計算、
 VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model.twist_bones` の骨は書き出せる形。`VRMC_node_constraint` に対応しない

@@ -332,3 +332,22 @@ def check_vrm(inputs, parameters, outputs, context):
     if unknown:
         raise ToolError(f"check.vrm の知らないパラメーター: {sorted(unknown)}（使えるのは report_only・strict）")
     return _finish(vrm.inspect_file(inputs["vrm"]), outputs, parameters, "VRM の検査")
+
+
+@register("check.vrm_roll", inputs=("vrm",), outputs=("report",),
+          summary="VRM 1.0 の roll 拘束を GLB の基本姿勢から検算する（Blender なし）。"
+                  "元 node の軸まわりの回転と倒しを組み合わせ、重みを掛けたねじれからの最大のずれと、倒しただけのねじれを測る",
+          capability={"aliases": ["VRM roll 拘束", "ねじれの検算"],
+                      "network_mode": "never", "external_process_mode": "never",
+                      "parameters": {"status": "docs", "schema": None}})
+def check_vrm_roll(inputs, parameters, outputs, context):
+    from .. import vrm_roll
+    from .check_ops import _finish
+    operation = "check.vrm_roll"
+    require(inputs, ("vrm",), operation)
+    allowed = {"twists_deg", "swings_deg", "tolerance_deg", "strict", "report_only"}
+    _check(parameters, allowed, outputs, (), operation)
+    for key in ("strict", "report_only"):
+        if key in parameters and type(parameters[key]) is not bool:
+            raise ToolError(f"{key} は true または false にしてください")
+    return _finish(vrm_roll.inspect_file(inputs["vrm"], parameters), outputs, parameters, "VRM の roll 検算")
