@@ -512,12 +512,22 @@ def _gain(value):
           summary="1 つの部品（object）のメッシュが使う uv の範囲（三角形と、その外の margin 画素）だけ、色の絵に色ごとの倍率 gain を"
                   "掛ける（Blender の中で）。dark_below を渡すと、明るさ（RGB の最大）がそれより暗い画素だけ（+feather でなめらかに 0 へ。"
                   "明るい縁取りの模様などは変えない）。ほかの部品と分け合う色の絵でも、その部品の所だけが変わる。塗り替えた絵は texture の"
-                  "PNG に書き、.blend に詰め込んで付け替える。元のファイルは変えない")
+                  "PNG に書き、.blend に詰め込んで付け替える。region で面を絞り、paint で目標色へ寄せ、変えた画素を共有する別の面を報告できる。"
+                  "元のファイルは変えない")
 def recolor_part(inputs, parameters, outputs, context):
     require(inputs, ("blend",), "model.recolor_part")
-    _refuse_unknown(parameters, COMMON - {"armature"} | {"object", "image", "gain", "dark_below", "feather", "margin"}, "model.recolor_part")
-    settings = {"object": _name(parameters.get("object"), "object"), "image": None, "gain": _gain(parameters.get("gain")),
+    _refuse_unknown(parameters, COMMON - {"armature"} | {"object", "image", "gain", "dark_below", "feather", "margin",
+                                                      "region", "paint"}, "model.recolor_part")
+    settings = {"object": _name(parameters.get("object"), "object"), "image": None,
                 "dark_below": None, "feather": 0.1, "margin": 3.0}
+    if "region" in parameters:
+        settings["region"] = recolor_region(parameters["region"])
+    if "paint" in parameters:
+        if "region" not in settings or set(parameters) & {"gain", "dark_below", "feather", "margin"}:
+            raise ToolError("paint は region と組み合わせ、gain・dark_below・feather・margin は省いてください")
+        settings.update(paint=recolor_paint(parameters["paint"]), margin=0)
+    else:
+        settings["gain"] = _gain(parameters.get("gain"))
     if parameters.get("image") is not None:
         settings["image"] = _name(parameters["image"], "image")
     if parameters.get("dark_below") is not None:
@@ -534,7 +544,58 @@ def recolor_part(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"],
                    **{key: report.get(key) for key in ("object", "image", "texels_in_part", "texels_changed")}}
     unresolved = [] if report.get("texels_in_part") else [f"{report.get('object')} の、絵 {report.get('image')} を使う面の uv の範囲に画素がありません"]
+    sharing = report.get("other_faces_using_changed_texels", {})
+    if sharing:
+        unresolved.append(f"変えた画素を使う別の面、または未確認の面があります: {', '.join(sorted(sharing))}")
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+def recolor_region(region):
+    if not isinstance(region, dict) or not region:
+        raise ToolError("region は空でない面の選択オブジェクトにしてください")
+    _refuse_unknown(region, ("box", "material", "mirror_x", "island_vertices", "island_box"), "region")
+    for key in ("box", "island_box"):
+        if key in region:
+            _box(region[key], f"region.{key}")
+    if "material" in region:
+        _name(region["material"], "region.material")
+    if "mirror_x" in region and not isinstance(region["mirror_x"], bool):
+        raise ToolError("region.mirror_x は true / false にしてください")
+    if "island_box" in region and "island_vertices" not in region:
+        raise ToolError("region.island_box には island_vertices も要ります")
+    if "island_vertices" in region:
+        span = region["island_vertices"]
+        if (not isinstance(span, list) or len(span) != 2 or not all(type(v) is int and v >= 1 for v in span)
+                or span[0] > span[1]):
+            raise ToolError("region.island_vertices は頂点数の [最小, 最大] にしてください")
+    return dict(region)
+
+
+def recolor_paint(paint):
+    if not isinstance(paint, dict):
+        raise ToolError("paint は目標色と塗り方のオブジェクトにしてください")
+    _refuse_unknown(paint, ("rgb", "keep", "pad", "clean", "select"), "paint")
+    rgb = paint.get("rgb")
+    if not isinstance(rgb, list) or len(rgb) != 3:
+        raise ToolError("paint.rgb は 0〜1 の [r, g, b] にしてください")
+    condition = paint.get("select", {"mode": "all"})
+    if not isinstance(condition, dict) or condition.get("mode") not in ("all", "dark", "grey"):
+        raise ToolError("paint.select.mode は all、dark、grey のいずれかにしてください")
+    mode = condition["mode"]
+    fields = {"mode"} if mode == "all" else {"mode", "value", "softness"}
+    if mode == "grey":
+        fields.add("max_saturation")
+    if set(condition) != fields:
+        raise ToolError(f"paint.select の {mode} に要る設定は {sorted(fields)} です")
+    selection = {"mode": mode, **{key: _real(condition[key], f"paint.select.{key}", 0, exclusive=key == "softness", maximum=1)
+                                 for key in sorted(fields - {"mode"})}}
+    pad = number(paint, "pad", 0, minimum=0, integer=True)
+    clean = number(paint, "clean", 0, minimum=0, integer=True)
+    if max(pad, clean) > 64:
+        raise ToolError("paint.pad と paint.clean は 0〜64 画素にしてください")
+    return {"rgb": [_real(v, "paint.rgb", 0, maximum=1) for v in rgb],
+            "keep": _real(paint.get("keep", 0), "paint.keep", 0, maximum=1), "pad": pad, "clean": clean,
+            "select": selection}
 
 
 RULE_KEYS = {"image", "hue_range_deg", "soft", "min_saturation", "hue_shift", "sat_scale", "value_gamma", "value_scale"}
