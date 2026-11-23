@@ -24,6 +24,19 @@ def test_paint_keeps_alpha_and_does_not_wrap_the_atlas():
     assert np.count_nonzero(np.any(result != pixels, axis=2)) == 4
 
 
+@pytest.mark.parametrize("keep", [0, 0.75])
+def test_paint_uses_soft_weights_even_if_every_texel_is_under_half(keep):
+    pixels = np.full((2, 2, 4), 0.36, dtype=np.float32)
+    mask = np.ones((2, 2), dtype=bool)
+    paint = recolor_paint({"rgb": [1, 0, 0], "keep": keep,
+                           "select": {"mode": "dark", "value": 0.3, "softness": 0.1}})
+    result = paint_pixels(pixels, mask, paint)
+    weight = 1 - 0.6 ** 2 * (3 - 2 * 0.6)
+    rgb = np.rint(((1 - weight) * 0.36 + weight * np.array([1, 0, 0])) * 255) / 255
+    assert np.allclose(result[..., :3], rgb)
+    assert np.array_equal(result[..., 3], pixels[..., 3])
+
+
 @pytest.mark.parametrize("api, config, message", [
     (recolor_region, {"island_vertices": [4, 2]}, "island_vertices"),
     (recolor_region, {"island_box": {"x": [0, 1]}}, "island_vertices"),

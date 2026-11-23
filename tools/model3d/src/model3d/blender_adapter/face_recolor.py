@@ -106,12 +106,16 @@ def paint_pixels(image, face_mask, paint):
         for _ in range(2):
             weight = np.where(area, box_mean(weight * area, clean) / denominator, 0)
         weight = smooth(0.35, 0.65, weight)
-    strong = weight > 0.5
-    if not strong.any():
+    active = weight > 0
+    if not active.any():
         return image.copy()
-    luminance = rgb @ np.array([0.2126, 0.7152, 0.0722])
-    ratio = np.clip(luminance / max(float(np.median(luminance[strong])), 1 / 255), 0.25, 2.5)
-    target = np.clip(np.asarray(paint["rgb"]) * ratio[..., None] ** paint["keep"], 0, 1)
+    target = np.asarray(paint["rgb"])
+    if paint["keep"]:
+        luminance = rgb @ np.array([0.2126, 0.7152, 0.0722])
+        strong = weight > 0.5
+        reference = luminance[strong] if strong.any() else luminance[active]
+        ratio = np.clip(luminance / max(float(np.median(reference)), 1 / 255), 0.25, 2.5)
+        target = np.clip(target * ratio[..., None] ** paint["keep"], 0, 1)
     updated = rgb * (1 - weight[..., None]) + target * weight[..., None]
     if mode == "all":
         done = face_mask.copy()
