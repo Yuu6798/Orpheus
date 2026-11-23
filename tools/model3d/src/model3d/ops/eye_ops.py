@@ -224,7 +224,8 @@ KEY_AMOUNTS = ("lid_front", "lid_margin", "close_below", "close_reach", "close_m
 KEY_PAIRS = ("iris_stretch", "iris_squash")
 KEY_SHAPES = ("side_fade", "bump_power", "upper_fall", "lower_fall")
 KEY_NAMES = {"wide": "eye_wide_", "small": "iris_small_", "stretch": "iris_wide_", "squash": "iris_squash_"}
-KEYS_PARAMETERS = {"blink", "smile", "names", *KEY_AMOUNTS, *KEY_PAIRS, *KEY_SHAPES, "blender", "addons", "blender_extensions", "timeout"}
+KEYS_PARAMETERS = {"blink", "smile", "combined_blink", "names", *KEY_AMOUNTS, *KEY_PAIRS, *KEY_SHAPES,
+                   "blender", "addons", "blender_extensions", "timeout"}
 
 
 def _sides(value, where, default):
@@ -266,10 +267,29 @@ def key_settings(parameters):
     return cfg
 
 
+def _combined_blink(value, fixing):
+    if not isinstance(value, dict) or set(value) != {"tolerance_m", "keys"}:
+        raise ToolError("combined_blink は tolerance_m と keys にしてください")
+    tolerance = _number(value["tolerance_m"], "combined_blink.tolerance_m")
+    keys = value["keys"]
+    if tolerance < 0:
+        raise ToolError("combined_blink.tolerance_m は 0 以上の有限の値にしてください")
+    if not isinstance(keys, dict) or not keys:
+        raise ToolError("combined_blink.keys は空でない {両目のキー: [片目のキー, もう一方のキー]} にしてください")
+    for name, pair in keys.items():
+        if (not isinstance(name, str) or not name or not isinstance(pair, list) or len(pair) != 2
+                or not all(isinstance(key, str) and key for key in pair) or len({name, *pair}) != 3):
+            raise ToolError("combined_blink.keys の両目と片目のキーは 3 つとも違う名前にしてください")
+        if name in fixing or any(key in keys for key in pair):
+            raise ToolError("combined_blink の書き換え先は、直す片目のキーやほかの合成の元キーにできません")
+    return {"tolerance_m": tolerance, "keys": keys}
+
+
 @register("model.eye_keys", inputs=("blend", "geometry"), outputs=("blend", "report"), cacheable=False,
           summary="目の板と瞳を入れた頭の、まばたきのキーを直し（上まぶたを下まぶたのふちより close_below 下まで届かせる・下りてきたまぶたを"
                   "板より lid_margin 手前の球の面へ押し出す・瞳は動かさない）、新しい形状キー（瞳が縮む・横へ伸びる・つぶれる・見開き。左右別）を"
-                  "足す（Blender の中で。計算は numpy）。geometry は目の形の値（model3d-eye-geometry/0.1）。量と形に既定は無い。入力の .blend は"
+                  "足す（Blender の中で。計算は numpy）。combined_blink は直した片目から両目のキーを作り直す。"
+                  "geometry は目の形の値（model3d-eye-geometry/0.1）。量と形に既定は無い。入力の .blend は"
                   "変えない。Blender が要り、再利用しない（毎回実行）")
 def eye_keys(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
@@ -298,7 +318,10 @@ def eye_keys(inputs, parameters, outputs, context):
         raise ToolError(f"model.eye_keys には、目の形の値の lid_vertices（見開きで動かすまぶたの頂点）が要ります: {no_lids}")
     step_dir = Path(context.step_dir)
     settings_path = step_dir / "eye_keys_settings.json"
-    atomic_json(settings_path, {"geometry": geometry, "blink": blink, "smile": smile, "names": names, "cfg": cfg})
+    settings = {"geometry": geometry, "blink": blink, "smile": smile, "names": names, "cfg": cfg}
+    if "combined_blink" in parameters:
+        settings["combined_blink"] = _combined_blink(parameters["combined_blink"], fixing)
+    atomic_json(settings_path, settings)
     record = launcher.run_blender(blender, KEYS_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
                                                                 "--out", str(outputs["blend"]), "--report", str(outputs["report"])],
                                   log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
