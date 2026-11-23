@@ -806,3 +806,131 @@ def warp_mouth(inputs, parameters, outputs, context):
         unresolved.append(f"あごの線の上で動きを 0 に戻せない列が {report['columns_not_above_jaw']} あります（あごの線を越えて動かしています）")
     return StepResult(observations=[{k: report[k] for k in ("kind", "size", "left", "right", "centre_x", "line_y_mean", "mask_box",
                                                             "opened_pixels")}], unresolved=unresolved, review=bool(unresolved))
+
+
+def _iris_object(value, parameters, label):
+    if not isinstance(value, dict):
+        raise ToolError(f"{label} は設定オブジェクトにしてください")
+    _refuse_unknown(value, parameters, label)
+    return value
+
+
+def _iris_number(value, label, minimum, maximum):
+    number = _finite(value, label, minimum=minimum)
+    if number > maximum:
+        raise ToolError(f"{label} は {maximum} 以下にしてください")
+    return number
+
+
+def _iris_size(value, label):
+    if type(value) is not int or not 2 <= value <= 2048:
+        raise ToolError(f"{label} は 2〜2048 画素の整数にしてください")
+    return value
+
+
+def _iris_range(value, label):
+    low, high = _point(value, label)
+    if low >= high:
+        raise ToolError(f"{label} の下限は上限より小さくしてください")
+    return [low, high]
+
+
+def _iris_color(value, swatches, label):
+    if isinstance(value, str):
+        if value not in swatches:
+            raise ToolError(f"{label} に登録していない採色名 {value!r} が指定されています")
+        return value
+    return _rgb(value, label)
+
+
+def iris_atlas_settings(parameters):
+    _refuse_unknown(parameters, {"sample", "iris", "sclera", "padding"}, "texture.iris_atlas")
+    sample = _iris_object(parameters.get("sample"), {"centre", "radius", "swatches"}, "sample")
+    swatches = sample.get("swatches")
+    if not isinstance(swatches, dict) or not swatches:
+        raise ToolError("sample.swatches は採色名と位置の組にしてください")
+    points = {}
+    for name, rows in swatches.items():
+        if not isinstance(name, str) or not name.strip() or not isinstance(rows, list) or not rows:
+            raise ToolError("各採色名に 1 つ以上の位置が要ります")
+        points[name] = [_point(point, f"sample.swatches.{name}") for point in rows]
+
+    iris = _iris_object(parameters.get("iris"), {"size", "radius", "base", "layers", "blur"}, "iris")
+    layers = iris.get("layers", [])
+    if not isinstance(layers, list):
+        raise ToolError("iris.layers は重ねる順の配列にしてください")
+    types = {"band": {"curvature"}, "ellipse": {"centre", "radius"}, "ring": set(), "arc": {"radius", "width"}}
+    compiled_layers = []
+    for index, layer in enumerate(layers):
+        label = f"iris.layers[{index}]"
+        kind = layer.get("kind") if isinstance(layer, dict) else None
+        if not isinstance(kind, str) or kind not in types:
+            raise ToolError(f"{label}.kind は band・ellipse・ring・arc のいずれかにしてください")
+        _iris_object(layer, {"kind", "color", "strength", "color_scale", "edge"} | types[kind], label)
+        result = {"kind": kind, "color": _iris_color(layer.get("color"), points, f"{label}.color"),
+                  "edge": _iris_range(layer.get("edge"), f"{label}.edge"),
+                  "strength": _iris_number(layer.get("strength", 1.0), f"{label}.strength", 0, 1),
+                  "color_scale": _iris_number(layer.get("color_scale", 1.0), f"{label}.color_scale", 0, 1)}
+        if kind == "band":
+            result["curvature"] = _finite(layer.get("curvature", 0.0), f"{label}.curvature")
+        elif kind == "ellipse":
+            result["centre"] = _point(layer.get("centre"), f"{label}.centre")
+            result["radius"] = [_finite(value, f"{label}.radius", 0, exclusive=True)
+                                for value in _point(layer.get("radius"), f"{label}.radius")]
+        elif kind == "arc":
+            result["radius"] = _finite(layer.get("radius"), f"{label}.radius", 0)
+            result["width"] = _finite(layer.get("width"), f"{label}.width", 0, exclusive=True)
+        compiled_layers.append(result)
+
+    sclera = _iris_object(parameters.get("sclera"), {"size", "dark", "light", "gradient"}, "sclera")
+    size = sclera.get("size")
+    if not isinstance(size, list) or len(size) != 2:
+        raise ToolError("sclera.size は [幅, 高さ] の画素数にしてください")
+    gradient = _iris_range(sclera.get("gradient"), "sclera.gradient")
+    if gradient[0] < 0 or gradient[1] > 1:
+        raise ToolError("sclera.gradient は 0〜1 の範囲にしてください")
+    padding = parameters.get("padding", 4)
+    if type(padding) is not int or not 1 <= padding <= 128:
+        raise ToolError("padding は 1〜128 画素の整数にしてください")
+    radius = _iris_number(iris.get("radius"), "iris.radius", 0, 0.5)
+    if radius == 0:
+        raise ToolError("iris.radius は 0 より大きくしてください")
+    return {
+        "sample": {"centre": _point(sample.get("centre"), "sample.centre"),
+                   "radius": _finite(sample.get("radius"), "sample.radius", 0, exclusive=True), "swatches": points},
+        "iris": {"size": _iris_size(iris.get("size"), "iris.size"), "radius": radius,
+                 "base": _iris_color(iris.get("base"), points, "iris.base"), "layers": compiled_layers,
+                 "blur": _iris_number(iris.get("blur", 0), "iris.blur", 0, 128)},
+        "sclera": {"size": [_iris_size(v, "sclera.size") for v in size], "gradient": gradient,
+                   "dark": _rgb(sclera.get("dark"), "sclera.dark"), "light": _rgb(sclera.get("light"), "sclera.light")},
+        "padding": padding,
+    }
+
+
+@register("texture.iris_atlas", inputs=("reference",), outputs=("atlas", "report"),
+          summary="設定画の指定点で測った色から瞳を描き、白目のグラデーションと同じ PNG に並べる。"
+                  "目の UV と採色位置を報告する。Blender 不要",
+          capability={"aliases": ["設定画から瞳の色を採る", "瞳と白目のテクスチャを描く", "eye iris texture atlas"],
+                      "network_mode": "never", "external_process_mode": "never",
+                      "parameters": {"status": "docs", "schema": None}})
+def iris_atlas(inputs, parameters, outputs, context):
+    import numpy as np
+
+    from .. import iris_texture
+
+    operation = "texture.iris_atlas"
+    require(inputs, ("reference",), operation)
+    if not {"atlas", "report"} <= outputs.keys():
+        raise ToolError(f"{operation} には outputs の atlas と report が要ります")
+    if Path(outputs["atlas"]).suffix.lower() != ".png":
+        raise ToolError(f"{operation} の atlas は .png にしてください")
+    settings = iris_atlas_settings(parameters)
+    reference = texture.load_image(inputs["reference"])
+    try:
+        with np.errstate(over="raise", invalid="raise", divide="raise"):
+            atlas, report = iris_texture.draw_atlas(reference, settings)
+    except (FloatingPointError, OverflowError) as error:
+        raise ToolError("瞳を描く座標・半径・帯の範囲を確認してください。画像の精度で計算できない値があります") from error
+    texture.save_image(outputs["atlas"], atlas)
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{"kind": "iris_atlas", "size": report["size"], "swatches": len(report["swatches"])}])
