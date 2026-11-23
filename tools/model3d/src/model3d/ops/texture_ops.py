@@ -33,6 +33,52 @@ def _refuse_unknown(parameters, known, operation):
         raise ToolError(f"{operation} の知らないパラメーター: {', '.join(unknown)}（使えるのは {', '.join(known)}）")
 
 
+@register("texture.cylinder_map", inputs=("mesh", "texture"), outputs=("image", "map", "report"),
+          summary="腕や筒のメッシュを展開し、軸に沿う距離と軸まわりの角度の地図に色の絵を載せる。"
+                  "見えている元の画素と面、軸からの距離を NPZ、太さと画素の細かさを JSON に出す。Blender 不要",
+          capability={"network_mode": "never", "external_process_mode": "never", "parameters": {"status": "docs", "schema": None}})
+def texture_cylinder_map(inputs, parameters, outputs, context):
+    import numpy as np
+    from PIL import Image
+    from .. import cylinder_map
+    from .face_ops import _head_arrays
+
+    operation = "texture.cylinder_map"
+    require(inputs, ("mesh", "texture"), operation)
+    _refuse_unknown(parameters, ("origin", "axis", "zero_direction", "quarter_direction", "interval_m",
+                                 "radius_m", "resolution", "profile_stride"), operation)
+    for key, suffix in (("image", ".png"), ("map", ".npz"), ("report", ".json")):
+        if key not in outputs or Path(outputs[key]).suffix.lower() != suffix:
+            raise ToolError(f"{operation} は outputs.{key} に {suffix} のパスが要ります")
+
+    def values(key, length):
+        value = parameters.get(key)
+        if not isinstance(value, list) or len(value) != length:
+            raise ToolError(f"{key} は {length} 個の有限の数にしてください")
+        return [number({key: component}, key) for component in value]
+
+    origin = values("origin", 3)
+    frame = cylinder_map.coordinate_frame(values("axis", 3), values("zero_direction", 3), values("quarter_direction", 3))
+    interval = values("interval_m", 2)
+    if interval[0] >= interval[1] or not math.isfinite(interval[1] - interval[0]):
+        raise ToolError("interval_m は [開始, 終了] の順で有限の幅にしてください")
+    raw_resolution = parameters.get("resolution")
+    if (not isinstance(raw_resolution, list) or len(raw_resolution) != 2 or any(
+            not isinstance(v, int) or isinstance(v, bool) or not 2 <= v <= 4096 for v in raw_resolution)):
+        raise ToolError("resolution は [幅, 高さ]（いずれも 2〜4096 の整数）にしてください")
+    radius = number(parameters, "radius_m", minimum=0, exclusive=True)
+    stride = number(parameters, "profile_stride", 8, minimum=1, integer=True)
+
+    arrays = _head_arrays(inputs["mesh"], ("co", "tris", "tri_loops", "uv"))
+    image = texture.load_image(inputs["texture"]).astype(np.uint8)
+    color, lookup, report = cylinder_map.project(arrays, image, origin, frame, interval, radius, raw_resolution, stride)
+    Image.fromarray(color).save(outputs["image"])
+    with Path(outputs["map"]).open("wb") as stream:
+        np.savez_compressed(stream, **lookup)
+    atomic_json(outputs["report"], report)
+    return StepResult(observations=[{key: report[key] for key in ("resolution", "triangles", "covered_pixels")}])
+
+
 def projection_settings(parameters):
     """texture.project_reference のパラメーターを確かめ、視点・位置合わせ (A, t, 報告)・数の設定・review_note を返す。
     dance-recipe も工程を作る前にこれで確かめる（同じ規則を 2 か所に書かない）。"""
