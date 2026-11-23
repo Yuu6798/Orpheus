@@ -11,7 +11,7 @@ from PIL import Image
 from model3d import executor
 from model3d.blender_adapter import launcher
 from model3d.blender_adapter.eye_math import GeometryError, validate
-from model3d.eye_build import iris_mesh, validate_settings
+from model3d.eye_build import iris_mesh, removal_triangles, validate_settings
 from model3d.io import atomic_json, read_json
 
 
@@ -90,6 +90,12 @@ def test_configuration_rejects_ambiguous_removal_and_absurd_resolution():
     eyes["R"]["remove"]["component_size"] = 5
     with pytest.raises(GeometryError, match="component_size"):
         validate_settings(cfg)
+
+
+def test_removal_raster_includes_all_triangles_of_a_polygon():
+    triangles = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 4], [3, 5, 4]])
+    polygons = np.array([0, 0, 0, 1])
+    assert removal_triangles(triangles, polygons, [1]).tolist() == [True, True, True, False]
 
 
 FIXTURE = """

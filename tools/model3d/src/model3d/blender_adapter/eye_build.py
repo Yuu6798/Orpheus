@@ -72,6 +72,8 @@ def build(bpy, bmesh, ob, atlas, config):
     mesh.edges.foreach_get("vertices", edges)
     tris = np.empty(len(mesh.loop_triangles) * 3, np.int32)
     mesh.loop_triangles.foreach_get("vertices", tris)
+    polygons = np.empty(len(mesh.loop_triangles), np.int32)
+    mesh.loop_triangles.foreach_get("polygon_index", polygons)
     head = Head(co, edges.reshape(-1, 2), tris.reshape(-1, 3))
     skin_vertex = config.get("skin_vertex")
     if skin_vertex is not None and skin_vertex >= head.n:
@@ -79,7 +81,7 @@ def build(bpy, bmesh, ob, atlas, config):
     skin = head.skin if skin_vertex is None else head.island_of == head.island_of[skin_vertex]
     regions, removed, lids = {}, set(), set()
     for side in SIDES:
-        regions[side] = area = make_eye(head, config["eyes"][side], config, skin, removed)
+        regions[side] = area = make_eye(head, config["eyes"][side], config, skin, removed, polygons)
         if lids.intersection(area["lids"]):
             raise GeometryError("見開きで動かすまぶたの頂点が左右で重なっています")
         lids.update(area["lids"])

@@ -121,7 +121,7 @@ def opening_data(opening, skin_depth, window, grid, search):
     top = np.argmax(present, axis=0)
     bottom = len(opening) - 1 - np.argmax(present[::-1], axis=0)
     x = x0 + (cols + 0.5) * grid
-    rows = max(1, math.ceil(search / grid))
+    rows = max(1, math.ceil(min(len(opening), search / grid)))
     low_points, high_points = [], []
     for col, xc, t, b in zip(cols, x, top, bottom):
         if b <= t:
@@ -250,7 +250,8 @@ def plate_mesh(lid_depth, removed_depth, opening, window, centre, radius, normal
     used, mapped = np.unique(faces, return_inverse=True)
     points, r, c = points[used], rows.ravel()[used], cols.ravel()[used]
     wall = opening.copy()
-    for step in range(1, min(len(opening), 1 + math.ceil(config.get("wall_margin", 0) / resolution))):
+    wall_rows = math.ceil(min(len(opening) - 1, config.get("wall_margin", 0) / resolution))
+    for step in range(1, wall_rows + 1):
         wall[step:] |= opening[:-step]
         wall[:-step] |= opening[step:]
     limit = lid_depth[r, c] + config["behind_skin"]
@@ -295,12 +296,18 @@ def iris_mesh(eye, config, centre, axes):
     return points, uvs, fan, panels.reshape(-1, 4)
 
 
-def make_eye(head, eye, config, skin, previous_removed):
+def removal_triangles(triangles, polygon_indices, vertices):
+    # BMesh は頂点に接する元の面を丸ごと消すので、四角や N ゴンは分割した三角形を全部選ぶ。
+    touched = np.isin(triangles, vertices).any(axis=1)
+    return np.isin(polygon_indices, polygon_indices[touched])
+
+
+def make_eye(head, eye, config, skin, previous_removed, polygon_indices):
     window, resolution, front_y = eye["window"], config["resolution"], config["front_y"]
     gone = removal(head, eye, skin, front_y)
     if set(gone) & set(previous_removed):
         raise GeometryError("左右で取り除く頂点が重なっています")
-    removed_face = np.isin(head.tris, gone).any(axis=1)
+    removed_face = removal_triangles(head.tris, polygon_indices, gone)
     if not removed_face.any():
         raise GeometryError("取り除く頂点に面がありません")
     tris = head.tris
