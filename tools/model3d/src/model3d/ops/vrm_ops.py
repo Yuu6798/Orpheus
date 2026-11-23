@@ -260,6 +260,75 @@ def expressions(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
+MATERIAL_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_materials_mtoon.py"
+MATERIAL_PARAMETERS = {"materials", "alpha_modes", "merge_materials", "merge_images", "shade_from_base",
+                       "reference_material", "base_color_factors", "shade_color_factors",
+                       "blender", "addons", "blender_extensions", "timeout"}
+
+
+def mtoon_material_settings(parameters):
+    materials = _names(parameters, "materials")
+    settings = {"materials": materials, "shade_from_base": parameters.get("shade_from_base", False)}
+    if not isinstance(settings["shade_from_base"], bool):
+        raise ToolError("shade_from_base は true か false にしてください")
+    reference = parameters.get("reference_material")
+    if reference is not None and (not materials or not isinstance(reference, str) or not reference.strip()):
+        raise ToolError("reference_material は変換する materials と一緒に、手本の材質名を指定してください")
+    settings["reference_material"] = reference
+    for key, length in (("base_color_factors", 4), ("shade_color_factors", 3)):
+        factors = parameters.get(key, {})
+        if not isinstance(factors, dict) or factors.keys() - set(materials):
+            raise ToolError(f"{key} には materials の材質名を指定してください")
+        for components in factors.values():
+            if (not isinstance(components, list) or len(components) != length
+                    or any(type(value) not in (int, float) or not 0 <= value <= 1 for value in components)):
+                raise ToolError(f"{key} の値は 0〜1 の数値 {length} 個にしてください")
+        settings[key] = factors
+    for key in ("alpha_modes", "merge_materials", "merge_images"):
+        mapping = parameters.get(key, {})
+        if not isinstance(mapping, dict) or any(not isinstance(name, str) or not name.strip()
+                                               for pair in mapping.items() for name in pair):
+            raise ToolError(f"{key} は空でない名前同士の対応を書いてください")
+        if key == "alpha_modes":
+            if set(mapping.values()) - {"OPAQUE", "MASK", "BLEND"}:
+                raise ToolError("alpha_modes の値は OPAQUE、MASK、BLEND のいずれかにしてください")
+        elif mapping.keys() & mapping.values():
+            raise ToolError(f"{key} の統合元と統合先は別の名前にしてください（連鎖も不可）")
+        settings[key] = mapping
+    if not any(settings[key] for key in ("materials", "alpha_modes", "merge_materials", "merge_images")):
+        raise ToolError("変換、透過の変更、または重複の統合を指定してください")
+    if settings["shade_from_base"] and not materials:
+        raise ToolError("shade_from_base は変換する materials と一緒に指定してください")
+    return settings
+
+
+@register("vrm.materials_mtoon", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="指定した Principled 材質を VRM Add-on で MToon に変換し、指定した材質の透過型を変える。"
+                  "名前で示した材質や画像の対は、設定・つなぎ方や画素が同じことを確かめてから統合する。元の .blend は変えない")
+def materials_mtoon(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import atomic_json
+    operation = "vrm.materials_mtoon"
+    require(inputs, ("blend",), operation)
+    _check(parameters, MATERIAL_PARAMETERS, outputs, ("blend", "report"), operation)
+    settings = mtoon_material_settings(parameters)
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "vrm_material_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--settings", settings_path,
+            "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    record = launcher.run_blender(blender, MATERIAL_SCRIPT, None, args, log=step_dir / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    return StepResult(observations=[{"kind": "vrm_materials_mtoon", "blender_version": record["blender_version"],
+                                     "addons": record.get("addons"), "converted": len(report["converted"]),
+                                     "alpha_changed": len(report["alpha_changed"]),
+                                     "materials_merged": len(report["materials_merged"]),
+                                     "images_merged": len(report["images_merged"])}])
+
+
 EXPORT_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_export.py"
 EXPORT_PARAMETERS = {"blender", "addons", "blender_extensions", "jpeg_quality", "armature", "strict", "timeout"}
 
