@@ -16,6 +16,7 @@ from ..io import ToolError, atomic_json, read_json, sha256
 from . import StepResult, register, require
 
 EXPORT_MESH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "mesh_export.py"
+MOUTH_BAG_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "mouth_bag.py"
 COMMON = {"blender", "addons", "blender_extensions", "timeout"}
 
 
@@ -586,13 +587,19 @@ def _color(value, where):
     return value
 
 
-def mouth_window_settings(parameters, where):
-    """口のまわりの窓（front_y・window・zone）を確かめる（texture.mouth_inside と check.mouth で同じ書き方）。"""
+def mouth_region_settings(parameters, where):
+    """口のまわりの座標の取り方を共通にする。"""
     window = _section(parameters, "window", f"{where}.window" if where else "window", ("half_width", "z"))
     zone = _section(parameters, "zone", f"{where}.zone" if where else "zone", ("half_width",))
     settings = {"front_y": _real(parameters.get("front_y"), "front_y"),
                 "window": {"half_width": _real(window["half_width"], "window.half_width", 0.0, exclusive=True), "z": _span(window["z"], "window.z")},
                 "zone": {"half_width": _real(zone["half_width"], "zone.half_width", 0.0, exclusive=True)}}
+    return settings
+
+
+def mouth_window_settings(parameters, where):
+    """口のまわりの窓と正面の絵の設定を確かめる。"""
+    settings = mouth_region_settings(parameters, where)
     if "resolution" in parameters:
         settings["resolution"] = _real(parameters["resolution"], "resolution", 0.0, exclusive=True)
     if "visible" in parameters:
@@ -600,6 +607,74 @@ def mouth_window_settings(parameters, where):
     _raster_size(2 * settings["window"]["half_width"], settings["window"]["z"], settings.get("resolution", 0.0001), "window")
     _zone_in_window(settings, "")
     return settings
+
+
+def mouth_bag_settings(parameters):
+    _refuse_unknown(parameters, COMMON | {
+        "object", "material", "uv_layer", "uv_inside", "uv_tongue", "tongue_width", "front_y", "window", "zone",
+        "depth", "rings", "half_height", "widen", "drop", "last_ring_scale", "cap_extra", "clearance",
+    }, "model.mouth_bag")
+    settings = mouth_region_settings(parameters, "")
+    _zone_in_window(settings, "")
+    for key in ("object", "material"):
+        settings[key] = _name(parameters.get(key), key)
+    if "uv_layer" in parameters:
+        settings["uv_layer"] = _name(parameters["uv_layer"], "uv_layer")
+    for key in ("uv_inside", "uv_tongue"):
+        if key != "uv_inside" and key not in parameters:
+            continue
+        uv = parameters.get(key)
+        if not isinstance(uv, list) or len(uv) != 2:
+            raise ToolError(f"{key} は [u, v] の座標にしてください")
+        settings[key] = [_real(value, key, 0, maximum=1) for value in uv]
+    for key, default in (("depth", None), ("half_height", None), ("widen", 1.0), ("last_ring_scale", 1.0), ("tongue_width", 1.0)):
+        high = 1.0 if key in ("last_ring_scale", "tongue_width") else None
+        settings[key] = _real(parameters.get(key, default), key, 0, exclusive=True, maximum=high)
+    if "tongue_width" in parameters and "uv_tongue" not in settings:
+        raise ToolError("tongue_width を指定するには uv_tongue が要ります")
+    settings["rings"] = _integer(parameters.get("rings"), "rings", 1)
+    settings["drop"] = _real(parameters.get("drop", 0.0), "drop")
+    settings["cap_extra"] = _real(parameters.get("cap_extra", 0.0), "cap_extra", 0)
+    if "clearance" in parameters:
+        clearance = _section(parameters, "clearance", "clearance", ("object", "half_width", "z", "gap"))
+        settings["clearance"] = {"object": _name(clearance["object"], "clearance.object"),
+                                 "half_width": _real(clearance["half_width"], "clearance.half_width", 0, exclusive=True),
+                                 "z": _span(clearance["z"], "clearance.z"), "gap": _real(clearance["gap"], "clearance.gap", 0)}
+        if settings["clearance"]["object"] == settings["object"]:
+            raise ToolError("clearance.object には別のメッシュを指定してください")
+    return settings
+
+
+@register("model.mouth_bag", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="唇の裏の開いた輪から口の奥に向かって面を足し、袋を閉じる（Blender の中で）。"
+                  "縁の頂点の重みと形状キーの動きを奥の段へ写す。壁とふたには指定した材質と UV を割り当てる。"
+                  "口のまわりの範囲・寸法・色の絵の UV は指定が要る。元の .blend は変えない")
+def mouth_bag(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+
+    require(inputs, ("blend",), "model.mouth_bag")
+    settings = mouth_bag_settings(parameters)
+    if "blend" not in outputs or "report" not in outputs:
+        raise ToolError("model.mouth_bag には outputs の blend と report が要ります")
+    if Path(outputs["blend"]).suffix.lower() != ".blend":
+        raise ToolError("model.mouth_bag の outputs の blend は .blend にしてください")
+    if Path(inputs["blend"]).resolve() == Path(outputs["blend"]).resolve():
+        raise ToolError("model.mouth_bag の入力と出力には別の .blend を指定してください")
+    blender = _blender(parameters, context, "model.mouth_bag")
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "mouth_bag_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--settings", str(settings_path), "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    record = launcher.run_blender(blender, MOUTH_BAG_SCRIPT, None, args, log=step_dir / "blender.log", timeout=_timeout(parameters),
+                                  addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observations = {"kind": "mouth_bag", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                    "blender_version": record["blender_version"],
+                    **{key: report[key] for key in ("object", "rim_vertices", "new_vertices", "new_faces", "depth", "shape_keys")}}
+    return StepResult(observations=[observations])
 
 
 def mouth_inside_settings(parameters):
