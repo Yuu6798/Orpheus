@@ -108,7 +108,9 @@ RING_KEYS = ("name", "at", "axis", "offset", "band", "radius", "groups")
 
 def pinch_settings(parameters):
     """check.arm_pinch のパラメーターを確かめ、台本の settings にする。"""
-    _refuse_unknown(parameters, COMMON | {"body", "rings", "frames", "min_weight", "thin", "min_ratio", "strict", "report_only"},
+    from .pose_parameters import pose_rotations
+
+    _refuse_unknown(parameters, COMMON | {"body", "rings", "frames", "poses", "min_weight", "thin", "min_ratio", "strict", "report_only"},
                     "check.arm_pinch")
     rings = parameters.get("rings")
     if not isinstance(rings, list) or not rings:
@@ -128,9 +130,24 @@ def pinch_settings(parameters):
     names = [ring["name"] for ring in checked]
     if len(set(names)) != len(names):
         raise ToolError(f"rings の name が重なっています: {names}")
-    return {"body": _name(parameters.get("body"), "body"), "rings": checked, "frames": _frames(parameters),
-            "armature": _armature(parameters),
-            "min_weight": _real(parameters.get("min_weight", 0.9), "min_weight", 0.0, maximum=1.0)}
+    settings = {"body": _name(parameters.get("body"), "body"), "rings": checked, "frames": _frames(parameters),
+                "armature": _armature(parameters),
+                "min_weight": _real(parameters.get("min_weight", 0.9), "min_weight", 0.0, maximum=1.0)}
+    if "poses" in parameters:
+        poses = parameters["poses"]
+        if settings["frames"] is not None or not isinstance(poses, list) or not poses:
+            raise ToolError("poses は、frames を省いて空でない姿勢の並びで渡してください")
+        settings["poses"] = []
+        for index, pose in enumerate(poses):
+            where = f"poses[{index}]"
+            if not isinstance(pose, dict) or set(pose) != {"name", "rotations"}:
+                raise ToolError(f"{where} は name と rotations にしてください")
+            settings["poses"].append({"name": _name(pose["name"], f"{where}.name"),
+                                      "rotations": pose_rotations(pose["rotations"], f"{where}.rotations")})
+        names = [pose["name"] for pose in settings["poses"]]
+        if len(set(names)) != len(names):
+            raise ToolError("poses の name が重なっています")
+    return settings
 
 
 def pinch_summary(raw, thin=0.75, min_ratio=None):
@@ -152,6 +169,11 @@ def pinch_summary(raw, thin=0.75, min_ratio=None):
                             f"下回ったコマ {int((values < min_ratio).sum())}）")
     report = {"check": "arm_pinch", "frames": [frames[0], frames[-1]] if frames else [], "frame_count": len(frames), "thin_below": thin,
               "rings": rings, "unmeasured": unmeasured, "thresholds": {} if min_ratio is None else {"min_ratio": min_ratio}}
+    if "poses" in raw:
+        report["poses"] = raw["poses"]
+        for name, values in rings.items():
+            values["ratios_by_pose"] = dict(zip(raw["poses"], raw["rings"][name]["ratio"], strict=True))
+            values["min_at_pose"] = raw["poses"][frames.index(values["min_at_frame"])]
     if min_ratio is None:
         report.update({"pass": None, "reason": "しきい値が無いので測っただけ（report_only で測るだけにできる）", "failures": []})
     else:
@@ -163,6 +185,7 @@ def pinch_summary(raw, thin=0.75, min_ratio=None):
           summary="腕の関節のまわり（肩の付け根・肘・手首など）のメッシュが、ねじれで絞ったように細くなっていないかをコマごとに測る（Blender の"
                   "中で。.blend は変えない）: rings の輪ごとに、初期姿勢で骨に沿った帯の頂点を選び、コマごとの太さ（骨の軸に垂直な、重心からの"
                   "距離の平均）を初期姿勢で割った比。輪ごとの最小・5% 点・中央値・thin（既定 0.75）より細いコマの数・半分より細いコマの数。"
+                  "poses を渡すとアクションなしで名前付きの姿勢を測る。"
                   "体の Armature 以外のモディファイアは止めて骨の変形だけを見る。min_ratio を渡したときだけ合否を出す。好みは判定しない")
 def check_arm_pinch(inputs, parameters, outputs, context):
     from .check_ops import _finish

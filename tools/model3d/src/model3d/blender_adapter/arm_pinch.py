@@ -28,10 +28,12 @@ import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
     from .model_edit import bone_world, world_points
+    from .pose_sample import apply_pose_sample, prepare_pose_samples
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from model_edit import bone_world, world_points
+    from pose_sample import apply_pose_sample, prepare_pose_samples
     from vrm_apply_motion import use_scene_of
 
 DEFAULTS = {"body": None, "rings": [], "frames": None, "armature": None, "min_weight": 0.9}
@@ -81,6 +83,11 @@ def main(argv=None):
         raise SystemExit(f"アーマチュアがありません{'（' + settings['armature'] + '）' if settings['armature'] else ''}")
     armature = armatures[0]
     scene = use_scene_of(bpy, armature)
+    poses = settings.get("poses")
+    if poses:
+        prepare_pose_samples(armature, (step for pose in poses for step in pose["rotations"]))
+        scene.frame_set(scene.frame_start)
+        bpy.context.view_layer.update()
     if abs(scene.unit_settings.scale_length - 1.0) > 1e-9:          # 距離の設定（m）と Blender 単位を合わせる
         raise SystemExit(f"1 Blender 単位 = 1 m のシーンだけを扱います（scale_length {scene.unit_settings.scale_length}）")
     body = bpy.data.objects.get(settings["body"])
@@ -115,9 +122,12 @@ def main(argv=None):
         rings.append((ring, chosen, base))
         out[ring["name"]] = {"verts": int(len(chosen)), "rest_spread_mm": None if base is None else round(base * 1000, 3), "ratio": []}
     first, last = settings["frames"] or (scene.frame_start, scene.frame_end)
-    frames = list(range(int(first), int(last) + 1))
+    frames = list(range(1, len(poses) + 1)) if poses else list(range(int(first), int(last) + 1))
     for frame in frames:
-        scene.frame_set(frame)
+        if poses:
+            apply_pose_sample(armature, poses[frame - 1]["rotations"], bpy.context.view_layer)
+        else:
+            scene.frame_set(frame)
         depsgraph = bpy.context.evaluated_depsgraph_get()
         evaluated = body.evaluated_get(depsgraph)
         world_armature = np.array(armature.evaluated_get(depsgraph).matrix_world)   # アーマチュアや親が動いても、そのコマの向き
@@ -136,6 +146,8 @@ def main(argv=None):
             out[ring["name"]]["ratio"].append(spread(points[chosen], axis) / base)
     report = {"schema_version": "model3d-arm-pinch/0.1", "blender": bpy.app.version_string, "scene": scene.name, "armature": armature.name,
               "body": body.name, "modifiers_off": muted, "modifiers_synced": synced, "frames": frames, "rings": out}
+    if poses:
+        report["poses"] = [pose["name"] for pose in poses]
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False)

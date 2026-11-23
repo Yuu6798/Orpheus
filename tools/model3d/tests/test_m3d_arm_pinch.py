@@ -2,7 +2,9 @@
 本物の Blender 5.2.4 での確かめは docs/model3d.md（CI には Blender が無い）。"""
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -95,6 +97,79 @@ def test_pinch_step_reports_and_judges(tmp_path):
     assert raw["x_settings"]["rings"][0]["offset"] == 0.0 and raw["x_settings"]["min_weight"] == 0.9
 
 
+POSES = [
+    {"name": "rest", "rotations": []},
+    {"name": "roll", "rotations": [{"bone": "turn", "axis": "Y", "degrees": 90}]},
+    {"name": "opposite", "rotations": [{"bone": "turn", "axis": "Y", "degrees": -90, "space": "armature"}]},
+]
+
+
+def test_pinch_settings_and_report_name_each_static_pose():
+    from model3d.ops.arm_ops import pinch_settings
+
+    settings = pinch_settings({"body": "Tube", "rings": RINGS, "poses": POSES})
+    assert settings["poses"][1]["rotations"][0]["space"] == "local"
+    raw = {"frames": [1, 2, 3], "poses": [pose["name"] for pose in POSES],
+           "rings": {"ring": {"verts": 8, "rest_spread_mm": 20.0, "ratio": [1, 0.7, 0.71]}}}
+    report = pinch_summary(raw, min_ratio=0.8)
+    assert report["rings"]["ring"]["min_at_pose"] == "roll"
+    assert report["rings"]["ring"]["ratios_by_pose"] == {"rest": 1, "roll": 0.7, "opposite": 0.71}
+    assert report["pass"] is False
+
+
+@pytest.mark.skipif(not os.getenv("MODEL3D_BLENDER"), reason="set MODEL3D_BLENDER to the Blender executable")
+def test_blender_pinch_samples_without_an_action(tmp_path):
+    from model3d import executor
+
+    script = tmp_path / "fixture.py"
+    script.write_text("""
+import math
+import sys
+import bpy
+
+bpy.ops.object.select_all(action="SELECT")
+bpy.ops.object.delete(use_global=False)
+scene = bpy.context.scene
+rig = bpy.data.objects.new("Rig", bpy.data.armatures.new("Rig"))
+scene.collection.objects.link(rig)
+bpy.context.view_layer.objects.active = rig
+bpy.ops.object.mode_set(mode="EDIT")
+for name in ("axis", "turn"):
+    rig.data.edit_bones.new(name).tail = (0, 1, 0)
+bpy.ops.object.mode_set(mode="OBJECT")
+mesh = bpy.data.meshes.new("Tube")
+angles = [index * math.tau / 8 for index in range(8)]
+mesh.from_pydata([(0.25 * math.cos(a), 0.5, 0.25 * math.sin(a)) for a in angles], [], [])
+tube = bpy.data.objects.new("Tube", mesh)
+scene.collection.objects.link(tube)
+for name in ("axis", "turn"):
+    tube.vertex_groups.new(name=name).add(list(range(8)), 0.5, "REPLACE")
+tube.modifiers.new("Armature", "ARMATURE").object = rig
+bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1])
+""", encoding="utf-8")
+    blender = os.environ["MODEL3D_BLENDER"]
+    blend = tmp_path / "tube.blend"
+    subprocess.run([blender, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+                    "--python", str(script), "--", str(blend)], check=True, capture_output=True, timeout=60)
+    original = blend.read_bytes()
+    ring = {"name": "middle", "at": "axis", "axis": "axis", "offset": 0.5, "band": 0.01,
+            "radius": 0.3, "groups": ["axis", "turn"]}
+    atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "pinch",
+                "inputs": {"tube": {"path": blend.name}}, "steps": [{"id": "pinch", "operation": "check.arm_pinch",
+                "inputs": {"blend": "$inputs.tube"}, "outputs": {"report": "pinch.json"},
+                "parameters": {"blender": blender, "body": "Tube", "poses": POSES, "rings": [ring], "min_ratio": 0.8}}]})
+    result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
+    step = result["steps"]["pinch"]
+    assert step["status"] == "needs_review", step
+    report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
+    values = report["rings"]["middle"]["ratios_by_pose"]
+    assert report["rings"]["middle"]["verts"] == 8
+    assert values["rest"] == pytest.approx(1.0)
+    assert values["roll"] == pytest.approx(math.cos(math.pi / 4), abs=1e-6)
+    assert values["opposite"] == pytest.approx(values["roll"], abs=1e-7)
+    assert blend.read_bytes() == original
+
+
 class Context:
     tools = {}
 
@@ -112,6 +187,10 @@ class Context:
     ({"body": "Body", "rings": RINGS, "thin": 0}, "thin"),
     ({"body": "Body", "rings": RINGS, "min_ratio": 1.5}, "min_ratio"),
     ({"body": "Body", "rings": RINGS, "frames": [10, 1]}, "frames"),
+    ({"body": "Body", "rings": RINGS, "frames": [1, 3], "poses": POSES}, "poses"),
+    ({"body": "Body", "rings": RINGS, "poses": [POSES[0], POSES[0]]}, "重なっ"),
+    ({"body": "Body", "rings": RINGS, "poses": [{"name": "invalid", "rotations": [
+        {"bone": "turn", "axis": "W", "degrees": 90}]}]}, "axis"),
     ({"body": "Body", "rings": RINGS, "min_weight": 2}, "min_weight"),
 ])
 def test_arm_pinch_rejects_bad_settings(tmp_path, parameters, message):
