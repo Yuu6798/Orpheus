@@ -32,7 +32,7 @@ def test_recipe_unwraps_front_seam_and_preserves_outer_surface(tmp_path):
                                     "parameters": {"origin": [0, 0, 0], "axis": [1, 0, 0], "zero_direction": [0, -1, 0],
                                                    "quarter_direction": [0, 0, 1], "interval_m": [0, 0.7], "radius_m": 0.4,
                                                    "resolution": [40, 48], "profile_stride": 5},
-                                    "outputs": {"map": "pixels.npz", "image": "unwrap.png", "report": "unwrap.json"}}]})
+                                    "outputs": {"map": "pixels.NPZ", "image": "unwrap.png", "report": "unwrap.json"}}]})
     run = executor.run_recipe(recipe, tmp_path / "runs")
     assert run["status"] == "succeeded", run
     artifacts = run["steps"]["unwrap"]["artifacts"]

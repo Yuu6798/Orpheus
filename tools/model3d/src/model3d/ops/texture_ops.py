@@ -73,7 +73,8 @@ def texture_cylinder_map(inputs, parameters, outputs, context):
     image = texture.load_image(inputs["texture"]).astype(np.uint8)
     color, lookup, report = cylinder_map.project(arrays, image, origin, frame, interval, radius, raw_resolution, stride)
     Image.fromarray(color).save(outputs["image"])
-    np.savez_compressed(outputs["map"], **lookup)
+    with Path(outputs["map"]).open("wb") as stream:
+        np.savez_compressed(stream, **lookup)
     atomic_json(outputs["report"], report)
     return StepResult(observations=[{key: report[key] for key in ("resolution", "triangles", "covered_pixels")}])
 
