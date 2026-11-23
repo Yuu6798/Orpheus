@@ -273,9 +273,12 @@ TWIST_MEASURE_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" /
 
 def twist_bones_settings(parameters):
     """model.twist_bones のパラメーターを確かめ、台本の settings にする。"""
-    from ..blender_adapter.twist_bones import check_roll
-    _refuse_unknown(parameters, COMMON | {"bones", "meshes", "rigid_max_verts", "rigid_share", "min_weight", "max_influences"},
+    from ..blender_adapter.twist_bones import CONSTRAINT_MODES, basis_name, check_roll
+    _refuse_unknown(parameters, COMMON | {"bones", "meshes", "constraint_mode", "rigid_max_verts", "rigid_share", "min_weight", "max_influences"},
                     "model.twist_bones")
+    mode = parameters.get("constraint_mode", "aim")
+    if mode not in CONSTRAINT_MODES:
+        raise ToolError(f"constraint_mode は {', '.join(CONSTRAINT_MODES)} のどれかにしてください: {mode!r}")
     entries = parameters.get("bones")
     if not isinstance(entries, list) or not entries:
         raise ToolError(f"bones は [{{\"bone\": ねじれる骨, \"aim\": 向く骨, \"name\": 足す骨}}, …] にしてください: {entries!r}")
@@ -284,11 +287,12 @@ def twist_bones_settings(parameters):
         if not isinstance(entry, dict):
             raise ToolError(f"bones[{k}] は {{\"bone\": …, \"aim\": …}} にしてください: {entry!r}")
         _refuse_unknown(entry, ("bone", "aim", "name", "roll"), f"bones[{k}]")
-        bone, aim = _name(entry.get("bone"), f"bones[{k}].bone"), _name(entry.get("aim"), f"bones[{k}].aim")
+        bone = _name(entry.get("bone"), f"bones[{k}].bone")
+        aim = _name(entry.get("aim"), f"bones[{k}].aim") if mode == "aim" or "aim" in entry else None
         name = _name(entry.get("name", f"{bone}_swing"), f"bones[{k}].name")
         if len({bone, aim, name}) != 3:
             raise ToolError(f"bones[{k}] の bone・aim・name は別の骨にしてください: {entry!r}")
-        bones.append({"bone": bone, "aim": aim, "name": name})
+        bones.append({"bone": bone, "name": name} if aim is None else {"bone": bone, "aim": aim, "name": name})
         if entry.get("roll") is not None:
             try:
                 roll = check_roll(entry["roll"], f"bones[{k}].roll")
@@ -298,13 +302,19 @@ def twist_bones_settings(parameters):
                 raise ToolError(f"bones[{k}].roll の name は bone・aim・name と、from は bone と別の骨にしてください: {entry!r}")
             bones[-1]["roll"] = roll
     added = [entry["name"] for entry in bones] + [entry["roll"]["name"] for entry in bones if "roll" in entry]
+    if mode == "parented_roll":
+        added.extend(basis_name(entry["name"]) for entry in bones)
+        if any(len(name.encode("utf-8")) > 63 or "\x00" in name for name in added):
+            raise ToolError("足す骨（台の骨を含む）の名前は UTF-8 で 63 バイト以内で、NUL を含まない文字列にしてください")
     for key, values in (("bone", [entry["bone"] for entry in bones]), ("name（roll の name も）", added)):
         if len(set(values)) != len(values):
             raise ToolError(f"bones の {key} が重なっています: {values}")
-    used = {entry["bone"] for entry in bones} | {entry["aim"] for entry in bones} | {e["roll"]["from"] for e in bones if "roll" in e}
+    used = {entry["bone"] for entry in bones} | {e["aim"] for e in bones if "aim" in e} | {e["roll"]["from"] for e in bones if "roll" in e}
     if set(added) & used:
         raise ToolError("bones の name（足す骨。roll の name も）は、bone・aim・roll の from の骨と別の名前にしてください")
     settings = {"bones": bones, "armature": _armature(parameters)}
+    if mode != "aim":
+        settings["constraint_mode"] = mode
     if parameters.get("min_weight") is not None:
         settings["min_weight"] = _real(parameters["min_weight"], "min_weight", 0.0)
     if parameters.get("max_influences") is not None:
@@ -324,7 +334,8 @@ def twist_bones_settings(parameters):
                   "（付け根に近いほど足した骨へ）。roll（前腕など）があれば、先の側に、roll.from の骨の軸のまわりの回転を写す骨"
                   "（Copy Rotation の Y だけ・Add・ローカル）も足し、重みを 3 つに折れ線で分ける。bone だけにほぼ付いた小さな島"
                   "（腕輪など）は島の平均の割合。min_weight 以下の重みは外す・max_influences で 1 頂点の骨の数を切る。動きは変えない。"
-                  "拘束は VRM 1.0 の aim・roll として書き出せる形（VRMC_node_constraint に対応しないアプリでは腕が崩れうる）。"
+                  "既定の拘束は VRM 1.0 の aim・roll として書き出せる形。constraint_mode: parented_roll は、"
+                  "補助の骨を元の骨の下に置き、拘束を読まないアプリでも腕の曲げに付いて行かせる。"
                   "元のファイルは変えない")
 def twist_bones(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
