@@ -12,7 +12,7 @@ import math
 import re
 from pathlib import Path
 
-from ..io import ToolError, atomic_json, read_json
+from ..io import ToolError, atomic_json, read_json, sha256
 from . import StepResult, register, require
 
 EXPORT_MESH_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "mesh_export.py"
@@ -441,6 +441,141 @@ def face_sheet(inputs, parameters, outputs, context):
     observation = {"kind": "face_sheet", "exit_code": record["exit_code"], "seconds": record["seconds"],
                    "blender_version": record["blender_version"], "object": report.get("object"), "images": len(report.get("images") or []),
                    "sheet_size": list(size)}
+    return StepResult(observations=[observation])
+
+
+MTOON_PREVIEW_SCRIPT = FACE_SHEET_SCRIPT.with_name("mtoon_preview.py")
+
+
+def _preview_entries(entries, where, allowed):
+    if not isinstance(entries, list) or not entries:
+        raise ToolError(f"{where} は空でない配列にしてください")
+    names = set()
+    for index, entry in enumerate(entries):
+        label = f"{where}[{index}]"
+        if not isinstance(entry, dict):
+            raise ToolError(f"{label} は設定オブジェクトにしてください")
+        _refuse_unknown(entry, allowed, label)
+        name = _name(entry.get("name"), f"{label}.name")
+        if name in names:
+            raise ToolError(f"{where} の名前が重なっています: {name}")
+        names.add(name)
+        yield entry, label
+
+
+def _preview_vector(value, where, direction=False):
+    if not isinstance(value, list) or len(value) != 3:
+        raise ToolError(f"{where} は [x, y, z] の配列にしてください")
+    checked = [_real(component, where) for component in value]
+    if not direction:
+        return checked
+    largest = max(abs(component) for component in checked)
+    if largest == 0.0:
+        raise ToolError(f"{where} の向きはゼロにできません")
+    scaled = [component / largest for component in checked]
+    return [component / math.hypot(*scaled) for component in scaled]
+
+
+def _preview_keys(keys, where):
+    if not isinstance(keys, dict):
+        raise ToolError(f"{where} は物体名から形状キーの値へのオブジェクトにしてください")
+    checked = {}
+    for name, values in keys.items():
+        _name(name, where)
+        if not isinstance(values, dict):
+            raise ToolError(f"{where}.{name} は形状キーの名前から値へのオブジェクトにしてください")
+        checked[name] = {_name(key, where): _real(value, f"{where}.{name}.{key}", -10, maximum=10)
+                         for key, value in values.items()}
+    return checked
+
+
+def mtoon_preview_settings(parameters):
+    _refuse_unknown(parameters, COMMON | {"lights", "views", "keys", "sets", "armature", "pose", "background", "samples"},
+                    "render.mtoon_preview")
+    lights = [{"name": item["name"], "direction": _preview_vector(item.get("direction"), f"{label}.direction", direction=True)}
+              for item, label in _preview_entries(parameters.get("lights"), "lights", {"name", "direction"})]
+    views = []
+    for item, label in _preview_entries(parameters.get("views"), "views", {"name", "centre", "direction", "scale", "size"}):
+        size = item.get("size", [640, 640])
+        if not isinstance(size, list) or len(size) != 2 or not all(type(v) is int and 16 <= v <= 4096 for v in size):
+            raise ToolError(f"{label}.size は 16〜4096 画素の整数を 2 つ指定してください")
+        views.append({"name": item["name"], "centre": _preview_vector(item.get("centre"), f"{label}.centre"),
+                      "direction": _preview_vector(item.get("direction"), f"{label}.direction", direction=True),
+                      "scale": _real(item.get("scale"), f"{label}.scale", 0.0, exclusive=True), "size": size})
+    if "keys" in parameters and "sets" in parameters:
+        raise ToolError("keys と sets はどちらか一方を指定してください")
+    reset_keys = "sets" in parameters
+    if reset_keys:
+        sets = [{"name": item["name"], "keys": _preview_keys(item.get("keys", {}), f"{label}.keys")}
+                for item, label in _preview_entries(parameters["sets"], "sets", {"name", "keys"})]
+    else:
+        sets = [{"name": "current", "keys": _preview_keys(parameters.get("keys", {}), "keys")}]
+    pose = parameters.get("pose", [])
+    if not isinstance(pose, list):
+        raise ToolError("pose は骨の回転設定の配列にしてください")
+    turns = []
+    for index, item in enumerate(pose):
+        label = f"pose[{index}]"
+        if not isinstance(item, dict):
+            raise ToolError(f"{label} は設定オブジェクトにしてください")
+        _refuse_unknown(item, {"bone", "axis", "degrees"}, label)
+        axis = item.get("axis")
+        if axis not in ("X", "Y", "Z"):
+            raise ToolError(f"{label}.axis は X・Y・Z のいずれかにしてください")
+        turns.append({"bone": _name(item.get("bone"), f"{label}.bone"), "axis": axis,
+                      "degrees": _real(item.get("degrees"), f"{label}.degrees")})
+    armature = _name(parameters.get("armature"), "armature") if turns else None
+    if "armature" in parameters and not turns:
+        raise ToolError("armature は pose の回転と一緒に指定してください")
+    background = parameters.get("background", [0.18, 0.18, 0.2])
+    if not isinstance(background, list) or len(background) != 3:
+        raise ToolError("background は線形 RGB の数を 3 つ指定してください")
+    return {"lights": lights, "views": views, "sets": sets, "reset_keys": reset_keys, "pose": turns, "armature": armature,
+            "background": [_real(value, "background", 0, maximum=1) for value in background],
+            "samples": _integer(parameters.get("samples", 8), "samples", 1)}
+
+
+@register("render.mtoon_preview", inputs=("blend",), outputs=("report",), cacheable=False,
+          summary="MToon の直接光の明暗を、指定した光×視点×表情の組み合わせで Blender から PNG に描く。"
+                  "光は白一灯の方向光で、落ちる影を省く。画像の一覧は JSON に記録する",
+          capability={"aliases": ["MToon の影を下見する", "VRM の表情と光の向きを描く", "MToon lighting preview"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def mtoon_preview(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    from .vrm_ops import VRM_ADDON
+
+    operation = "render.mtoon_preview"
+    require(inputs, ("blend",), operation)
+    settings = mtoon_preview_settings(parameters)
+    if "report" not in outputs:
+        raise ToolError(f"{operation} には outputs の report が要ります")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    settings_path, views_dir = step_dir / "mtoon_preview_settings.json", step_dir / "views"
+    render_report = step_dir / "mtoon_preview_render.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(
+        blender, MTOON_PREVIEW_SCRIPT, None,
+        ["--blend", inputs["blend"], "--settings", settings_path, "--out-dir", views_dir, "--report", render_report],
+        log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions,
+    )
+    report = read_json(render_report)
+    expected = len(settings["lights"]) * len(settings["views"]) * len(settings["sets"])
+    if len(report["images"]) != expected:
+        raise ToolError(f"{operation}: 描いた画像の数が設定と違います")
+    for index, image in enumerate(report["images"], 1):
+        path = views_dir / f"{index:04d}.png"
+        if image["file"] != path.name or not path.is_file():
+            raise ToolError(f"{operation}: 予定の画像がありません: {path.name}")
+        image["sha256"] = sha256(path)
+    report["directory"] = str(views_dir)
+    atomic_json(outputs["report"], report)
+    observation = {"kind": "mtoon_preview", "images": expected, "materials": len(report["materials"]),
+                   "blender_version": record["blender_version"], "addons": record.get("addons")}
     return StepResult(observations=[observation])
 
 
