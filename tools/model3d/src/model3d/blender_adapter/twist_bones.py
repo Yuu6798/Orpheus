@@ -31,6 +31,7 @@ VRMC_node_constraint に対応しないアプリでは、足した骨が動か�
 なることを確かめた（docs/model3d.md）。CI には Blender が無い（重みの分け方はテストする）。
 """
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import sys
@@ -57,6 +58,44 @@ def basis_name(name):
     return f"{name}_basis"
 
 
+@dataclass(frozen=True)
+class Segment:
+    fraction: float
+    name: str
+    carrier: str | None
+    basis: str | None
+
+
+def segment_fractions(value, where):
+    """区間数または内点の割合を、昇順の内点だけにする。"""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 2:
+        return tuple(k / value for k in range(1, value))
+    if isinstance(value, list) and value and all(
+        isinstance(t, (int, float)) and not isinstance(t, bool) and 0 < t < 1 for t in value
+    ) and all(a < b for a, b in zip(value, value[1:])):
+        return tuple(value)
+    raise ValueError(f"{where} は 2 以上の整数か、0 より大きく 1 より小さい昇順の割合の並びにしてください: {value!r}")
+
+
+def segment_layout(entry, follows_source):
+    if "segments" not in entry:
+        return ()
+    layout = []
+    for i, t in enumerate(segment_fractions(entry["segments"], "segments"), start=1):
+        name = f"{entry['name']}_segment_{i}"
+        carrier = f"{name}_carrier" if "roll" in entry else None
+        basis = basis_name(name) if carrier and follows_source else None
+        layout.append(Segment(t, name, carrier, basis))
+    return tuple(layout)
+
+
+def additional_segment_names(entry, follows_source, layout):
+    """元から同名の頂点グループがあると危険な、台と途中の骨の名前。"""
+    names = [basis_name(entry["name"])] if follows_source or layout else []
+    names.extend(name for segment in layout for name in (segment.name, segment.carrier, segment.basis) if name)
+    return names
+
+
 def parse_args(argv):
     ap = argparse.ArgumentParser(prog="twist_bones.py")
     ap.add_argument("--blend", required=True)
@@ -74,9 +113,9 @@ def check_roll(value, where):
     """bones[k].roll の設定を確かめ、既定を埋めた dict にする（悪ければ ValueError）。"""
     if not isinstance(value, dict):
         raise ValueError(f"{where} は {{\"name\": 足す骨, \"from\": 回転を写す骨}} にしてください: {value!r}")
-    unknown = set(value) - {"name", "from", "start", "euler_order"}
+    unknown = set(value) - {"name", "from", "start", "euler_order", "influence"}
     if unknown:
-        raise ValueError(f"{where} の知らない設定: {sorted(unknown)}（使えるのは euler_order・from・name・start）")
+        raise ValueError(f"{where} の知らない設定: {sorted(unknown)}（使えるのは euler_order・from・influence・name・start）")
     out = {**ROLL_DEFAULTS, **value}
     for key in ("name", "from"):
         if not isinstance(out.get(key), str) or not out.get(key):
@@ -86,6 +125,10 @@ def check_roll(value, where):
         raise ValueError(f"{where}.start は 0 より大きく 1 より小さい割合にしてください: {start!r}")
     if out["euler_order"] not in EULER_ORDERS:
         raise ValueError(f"{where}.euler_order は {', '.join(EULER_ORDERS)} のどれかにしてください: {out['euler_order']!r}")
+    if "influence" in out:
+        influence = out["influence"]
+        if isinstance(influence, bool) or not isinstance(influence, (int, float)) or not 0 <= influence <= 1:
+            raise ValueError(f"{where}.influence は 0 以上 1 以下の割合にしてください: {influence!r}")
     if out["name"] == out["from"]:
         raise ValueError(f"{where} の name と from は別の骨にしてください: {value!r}")
     return out
@@ -100,6 +143,15 @@ def part_shares(along, start=None):
     swing = np.maximum(0.0, 1.0 - along / start)
     roll = np.maximum(0.0, (along - start) / (1.0 - start))
     return swing, 1.0 - swing - roll, roll
+
+
+def segmented_shares(along, fractions):
+    """隣り合う 2 点だけに重みを分ける。内点と両端の順で返す。"""
+    knots = (0.0, *fractions, 1.0)
+    yield np.interp(along, knots[:2], (1.0, 0.0))
+    for index in range(1, len(knots) - 1):
+        yield np.interp(along, knots[index - 1:index + 2], (0.0, 1.0, 0.0))
+    yield np.interp(along, knots[-2:], (0.0, 1.0))
 
 
 def writes(value, floor):
@@ -170,31 +222,61 @@ def group_state(mesh, group_index, bone_groups=None):
     return weights, dominant
 
 
-def add_parented_swing(edit_bones, source, name):
-    """元の骨の子に、逆向きの骨と roll の軸を合わせる台を置く。"""
+def rest_orientation(bone):
     from mathutils import Matrix
 
-    rotation = source.matrix.to_3x3()
-    flip = Matrix.Diagonal((-1.0, -1.0, 1.0))  # 骨のローカル Z 軸で半回転
-    parent_rotation = source.parent.matrix.to_3x3() if source.parent else Matrix.Identity(3)
-    swing_rotation = rotation @ flip
+    return bone.matrix.to_3x3() if bone else Matrix.Identity(3)
+
+
+def flipped_orientation(source):
+    from mathutils import Matrix
+
+    return rest_orientation(source) @ Matrix.Diagonal((-1.0, -1.0, 1.0))  # 骨のローカル Z 軸で半回転
+
+
+def add_oriented_bone(edit_bones, source, name, parent, orientation):
+    bone = edit_bones.new(name)
+    bone.head = source.head.copy()
+    bone.tail = source.head + orientation.col[1].normalized() * source.length
+    matrix = orientation.to_4x4()
+    matrix.translation = source.head
+    bone.matrix = matrix
+    bone.parent = parent
+    bone.use_connect = False
+    bone.use_deform = True  # 頂点の重みのない台の骨も VRM に残す
+    return bone
+
+
+def add_parented_swing(edit_bones, source, name):
+    """元の骨の子に、逆向きの骨と roll の軸を合わせる台を置く。"""
+    rotation = rest_orientation(source)
+    swing_rotation = flipped_orientation(source)
     # 元の骨と新しい骨の親座標での初期回転を一致させる。
-    basis_rotation = swing_rotation @ rotation.inverted() @ parent_rotation
-    parent = source
-    for name, orientation in ((basis_name(name), basis_rotation), (name, swing_rotation)):
-        bone = edit_bones.new(name)
-        bone.head = source.head.copy()
-        bone.tail = source.head + orientation.col[1].normalized() * source.length
-        matrix = orientation.to_4x4()
-        matrix.translation = source.head
-        bone.matrix = matrix
-        bone.parent = parent
-        bone.use_connect = False
-        bone.use_deform = True  # 頂点の重みのない台の骨も VRM に残す
-        parent = bone
+    basis_rotation = swing_rotation @ rotation.inverted() @ rest_orientation(source.parent)
+    basis = add_oriented_bone(edit_bones, source, basis_name(name), source, basis_rotation)
+    add_oriented_bone(edit_bones, source, name, basis, swing_rotation)
 
 
-def add_roll(armature, pose_bone, source, euler_order):
+def add_segment_bones(edit_bones, source, entry, layout, follows_source):
+    basis = basis_name(entry["name"])
+    forward = rest_orientation(source)
+    if follows_source:
+        base = edit_bones[basis]
+        intermediate = flipped_orientation(source)
+    else:
+        swing = edit_bones[entry["name"]]
+        base = add_oriented_bone(edit_bones, source, basis, swing, rest_orientation(source.parent))
+        intermediate = forward
+    for segment in layout:
+        if segment.carrier:
+            carrier = add_oriented_bone(edit_bones, source, segment.carrier, base, intermediate)
+            parent = add_oriented_bone(edit_bones, source, segment.basis, carrier, forward) if segment.basis else carrier
+            add_oriented_bone(edit_bones, source, segment.name, parent, forward)
+        else:
+            add_oriented_bone(edit_bones, source, segment.name, base, intermediate)
+
+
+def add_roll(armature, pose_bone, source, euler_order, influence=1.0):
     for constraint in list(pose_bone.constraints):
         pose_bone.constraints.remove(constraint)
     copy = pose_bone.constraints.new("COPY_ROTATION")
@@ -205,6 +287,37 @@ def add_roll(armature, pose_bone, source, euler_order):
     copy.target_space = "LOCAL"
     copy.owner_space = "LOCAL"
     copy.euler_order = euler_order
+    copy.influence = influence
+
+
+def add_segment_rolls(armature, entry, layout, follows_source):
+    roll = entry.get("roll")
+    order = roll["euler_order"] if roll else ROLL_DEFAULTS["euler_order"]
+    for segment in layout:
+        fraction = segment.fraction
+        influence = 1 - fraction if follows_source else fraction
+        carry = armature.pose.bones[segment.carrier or segment.name]
+        add_roll(armature, carry, entry["bone"], order, influence)
+        if roll:
+            hand = armature.pose.bones[segment.name]
+            add_roll(armature, hand, roll["from"], order, fraction * roll.get("influence", 1.0))
+
+
+def weighted_chain(entry, layout):
+    roll = entry.get("roll")
+    return [entry["name"], *(segment.name for segment in layout), roll["name"] if roll else entry["bone"]]
+
+
+def segmented_parts(obj, source_group, entry, layout, weights, along):
+    chain = weighted_chain(entry, layout)
+    fractions = [segment.fraction for segment in layout]
+    parts = [
+        (obj.vertex_groups.get(bone) or obj.vertex_groups.new(name=bone), weights * share)
+        for bone, share in zip(chain, segmented_shares(along, fractions))
+    ]
+    if source_group.name != chain[-1]:
+        parts.append((source_group, np.zeros_like(weights)))
+    return parts
 
 
 def main(argv=None):
@@ -216,6 +329,11 @@ def main(argv=None):
     with open(a.settings, encoding="utf-8") as stream:
         settings = merged(json.load(stream))
     follows_source = settings.get("constraint_mode") == "parented_roll"
+    layouts = {entry["bone"]: segment_layout(entry, follows_source) for entry in settings["bones"]}
+    segment_names = {
+        name for entry in settings["bones"]
+        for name in additional_segment_names(entry, follows_source, layouts[entry["bone"]])
+    }
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
     armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE" and (not settings["armature"] or obj.name == settings["armature"])]
     if not armatures:
@@ -236,8 +354,7 @@ def main(argv=None):
         added = [entry["name"]]
         if roll:
             added.append(roll["name"])
-        if follows_source:
-            added.append(basis_name(entry["name"]))
+        added.extend(additional_segment_names(entry, follows_source, layouts[entry["bone"]]))
         for name in added:
             if name in bones:
                 raise SystemExit(f"{armature.name} に骨 {name} がもうあります（model.twist_bones を 2 回かけない）")
@@ -252,13 +369,12 @@ def main(argv=None):
             if not deformed_by(obj, armature):
                 raise SystemExit(f"meshes の {name} は {armature.name} で動きません（アーマチュアのモディファイアも、アーマチュアの親も無い）")
             meshes.append(obj)
-    if follows_source:
-        support_names = {basis_name(entry["name"]) for entry in settings["bones"]}
+    if segment_names:
         for obj in bpy.data.objects:
             if obj.type == "MESH" and deformed_by(obj, armature):
-                collision = support_names.intersection(group.name for group in obj.vertex_groups)
+                collision = segment_names.intersection(group.name for group in obj.vertex_groups)
                 if collision:
-                    raise SystemExit(f"{obj.name} に台の骨と同じ名前の頂点グループがあります: {sorted(collision)}")
+                    raise SystemExit(f"{obj.name} に台や途中の骨と同じ名前の頂点グループがあります: {sorted(collision)}")
 
     # 1. ねじらない骨を足す（親は元の骨の親。Damped Track で aim の付け根を向くだけ）。2. roll があれば、元の骨の start から先に、
     # 手の回転の一部を写す骨を足す（親は元の骨。Copy Rotation の Y だけ・Add・ローカルどうし）。骨は bones の順に、足した骨・roll の骨
@@ -285,6 +401,9 @@ def main(argv=None):
             bone.parent = source
             bone.use_connect = False
             bone.use_deform = True
+        layout = layouts[entry["bone"]]
+        if layout:
+            add_segment_bones(edit_bones, source, entry, layout, follows_source)
     bpy.ops.object.mode_set(mode="POSE")
     for entry in settings["bones"]:
         pose_bone = armature.pose.bones[entry["name"]]
@@ -300,7 +419,8 @@ def main(argv=None):
             track.subtarget = entry["aim"]
             track.track_axis = "TRACK_Y"
         if roll:
-            add_roll(armature, armature.pose.bones[roll["name"]], roll["from"], roll["euler_order"])
+            add_roll(armature, armature.pose.bones[roll["name"]], roll["from"], roll["euler_order"], roll.get("influence", 1.0))
+        add_segment_rolls(armature, entry, layouts[entry["bone"]], follows_source)
     bpy.ops.object.mode_set(mode="OBJECT")
 
     # 3. 重みを振り分ける（リンク複製は先にその物体だけのデータにする）
@@ -324,19 +444,24 @@ def main(argv=None):
             touched = weights > 0
             if not touched.any():
                 continue
-            roll = entry.get("roll")
             share, rigid = split_shares(along, roots, touched, dominant, settings["rigid_max_verts"], settings["rigid_share"])
-            swing_share, keep_share, roll_share = part_shares(share, roll["start"] if roll else None)
-            keep = weights * keep_share
-            # 足した骨・元の骨・roll の骨の順に書く（台本と同じ順。外すと頂点の中のグループの並びが変わるので、順まで合わせる）
-            parts = [(obj.vertex_groups.get(entry["name"]) or obj.vertex_groups.new(name=entry["name"]),
-                      weights - keep if roll is None else weights * swing_share), (source_group, keep)]
-            if roll:
-                parts.append((obj.vertex_groups.get(roll["name"]) or obj.vertex_groups.new(name=roll["name"]), weights * roll_share))
+            layout = layouts[entry["bone"]]
+            if layout:
+                parts = segmented_parts(obj, source_group, entry, layout, weights, share)
+            else:
+                roll = entry.get("roll")
+                swing_share, keep_share, roll_share = part_shares(share, roll["start"] if roll else None)
+                keep = weights * keep_share
+                # 足した骨・元の骨・roll の骨の順に書く（台本と同じ順）
+                parts = [(obj.vertex_groups.get(entry["name"]) or obj.vertex_groups.new(name=entry["name"]),
+                          weights - keep if roll is None else weights * swing_share), (source_group, keep)]
+                if roll:
+                    parts.append((obj.vertex_groups.get(roll["name"]) or obj.vertex_groups.new(name=roll["name"]), weights * roll_share))
+            part_floor = (0.0 if floor is None else floor) if layout else floor
             for index in np.flatnonzero(touched):
                 for group, values in parts:
                     value = float(values[index])
-                    if writes(value, floor):
+                    if writes(value, part_floor):
                         group.add([int(index)], value, "REPLACE")
                     else:                                # 足した骨のグループが前からあっても、古い重みを残さない（無い頂点を外すのは何もしない）
                         group.remove([int(index)])
@@ -363,7 +488,9 @@ def main(argv=None):
 
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     added = []
+    chains = {}
     for entry in settings["bones"]:
+        layout = layouts[entry["bone"]]
         if follows_source:
             basis = basis_name(entry["name"])
             added.append({"name": basis, "kind": "basis", "parent": entry["bone"]})
@@ -371,13 +498,31 @@ def main(argv=None):
                           "parent": basis, "cancels_twist_of": entry["bone"]})
         else:
             added.append({"name": entry["name"], "kind": "swing", "copy_of": entry["bone"], "aims_at": entry["aim"]})
+            if layout:
+                added.append({"name": basis_name(entry["name"]), "kind": "basis", "parent": entry["name"]})
         if entry.get("roll"):
             roll = entry["roll"]
-            added.append({"name": roll["name"], "kind": "roll", "part_of": entry["bone"], "from": roll["from"], "start": roll["start"],
-                          "euler_order": roll["euler_order"]})
+            row = {"name": roll["name"], "kind": "roll", "part_of": entry["bone"], "from": roll["from"], "start": roll["start"],
+                   "euler_order": roll["euler_order"]}
+            if "influence" in roll:
+                row["influence"] = roll["influence"]
+            added.append(row)
+        for segment in layout:
+            if segment.carrier:
+                added.append({"name": segment.carrier, "kind": "carrier", "part_of": entry["bone"], "fraction": segment.fraction})
+            if segment.basis:
+                added.append({"name": segment.basis, "kind": "basis", "parent": segment.carrier})
+            added.append({"name": segment.name, "kind": "segment", "part_of": entry["bone"], "fraction": segment.fraction})
+        if layout:
+            chains[entry["bone"]] = [
+                {"name": name, "position": t}
+                for name, t in zip(weighted_chain(entry, layout), (0.0, *(segment.fraction for segment in layout), 1.0))
+            ]
     report = {"schema_version": "model3d-twist-bones/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "armature": armature.name, "bones": added, "weights": weights_report, "influences": influences_report,
               "meshes": [obj.name for obj in meshes], "separated_from": separated, "settings": settings}
+    if chains:
+        report["chains"] = chains
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
