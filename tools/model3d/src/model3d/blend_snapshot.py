@@ -112,15 +112,31 @@ def compare(left, right, tolerance=None, requested=None, requested_attributes=No
     else:
         report["rest_matrix_max_abs_error"] = report["pose_matrix_max_abs_error"] = None
     evaluations = []
+    full_evaluation_identical = True
     for frame in sorted(set(lmeta["evaluated"]) & set(rmeta["evaluated"]), key=int):
         le, re_ = lmeta["evaluated"][frame], rmeta["evaluated"][frame]
         for name in sorted(set(le) & set(re_)):
             a, b = larr[le[name]["key"]], rarr[re_[name]["key"]]
-            if _non_finite(a, b):
+            full_a = larr.get(le[name].get("full_key"))
+            full_b = rarr.get(re_[name].get("full_key"))
+            finite = not _non_finite(a, b, full_a, full_b)
+            if not finite:
                 non_finite.append(f"{name}（コマ {frame}）")
-            evaluations.append({"frame": int(frame), "object": name, "vertex_count_identical": le[name]["vertices"] == re_[name]["vertices"],
-                                "all_evaluated_vertices_exact": le[name]["sha256"] == re_[name]["sha256"],
-                                "sampled_max_coordinate_error": _max_error(a, b)})
+            row = {"frame": int(frame), "object": name, "vertex_count_identical": le[name]["vertices"] == re_[name]["vertices"],
+                   "all_evaluated_vertices_exact": le[name]["sha256"] == re_[name]["sha256"],
+                   "sampled_max_coordinate_error": _max_error(a, b)}
+            if "full_key" in le[name] or "full_key" in re_[name]:
+                row.update(max_evaluated_coordinate_error=None, max_evaluated_distance=None, p95_evaluated_distance=None)
+                comparable = (full_a is not None and full_b is not None and full_a.shape == full_b.shape
+                              and full_a.shape == (le[name]["vertices"], 3))
+                full_evaluation_identical &= comparable
+                if comparable and finite:
+                    delta = full_a.astype(np.float64) - full_b.astype(np.float64)
+                    distance = np.linalg.norm(delta, axis=1)
+                    row.update(max_evaluated_coordinate_error=float(np.abs(delta).max()) if delta.size else 0.0,
+                               max_evaluated_distance=float(distance.max()) if distance.size else 0.0,
+                               p95_evaluated_distance=float(np.percentile(distance, 95)) if distance.size else 0.0)
+            evaluations.append(row)
     report["evaluated_meshes"] = evaluations
     report["non_finite"] = non_finite
     structure = (not report["missing_objects"] and not report["additional_objects"] and report["scene_identical"]
@@ -130,6 +146,7 @@ def compare(left, right, tolerance=None, requested=None, requested_attributes=No
                  and all(info.get("kind_identical", True) for o in report["objects"] for info in o["attributes"].values())
                  and not (unfound and (unfound["left"] or unfound["right"]))
                  and not (attributes_unfound and (attributes_unfound["left"] or attributes_unfound["right"]))
+                 and full_evaluation_identical
                  and all(e["vertex_count_identical"] for e in evaluations))
     geometry = all(o["vertices_exact"] and o["uv_identical"] and o["attributes_identical"] and o["matrix_world_identical"]
                    for o in report["objects"])
@@ -179,9 +196,10 @@ def compare(left, right, tolerance=None, requested=None, requested_attributes=No
             elif matrix is None and report[key] not in (0.0, None):
                 failures.append(f"骨の {key} {report[key]:.3g} が 0 ではありません（matrix {omitted}）")
         for e in evaluations:
-            if beyond(e["sampled_max_coordinate_error"], coordinate):
-                failures.append(f"コマ {e['frame']} の {e['object']}: 変形した形の違い {e['sampled_max_coordinate_error']:.3g} が coordinate を超えます")
-            elif (coordinate is None and e["vertex_count_identical"] and e["sampled_max_coordinate_error"] is not None
+            error = e.get("max_evaluated_coordinate_error", e["sampled_max_coordinate_error"])
+            if beyond(error, coordinate):
+                failures.append(f"コマ {e['frame']} の {e['object']}: 変形した形の違い {error:.3g} が coordinate を超えます")
+            elif (coordinate is None and e["vertex_count_identical"] and error is not None
                   and not e["all_evaluated_vertices_exact"]):                 # exact と同じく、頂点の全部（sha256）で比べる
                 failures.append(f"コマ {e['frame']} の {e['object']}: 変形した形が同じではありません（coordinate {omitted}）")
     report.update({"pass": not failures, "failures": failures})

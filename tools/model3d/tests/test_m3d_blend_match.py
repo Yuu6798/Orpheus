@@ -2,7 +2,10 @@
 骨・変形した形・tolerance）と、工程の設定・Blender への渡し方（代役の Blender）。中身を書き出す所は本物の Blender が要るので、
 CI では確かめない（docs/model3d.md の手元の確認）。"""
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import numpy as np
 import pytest
@@ -65,9 +68,19 @@ if settings["evaluate"]:
         meta["evaluated"][str(frame)] = {}
         for k, ob in enumerate(desc["objects"]):
             world = np.array(ob["co"], np.float32).reshape(-1, 3) + np.float32(desc["evaluated_shift"])
-            arrays[f"e{frame}_o{k}"] = world
+            if "--mute-pose-constraints" in args:
+                meta["muted_pose_constraint_count"] = 1
+            elif desc.get("with_constraint"):
+                world[-1] += [3 / 8, 4 / 8, 0]
+            count = min(settings.get("samples", 512), len(world))
+            indices = np.linspace(0, len(world) - 1, count, dtype=int)
+            arrays[f"e{frame}_o{k}"] = world[indices]
             meta["evaluated"][str(frame)][ob["name"]] = {"key": f"e{frame}_o{k}", "vertices": len(world),
                                                          "sha256": hashlib.sha256(world.tobytes()).hexdigest()}
+            if settings.get("evaluated_distances"):
+                full_key = f"e{frame}_o{k}_all"
+                arrays[full_key] = world
+                meta["evaluated"][str(frame)][ob["name"]]["full_key"] = full_key
 meta["settings"] = settings
 with open(value("--out"), "wb") as stream:
     np.savez(stream, **arrays)
@@ -243,6 +256,79 @@ def test_the_operation_writes_both_snapshots_and_compares_them(tmp_path):
     assert loose["status"] == "succeeded"
 
 
+def test_constraints_can_be_disabled_on_one_side_and_all_vertices_set_the_limit(tmp_path):
+    from model3d import executor
+
+    blender = stand_in_executable(tmp_path, "blender", STAND_IN)
+    for side in ("left", "right"):
+        atomic_json(tmp_path / f"{side}.blend", {**_description(), "with_constraint": True})
+    params = {"blender": str(blender), "frames": [1], "evaluate": True, "samples": 1,
+              "mute_pose_constraints": ["right"], "evaluated_distances": True, "tolerance": {"coordinate": 0.25}}
+    result = executor.run_recipe(_recipe(tmp_path, params), tmp_path / "runs")
+    step = result["steps"]["match"]
+    assert step["status"] == "needs_review"
+    report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["muted_pose_constraint_count"] == {"right": 1}
+    evaluation = report["evaluated_meshes"][0]
+    assert evaluation["sampled_max_coordinate_error"] == 0.0
+    assert evaluation["max_evaluated_coordinate_error"] == 0.5
+    assert evaluation["max_evaluated_distance"] == 0.625
+    assert evaluation["p95_evaluated_distance"] == pytest.approx(0.53125)
+
+
+@pytest.mark.skipif(not os.getenv("MODEL3D_BLENDER"), reason="set MODEL3D_BLENDER to the Blender executable")
+def test_blender_comparison_disables_pose_constraints_without_changing_input(tmp_path):
+    from model3d import executor
+
+    fixture = tmp_path / "make_fixture.py"
+    fixture.write_text("""
+import sys
+import bpy
+
+bpy.ops.object.select_all(action="SELECT")
+bpy.ops.object.delete(use_global=False)
+scene = bpy.context.scene
+rig = bpy.data.objects.new("rig", bpy.data.armatures.new("rig"))
+scene.collection.objects.link(rig)
+bpy.context.view_layer.objects.active = rig
+bpy.ops.object.mode_set(mode="EDIT")
+bone = rig.data.edit_bones.new("root")
+bone.tail = (0, 1, 0)
+bpy.ops.object.mode_set(mode="OBJECT")
+target = bpy.data.objects.new("target", None)
+scene.collection.objects.link(target)
+target.location = (3 / 8, 4 / 8, 0)
+rig.pose.bones["root"].constraints.new("COPY_LOCATION").target = target
+mesh = bpy.data.meshes.new("surface")
+mesh.from_pydata([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], [], [(0, 1, 2, 3)])
+surface = bpy.data.objects.new("surface", mesh)
+scene.collection.objects.link(surface)
+surface.vertex_groups.new(name="root").add([3], 1.0, "REPLACE")
+surface.modifiers.new("rig", "ARMATURE").object = rig
+scene.frame_start = scene.frame_end = 1
+bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1])
+""", encoding="utf-8")
+    blender = os.environ["MODEL3D_BLENDER"]
+    left = tmp_path / "left.blend"
+    right = tmp_path / "right.blend"
+    subprocess.run([blender, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+                    "--python", str(fixture), "--", str(left)], check=True, capture_output=True, timeout=60)
+    shutil.copyfile(left, right)
+    original = right.read_bytes()
+    params = {"blender": blender, "frames": [1], "evaluate": True, "samples": 1,
+              "mute_pose_constraints": ["right"], "evaluated_distances": True}
+    result = executor.run_recipe(_recipe(tmp_path, params), tmp_path / "runs")
+    step = result["steps"]["match"]
+    assert step["status"] == "needs_review", step
+    report = json.loads(Path(step["artifacts"]["report"]).read_text(encoding="utf-8"))
+    assert report["muted_pose_constraint_count"] == {"right": 1}
+    evaluation = report["evaluated_meshes"][0]
+    assert evaluation["sampled_max_coordinate_error"] == 0.0
+    assert evaluation["max_evaluated_distance"] == pytest.approx(0.625)
+    assert evaluation["p95_evaluated_distance"] == pytest.approx(0.53125)
+    assert right.read_bytes() == original
+
+
 class Context:
     def __init__(self, step_dir):
         self.step_dir = step_dir
@@ -255,6 +341,11 @@ class Context:
     ({"frames": [1.5]}, "frames"),
     ({"pose_frames": "some"}, "pose_frames"),
     ({"evaluate": "yes", "frames": [1]}, "evaluate"),
+    ({"evaluate": True, "frames": [1], "mute_pose_constraints": "left"}, "mute_pose_constraints"),
+    ({"evaluate": True, "frames": [1], "mute_pose_constraints": ["left", "left"]}, "mute_pose_constraints"),
+    ({"evaluate": True, "frames": [1], "mute_pose_constraints": ["center"]}, "mute_pose_constraints"),
+    ({"evaluated_distances": "yes"}, "evaluated_distances"),
+    ({"evaluated_distances": True}, "evaluate"),
     ({"attributes": "most"}, "attributes"),
     ({"objects": "body"}, "objects"),
     ({"armature": ""}, "armature"),

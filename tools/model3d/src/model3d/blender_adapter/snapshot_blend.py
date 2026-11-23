@@ -7,6 +7,7 @@ check.blend_match が 2 つの .blend を比べるのに使う（比べるのは
 settings.json（check.blend_match が書く）:
 - frames: 変形した形を測るコマ（evaluate のとき）。pose_frames: 骨の姿勢を測るコマ（"all" はシーンの全部のコマ）。
 - evaluate: 変形した世界の形の sha256 と、等間隔の samples 個の頂点を残すか。
+- evaluated_distances: 等間隔の頂点に加え、変形後の全頂点の位置を残すか。
 - attributes: 残す属性の名前の並びか "all"（. で始まる内部の属性と position は除く）。
 - objects: 比べるメッシュの名前の並び（null は全部）。armature: 骨を読むアーマチュアの名前（null は 1 つだけあるとき）。
 リポジトリ外の試作（作り直したキャラと採用版の比べ）と同じ読み方: 頂点は物体の中の座標（float32）、面のつなぎと uv は面の角ごと、
@@ -42,6 +43,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description="write a snapshot of a .blend for check.blend_match")
     for flag in ("--blend", "--out", "--meta", "--settings"):
         parser.add_argument(flag, required=True)
+    parser.add_argument("--mute-pose-constraints", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -55,6 +57,23 @@ def main(argv=None):
         settings = json.load(stream)
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
     scene = bpy.context.scene
+    armatures = [ob for ob in bpy.data.objects if ob.type == "ARMATURE"]
+    if settings.get("armature"):
+        armatures = [ob for ob in armatures if ob.name == settings["armature"]]
+        if not armatures:
+            raise SystemExit(f"アーマチュアがありません: {settings['armature']}")
+    if len(armatures) > 1:
+        raise SystemExit(f"アーマチュアが {len(armatures)} つあります。armature で名前を選んでください: {[ob.name for ob in armatures]}")
+    arm = armatures[0] if armatures else None
+    muted_count = 0
+    if a.mute_pose_constraints:
+        if arm is None:
+            raise SystemExit("拘束を止める対象のアーマチュアがありません")
+        # 開いた一時シーンから外す。コマのキーやドライバーが再度有効にすることを防ぐ。
+        for bone in arm.pose.bones:
+            for constraint in tuple(bone.constraints):
+                bone.constraints.remove(constraint)
+                muted_count += 1
     # 物体の置き場所の行列（matrix_world）は、保存したときのコマで変わる（動く物体や親）。どちらのファイルでも、
     # シーンの最初のコマに合わせてから読む（頂点・面・uv・属性は、コマによらないメッシュのデータ）
     scene.frame_set(scene.frame_start)
@@ -63,6 +82,8 @@ def main(argv=None):
                         "scene": {"start": scene.frame_start, "end": scene.frame_end, "fps": scene.render.fps,
                                   "fps_base": scene.render.fps_base},     # 再生の速さは fps / fps_base
                         "objects": [], "evaluated": {}, "matrix_frame": scene.frame_start}
+    if a.mute_pose_constraints:
+        meta["muted_pose_constraint_count"] = muted_count
     wanted = settings.get("objects")
     meshes = [ob for ob in bpy.data.objects if ob.type == "MESH" and (wanted is None or ob.name in wanted)]
     for k, ob in enumerate(meshes):
@@ -93,18 +114,10 @@ def main(argv=None):
         if not settings.get("evaluate"):
             for modifier in ob.modifiers:
                 modifier.show_viewport = False
-    armatures = [ob for ob in bpy.data.objects if ob.type == "ARMATURE"]
-    if settings.get("armature"):
-        armatures = [ob for ob in armatures if ob.name == settings["armature"]]
-        if not armatures:
-            raise SystemExit(f"アーマチュアがありません: {settings['armature']}")
-    if len(armatures) > 1:
-        raise SystemExit(f"アーマチュアが {len(armatures)} つあります。armature で名前を選んでください: {[ob.name for ob in armatures]}")
     frames = [int(f) for f in settings.get("frames") or []]
     pose_frames = settings.get("pose_frames")
     pose_frames = (list(range(scene.frame_start, scene.frame_end + 1)) if pose_frames == "all"
                    else [int(f) for f in (pose_frames if pose_frames is not None else frames)])
-    arm = armatures[0] if armatures else None
     meta["armature"] = arm.name if arm else None
     meta["bones"] = sorted(b.name for b in arm.pose.bones) if arm else []
     if arm:
@@ -130,6 +143,10 @@ def main(argv=None):
                 picks = np.linspace(0, len(world) - 1, count, dtype=int) if count else np.zeros(0, dtype=int)
                 arrays[f"e{frame}_o{k}"] = world[picks]
                 evaluated[ob.name] = {"key": f"e{frame}_o{k}", "vertices": len(world), "sha256": digest(world)}
+                if settings.get("evaluated_distances"):
+                    full_key = f"e{frame}_o{k}_all"
+                    arrays[full_key] = world
+                    evaluated[ob.name]["full_key"] = full_key
                 ev.to_mesh_clear()
             meta["evaluated"][str(frame)] = evaluated
     if arm:
