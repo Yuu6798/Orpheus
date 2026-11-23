@@ -40,7 +40,8 @@ from pathlib import Path
 import bpy
 
 root = Path(sys.argv[-1])
-for name, color in (("base", (0.2, 0.4, 0.6, 1)), ("other", (0.6, 0.3, 0.1, 1))):
+for name, color in (("base", (0.2, 0.4, 0.6, 1)), ("other", (0.6, 0.3, 0.1, 1)),
+                    ("partial", (0.3, 0.6, 0.1, 0.5))):
     image = bpy.data.images.new(name, width=4, height=4, alpha=True)
     image.pixels = color * 16
     image.filepath_raw = str(root / (name + ".png"))
@@ -56,15 +57,17 @@ def packed(filename, name):
 base = packed("base.png", "Atlas")
 copy = packed("base.png", "Atlas copy")
 other = packed("other.png", "Other atlas")
+partial = packed("partial.png", "Partial alpha")
 for name, image in (("Solid", base), ("Solid copy", copy), ("Variant", base),
-                    ("Convert", base), ("Translucent", other), ("Unselected", copy)):
+                    ("Mapping variant", base), ("Convert", base), ("Translucent", other),
+                    ("Partial alpha", partial), ("Unselected", copy)):
     bpy.ops.mesh.primitive_plane_add()
     ob = bpy.context.object
     ob.name = name
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     ob.data.materials.append(mat)
-    if name.startswith("Solid") or name == "Variant":
+    if name.startswith("Solid") or name in {"Variant", "Mapping variant"}:
         gltf = mat.vrm_addon_extension.mtoon1
         gltf.enabled = True
         gltf.alpha_mode = "BLEND"
@@ -75,13 +78,15 @@ for name, image in (("Solid", base), ("Solid copy", copy), ("Variant", base),
         toon.shading_shift_factor = 0.125
         if name == "Variant":
             mat.node_tree.nodes["Mtoon1BaseColorTexture.Image"].image = other
+        if name == "Mapping variant":
+            mat.node_tree.nodes["Mtoon1BaseColorTexture.Image"].texture_mapping.translation[0] = 0.75
         continue
     tree = mat.node_tree
     texture = tree.nodes.new("ShaderNodeTexImage")
     texture.image = image
     shader = next(node for node in tree.nodes if node.type == "BSDF_PRINCIPLED")
     tree.links.new(texture.outputs["Color"], shader.inputs["Base Color"])
-    if name == "Translucent":
+    if name in {"Translucent", "Partial alpha"}:
         shader.inputs["Alpha"].default_value = 0.375
         texture.interpolation = "Closest"
         texture.extension = "EXTEND"
@@ -155,9 +160,14 @@ def test_synthetic_blend_conversion_and_deduplication(tmp_path):
     assert report["images_merged"] == {"Atlas copy": "Atlas"}
     script.write_text(CHECK, encoding="utf-8")
     launcher.run_blender(blender, script, blend=Path(step["artifacts"]["blend"]), addons=addons, extensions=extensions)
-    for invalid in ({"merge_materials": {"Variant": "Solid"}}, {"merge_images": {"Other atlas": "Atlas"}}):
+    for invalid, message in (
+        ({"merge_materials": {"Variant": "Solid"}}, "同じ内容と確認できません"),
+        ({"merge_materials": {"Mapping variant": "Solid"}}, "同じ内容と確認できません"),
+        ({"merge_images": {"Other atlas": "Atlas"}}, "同じ内容と確認できません"),
+        ({"materials": ["Partial alpha"]}, "MToon では画像の透過も使われます"),
+    ):
         run = executor.run_recipe(recipe(tmp_path, settings | invalid), tmp_path / "runs")
         assert run["status"] == "failed"
         log = Path(run["run_dir"]) / "finish" / "blender.log"
-        assert "同じ内容と確認できません" in log.read_text(encoding="utf-8")
+        assert message in log.read_text(encoding="utf-8")
         assert hashlib.sha256(source.read_bytes()).hexdigest() == digest

@@ -74,6 +74,17 @@ def conversion_shader(material):
     return shader
 
 
+def has_pixel_transparency(image):
+    if image.source not in {"FILE", "GENERATED"} or not all(image.size) or not len(image.pixels):
+        raise SystemExit(f"画像 {image.name!r} の透過を確かめられません")
+    channels = image.channels
+    if channels not in (2, 4):
+        return False
+    pixels = array("f", [0]) * len(image.pixels)
+    image.pixels.foreach_get(pixels)
+    return any(a < 1 for a in memoryview(pixels)[channels - 1::channels])
+
+
 def convert_material(material, settings, reference):
     shader = conversion_shader(material)
     base_node = image_node_on(shader.inputs["Base Color"])
@@ -101,6 +112,10 @@ def convert_material(material, settings, reference):
     color = settings["base_color_factors"].get(material.name, color)
     transparent = alpha_node is not None or color[3] < 1.0 or old_mode == "BLEND" or (
         getattr(material, "surface_render_method", None) == "BLENDED")
+    alpha_mode = "MASK" if old_mode == "CLIP" else ("BLEND" if transparent else "OPAQUE")
+    effective_mode = settings["alpha_modes"].get(material.name, alpha_mode)
+    if effective_mode != "OPAQUE" and base_image is not None and alpha_node is None and has_pixel_transparency(base_image):
+        raise SystemExit(f"材質 {material.name!r} は色の画像の透過を使っていませんが、MToon では画像の透過も使われます")
 
     gltf = mtoon_of(material)
     gltf.enabled = True
@@ -126,11 +141,9 @@ def convert_material(material, settings, reference):
             setattr(toon, key, reference[key])
     if material.name in settings["shade_color_factors"]:
         toon.shade_color_factor = settings["shade_color_factors"][material.name]
-    if old_mode == "CLIP":
-        gltf.alpha_mode = "MASK"
+    gltf.alpha_mode = alpha_mode
+    if alpha_mode == "MASK":
         gltf.alpha_cutoff = cutoff
-    else:
-        gltf.alpha_mode = "BLEND" if transparent else "OPAQUE"
 
 
 def image_signature(image, cache):
@@ -220,11 +233,17 @@ def shader_signature(material, cache):
         image = getattr(node, "image", None)
         group = getattr(node, "node_tree", None)
         image_user = getattr(node, "image_user", None)
+        mapping = ()
+        if node.type == "TEX_IMAGE":
+            color = node.color_mapping
+            ramp = color.color_ramp if color.use_color_ramp else None
+            colors = (scalar_properties(ramp), tuple(scalar_properties(element) for element in ramp.elements)) if ramp else ()
+            mapping = (scalar_properties(node.texture_mapping), scalar_properties(color), colors)
         sockets = tuple(scalar_properties(socket) for socket in (*node.inputs, *node.outputs))
         nodes.append((node.name, scalar_properties(node, skip=NODE_LAYOUT), sockets,
                       image_signature(image, cache) if image else None,
                       group.as_pointer() if group else None,
-                      scalar_properties(image_user) if image_user else None))
+                      scalar_properties(image_user) if image_user else None, mapping))
     links = sorted((link.from_node.name, link.from_socket.identifier, link.to_node.name,
                     link.to_socket.identifier, link.is_muted) for link in tree.links)
     render_fields = ("use_backface_culling", "use_backface_culling_shadow", "use_backface_culling_lightprobe_volume",
