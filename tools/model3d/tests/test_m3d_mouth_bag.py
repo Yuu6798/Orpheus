@@ -53,10 +53,12 @@ from mathutils import Vector
 
 N = 10
 
-def make(path):
+def make(path, style="rounded"):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     rim = [(.14 * math.cos(math.pi - 2*math.pi*i/N), -.2, .043 * math.sin(math.pi - 2*math.pi*i/N))
            for i in range(N)]
+    if style == "flat-corners":
+        rim = [(max(-.1, min(.1, x)), y, z) for x, y, z in rim]
     outer = [(x * 1.9, -.32, z * 3.5) for x, _, z in rim]
     faces = [(N+(i+1)%N, N+i, i, (i+1)%N) for i in range(N)]
     mesh = bpy.data.meshes.new("Fixture Face")
@@ -131,7 +133,8 @@ else:
 '''
 
 
-def test_mouth_bag_on_a_blend_with_shape_keys_and_shared_mesh(tmp_path):
+@pytest.mark.parametrize("rim_style", ["rounded", "flat-corners"])
+def test_mouth_bag_on_a_blend_with_shape_keys_and_shared_mesh(tmp_path, rim_style):
     blender = os.environ.get("MODEL3D_TEST_BLENDER") or shutil.which("blender")
     if not blender:
         pytest.skip("Blender is needed for the synthetic mouth geometry")
@@ -147,7 +150,7 @@ def test_mouth_bag_on_a_blend_with_shape_keys_and_shared_mesh(tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
 
     source = tmp_path / "fixture.blend"
-    run_blender("make", source)
+    run_blender("make", source, rim_style)
     before = source.read_bytes()
     settings = {**SETTINGS, "blender": blender, "cap_extra": .004,
                 "clearance": {"object": "Fixture Obstacle", "half_width": .13, "z": [-.07, .07], "gap": .024}}

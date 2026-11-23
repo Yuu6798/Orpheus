@@ -1,6 +1,7 @@
 """唇の裏の開いた輪に、形状キーと骨の重みを引き継ぐ内壁とふたを作る。"""
 
 import argparse
+from itertools import accumulate, pairwise
 import json
 import math
 import os
@@ -48,15 +49,29 @@ def rim_cycle(co, edges, boundary, limits):
     return cycle
 
 
+def arc_fractions(points):
+    lengths = [math.dist(a, b) for a, b in pairwise(points)]
+    if any(length == 0 for length in lengths):
+        raise ValueError("口の縁に同じ位置の頂点が続いています")
+    total = sum(lengths)
+    return [length / total for length in accumulate(lengths, initial=0.0)]
+
+
 def ring_angles(points):
     x = [p.x for p in points]
     left, right = min(x), max(x)
-    corner = x.index(right)
-    if right <= left or corner <= 1 or corner >= len(x) - 1:
+    corner = next((i for i in range(2, len(x) - 1) if x[i] == right), None)
+    if right <= left or corner is None:
         raise ValueError("口の左右の端と上下の縁を決められません")
     # 元の輪を横に投影して、上と下をそれぞれ半円へ写す。
-    return [math.pi * (1 - (value - left) / (right - left)) if i <= corner
-            else math.pi * (1 + (value - left) / (right - left)) for i, value in enumerate(x)], corner
+    angles = [math.pi * (1 - (value - left) / (right - left)) if i <= corner
+              else math.pi * (1 + (value - left) / (right - left)) for i, value in enumerate(x)]
+    # 口角が平たく、横の座標が重なったり戻ったりする縁には、輪の長さを使って頂点の間を保つ。
+    if any(a >= b for a, b in pairwise(x[:corner + 1])):
+        angles[:corner] = [math.pi * (1 - t) for t in arc_fractions(points[:corner + 1])[:-1]]
+    if any(a <= b for a, b in pairwise(x[corner:] + x[:1])):
+        angles[corner + 1:] = [math.pi * (2 - t) for t in arc_fractions(points[corner:] + points[:1])[1:-1]]
+    return angles, corner
 
 
 def clearance_front(objects, rule, unit):

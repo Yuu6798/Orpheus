@@ -2389,6 +2389,7 @@ VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model
 - `front_y`、`window`（`half_width` と `z`）、`zone`（`half_width`）は `check.mouth` と同じ書き方。
   頭は背筋を立てて −Y を向き、座標は世界の m。1 面だけに接する辺の両端が `zone` の横幅、`window.z`、`front_y` より手前にあれば候補にする。
   候補が 1 本の輪を作らなければ、書き出す前に止める。
+  平たい口角などで縁の横座標が重なる場合は、縁に沿った距離で奥の輪の頂点を配る。
 - `depth`、`half_height`（m）、`rings`（1 以上）で奥行き、奥の半高、段数を指定する。奥の幅を元の縁から変える倍率は
   `widen`（既定 1）、下げる距離は `drop`（m、既定 0）。最奥の輪の倍率は `last_ring_scale`（0 より大きい 1 以下、既定 1）、
   ふたの中心をさらに奥へ出す距離は `cap_extra`（m、既定 0）。
