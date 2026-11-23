@@ -55,6 +55,7 @@ image.pack()
 material = bpy.data.materials.new("Cloth")
 material.use_nodes = True
 material.node_tree.nodes.new("ShaderNodeTexImage").image = image
+secondary = bpy.data.scenes.new("Secondary")
 
 def make(name, faces, atlas):
     mesh = bpy.data.meshes.new(name)
@@ -68,7 +69,7 @@ def make(name, faces, atlas):
     if name == "Sharing":
         obj.location.x = 7
     obj.data.materials.append(material)
-    bpy.context.scene.collection.objects.link(obj)
+    (secondary if name == "Sharing" else bpy.context.scene).collection.objects.link(obj)
 
 make("Target", 2, [(0.016, 0.481), (0.52, 0.984)])
 make("Sharing", 1, [(0.016, 0.481)])

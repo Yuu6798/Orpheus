@@ -179,11 +179,13 @@ def read_pixels(image):
     return pixels.reshape(height, width, 4)
 
 
-def replace_image(bpy, image, pixels, name, path=None):
+def replace_image(bpy, image, pixels, name, path=None, preserve_alpha_mode=False):
     """塗り替えた画素の新しい絵を作って詰め込み、元の絵を使っていた所を付け替える（台本と同じ）。"""
     height, width = pixels.shape[:2]
     new_image = bpy.data.images.new(name, width, height, alpha=True)
     new_image.colorspace_settings.name = image.colorspace_settings.name
+    if preserve_alpha_mode:
+        new_image.alpha_mode = image.alpha_mode
     new_image.pixels.foreach_set(pixels.reshape(-1))
     if path:
         new_image.filepath_raw = path
@@ -194,14 +196,14 @@ def replace_image(bpy, image, pixels, name, path=None):
     return new_image
 
 
-def shared_texels(scene, image, target, selected, changed, mesh_texture_faces):
+def shared_texels(objects, image, target, selected, changed, mesh_texture_faces):
     if not changed.any():
         return {}
     height, width = changed.shape
     ys, xs = np.where(changed)
     bounds = (xs.min(), ys.min(), xs.max(), ys.max())
     result = {}
-    for obj in scene.objects:
+    for obj in objects:
         if obj.type != "MESH":
             continue
         slots = slots_using(effective_materials(obj), image)
@@ -260,7 +262,7 @@ def recolor_selected_faces(bpy, obj, image, settings):
     else:
         pixels, _ = gain_pixels(source, mask, np.asarray(settings["gain"], dtype=np.float32), settings["dark_below"], settings["feather"])
     changed = np.any(np.rint(np.clip(source, 0, 1) * 255) != np.rint(np.clip(pixels, 0, 1) * 255), axis=2)
-    sharing = shared_texels(bpy.context.scene, image, obj, selected, changed, mesh_texture_faces)
+    sharing = shared_texels(bpy.data.objects, image, obj, selected, changed, mesh_texture_faces)
     return pixels, {"texels_in_part": int(mask.sum()), "texels_changed": int(changed.sum()),
                     "selected_triangles": int(selected.sum()), "other_faces_using_changed_texels": sharing}
 
@@ -297,7 +299,7 @@ def main(argv=None):
         if image.is_float or image.source not in ("FILE", "GENERATED"):
             raise SystemExit("面を選ぶ色替えには静止した 8 ビット画像を使ってください")
         pixels, info = recolor_selected_faces(bpy, obj, image, settings)
-        replace_image(bpy, image, pixels, Path(a.texture).stem, a.texture)
+        replace_image(bpy, image, pixels, Path(a.texture).stem, a.texture, preserve_alpha_mode=True)
         report.update(object=obj.name, image=image.name, texture=a.texture, **info)
     elif a.mode == "part":
         obj = bpy.data.objects.get(settings["object"])

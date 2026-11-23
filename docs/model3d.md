@@ -1897,7 +1897,7 @@ VRM 1.0 の拘束（aim・roll・rotation）の形でない骨の拘束（`model
   `{"mode":"dark","value":0.3,"softness":0.1}` または `{"mode":"grey","value":0.6,"softness":0.1,"max_saturation":0.2}`。
   `dark` はしきい値より暗い画素、`grey` は明るく彩度の低い画素を選ぶ。数値は選びたい色に合わせる。透過は維持する。
   `pad` で四近傍へ広げ、`clean` で画素の選択をならす（いずれも 0〜64 画素、既定 0）。
-- `region` を使うと、変えた画素を使うほかの面を `report.other_faces_using_changed_texels` に物体ごとに記録する。
+- `region` を使うと、変えた画素を使うほかの面を `report.other_faces_using_changed_texels` に物体ごとに記録する。同じファイルの別シーンも調べる。
   面数はポリゴン、画素数は重複を除いた数。共有または UV 未確認があれば要確認。元の .blend は変えない。出力を使う前に絵を確認する。
   アクティブな UV の 0〜1 内にある画素の中心で測る。UV の繰り返し・材質ノード内での座標変換・補間は検査の対象外。
 
