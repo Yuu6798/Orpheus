@@ -7,15 +7,6 @@ import sys
 
 import numpy as np
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from model3d.blender_adapter.eye_math import GeometryError, SCHEMA, SIDES, validate
-from model3d.blender_adapter.model_edit import world_points
-from model3d.eye_build import make_eye, validate_settings
-from model3d.face_shapes import Head
-
-
 def add_material(bpy, mesh, image_path, name):
     image = bpy.data.images.load(str(image_path), check_existing=False)
     image.pack()
@@ -58,6 +49,11 @@ def add_surface(bm, attribute, marker, material, data, matrix, shapes, basis, uv
 
 
 def build(bpy, bmesh, ob, atlas, config):
+    from model3d.blender_adapter.eye_math import GeometryError, SCHEMA, SIDES, validate
+    from model3d.blender_adapter.model_edit import world_points
+    from model3d.eye_build import make_eye
+    from model3d.face_shapes import Head
+
     mesh = ob.data
     if ob.library or mesh.library or mesh.users != 1 + int(mesh.use_fake_user) or ob.mode != "OBJECT":
         raise GeometryError("書き換えられる単独のメッシュをオブジェクトモードで使ってください")
@@ -155,6 +151,11 @@ def build(bpy, bmesh, ob, atlas, config):
 def main():
     import bmesh
     import bpy
+
+    if not __package__:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from model3d.blender_adapter.eye_math import GeometryError
+    from model3d.eye_build import validate_settings
 
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ("blend", "atlas", "settings", "out", "geometry", "report"):
