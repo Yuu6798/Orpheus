@@ -102,24 +102,30 @@ def recolor_all(rules, names, read):
 def uv_mask(uv_triangles, width, height, margin):
     """uv の三角形 (T, 3, 2)（画素の座標）が覆う画素と、その外の margin 画素（三角形の大きさで割った重心座標の許し）。台本と同じ。"""
     mask = np.zeros((height, width), dtype=bool)
-    reach = int(np.ceil(margin)) + 1
     for t in uv_triangles:
-        x0, x1 = max(int(np.floor(t[:, 0].min())) - reach, 0), min(int(np.ceil(t[:, 0].max())) + reach, width - 1)
-        y0, y1 = max(int(np.floor(t[:, 1].min())) - reach, 0), min(int(np.ceil(t[:, 1].max())) + reach, height - 1)
-        if x1 < x0 or y1 < y0:
-            continue
-        grid_x, grid_y = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
-        a, b, c = t
-        denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
-        if abs(denominator) < 1e-9:
-            continue
-        w0 = ((b[1] - c[1]) * (grid_x - c[0]) + (c[0] - b[0]) * (grid_y - c[1])) / denominator
-        w1 = ((c[1] - a[1]) * (grid_x - c[0]) + (a[0] - c[0]) * (grid_y - c[1])) / denominator
-        w2 = 1.0 - w0 - w1
-        tolerance = margin / max(np.sqrt(abs(denominator)), 1.0)
-        inside = (w0 >= -tolerance) & (w1 >= -tolerance) & (w2 >= -tolerance)
-        mask[y0:y1 + 1, x0:x1 + 1] |= inside
+        part = triangle_texels(t, width, height, margin)
+        if part is not None:
+            area, inside = part
+            mask[area] |= inside
     return mask
+
+
+def triangle_texels(t, width, height, margin=0):
+    reach = int(np.ceil(margin)) + 1
+    x0, x1 = max(int(np.floor(t[:, 0].min())) - reach, 0), min(int(np.ceil(t[:, 0].max())) + reach, width - 1)
+    y0, y1 = max(int(np.floor(t[:, 1].min())) - reach, 0), min(int(np.ceil(t[:, 1].max())) + reach, height - 1)
+    if x1 < x0 or y1 < y0:
+        return None
+    a, b, c = t
+    denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+    if abs(denominator) < 1e-9:
+        return None
+    grid_x, grid_y = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+    w0 = ((b[1] - c[1]) * (grid_x - c[0]) + (c[0] - b[0]) * (grid_y - c[1])) / denominator
+    w1 = ((c[1] - a[1]) * (grid_x - c[0]) + (a[0] - c[0]) * (grid_y - c[1])) / denominator
+    w2 = 1.0 - w0 - w1
+    tolerance = margin / max(np.sqrt(abs(denominator)), 1.0)
+    return np.s_[y0:y1 + 1, x0:x1 + 1], (w0 >= -tolerance) & (w1 >= -tolerance) & (w2 >= -tolerance)
 
 
 def gain_pixels(texture, mask, gain, dark_below, feather):
@@ -188,6 +194,77 @@ def replace_image(bpy, image, pixels, name, path=None):
     return new_image
 
 
+def shared_texels(scene, image, target, selected, changed, mesh_texture_faces):
+    if not changed.any():
+        return {}
+    height, width = changed.shape
+    ys, xs = np.where(changed)
+    bounds = (xs.min(), ys.min(), xs.max(), ys.max())
+    result = {}
+    for obj in scene.objects:
+        if obj.type != "MESH":
+            continue
+        slots = slots_using(effective_materials(obj), image)
+        if not slots:
+            continue
+        uv = mesh_texture_faces(obj, width, height)
+        if uv is None:
+            result[obj.name] = {"unread": "アクティブな UV が無い"}
+            continue
+        counts, hit = set(), np.zeros_like(changed)
+        for index, tri in enumerate(obj.data.loop_triangles):
+            if tri.material_index not in slots or (obj == target and selected[index]):
+                continue
+            points = uv[list(tri.loops)]
+            minimum, maximum = points.min(axis=0), points.max(axis=0)
+            if (maximum < bounds[:2]).any() or (minimum > np.asarray(bounds[2:]) + 1).any():
+                continue
+            part = triangle_texels(points, width, height)
+            if part is None:
+                continue
+            area, inside = part
+            overlap = inside & changed[area]
+            if overlap.any():
+                counts.add(tri.polygon_index)
+                hit[area] |= overlap
+        if counts:
+            result[obj.name] = {"faces": len(counts), "texels": int(hit.sum())}
+    return result
+
+
+def recolor_selected_faces(bpy, obj, image, settings):
+    if __package__:
+        from .face_recolor import choose_faces, mesh_texture_faces, paint_pixels
+    else:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from face_recolor import choose_faces, mesh_texture_faces, paint_pixels
+
+    source = read_pixels(image)
+    height, width = source.shape[:2]
+    if not width or not height:
+        raise SystemExit(f"絵を読めません: {image.name}")
+    uv = mesh_texture_faces(obj, width, height)
+    if uv is None:
+        raise SystemExit(f"{obj.name} にアクティブな UV がありません")
+    region = settings["region"]
+    materials = effective_materials(obj)
+    slots = slots_using(materials, image)
+    if "material" in region:
+        slots = {index for index in slots if materials[index].name == region["material"]}
+    selected = choose_faces(obj, slots, region, bpy.context.scene.unit_settings.scale_length)
+    triangles = list(obj.data.loop_triangles)
+    mask = uv_mask([uv[list(tri.loops)] for tri, pick in zip(triangles, selected, strict=True) if pick],
+                   width, height, settings["margin"])
+    if "paint" in settings:
+        pixels = paint_pixels(source, mask, settings["paint"])
+    else:
+        pixels, _ = gain_pixels(source, mask, np.asarray(settings["gain"], dtype=np.float32), settings["dark_below"], settings["feather"])
+    changed = np.any(np.rint(np.clip(source, 0, 1) * 255) != np.rint(np.clip(pixels, 0, 1) * 255), axis=2)
+    sharing = shared_texels(bpy.context.scene, image, obj, selected, changed, mesh_texture_faces)
+    return pixels, {"texels_in_part": int(mask.sum()), "texels_changed": int(changed.sum()),
+                    "selected_triangles": int(selected.sum()), "other_faces_using_changed_texels": sharing}
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from pathlib import Path
@@ -212,6 +289,16 @@ def main(argv=None):
             image = bpy.data.images[name]
             width, height = image.size
             replace_image(bpy, image, pixels.reshape(height, width, 4), name + "_recolor")
+    elif a.mode == "part" and "region" in settings:
+        obj = bpy.data.objects.get(settings["object"])
+        if obj is None or obj.type != "MESH":
+            raise SystemExit(f"object のメッシュがありません: {settings['object']}")
+        image = image_of(obj, settings.get("image"))
+        if image.is_float or image.source not in ("FILE", "GENERATED"):
+            raise SystemExit("面を選ぶ色替えには静止した 8 ビット画像を使ってください")
+        pixels, info = recolor_selected_faces(bpy, obj, image, settings)
+        replace_image(bpy, image, pixels, Path(a.texture).stem, a.texture)
+        report.update(object=obj.name, image=image.name, texture=a.texture, **info)
     elif a.mode == "part":
         obj = bpy.data.objects.get(settings["object"])
         if obj is None or obj.type != "MESH":
