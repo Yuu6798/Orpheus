@@ -26,6 +26,84 @@ def _finish(report, outputs, parameters, label):
     return StepResult(observations=[report], unresolved=[f"{label}: {f}" for f in failures], review=True)
 
 
+def view_point_settings(parameters):
+    from .face_ops import COMMON, _name, _real, _refuse_unknown
+
+    _refuse_unknown(parameters, COMMON | {"objects", "rays", "keys", "modifiers"}, "check.view_point")
+    objects = parameters.get("objects")
+    if not isinstance(objects, list) or not objects:
+        raise ToolError("objects は調べるメッシュの名前の並びにしてください")
+    objects = [_name(name, "objects") for name in objects]
+    if len(set(objects)) != len(objects):
+        raise ToolError("objects に重なった名前があります")
+    rays = parameters.get("rays")
+    if not isinstance(rays, list) or not rays:
+        raise ToolError("rays は空でない配列にしてください")
+    normalized = []
+    for index, ray in enumerate(rays):
+        if not isinstance(ray, dict):
+            raise ToolError(f"rays[{index}] は設定オブジェクトにしてください")
+        _refuse_unknown(ray, {"origin", "direction"}, f"rays[{index}]")
+        vectors = {}
+        for name in ("origin", "direction"):
+            value = ray.get(name)
+            if not isinstance(value, list) or len(value) != 3:
+                raise ToolError(f"rays[{index}].{name} は [x, y, z] にしてください")
+            vectors[name] = [_real(component, f"rays[{index}].{name}") for component in value]
+        largest = max(abs(v) for v in vectors["direction"])
+        if largest == 0.0:
+            raise ToolError(f"rays[{index}].direction をゼロにできません")
+        scaled = [component / largest for component in vectors["direction"]]
+        length = math.hypot(*scaled)
+        vectors["direction"] = [component / length for component in scaled]
+        normalized.append(vectors)
+    keys = parameters.get("keys", {})
+    if not isinstance(keys, dict):
+        raise ToolError("keys は物体名ごとの形状キーと値にしてください")
+    checked_keys = {}
+    for name, values in keys.items():
+        if name not in objects or not isinstance(values, dict):
+            raise ToolError(f"keys.{name} は調べる物体の形状キーと値にしてください")
+        checked_keys[name] = {_name(key, f"keys.{name}"): _real(value, f"keys.{name}.{key}", -10, maximum=10)
+                              for key, value in values.items()}
+    modifiers = parameters.get("modifiers", True)
+    if not isinstance(modifiers, bool):
+        raise ToolError("modifiers は true / false にしてください")
+    return {"objects": objects, "rays": normalized, "keys": checked_keys, "modifiers": modifiers}
+
+
+@register("check.view_point", inputs=("blend",), outputs=("report",), cacheable=False,
+          summary="指定したワールド座標から飛ばした光線とメッシュの交点を手前から並べ、面・材質・島の頂点数・UV と画像の色を調べる。"
+                  "Blender が必要で、入力の .blend を保存しない",
+          capability={"aliases": ["点の奥にある面と材質を調べる", "部品の見え隠れを光線で調べる", "mesh ray layers"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def view_point(inputs, parameters, outputs, context):
+    from pathlib import Path
+
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+
+    operation = "check.view_point"
+    require(inputs, ("blend",), operation)
+    settings = view_point_settings(parameters)
+    if "report" not in outputs:
+        raise ToolError(f"{operation} には outputs の report が要ります")
+    script = Path(__file__).resolve().parents[1] / "blender_adapter" / "view_point.py"
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "view_point_settings.json"
+    atomic_json(settings_path, settings)
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    record = launcher.run_blender(blender, script, None, ["--blend", inputs["blend"], "--settings", settings_path,
+                                                         "--report", outputs["report"]],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    return StepResult(observations=[{"kind": "view_point", "intersections": [len(ray["hits"]) for ray in report["rays"]],
+                                     "blender_version": record["blender_version"]}])
+
+
 @register("check.structure", inputs=("rig",), outputs=("report",),
           summary="骨・ウェイトを検査し、任意の入力 mesh と頂点数・topology を照合する。required_bone_roles は preset か配列")
 def check_structure(inputs, parameters, outputs, context):
