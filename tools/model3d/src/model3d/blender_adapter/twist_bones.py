@@ -303,21 +303,97 @@ def add_segment_rolls(armature, entry, layout, follows_source):
             add_roll(armature, hand, roll["from"], order, fraction * roll.get("influence", 1.0))
 
 
-def weighted_chain(entry, layout):
+def chain_points(entry, layout):
+    """ねじれを分ける各骨の名前と、重みの山になる位置。"""
     roll = entry.get("roll")
-    return [entry["name"], *(segment.name for segment in layout), roll["name"] if roll else entry["bone"]]
+    if layout:
+        middle = [(segment.name, segment.fraction) for segment in layout]
+    elif roll:
+        middle = [(entry["bone"], roll["start"])]
+    else:
+        middle = []
+    return [(entry["name"], 0.0), *middle, (roll["name"] if roll else entry["bone"], 1.0)]
 
 
 def segmented_parts(obj, source_group, entry, layout, weights, along):
-    chain = weighted_chain(entry, layout)
-    fractions = [segment.fraction for segment in layout]
+    names, positions = zip(*chain_points(entry, layout))
     parts = [
         (obj.vertex_groups.get(bone) or obj.vertex_groups.new(name=bone), weights * share)
-        for bone, share in zip(chain, segmented_shares(along, fractions))
+        for bone, share in zip(names, segmented_shares(along, positions[1:-1]))
     ]
-    if source_group.name != chain[-1]:
+    if source_group.name != names[-1]:
         parts.append((source_group, np.zeros_like(weights)))
     return parts
+
+
+def nearest_chain_index(entry, chain, t):
+    if isinstance(entry.get("segments"), int):
+        return round(min(1.0, max(0.0, t)) * entry["segments"])
+    return min(range(len(chain)), key=lambda index: abs(chain[index][1] - t))
+
+
+def spring_root_moves(bones, recipes, layouts):
+    """既存の骨を検査し、編集モードに入る前に鎖の付け替え先を決める。"""
+    if not any("spring_roots" in entry for entry in recipes):
+        return []
+    protected = set()
+    for entry in recipes:
+        for name in (entry["bone"], entry.get("aim"), entry.get("roll", {}).get("from")):
+            if name:
+                bone = bones[name]
+                protected.add(name)
+                protected.update(parent.name for parent in bone.parent_recursive)
+    moves = []
+    for entry in recipes:
+        if "spring_roots" not in entry:
+            continue
+        rule = entry["spring_roots"]
+        source = bones[entry["bone"]]
+        if "names" in rule:
+            roots = [bones.get(name) for name in rule["names"]]
+            invalid = [name for name, bone in zip(rule["names"], roots) if bone is None or bone.parent != source]
+            if invalid:
+                raise SystemExit(f"spring_roots の骨は {source.name} の直下に要ります: {invalid}")
+        else:
+            roots = [bone for bone in source.children if bone.name.startswith(tuple(rule["prefixes"]))]
+            if not roots:
+                raise SystemExit(f"spring_roots の接頭辞に合う {source.name} の子がありません: {rule['prefixes']}")
+        if conflict := sorted(bone.name for bone in roots if bone.name in protected):
+            raise SystemExit(f"ねじれの計算で使う骨やその祖先は spring_roots で付け替えられません: {conflict}")
+        chain = chain_points(entry, layouts[entry["bone"]])
+        axis = source.tail_local - source.head_local
+        for root in roots:
+            t = (root.head_local - source.head_local).dot(axis) / axis.length_squared
+            index = rule["index"] if "index" in rule else nearest_chain_index(entry, chain, t)
+            target, position = chain[index]
+            moves.append({"bone": root.name, "from": source.name, "to": target, "t": t,
+                          "index": index, "position": position, "changed": target != source.name})
+    return moves
+
+
+def check_spring_centers(armature, moves, recipes):
+    """aim の補助骨へ移して、設定済みの中心が祖先でなくなる場合は止める。"""
+    extension = getattr(armature.data, "vrm_addon_extension", None)
+    if getattr(extension, "spec_version", None) != "1.0":
+        return
+    entries = {entry["bone"]: entry for entry in recipes}
+    detached = {}
+    for move in moves:
+        source = move["from"]
+        roll = entries[source].get("roll")
+        if move["changed"] and (not roll or move["to"] != roll["name"]):
+            detached[move["bone"]] = source
+    if not detached:
+        return
+    for spring in extension.spring_bone1.springs:
+        center = spring.center.bone_name
+        if not center:
+            continue
+        for joint in spring.joints:
+            bone = armature.data.bones.get(joint.node.bone_name)
+            if bone and any(detached.get(ancestor.name) == center for ancestor in (bone, *bone.parent_recursive)):
+                raise SystemExit(f"spring_roots で揺れもの {spring.vrm_name} の中心 {center} が祖先でなくなります"
+                                 "（constraint_mode を parented_roll にするか、中心の下の付け替え先を指定してください）")
 
 
 def main(argv=None):
@@ -358,6 +434,9 @@ def main(argv=None):
         for name in added:
             if name in bones:
                 raise SystemExit(f"{armature.name} に骨 {name} がもうあります（model.twist_bones を 2 回かけない）")
+    moved = spring_root_moves(bones, settings["bones"], layouts)
+    if moved and not follows_source:
+        check_spring_centers(armature, moved, settings["bones"])
     if settings["meshes"] is None:                       # 既定: このアーマチュアで動くメッシュだけ（ほかのキャラの重みは触らない）
         meshes = [obj for obj in bpy.data.objects if obj.type == "MESH" and deformed_by(obj, armature)]
     else:
@@ -404,6 +483,11 @@ def main(argv=None):
         layout = layouts[entry["bone"]]
         if layout:
             add_segment_bones(edit_bones, source, entry, layout, follows_source)
+    for move in moved:
+        if move["changed"]:
+            root = edit_bones[move["bone"]]
+            root.use_connect = False
+            root.parent = edit_bones[move["to"]]
     bpy.ops.object.mode_set(mode="POSE")
     for entry in settings["bones"]:
         pose_bone = armature.pose.bones[entry["name"]]
@@ -515,14 +599,15 @@ def main(argv=None):
             added.append({"name": segment.name, "kind": "segment", "part_of": entry["bone"], "fraction": segment.fraction})
         if layout:
             chains[entry["bone"]] = [
-                {"name": name, "position": t}
-                for name, t in zip(weighted_chain(entry, layout), (0.0, *(segment.fraction for segment in layout), 1.0))
+                {"name": name, "position": t} for name, t in chain_points(entry, layout)
             ]
     report = {"schema_version": "model3d-twist-bones/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "armature": armature.name, "bones": added, "weights": weights_report, "influences": influences_report,
               "meshes": [obj.name for obj in meshes], "separated_from": separated, "settings": settings}
     if chains:
         report["chains"] = chains
+    if moved:
+        report["reparented_spring_roots"] = moved
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
