@@ -49,6 +49,12 @@ DEFAULTS = {"bones": [], "meshes": None, "armature": None, "rigid_max_verts": 60
             "max_influences": None}
 EULER_ORDERS = ("XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX")
 ROLL_DEFAULTS = {"start": 0.5, "euler_order": "ZYX"}   # 前腕の真ん中から先。ZYX は 3 作目で 6 通りを試していちばんずれが小さかった順
+CONSTRAINT_MODES = ("aim", "parented_roll")
+
+
+def basis_name(name):
+    """ねじれを写す座標をそろえる台の骨の名前。"""
+    return f"{name}_basis"
 
 
 def parse_args(argv):
@@ -164,6 +170,43 @@ def group_state(mesh, group_index, bone_groups=None):
     return weights, dominant
 
 
+def add_parented_swing(edit_bones, source, name):
+    """元の骨の子に、逆向きの骨と roll の軸を合わせる台を置く。"""
+    from mathutils import Matrix
+
+    rotation = source.matrix.to_3x3()
+    flip = Matrix.Diagonal((-1.0, -1.0, 1.0))  # 骨のローカル Z 軸で半回転
+    parent_rotation = source.parent.matrix.to_3x3() if source.parent else Matrix.Identity(3)
+    swing_rotation = rotation @ flip
+    # 元の骨と新しい骨の親座標での初期回転を一致させる。
+    basis_rotation = swing_rotation @ rotation.inverted() @ parent_rotation
+    parent = source
+    for name, orientation in ((basis_name(name), basis_rotation), (name, swing_rotation)):
+        bone = edit_bones.new(name)
+        bone.head = source.head.copy()
+        bone.tail = source.head + orientation.col[1].normalized() * source.length
+        matrix = orientation.to_4x4()
+        matrix.translation = source.head
+        bone.matrix = matrix
+        bone.parent = parent
+        bone.use_connect = False
+        bone.use_deform = True  # 頂点の重みのない台の骨も VRM に残す
+        parent = bone
+
+
+def add_roll(armature, pose_bone, source, euler_order):
+    for constraint in list(pose_bone.constraints):
+        pose_bone.constraints.remove(constraint)
+    copy = pose_bone.constraints.new("COPY_ROTATION")
+    copy.target = armature
+    copy.subtarget = source
+    copy.use_x, copy.use_y, copy.use_z = False, True, False
+    copy.mix_mode = "ADD"
+    copy.target_space = "LOCAL"
+    copy.owner_space = "LOCAL"
+    copy.euler_order = euler_order
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -172,6 +215,7 @@ def main(argv=None):
     a = parse_args(argv)
     with open(a.settings, encoding="utf-8") as stream:
         settings = merged(json.load(stream))
+    follows_source = settings.get("constraint_mode") == "parented_roll"
     bpy.ops.wm.open_mainfile(filepath=os.path.abspath(a.blend))
     armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE" and (not settings["armature"] or obj.name == settings["armature"])]
     if not armatures:
@@ -181,10 +225,20 @@ def main(argv=None):
     bones = armature.data.bones
     for entry in settings["bones"]:
         roll = entry.get("roll")
-        for key, name in (("bone", entry["bone"]), ("aim", entry["aim"])) + ((("roll.from", roll["from"]),) if roll else ()):
+        required = [("bone", entry["bone"])]
+        if "aim" in entry:
+            required.append(("aim", entry["aim"]))
+        if roll:
+            required.append(("roll.from", roll["from"]))
+        for key, name in required:
             if name not in bones:
                 raise SystemExit(f"{armature.name} に骨 {name} がありません（bones の {key}）")
-        for name in (entry["name"],) + ((roll["name"],) if roll else ()):
+        added = [entry["name"]]
+        if roll:
+            added.append(roll["name"])
+        if follows_source:
+            added.append(basis_name(entry["name"]))
+        for name in added:
             if name in bones:
                 raise SystemExit(f"{armature.name} に骨 {name} がもうあります（model.twist_bones を 2 回かけない）")
     if settings["meshes"] is None:                       # 既定: このアーマチュアで動くメッシュだけ（ほかのキャラの重みは触らない）
@@ -198,6 +252,13 @@ def main(argv=None):
             if not deformed_by(obj, armature):
                 raise SystemExit(f"meshes の {name} は {armature.name} で動きません（アーマチュアのモディファイアも、アーマチュアの親も無い）")
             meshes.append(obj)
+    if follows_source:
+        support_names = {basis_name(entry["name"]) for entry in settings["bones"]}
+        for obj in bpy.data.objects:
+            if obj.type == "MESH" and deformed_by(obj, armature):
+                collision = support_names.intersection(group.name for group in obj.vertex_groups)
+                if collision:
+                    raise SystemExit(f"{obj.name} に台の骨と同じ名前の頂点グループがあります: {sorted(collision)}")
 
     # 1. ねじらない骨を足す（親は元の骨の親。Damped Track で aim の付け根を向くだけ）。2. roll があれば、元の骨の start から先に、
     # 手の回転の一部を写す骨を足す（親は元の骨。Copy Rotation の Y だけ・Add・ローカルどうし）。骨は bones の順に、足した骨・roll の骨
@@ -205,16 +266,20 @@ def main(argv=None):
     armature.hide_viewport = False
     armature.hide_set(False)
     bpy.ops.object.mode_set(mode="EDIT")
+    edit_bones = armature.data.edit_bones
     for entry in settings["bones"]:
-        source = armature.data.edit_bones[entry["bone"]]
-        bone = armature.data.edit_bones.new(entry["name"])
-        bone.head, bone.tail, bone.roll = source.head.copy(), source.tail.copy(), source.roll
-        bone.parent = source.parent
-        bone.use_connect = False
-        bone.use_deform = True
+        source = edit_bones[entry["bone"]]
+        if follows_source:
+            add_parented_swing(edit_bones, source, entry["name"])
+        else:
+            bone = edit_bones.new(entry["name"])
+            bone.head, bone.tail, bone.roll = source.head.copy(), source.tail.copy(), source.roll
+            bone.parent = source.parent
+            bone.use_connect = False
+            bone.use_deform = True
         roll = entry.get("roll")
         if roll:
-            bone = armature.data.edit_bones.new(roll["name"])
+            bone = edit_bones.new(roll["name"])
             # start 0.5 なら (付け根 + 先) / 2 とビットまで同じ（半分は正確に割れる）
             bone.head, bone.tail, bone.roll = source.head * (1.0 - roll["start"]) + source.tail * roll["start"], source.tail.copy(), source.roll
             bone.parent = source
@@ -223,25 +288,19 @@ def main(argv=None):
     bpy.ops.object.mode_set(mode="POSE")
     for entry in settings["bones"]:
         pose_bone = armature.pose.bones[entry["name"]]
-        for constraint in list(pose_bone.constraints):
-            pose_bone.constraints.remove(constraint)
-        track = pose_bone.constraints.new("DAMPED_TRACK")
-        track.target = armature
-        track.subtarget = entry["aim"]
-        track.track_axis = "TRACK_Y"
         roll = entry.get("roll")
-        if roll:
-            pose_bone = armature.pose.bones[roll["name"]]
+        if follows_source:
+            order = roll["euler_order"] if roll else ROLL_DEFAULTS["euler_order"]
+            add_roll(armature, pose_bone, entry["bone"], order)
+        else:
             for constraint in list(pose_bone.constraints):
                 pose_bone.constraints.remove(constraint)
-            copy = pose_bone.constraints.new("COPY_ROTATION")
-            copy.target = armature
-            copy.subtarget = roll["from"]
-            copy.use_x, copy.use_y, copy.use_z = False, True, False
-            copy.mix_mode = "ADD"
-            copy.target_space = "LOCAL"
-            copy.owner_space = "LOCAL"
-            copy.euler_order = roll["euler_order"]
+            track = pose_bone.constraints.new("DAMPED_TRACK")
+            track.target = armature
+            track.subtarget = entry["aim"]
+            track.track_axis = "TRACK_Y"
+        if roll:
+            add_roll(armature, armature.pose.bones[roll["name"]], roll["from"], roll["euler_order"])
     bpy.ops.object.mode_set(mode="OBJECT")
 
     # 3. 重みを振り分ける（リンク複製は先にその物体だけのデータにする）
@@ -305,7 +364,13 @@ def main(argv=None):
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.out_blend), copy=True, compress=True)
     added = []
     for entry in settings["bones"]:
-        added.append({"name": entry["name"], "kind": "swing", "copy_of": entry["bone"], "aims_at": entry["aim"]})
+        if follows_source:
+            basis = basis_name(entry["name"])
+            added.append({"name": basis, "kind": "basis", "parent": entry["bone"]})
+            added.append({"name": entry["name"], "kind": "swing", "copy_of": entry["bone"],
+                          "parent": basis, "cancels_twist_of": entry["bone"]})
+        else:
+            added.append({"name": entry["name"], "kind": "swing", "copy_of": entry["bone"], "aims_at": entry["aim"]})
         if entry.get("roll"):
             roll = entry["roll"]
             added.append({"name": roll["name"], "kind": "roll", "part_of": entry["bone"], "from": roll["from"], "start": roll["start"],
