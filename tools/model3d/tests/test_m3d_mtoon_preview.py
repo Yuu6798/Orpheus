@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace as Namespace
 
@@ -62,6 +64,68 @@ def test_shared_key_conflicts_and_basis_fail_before_changes():
         _shape_keys(scene, [{"name": "test", "keys": {"a": {"Lift": 0.125}, "b": {"Lift": 0.25}}}], False)
     with pytest.raises(ValueError, match="Basis"):
         _shape_keys(scene, [{"name": "test", "keys": {"a": {"Basis": 0.125}}}], False)
+
+
+@pytest.mark.skipif(not os.getenv("MODEL3D_BLENDER"), reason="set MODEL3D_BLENDER to the Blender executable")
+def test_blender_pose_survives_action_nla_and_driver_reevaluation(tmp_path):
+    from model3d.blender_adapter import mtoon_preview
+
+    test_script = tmp_path / "test_pose.py"
+    test_script.write_text("""
+import math
+import runpy
+import sys
+import bpy
+from mathutils import Matrix
+
+pose = runpy.run_path(sys.argv[-1])["_pose"]
+
+def close(actual, expected):
+    return all(abs(a - b) < 1e-5 for row_a, row_b in zip(actual, expected) for a, b in zip(row_a, row_b))
+
+for use_nla in (False, True):
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    bpy.ops.object.armature_add()
+    rig = bpy.context.object
+    bone = rig.pose.bones[0]
+    bone.rotation_mode = "XYZ"
+    bone.rotation_euler.x = 0.25
+    bone.keyframe_insert("rotation_euler", index=0, frame=1)
+    bone.rotation_euler.x = 0.75
+    bone.keyframe_insert("rotation_euler", index=0, frame=9)
+    if use_nla:
+        action = rig.animation_data.action
+        rig.animation_data.action = None
+        rig.animation_data.nla_tracks.new().strips.new("Motion", 1, action)
+    bone.driver_add("rotation_euler", 1).driver.expression = "0.03 * frame"
+    rig.driver_add("location", 2).driver.expression = "0.05 * frame"
+    constraint = bone.constraints.new("LIMIT_LOCATION")
+    constraint.use_min_x = True
+    constraint.min_x = 0.75
+    scene.frame_set(4)
+    evaluated = rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    reference = evaluated.matrix_basis.copy()
+    evaluated_bone = evaluated.pose.bones[bone.name]
+    assert 0.25 < evaluated_bone.rotation_euler.x < 0.75
+    assert abs(evaluated_bone.rotation_euler.y - 0.12) < 1e-5
+    assert abs(reference.translation.z - 0.2) < 1e-5
+    base = bone.bone.matrix_local @ evaluated_bone.matrix_basis
+    assert not close(evaluated_bone.matrix, base)
+    pivot = base.translation
+    expected = Matrix.Translation(pivot) @ Matrix.Rotation(math.radians(20), 4, "Z") @ Matrix.Translation(-pivot) @ base
+    pose(bpy, {"armature": rig.name, "pose": [{"bone": bone.name, "axis": "Z", "degrees": 20}]})
+    assert rig.animation_data is None and constraint.mute
+    for frame in (4, 7):
+        scene.frame_set(frame)
+        evaluated = rig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        assert close(evaluated.matrix_basis, reference)
+        assert close(evaluated.pose.bones[bone.name].matrix, expected)
+""", encoding="utf-8")
+    result = subprocess.run([os.environ["MODEL3D_BLENDER"], "-b", "--factory-startup", "--disable-autoexec",
+                             "--python-exit-code", "1", "--python", str(test_script), "--", mtoon_preview.__file__],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 STAND_IN = r'''

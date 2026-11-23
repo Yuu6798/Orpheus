@@ -89,6 +89,19 @@ def _preview_shader(material, image, values):
     return light
 
 
+def _freeze_armature_animation(bpy, armature):
+    if armature.animation_data is None:
+        return
+    evaluated = armature.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    object_basis = evaluated.matrix_basis.copy()
+    # matrix_basis はアクションなどで評価したローカル変換。拘束の結果は含まない。
+    pose_bases = {bone.name: bone.matrix_basis.copy() for bone in evaluated.pose.bones}
+    armature.animation_data_clear()
+    armature.matrix_basis = object_basis
+    for bone in armature.pose.bones:
+        bone.matrix_basis = pose_bases[bone.name]
+
+
 def _pose(bpy, settings):
     if not settings["pose"]:
         return
@@ -101,6 +114,7 @@ def _pose(bpy, settings):
     for item in settings["pose"]:
         if item["bone"] not in bones:
             raise ValueError(f"ポーズを付ける骨がありません: {item['bone']}")
+    _freeze_armature_animation(bpy, armature)
     for bone in bones:
         for constraint in bone.constraints:
             constraint.mute = True
