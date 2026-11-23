@@ -324,6 +324,63 @@ def shape_keys(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
+FACE_NORMALS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "face_normals.py"
+
+
+def _normal_coordinates(value, count, where):
+    if not isinstance(value, list) or len(value) != count:
+        raise ToolError(f"{where} は {count} 個の座標の配列にしてください")
+    return [_real(component, where) for component in value]
+
+
+def face_normals_settings(parameters):
+    _refuse_unknown(parameters, COMMON | {"object", "material", "face", "neck"}, "model.face_normals")
+    settings = {"object": _name(parameters.get("object"), "object"), "material": _name(parameters.get("material"), "material")}
+    if "face" in parameters:
+        face = _section(parameters, "face", "face", ("centre", "stretch_z", "weight"))
+        settings["face"] = {"centre": _normal_coordinates(face["centre"], 3, "face.centre"),
+                            "stretch_z": _real(face["stretch_z"], "face.stretch_z", 0, exclusive=True),
+                            "weight": _real(face["weight"], "face.weight", 0, maximum=1)}
+    if "neck" in parameters:
+        neck = _section(parameters, "neck", "neck", ("centre_xy", "height"))
+        settings["neck"] = {"centre_xy": _normal_coordinates(neck["centre_xy"], 2, "neck.centre_xy"),
+                            "height": _span(neck["height"], "neck.height")}
+    if not settings.keys() & {"face", "neck"}:
+        raise ToolError("face または neck の設定が要ります")
+    return settings
+
+
+@register("model.face_normals", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="指定材質の面のカスタム法線を、顔は縦に伸ばした放射方向へ、首は水平の放射方向へ混ぜて .blend に保存する。"
+                  "中心・強さ・首の高さは設定で指定する。頂点位置を動かさない。Blender が必要",
+          capability={"aliases": ["顔の影を法線でなめらかにする", "首の法線を筒に沿わせる", "face and neck custom normals"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def face_normals(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+
+    operation = "model.face_normals"
+    require(inputs, ("blend",), operation)
+    settings = face_normals_settings(parameters)
+    if not {"blend", "report"} <= outputs.keys():
+        raise ToolError(f"{operation} には outputs の blend と report が要ります")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "face_normals_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(
+        blender, FACE_NORMALS_SCRIPT, None,
+        ["--blend", inputs["blend"], "--settings", settings_path, "--out-blend", outputs["blend"], "--report", outputs["report"]],
+        log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions,
+    )
+    report = read_json(outputs["report"])
+    return StepResult(observations=[{"kind": "face_normals", "target_corners": report["target_corners"],
+                                     "changed_corners": report["changed_corners"], "blender_version": record["blender_version"]}])
+
+
 FACE_SHEET_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "face_sheet.py"
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
