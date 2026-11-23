@@ -6,10 +6,8 @@ def prepare_pose_samples(armature, rotations):
     missing = sorted({step["bone"] for step in rotations} - set(armature.pose.bones.keys()))
     if missing:
         raise SystemExit(f"{armature.name} に姿勢を与える骨がありません: {missing}")
-    animation = armature.animation_data
-    if animation:
-        animation.action = None
-        animation.use_nla = False
+    if armature.animation_data:
+        armature.animation_data_clear()
     armature.data.pose_position = "POSE"
 
 

@@ -992,7 +992,7 @@ def box_room(inputs, parameters, outputs, context):
     return StepResult(observations=[observation])
 
 
-PART_PARAMETERS = {"blender", "addons", "blender_extensions", "frames", "bone_meshes", "bone_colors", "bone_default", "object_colors",
+PART_PARAMETERS = {"blender", "addons", "blender_extensions", "frames", "poses", "bone_meshes", "bone_colors", "bone_default", "object_colors",
                    "default_color", "show", "hide", "resolution", "format", "quality", "antialiasing", "cavity", "world", "camera",
                    "armature", "timeout"}
 PART_CAMERA_KEYS = {"yaw", "height", "center", "lens", "target"}
@@ -1009,11 +1009,17 @@ def _color(value, where):
 
 def _part_settings(parameters):
     """render.part_colors のパラメーターを確かめ、台本の settings にする（省いた値は台本の既定。長さは m）。"""
-    frames = parameters.get("frames")
-    if (not isinstance(frames, list) or not frames
-            or not all(isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) for f in frames)):
-        raise ToolError(f"frames は描く動きのコマ（数。小数は前後のコマの間の時刻）の並びにしてください: {frames!r}")
-    s = {"frames": frames}
+    from .pose_parameters import named_poses
+
+    if "poses" in parameters:
+        poses = named_poses(parameters)
+        s = {"poses": poses, "frames": list(range(1, len(poses) + 1))}
+    else:
+        frames = parameters.get("frames")
+        if (not isinstance(frames, list) or not frames
+                or not all(isinstance(f, (int, float)) and not isinstance(f, bool) and math.isfinite(f) for f in frames)):
+            raise ToolError(f"frames は描く動きのコマ（数。小数は前後のコマの間の時刻）の並びにしてください: {frames!r}")
+        s = {"frames": frames}
     for key in ("bone_meshes", "show", "hide"):
         if key in parameters:
             s[key] = _names(parameters[key], key)
@@ -1074,7 +1080,7 @@ def _part_settings(parameters):
 @register("render.part_colors", inputs=("blend",), outputs=("frames", "report"), cacheable=False,
           summary="部位を色分けして描く診断の絵（Blender の簡易描画）: bone_meshes のメッシュは頂点ごとにいちばん重みの大きい頂点グループの"
                   "名前の頭（bone_colors）で、ほかのメッシュは物体ごとに 1 色（object_colors）。show で描画から隠した物（布の身代わり・"
-                  "当たり判定の写し）も描き、hide の物は描かない。カメラは狙う点の方位 yaw から水平に。コマ（frames。小数も）ごとに "
+                  "当たり判定の写し）も描き、hide の物は描かない。カメラは狙う点の方位 yaw から水平に。コマ（frames。小数も）か静止姿勢（poses）ごとに "
                   "f<T>.jpg（png も）。何が何を通り抜けているかを目で見分ける（内側に入った頂点の数では、脚がまるごと布を通り抜ける"
                   "失敗を拾えない）。.blend は変えない。frames は描いた絵の一覧（model3d-frames/0.1）。Blender が要り、再利用しない")
 def render_part_colors(inputs, parameters, outputs, context):

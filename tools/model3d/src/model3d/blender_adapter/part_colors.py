@@ -26,10 +26,12 @@ import sys
 import time
 
 try:   # パッケージとして読むとき（テスト）
+    from .pose_sample import apply_pose_sample, prepare_pose_samples
     from .stage_render import motion_frame, set_frame
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from pose_sample import apply_pose_sample, prepare_pose_samples
     from stage_render import motion_frame, set_frame
     from vrm_apply_motion import use_scene_of
 
@@ -170,6 +172,12 @@ def main(argv=None):
     if settings["armature"] and not armatures:
         raise SystemExit(f"アーマチュアの物体がありません: {settings['armature']}")
     scene = use_scene_of(bpy, armatures[0]) if armatures else bpy.context.scene
+    poses = settings.get("poses")
+    if poses:
+        if not armatures:
+            raise SystemExit("poses を描くためのアーマチュアがありません")
+        set_frame(scene, scene.frame_start)
+        prepare_pose_samples(armatures[0], (step for pose in poses for step in pose["rotations"]))
     names = {obj.name for obj in scene.objects}
     absent = sorted({*settings["bone_meshes"], *settings["show"], *settings["hide"]} - names)
     if absent:
@@ -194,10 +202,15 @@ def main(argv=None):
     rendered, began = [], time.time()
     for T, f in enumerate(settings["frames"], start=1):
         f = motion_frame(f)
-        set_frame(scene, f)
+        if poses:
+            apply_pose_sample(armatures[0], poses[T - 1]["rotations"], bpy.context.view_layer)
+        else:
+            set_frame(scene, f)
         scene.render.filepath = os.path.join(os.path.abspath(a.frames_dir), frame_file(T, settings["format"]))
         bpy.ops.render.render(write_still=True)
         rendered.append({"T": T, "f": f, "file": frame_file(T, settings["format"])})
+        if poses:
+            rendered[-1]["pose"] = poses[T - 1]["name"]
     report = {"schema_version": "model3d-part-colors/0.1", "blender": bpy.app.version_string, "scene": scene.name,
               "fps": scene.render.fps / scene.render.fps_base, "resolution": settings["resolution"], "frames": rendered,
               "objects": applied, "drawn": drawn, "skipped_hidden": skipped, "hidden": sorted(settings["hide"]),

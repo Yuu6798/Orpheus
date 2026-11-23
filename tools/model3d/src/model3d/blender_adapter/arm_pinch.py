@@ -85,8 +85,8 @@ def main(argv=None):
     scene = use_scene_of(bpy, armature)
     poses = settings.get("poses")
     if poses:
-        prepare_pose_samples(armature, (step for pose in poses for step in pose["rotations"]))
         scene.frame_set(scene.frame_start)
+        prepare_pose_samples(armature, (step for pose in poses for step in pose["rotations"]))
         bpy.context.view_layer.update()
     if abs(scene.unit_settings.scale_length - 1.0) > 1e-9:          # 距離の設定（m）と Blender 単位を合わせる
         raise SystemExit(f"1 Blender 単位 = 1 m のシーンだけを扱います（scale_length {scene.unit_settings.scale_length}）")

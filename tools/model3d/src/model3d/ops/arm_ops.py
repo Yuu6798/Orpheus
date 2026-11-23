@@ -108,7 +108,7 @@ RING_KEYS = ("name", "at", "axis", "offset", "band", "radius", "groups")
 
 def pinch_settings(parameters):
     """check.arm_pinch のパラメーターを確かめ、台本の settings にする。"""
-    from .pose_parameters import pose_rotations
+    from .pose_parameters import named_poses
 
     _refuse_unknown(parameters, COMMON | {"body", "rings", "frames", "poses", "min_weight", "thin", "min_ratio", "strict", "report_only"},
                     "check.arm_pinch")
@@ -134,19 +134,7 @@ def pinch_settings(parameters):
                 "armature": _armature(parameters),
                 "min_weight": _real(parameters.get("min_weight", 0.9), "min_weight", 0.0, maximum=1.0)}
     if "poses" in parameters:
-        poses = parameters["poses"]
-        if settings["frames"] is not None or not isinstance(poses, list) or not poses:
-            raise ToolError("poses は、frames を省いて空でない姿勢の並びで渡してください")
-        settings["poses"] = []
-        for index, pose in enumerate(poses):
-            where = f"poses[{index}]"
-            if not isinstance(pose, dict) or set(pose) != {"name", "rotations"}:
-                raise ToolError(f"{where} は name と rotations にしてください")
-            settings["poses"].append({"name": _name(pose["name"], f"{where}.name"),
-                                      "rotations": pose_rotations(pose["rotations"], f"{where}.rotations")})
-        names = [pose["name"] for pose in settings["poses"]]
-        if len(set(names)) != len(names):
-            raise ToolError("poses の name が重なっています")
+        settings["poses"] = named_poses(parameters)
     return settings
 
 
