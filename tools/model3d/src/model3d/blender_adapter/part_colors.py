@@ -176,8 +176,8 @@ def main(argv=None):
     if poses:
         if not armatures:
             raise SystemExit("poses を描くためのアーマチュアがありません")
-        prepare_pose_samples(armatures[0], (step for pose in poses for step in pose["rotations"]))
         set_frame(scene, scene.frame_start)
+        prepare_pose_samples(armatures[0], (step for pose in poses for step in pose["rotations"]))
     names = {obj.name for obj in scene.objects}
     absent = sorted({*settings["bone_meshes"], *settings["show"], *settings["hide"]} - names)
     if absent:

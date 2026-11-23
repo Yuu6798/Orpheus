@@ -129,6 +129,8 @@ bpy.context.view_layer.objects.active = rig
 bpy.ops.object.mode_set(mode="EDIT")
 rig.data.edit_bones.new("hinge").tail = (0, 1, 0)
 bpy.ops.object.mode_set(mode="OBJECT")
+driver = rig.pose.bones["hinge"].driver_add("rotation_euler", 1).driver
+driver.expression = "0.25"
 bpy.ops.mesh.primitive_cube_add(size=0.3, location=(0.5, 0, 0))
 part = bpy.context.object
 part.name = "Part"
