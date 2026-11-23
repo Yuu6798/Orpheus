@@ -150,6 +150,43 @@ def _blender_common(parameters, context, operation, allowed, vrm=True):
     return _blender(parameters, context, operation), addons, extensions, armature
 
 
+BUILD_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "eye_build.py"
+
+
+@register("model.eye_build", inputs=("blend", "atlas"), outputs=("blend", "geometry", "report"), cacheable=False,
+          summary="頭のメッシュから指定した目の部品を外し、まぶたの開きに沿う白目の板と球面の瞳を入れる。"
+                  "目の形の値（model3d-eye-geometry/0.1）を出し、頭の .blend は別名で保存する")
+def eye_build(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..blender_adapter.eye_math import GeometryError
+    from ..eye_build import BUILD_KEYS, validate_settings
+    from ..io import read_json
+    from .motion_ops import _timeout
+
+    operation = "model.eye_build"
+    require(inputs, ("blend", "atlas"), operation)
+    for name in ("blend", "geometry", "report"):
+        if name not in outputs:
+            raise ToolError(f"{operation} には outputs の {name} が要ります")
+    blender, addons, extensions, _ = _blender_common(
+        parameters, context, operation, BUILD_KEYS | {"blender", "addons", "blender_extensions", "timeout"}, vrm=False)
+    try:
+        settings = validate_settings({key: value for key, value in parameters.items() if key in BUILD_KEYS})
+    except GeometryError as exc:
+        raise ToolError(str(exc)) from exc
+    step_dir = Path(context.step_dir)
+    path = step_dir / "eye_build_settings.json"
+    atomic_json(path, settings)
+    args = ["--blend", inputs["blend"], "--atlas", inputs["atlas"], "--settings", path, "--out", outputs["blend"],
+            "--geometry", outputs["geometry"], "--report", outputs["report"]]
+    record = launcher.run_blender(blender, BUILD_SCRIPT, args=args, log=step_dir / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    _geometry(outputs["geometry"])
+    report = read_json(outputs["report"])
+    return StepResult(observations=[{"kind": "eye_build", "blender_version": record["blender_version"],
+                                     "removed_vertices": report["removed_vertices"], "eyes": report["eyes"]}])
+
+
 @register("model.eye_rig", inputs=("blend", "geometry"), outputs=("blend", "report"), cacheable=False,
           summary="目の骨の根もとを目の球の中心へ移し（先は中心 + 目の板の向き × 半径。ロールは上へ）、瞳の頂点の重みを目の骨だけに付ける"
                   "（Blender の中で）。geometry は目の形の値（model3d-eye-geometry/0.1。球・瞳・縁・瞳の頂点）。骨を少し回すと、瞳が板から"
