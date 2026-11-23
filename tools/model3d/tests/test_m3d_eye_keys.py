@@ -3,7 +3,9 @@
 例の目と量は、どの頭とも関係の無い値。"""
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pytest
@@ -164,12 +166,81 @@ def test_eye_keys_step_passes_the_amounts(tmp_path):
     assert settings["blink"] == {"R": "blink_R", "L": "blink_L"} and settings["smile"] == {"R": "blink_smile_R", "L": "blink_smile_L"}
     assert report["blender_version"] == "5.2.4" and len(step["observations"][0]["new_keys"]) == 8
     argv = report["x_argv"]
-    assert Path(argv[argv.index("--python") + 1]).name == "eye_keys.py" and "vrm" not in " ".join(argv)   # VRM Add-on は要らない
+    assert Path(argv[argv.index("--python") + 1]).name == "eye_keys.py"
+    assert "--python-expr" not in argv   # VRM Add-on は要らない
     names = {"wide": "wide_", "small": "small_", "stretch": "stretch_", "squash": "squash_"}
     result = executor.run_recipe(_recipe(tmp_path, {"blender": blender, **CFG, "smile": False, "names": names,
                                                     "blink": {"R": "close_R", "L": "close_L"}}), tmp_path / "runs")
     settings = json.loads(Path(result["steps"]["keys"]["artifacts"]["report"]).read_text(encoding="utf-8"))["x_settings"]
     assert settings["smile"] is None and settings["names"] == names and settings["blink"] == {"R": "close_R", "L": "close_L"}
+
+
+COMBINED = {"keys": {"both": ["blink_R", "blink_L"], "other": ["blink_R", "blink_L"]}, "tolerance_m": 1e-5}
+
+
+def test_eye_keys_passes_combined_blink_configuration(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    result = executor.run_recipe(_recipe(tmp_path, {"blender": blender, **CFG, "combined_blink": COMBINED}), tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    path = Path(result["steps"]["keys"]["artifacts"]["report"])
+    assert json.loads(path.read_text(encoding="utf-8"))["x_settings"]["combined_blink"] == COMBINED
+
+
+@pytest.mark.skipif(not os.getenv("MODEL3D_BLENDER"), reason="set MODEL3D_BLENDER to the Blender executable")
+def test_blender_rewrites_only_additive_combined_blink(tmp_path):
+    from model3d import executor
+
+    blender = os.environ["MODEL3D_BLENDER"]
+    recipe = _recipe(tmp_path, {"blender": blender, **CFG, "smile": False, "combined_blink": COMBINED})
+    path = tmp_path / "head.blend"
+    fixture = tmp_path / "fixture.py"
+    fixture.write_text("""
+import bpy
+import sys
+
+bpy.ops.object.select_all(action="SELECT")
+bpy.ops.object.delete(use_global=False)
+mesh = bpy.data.meshes.new("Head")
+points = [(i * 0.001 - 0.005, -0.007, 1.405) for i in range(10)]
+mesh.from_pydata(points, [], [(0, 1, 2)])
+head = bpy.data.objects.new("Head", mesh)
+bpy.context.scene.collection.objects.link(head)
+head.shape_key_add(name="Basis", from_mix=False)
+for name, vertices in {"blink_R": [0], "blink_L": [1], "both": [0, 1], "other": [0, 1]}.items():
+    key = head.shape_key_add(name=name, from_mix=False)
+    for i, point in enumerate(points):
+        key.data[i].co = point
+    for i in vertices:
+        key.data[i].co.z -= 0.003
+    if name == "other":
+        key.data[2].co.x += 0.005
+bpy.ops.wm.save_as_mainfile(filepath=sys.argv[-1], check_existing=False)
+""", encoding="utf-8")
+    subprocess.run([blender, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
+                    "--python", str(fixture), "--", str(path)], check=True, capture_output=True, timeout=60)
+    original = path.read_bytes()
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "succeeded", result
+    artifacts = result["steps"]["keys"]["artifacts"]
+    report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))["combined_blink"]
+    assert report["both"]["rewritten"] and report["both"]["before_max_difference_m"] == 0
+    assert report["both"]["changed_vertices"] == 2
+    assert not report["other"]["rewritten"] and report["other"]["before_max_difference_m"] == pytest.approx(0.005)
+    assert path.read_bytes() == original
+    verify = tmp_path / "verify.py"
+    verify.write_text("""
+import bpy
+
+keys = bpy.data.objects["Head"].data.shape_keys.key_blocks
+basis, left, right = (keys[name].data for name in ("Basis", "blink_R", "blink_L"))
+for i, vertex in enumerate(keys["both"].data):
+    expected = left[i].co + right[i].co - basis[i].co
+    assert (vertex.co - expected).length < 2e-7
+assert abs(keys["other"].data[2].co.x - basis[2].co.x - 0.005) < 1e-8
+""", encoding="utf-8")
+    subprocess.run([blender, "--background", "--factory-startup", "--disable-autoexec", artifacts["blend"],
+                    "--python-exit-code", "1", "--python", str(verify)], check=True, capture_output=True, timeout=60)
 
 
 def _without(key):
@@ -184,6 +255,9 @@ def _without(key):
     ({**CFG, "names": {"wide": "a_", "small": "a_", "stretch": "b_", "squash": "c_"}}, None, "重なって"),
     ({**CFG, "names": {"wide": "a_"}}, None, "names"), ({**CFG, "blink": {"R": "blink_R"}}, None, "blink"),
     ({**CFG, "blink": {"R": "blink_smile_R", "L": "blink_L"}}, None, "同じキーを 2 回"),
+    ({**CFG, "combined_blink": {"keys": COMBINED["keys"]}}, None, "tolerance_m"),
+    ({**CFG, "combined_blink": {**COMBINED, "tolerance_m": -1}}, None, "tolerance_m"),
+    ({**CFG, "combined_blink": {**COMBINED, "keys": {"both": ["blink_R", "blink_R"]}}}, None, "違う名前"),
     (CFG, {**_geometry(), "eyes": {**_geometry()["eyes"], "L": {k: v for k, v in EYE.items() if k != "lid_vertices"}}}, "lid_vertices"),
     ({**CFG, "spin": 1}, None, "知らないパラメーター"), (CFG, {"schema_version": "other"}, "目の形の値")])
 def test_eye_keys_refuses_bad_settings(tmp_path, parameters, data, message):

@@ -57,6 +57,53 @@ def new_key_plan(names, cfg):
             (names["squash"], *cfg["iris_squash"], -1.0)]
 
 
+def key_positions(block):
+    values = np.empty((len(block.data), 3), dtype=np.float32)
+    block.data.foreach_get("co", values.ravel())
+    return values.astype(np.float64)
+
+
+def combined_blink_checks(shape_keys, keys, metric, tolerance):
+    basis = shape_keys.reference_key
+    blocks = shape_keys.key_blocks
+    base = key_positions(basis)
+    report = {}
+    for name, pair in keys.items():
+        trio = [blocks.get(key) for key in (name, *pair)]
+        if any(block is None for block in trio):
+            raise SystemExit(f"両目を合成する形状キーがありません: {[key for key in (name, *pair) if key not in blocks]}")
+        both, left, right = trio
+        if any(block == basis or block.relative_key != basis or block.vertex_group for block in trio):
+            report[name] = {"rewritten": False, "reason": "3 本とも Basis からの相対キーで、頂点グループ指定なしが必要"}
+            continue
+        residual = key_positions(both) - key_positions(left) - key_positions(right) + base
+        difference = float(np.abs(residual @ metric.T).max(initial=0))
+        if not np.isfinite(difference):
+            report[name] = {"rewritten": False, "reason": "座標に有限ではない値がある"}
+        elif difference > tolerance:
+            report[name] = {"before_max_difference_m": difference, "rewritten": False, "reason": "両目と片目の和が許容値を超えて違う"}
+        else:
+            report[name] = {"before_max_difference_m": difference, "rewritten": True}
+    return base, report
+
+
+def rewrite_combined_blink(blocks, keys, base, metric, report):
+    for name, (left, right) in keys.items():
+        if not report[name]["rewritten"]:
+            continue
+        block = blocks[name]
+        original = key_positions(block)
+        merged = base + (key_positions(blocks[left]) - base) + (key_positions(blocks[right]) - base)
+        if not np.isfinite(merged).all() or np.abs(merged).max(initial=0) > np.finfo(np.float32).max:
+            report[name].update(rewritten=False, reason="合成した座標を有限の単精度で保持できない")
+            continue
+        stored = merged.astype(np.float32)
+        block.data.foreach_set("co", stored.ravel())
+        delta = stored.astype(np.float64) - original
+        report[name].update(max_changed_m=float(np.abs(delta @ metric.T).max(initial=0)),
+                            changed_vertices=int(np.any(delta != 0, axis=1).sum()))
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
 
@@ -92,6 +139,10 @@ def main(argv=None):
     mesh.vertices.foreach_get("co", base)
     base = base.reshape(-1, 3)
     report = {"blender": bpy.app.version_string, "object": head.name, "blink": {}, "new_keys": {}}
+    combined = settings.get("combined_blink")
+    if combined:
+        metric = np.array(head.matrix_world.to_3x3()) * bpy.context.scene.unit_settings.scale_length
+        reference, report["combined_blink"] = combined_blink_checks(mesh.shape_keys, combined["keys"], metric, combined["tolerance_m"])
     for side in SIDES:
         eye = geometry["eyes"][side]
         iris = np.asarray(eye["iris_vertices"], dtype=np.int64)
@@ -106,6 +157,8 @@ def main(argv=None):
             fixed[iris] = base[iris]                                     # 瞳はまばたきで動かさない
             block.data.foreach_set("co", fixed.ravel())
             report["blink"][name] = info
+    if combined:
+        rewrite_combined_blink(blocks, combined["keys"], reference, metric, report["combined_blink"])
     base_w = frame.world(base.astype(np.float64))                             # 新しいキーは 64 ビットの頂点から（試しと同じ）
 
     def add_key(name, world_positions, low=0.0):
