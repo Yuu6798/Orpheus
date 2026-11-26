@@ -39,6 +39,14 @@ def test_notebook_recipe_is_valid_and_contains_no_secrets(tmp_path):
     assert "file:///" not in source and "C:/Users" not in source
     for cell in code:
         ast.parse("".join(cell["source"]))
+    setup = ast.parse("".join(code[1]["source"]))
+    lock = next(ast.literal_eval(statement.value) for statement in setup.body
+                if isinstance(statement, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == "locked_packages" for target in statement.targets))
+    assert {"timm", "omegaconf", "pytorch-lightning", "huggingface_hub"} <= lock.keys()
+    assert not {"torch", "torchvision", "torchaudio"} & lock.keys()
+    assert all(re.fullmatch(r"[0-9][a-z0-9.]*", version) for version in lock.values())
+    assert '"--no-deps"' in "".join(code[1]["source"])
 
 
 def test_unknown_settings_rejected(tmp_path):
@@ -71,6 +79,7 @@ def test_generated_foreground_and_full_image_boxes():
 
 def test_generated_extraction_writes_reusable_mhr70_archive(tmp_path):
     import hashlib
+    import sys
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -103,7 +112,9 @@ def test_generated_extraction_writes_reusable_mhr70_archive(tmp_path):
     runtime = dict(
         Path=Path, video=video, output=tmp_path, hashlib=hashlib, json=json, np=np,
         box_mode="plain_background", intrinsics=np.eye(3, dtype=np.float32), sources={},
-        sam_weights=("SAM", "test"), fov_weights=("FoV", "test"), torch=SimpleNamespace(__version__="test"),
+        sam_weights=("SAM", "test"), fov_weights=("FoV", "test"),
+        sys=sys, torch=SimpleNamespace(__version__="test", version=SimpleNamespace(cuda="test")),
+        runtime_packages=lambda: {"timm": "1.0.31"},
         cv2=SimpleNamespace(__version__="test", VideoCapture=capture, COLOR_BGR2RGB=0,
                             cvtColor=lambda image, _: image), fps=24, frame_count=frames, frame_prediction=prediction,
     )
@@ -135,3 +146,11 @@ def test_generated_extraction_writes_reusable_mhr70_archive(tmp_path):
     runtime["frame_prediction"] = track_prediction
     exec(compile(program, "colab_full_extraction", "exec"), runtime)
     assert recomputed == [1, 2]
+
+    recomputed.clear()
+    rgb_frames = (rgb + index for index in range(frames))
+    runtime["runtime_packages"] = lambda: {"timm": "1.0.32"}
+    exec(compile(program, "colab_full_extraction", "exec"), runtime)
+    assert recomputed == list(range(frames))
+    manifests = [json.loads(path.read_text(encoding="utf-8")) for path in tmp_path.glob("*/source.json")]
+    assert {entry["runtime"]["packages"]["timm"] for entry in manifests} == {"1.0.31", "1.0.32"}

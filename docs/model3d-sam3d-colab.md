@@ -25,5 +25,5 @@
 5. 出力の `keypoints.npz` を作業側に移し、[点の下ごしらえ](model3d.md#推定した-3d-の点を整える) の `keypoints` へ渡す。
    `pred_keypoints_3d` と `pred_cam_t` のほか、fps・時刻・枠・焦点距離・全画面の枠を使ったコマを記録する。
 
-SAM 3D Body・DINOv3・MoGe・utils3d と重みのリビジョンを固定する。Colab が提供する PyTorch の GPU ビルドを保つため、Python ランタイムとその周辺ライブラリは Colab 環境の値を使う。
+SAM 3D Body・DINOv3・MoGe・utils3d と重みのリビジョン、およびノートブックがインストールする Python パッケージの版を固定する。CUDA 対応の PyTorch や数値計算のライブラリは、Colab ランタイムの同梱版を使う。実際の Python、CUDA、主要パッケージの版を再開の判定と `source.json` に使う。
 この工程のレシピ実行、セルの構文と枠の処理はローカルで確認した。生成されたノートブックでの Colab GPU の通し実行は未確認。

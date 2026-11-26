@@ -87,26 +87,67 @@ def notebook():
 
             sam_source = checkout("sam-3d-body")
             dino_source = checkout("dinov3")
-            constraints = scratch / "torch-constraints.txt"
-            installed = {}
-            for package in ("torch", "torchvision", "torchaudio"):
-                try:
-                    installed[package] = metadata.version(package)
-                except metadata.PackageNotFoundError:
-                    pass
-            constraints.write_text("".join(f"{name}=={version}\\n" for name, version in installed.items()))
-            pip = [sys.executable, "-m", "pip", "install", "-q", "-c", str(constraints)]
-            dependencies = [
-                "huggingface_hub>=0.34,<2", "pytorch-lightning>=2.0,<3", "timm>=0.9,<2",
-                "hydra-core>=1.3,<1.4", "omegaconf>=2.3,<2.4", "trimesh<5", "torchmetrics<2",
-                "yacs", "einops", "dill", "rich", "pyrootutils", "webdataset", "roma", "joblib",
-                "loguru", "optree", "fvcore", "pycocotools", "braceexpand", "iopath", "tabulate",
-                "cloudpickle", "termcolor", "click", "ftfy", "regex",
-            ]
+            # Colab に追加する分だけのロック。数値計算と CUDA 対応 PyTorch はランタイム同梱のものを使う。
+            locked_packages = {
+                "antlr4-python3-runtime": "4.9.3",
+                "braceexpand": "0.1.7",
+                "click": "8.5.1",
+                "cloudpickle": "3.1.3",
+                "dill": "0.4.1",
+                "einops": "0.8.2",
+                "ftfy": "6.3.1",
+                "fvcore": "0.1.5.post20221221",
+                "glcontext": "3.1.0",
+                "huggingface_hub": "1.33.0",
+                "hydra-core": "1.3.2",
+                "iopath": "0.1.10",
+                "joblib": "1.6.0",
+                "lightning-utilities": "0.15.3",
+                "loguru": "0.7.3",
+                "moderngl": "5.13.0",
+                "omegaconf": "2.3.0",
+                "optree": "0.20.0",
+                "portalocker": "3.2.0",
+                "pycocotools": "2.0.11",
+                "pyrootutils": "1.0.4",
+                "pytorch-lightning": "2.6.6",
+                "regex": "2025.11.3",
+                "rich": "13.9.4",
+                "roma": "1.8.0",
+                "tabulate": "0.9.0",
+                "termcolor": "3.3.0",
+                "timm": "1.0.31",
+                "torchmetrics": "1.9.0",
+                "trimesh": "4.10.0",
+                "webdataset": "1.0.2",
+                "yacs": "0.1.8",
+            }
+            # 依存解決をさせず、Colab の PyTorch や CUDA のビルドを pip で置き換えない。
+            pip = [sys.executable, "-m", "pip", "install", "-q", "--no-deps", "--no-build-isolation"]
+            requirements = [f"{name}=={version}" for name, version in locked_packages.items()]
             utils_url, utils_sha = sources["utils3d"]
             moge_url, moge_sha = sources["MoGe"]
-            subprocess.run([*pip, *dependencies, f"utils3d @ git+{utils_url}@{utils_sha}"], check=True)
-            subprocess.run([*pip, "--no-deps", f"git+{moge_url}@{moge_sha}"], check=True)
+            subprocess.run([*pip, *requirements, f"utils3d @ git+{utils_url}@{utils_sha}",
+                            f"moge @ git+{moge_url}@{moge_sha}"], check=True)
+
+            def runtime_packages():
+                # 同梱のライブラリも含め、実際に見つかった版を再開の識別子と控えに入れる。
+                names = (
+                    *locked_packages, "moge", "utils3d", "torch", "torchvision", "torchaudio", "numpy", "scipy",
+                    "opencv-python", "opencv-python-headless", "opencv-contrib-python", "opencv-contrib-python-headless",
+                    "Pillow", "hf-xet", "fsspec", "safetensors", "scikit-image", "scikit-learn",
+                    "pyyaml", "packaging", "typing-extensions", "python-dotenv", "httpx", "aiohttp", "filelock",
+                )
+                versions = {}
+                for name in names:
+                    try:
+                        versions[name] = metadata.version(name)
+                    except metadata.PackageNotFoundError:
+                        versions[name] = None
+                mismatches = [name for name, version in locked_packages.items() if versions[name] != version]
+                if mismatches:
+                    raise RuntimeError(f"ノートブックの依存の版がロックと違います: {mismatches}")
+                return versions
 
             from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -267,8 +308,9 @@ def notebook():
                 video_hash = hashlib.file_digest(stream, "sha256").hexdigest()
             settings = {
                 "template": 1, "video": video_hash, "box_mode": box_mode, "matrix": intrinsics.tolist(),
-                "sources": sources, "weights": [sam_weights, fov_weights], "torch": torch.__version__,
-                "opencv": cv2.__version__, "fps": fps, "frames": frame_count,
+                "sources": sources, "weights": [sam_weights, fov_weights], "fps": fps, "frames": frame_count,
+                "runtime": {"python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,
+                            "opencv": cv2.__version__, "numpy": np.__version__, "packages": runtime_packages()},
             }
             key = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
             run_dir = output / key
