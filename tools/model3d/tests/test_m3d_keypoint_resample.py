@@ -94,3 +94,24 @@ def test_bad_input_is_reported(arrays, source, message, tmp_path):
     operation = get("motion.resample_keypoints").function
     with pytest.raises(ToolError, match=message):
         operation({"keypoints": path}, arguments, {"keypoints": tmp_path / "result.npz"}, None)
+
+
+def test_invalid_neighbours_do_not_distort_a_valid_interpolation():
+    arrays = dict(clip([50, 0, 10, 100]), valid=np.array([False, True, True, True]))
+    output, _ = keypoint_resample.resample(arrays, 4)
+    assert not output["valid"][1]
+    assert output["valid"][3]
+    assert output["pred_keypoints_3d"][3, 0, 0] == 5.0
+    assert output["pred_cam_t"][3, 0] == 5.0
+
+
+def test_long_float32_timestamps_allow_rounding_and_detect_jitter():
+    count = 3600
+    arrays = clip(np.ones(count), fps=60)
+    arrays["t"] = np.arange(count, dtype=np.float32) / np.float32(60)
+    converted, report = keypoint_resample.resample(arrays, 30)
+    assert report["target_frames"] == 1800
+    np.testing.assert_array_equal(converted["t"], np.arange(1800) / 30)
+    arrays["t"][-1] += np.float32(0.0003)
+    with pytest.raises(ValueError, match="等間隔"):
+        keypoint_resample.resample(arrays, 30)

@@ -24,7 +24,7 @@ def _endpoint_slope(first, second):
     return np.where(np.sign(slope) == np.sign(first), slope, 0)
 
 
-def _pchip(values, left, right, fraction):
+def _pchip(values, left, right, fraction, linear):
     """入力の 1 コマを刻み幅 1 とする PCHIP（各成分の単調性を保つ三次エルミート補間）。"""
     if len(values) == 1:
         return values[left]
@@ -50,6 +50,10 @@ def _pchip(values, left, right, fraction):
               + u * (1 - u)**2 * slope[left]
               + u**2 * (3 - 2 * u) * values64[right]
               + u**2 * (u - 1) * slope[right])
+    if linear.any():
+        # 両端が有効でも、外側に無効な点があると三次補間の傾きに混ざる。その区間は両端だけを使う。
+        weight = u[linear]
+        result[linear] = (1 - weight) * values64[left[linear]] + weight * values64[right[linear]]
     if not np.isfinite(result).all():
         raise ValueError("補間した値が有限値の範囲を超えました")
     return result.astype(values.dtype) if values.dtype.kind == "f" else result
@@ -85,10 +89,17 @@ def resample(arrays, target_fps, source_fps=None):
     start = 0.0
     if "t" in arrays:
         times = arrays["t"]
-        if (times.shape != (frames,) or times.dtype.kind not in "fiu" or not np.isfinite(times).all()
-                or not np.allclose(np.diff(times.astype(float)), 1 / source, rtol=1e-4, atol=0)):
+        if times.shape != (frames,) or times.dtype.kind not in "fiu" or not np.isfinite(times).all():
+            raise ValueError("t は全コマ分の有限な数の配列にしてください")
+        stamps = times.astype(np.float64)
+        start = float(stamps[0])
+        expected = start + np.arange(frames) / source
+        precise = times if times.dtype.kind == "f" else stamps
+        # float32 の時刻を差し引くと、後半ほど丸めの差が目立つ。等間隔の時刻そのものと比べる。
+        tolerance = np.spacing(np.abs(precise)).astype(float) + 1e-8 / source
+        if (not np.isfinite(expected).all() or np.any(np.diff(stamps) <= 0)
+                or np.any(np.abs(stamps - expected) > tolerance + tolerance[0])):
             raise ValueError("t は fps と一致する等間隔の秒の配列にしてください")
-        start = float(times[0])
 
     count = frames * (target / source)
     if not math.isfinite(count) or count >= np.iinfo(np.intp).max:
@@ -103,10 +114,15 @@ def resample(arrays, target_fps, source_fps=None):
     right = np.ceil(where).astype(np.intp)
     fraction = where - left
     nearest = np.where(fraction < 0.5, left, right)
+    linear = np.zeros(target_frames, dtype=bool)
+    if "valid" in arrays:
+        valid = arrays["valid"]
+        neighbours_valid = valid[np.maximum(0, left - 1)] & valid[np.minimum(frames - 1, right + 1)]
+        linear = (left != right) & valid[left] & valid[right] & ~neighbours_valid
     output = {}
     for name, array in arrays.items():
         if name in CONTINUOUS:
-            output[name] = _pchip(array, left, right, fraction)
+            output[name] = _pchip(array, left, right, fraction, linear)
         elif name == "valid":
             output[name] = array[left] & array[right]
         elif name == "used_full_image_box":
