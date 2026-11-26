@@ -1,11 +1,11 @@
 """VRM のキャラを model3d の工程で動かす（Blender 5.2 と VRM Add-on。docs/model3d.md の「VRM のキャラを動かす」）。
 
-どの工程も Blender の中で VRM Add-on を使うので、既定で bl_ext.user_default.vrm を有効にして起動する（addons で変えられる。
+VRM の設定を読む工程は、既定で bl_ext.user_default.vrm を有効にして起動する（addons で変えられる。
 拡張機能のフォルダは blender_extensions か --tool blender_extensions=DIR）。Blender は外部の実行ファイルなので再利用しない（毎回実行）。
 """
 from pathlib import Path
 
-from ..io import ToolError, read_json
+from ..io import ToolError, atomic_json, read_json
 from . import StepResult, number, register, require
 from .blender_ops import blender_addons
 from .motion_ops import _blender, _bone_prefix, _timeout
@@ -204,6 +204,77 @@ def bake_springs(inputs, parameters, outputs, context):
     if report.get("released_walls"):
         observation["released_walls"] = [{key: item.get(key) for key in ("springs", "walls", "guards", "frames_released", "spans")}
                                          for item in report["released_walls"]]
+    return StepResult(observations=[observation])
+
+
+def drape_settings(parameters, armature):
+    from ..blender_adapter.vrm_drape_sleeves import AXES, DEFAULTS
+    from .face_ops import _name, _real
+
+    settings = {"armature": armature, **{key: _name(parameters.get(key), key) for key in ("chest", "head")}}
+    if settings["chest"] == settings["head"]:
+        raise ToolError("chest と head には別の骨を指定してください")
+    used = {settings["chest"], settings["head"]}
+    for side in ("left", "right"):
+        chains = parameters.get(side, [])
+        if not isinstance(chains, list) or any(not isinstance(chain, list) or not chain for chain in chains):
+            raise ToolError(f"{side} は、骨の名前を根元から並べた鎖の配列にしてください")
+        settings[side] = []
+        for chain in chains:
+            names = [_name(name, side) for name in chain]
+            if set(names) & used or len(set(names)) != len(names):
+                raise ToolError(f"{side} の袖の骨が重なっています: {names}")
+            used.update(names)
+            settings[side].append(names)
+    if not (settings["left"] or settings["right"]):
+        raise ToolError("left または right に袖の鎖を指定してください")
+    frames = parameters.get("frames")
+    if frames is not None and (not isinstance(frames, list) or len(frames) != 2
+                               or any(type(value) is not int for value in frames) or frames[0] > frames[1]):
+        raise ToolError("frames は [最初, 最後] の整数の並びにしてください")
+    settings["frames"] = frames
+    for key in ("left_axis", "back_axis"):
+        value = parameters.get(key, DEFAULTS[key])
+        if not isinstance(value, str) or value not in AXES:
+            raise ToolError(f"{key} は +X、-X、+Y、-Y、+Z、-Z のいずれかにしてください")
+        settings[key] = value
+    if settings["left_axis"][1] == settings["back_axis"][1]:
+        raise ToolError("left_axis と back_axis には直交する軸を指定してください")
+    for key, minimum, maximum, exclusive in (("height_m", 0, None, True), ("distance_m", 0, None, True),
+                                             ("strength", 0, 1, False), ("smooth_s", 0, None, False),
+                                             ("lead_s", 0, None, False), ("max_angle_deg", 0, 180, True)):
+        settings[key] = _real(parameters.get(key, DEFAULTS[key]), key, minimum, exclusive=exclusive, maximum=maximum)
+    return settings
+
+
+@register("vrm.drape_sleeves", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="胸・頭に近づく広い袖を、揺れものの骨の鎖を使って下・外・後ろへ垂らす。"
+                  "左右の鎖と胸・頭の骨を名前で指定する。時間方向にならして回転のキーに焼く。Blender が要る",
+          capability={"aliases": ["振袖", "袖を重力で垂らす", "gravity sleeve drape"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def drape_sleeves(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..blender_adapter.vrm_drape_sleeves import DEFAULTS
+
+    operation = "vrm.drape_sleeves"
+    require(inputs, ("blend",), operation)
+    allowed = {"blender", "addons", "blender_extensions", "armature", "timeout", "chest", "head", "left", "right",
+               "frames", *DEFAULTS}
+    armature = _check(parameters, allowed, outputs, ("blend", "report"), operation)
+    settings = drape_settings(parameters, armature)
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "drape_sleeves_settings.json"
+    atomic_json(settings_path, settings)
+    script = Path(__file__).resolve().parents[1] / "blender_adapter" / "vrm_drape_sleeves.py"
+    addons, extensions = blender_addons(parameters, context)
+    record = launcher.run_blender(_blender(parameters, context, operation), script, None,
+                                  ["--blend", inputs["blend"], "--out-blend", outputs["blend"], "--settings", settings_path,
+                                   "--report", outputs["report"]], log=step_dir / "blender.log",
+                                  timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "vrm_drape_sleeves", "blender_version": record["blender_version"],
+                   **{key: report[key] for key in ("armature", "frames", "frames_modified", "keys", "bake_check_deg")}}
     return StepResult(observations=[observation])
 
 
