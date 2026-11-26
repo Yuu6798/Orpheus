@@ -3297,6 +3297,7 @@ Blender の外で数える所（`animation_check.py`。numpy だけ）に分け�
 - **`check.motion` とは段が違う**: `check.motion` は骨へ載せる前の点（`motion.prepare_keypoints` の points）を測る。こちらは仕上がった .blend を見る。
 
 **舞台やエフェクトを足す前に**、正面固定で描いたキャラと参照動画を同じ時刻で並べ、手先や足元を見比べる。
+一緒に描くには [短尺の動きの監査テンプレート](../examples/model3d_motion_audit/README.md) を使う。
 奥行きが読み取りにくい姿勢は [向きの下見](#向きの下見planscout) で斜めと横からも見る。冒頭のフックを含む全カットを
 同じ最終 .blend から描き、カットごとの動きのコマ `f` を [カメラの台本](#絵コンテのカメラを-3d-に写すplanshots) で指定すると、
 一部だけ旧版の手や袖の動きが混じるのを防げる。
