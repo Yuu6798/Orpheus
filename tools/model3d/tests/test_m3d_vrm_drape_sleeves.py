@@ -18,7 +18,7 @@ from model3d.ops.vrm_ops import drape_settings
 PARAMETERS = {"chest": "Chest", "head": "Head", "left": [["Sleeve root", "Sleeve end"]], "back_axis": "+Y"}
 
 
-def recipe(tmp_path, blender, **parameters):
+def recipe(tmp_path, blender, *, expected="succeeded", **parameters):
     path = tmp_path / "recipe.json"
     atomic_json(path, {"schema_version": "model3d-recipe/0.1", "name": "sleeve",
                        "inputs": {"input": {"path": "input.blend"}},
@@ -27,8 +27,8 @@ def recipe(tmp_path, blender, **parameters):
                                   "parameters": {**PARAMETERS, "blender": str(blender), **parameters},
                                   "outputs": {"blend": "draped.blend", "report": "drape.json"}}]})
     run = executor.run_recipe(path, tmp_path / "runs")
-    assert run["status"] == "succeeded", run
-    return run["steps"]["drape"]["artifacts"]
+    assert run["status"] == expected, run
+    return run["steps"]["drape"].get("artifacts", {})
 
 
 def test_drape_weights_raise_near_head_or_above_chest():
@@ -86,11 +86,12 @@ def run_blender(blender, path, script):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_blender_drapes_a_raised_chain_and_leaves_low_keys(tmp_path):
+def test_blender_drapes_a_raised_chain_preserves_low_keys_and_rejects_sparse_keys(tmp_path):
     blender = os.environ.get("MODEL3D_TEST_BLENDER") or shutil.which("blender")
     if not blender:
         pytest.skip("実 Blender がありません（MODEL3D_TEST_BLENDER）")
     source = tmp_path / "input.blend"
+    sparse = tmp_path / "sparse.blend"
     run_blender(blender, tmp_path / "make.py", f"""
 import bpy
 from mathutils import Quaternion
@@ -125,6 +126,8 @@ for frame, height in enumerate((0, 1, 1, 0), 1):
         bone.keyframe_insert("rotation_quaternion", frame=frame)
 scene.frame_set(1)
 bpy.ops.wm.save_as_mainfile(filepath={str(source)!r})
+rig.pose.bones["Sleeve root"].keyframe_delete("rotation_quaternion", frame=2, index=0)
+bpy.ops.wm.save_as_mainfile(filepath={str(sparse)!r})
 """)
     artifacts = recipe(tmp_path, blender, back_axis="-Z", smooth_s=0, lead_s=0)
     report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))
@@ -146,3 +149,7 @@ for frame, raised in [(1, False), (2, True), (3, True), (4, False)]:
         else:
             assert abs(bone.rotation_quaternion.w - 1) < 1e-6
 """)
+    source.write_bytes(sparse.read_bytes())
+    assert recipe(tmp_path, blender, expected="failed", back_axis="-Z", frames=[2, 3]) == {}
+    logs = [log.read_text(encoding="utf-8") for log in (tmp_path / "runs").rglob("blender.log")]
+    assert any("袖の四元数の 4 成分をシーンの全コマに焼いてください" in log for log in logs)

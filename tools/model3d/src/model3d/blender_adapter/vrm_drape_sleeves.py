@@ -69,6 +69,33 @@ def chains_in(armature, settings):
     return chains
 
 
+def check_baked_action(data, chains, scene):
+    from bpy_extras import anim_utils
+
+    if (data is None or data.action is None or any(not track.mute for track in data.nla_tracks)
+            or data.action_blend_type != "REPLACE" or data.action_influence != 1.0):
+        raise ValueError("袖を焼き付けた単一のアクションが要ります（NLA で混ぜた動きは事前に焼いてください）")
+    action = data.action
+    if action.layers:
+        bag = anim_utils.action_get_channelbag_for_slot(action, data.action_slot)
+        curves = bag.fcurves if bag else ()
+    else:
+        curves = getattr(action, "fcurves", ())
+    paths = {bone.path_from_id("rotation_quaternion"): bone.name for _, _, chain in chains for bone in chain}
+    groups = {path: {} for path in paths}
+    for curve in curves:
+        if curve.data_path in groups:
+            groups[curve.data_path][curve.array_index] = curve
+    required = set(range(scene.frame_start, scene.frame_end + 1))
+    for path, components in groups.items():
+        if set(components) != {0, 1, 2, 3} or any(
+            curve.mute or any(not modifier.mute for modifier in curve.modifiers)
+            or not required.issubset(point.co.x for point in curve.keyframe_points)
+            for curve in components.values()
+        ) or any(driver.data_path == path and not driver.mute for driver in data.drivers):
+            raise ValueError(f"袖の四元数の 4 成分をシーンの全コマに焼いてください: {paths[path]}")
+
+
 def chest_axes(world, chest, left_axis, back_axis):
     orientation = (world @ chest.matrix).to_quaternion()
     left = orientation @ left_axis
@@ -185,8 +212,7 @@ def main(argv=None):
     armature = choose_armature(scene, settings["armature"])
     chains = chains_in(armature, settings)
     data = armature.animation_data
-    if data is None or data.action is None or any(not track.mute for track in data.nla_tracks):
-        raise ValueError("袖を焼き付けた単一のアクションが要ります（NLA で混ぜた動きは事前に焼いてください）")
+    check_baked_action(data, chains, scene)
     original_frame = scene.frame_current, scene.frame_subframe
     first, last = settings.get("frames") or [scene.frame_start, scene.frame_end]
     if not scene.frame_start <= first <= last <= scene.frame_end:
