@@ -1456,6 +1456,12 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
 運ぶ区間では節の計算の状態（`animation_state`）を書き換えるので、アドオンの版が変わると動かないことがある（4.10.5 で確かめた）。食い込みの押し出しは入れていない（`collision.push_out` と `render.stage` の
 `push` を使う）。
 
+### 長髪を腕と袖からよける（`vrm.avoid_hair_arm`）
+
+`vrm.bake_springs` の出力で腕や袖と交差する長髪を、世界座標のメッシュ検査に基づいてよける。
+指定した髪の骨に補正を焼いた .blend と、補正前後のコマごとの交差数を出す。
+[髪と腕の指定、焼き付け、報告の見方](model3d-hair-arm.md)。
+
 ### VRM を書き出す（`vrm.export`）と中身を確かめる（`check.vrm`）
 
 - `vrm.export` の入力: `blend`（VRM のキャラの .blend。VRM Add-on の設定入り）、任意で `meta_from`（メタを写す元の VRM 1.0）。
