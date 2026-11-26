@@ -841,3 +841,24 @@ def bone_path(inputs, parameters, outputs, context):
             raise ToolError(f"motion.bone_path: 測った通り道に点がありません: {missing}")
         observation["points"] = sorted(settings["points"])
     return StepResult(observations=[observation])
+
+
+@register("motion.extract_s3d_colab", outputs=("notebook",),
+          summary="SAM 3D Body で動画を MHR70 の npz にする Google Colab のノートブックを書く。"
+                  "ローカルで行うのは生成まで。推定には Colab の GPU と Hugging Face の重みへのアクセスが要る",
+          capability={
+              "aliases": ["SAM 3D Body", "Colab モーション抽出", "動画から MHR70"],
+              "docs": "docs/model3d-sam3d-colab.md",
+              "network_mode": "never",
+              "network_note": "生成するノートブックは、Colab の実行中にモデルと重みを取得する。",
+              "parameters": {"status": "schema", "schema": {"type": "object", "additionalProperties": False}},
+          })
+def extract_s3d_colab(inputs, parameters, outputs, context):
+    from ..sam3d_colab import notebook
+
+    operation = "motion.extract_s3d_colab"
+    require(outputs, ("notebook",), f"{operation} の出力")
+    if parameters:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(parameters)}。動画や出力フォルダは Colab で指定します")
+    atomic_json(outputs["notebook"], notebook())
+    return StepResult(observations=[{"kind": "extract_s3d_colab", "format": "ipynb"}])
