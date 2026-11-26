@@ -61,17 +61,18 @@
 
 ### 短尺 VRM ダンスからの追加候補
 
-リポジトリ外の短尺制作で使った手当てから、汎用化する候補を挙げる。P0〜P2 は検討順の目安。候補の操作名は仮の名前。
+リポジトリ外の短尺制作から選んだ 7 件は `main` に取り込んだ。P0〜P2 は当初の検討順。
+各ガイドに使い方、確かめた範囲、制約を記録している。
 
-| 優先度 | 候補 | 実装時に確かめること |
+| 当初の優先度 | 取り込んだ機能 | PR |
 |---|---|---|
-| P0 | `vrm.avoid_hair_arm`。揺れものを焼いた後、腕や袖と交差する長髪の根元をよけ、先の骨を重力方向へ戻して S 字に垂らす | 変形後の髪と相手のメッシュから世界座標の BVH を組む。元の頂点番号を使う場合は、MToon の輪郭線などで頂点の対応が変わっていないか調べ、計測中だけ無効にした設定は失敗時にも戻す。角度の探索と時間方向の平滑化を終えてから、交差した面の組と調べたコマを記録する |
-| P0 | `vrm.drape_sleeves`。腕を上げて顔に寄った広い袖を、骨の鎖を使って下・外側へ垂らす | `motion.sleeve_bones` は関節の曲げに袖口を追従させる工程。袖を垂らす試作は胸の高さと頭への近さを使うので、適用前後を同じ本番カメラで見比べる |
-| P0 | `motion.extract_s3d_colab`。SAM 3D Body の MHR70 NPZ を得る Colab ノートブックの雛形 | GPU とチェックポイントへのアクセスを事前に確認する。依存のコミットを固定し、再実行時のキャッシュと初期化を確かめる。前景の枠を渡す経路で枠の検出に失敗したコマを記録し、少数コマを推定して出力を [点の下ごしらえ](model3d.md#推定した-3d-の点を整える) に渡す |
-| P1 | `motion.resample_keypoints`。NPZ の fps を合わせる | 座標とカメラの平行移動には PCHIP 補間を検討する。無効なコマや全画面を使ったコマの印は数値補間せず、元の時刻と対応が追えるようにする |
-| P1 | `check.face_occlusion`。本番カメラから顔の目印への光線で袖や腕の遮りを調べる | [点から面を調べる機能](model3d.md#点の奥にある面を調べるcheckview_point) を候補に、コマごとにカメラ・顔・衣装の動きを評価する。面への当たりと画面上の見え方を比べ、透ける素材も確かめる |
-| P1 | 動きの比較用の動画と複数方位の下見をまとめる | 参照とキャラの正面動画は同じ時刻でそろえ、気になるコマは既存の [向きの下見](model3d.md#向きの下見planscout) を使う |
-| P2 | 仕上げの重ね直しと、光や霧を顔の上だけ弱めるマスク | 描画側は [変えたコマだけ描き直す流れ](model3d.md#台本の値を比べる変えたコマだけ描き直す) を使う。仕上げ側では [`render.passes` の `head`](model3d.md#要素別に描く) の利用と、範囲を指定した合成で範囲の外のコマを保てるかを確かめる |
+| P0 | [`vrm.avoid_hair_arm`](model3d-hair-arm.md)。長髪と腕・袖の交差を世界座標で調べ、髪の回転を焼く | [#308](https://github.com/Yuu6798/Orpheus/pull/308) |
+| P0 | [`vrm.drape_sleeves`](model3d.md#胸や頭に寄った袖を垂らすvrmdrape_sleeves)。顔に寄った広い袖を重力方向へ垂らす | [#312](https://github.com/Yuu6798/Orpheus/pull/312) |
+| P0 | [`motion.extract_s3d_colab`](model3d-sam3d-colab.md)。SAM 3D Body の抽出用 Colab ノートブックを生成する | [#313](https://github.com/Yuu6798/Orpheus/pull/313) |
+| P1 | [`motion.resample_keypoints`](model3d-keypoint-resampling.md)。抽出した NPZ の fps を変換する | [#314](https://github.com/Yuu6798/Orpheus/pull/314) |
+| P1 | [`check.face_occlusion`](model3d.md#本番カメラから顔の遮りを調べるcheckface_occlusion)。顔の目印を遮る指定メッシュを調べる | [#310](https://github.com/Yuu6798/Orpheus/pull/310) |
+| P1 | [動きの監査テンプレート](../examples/model3d_motion_audit/README.md)。参照動画との横並び MP4 と複数方位の下見を作る | [#309](https://github.com/Yuu6798/Orpheus/pull/309) |
+| P2 | [`render.composite_fx`](model3d.md#区間を選んで合成し顔を効果から守るrendercomposite_fx)。再描画したコマの差し替えと区間の再合成、顔のマスクを扱う | [#311](https://github.com/Yuu6798/Orpheus/pull/311) |
 
 ## 段階
 
