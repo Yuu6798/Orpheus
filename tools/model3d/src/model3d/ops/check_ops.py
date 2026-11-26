@@ -104,6 +104,91 @@ def view_point(inputs, parameters, outputs, context):
                                      "blender_version": record["blender_version"]}])
 
 
+def face_occlusion_settings(parameters, cameras):
+    from .arm_ops import COMMON, _armature, _frames, _name, _names, _real, _refuse_unknown
+
+    operation = "check.face_occlusion"
+    _refuse_unknown(parameters, COMMON | {"landmarks", "occluders", "frames", "camera", "margin_m", "report_only"},
+                    operation)
+    camera = _name(parameters["camera"], "camera") if "camera" in parameters else None
+    if cameras is not None and camera is not None:
+        raise ToolError("camera と入力 cameras はどちらか一方だけを指定してください")
+    landmarks = parameters.get("landmarks")
+    if not isinstance(landmarks, dict) or not landmarks:
+        raise ToolError("landmarks は顔の目印の名前と設定の辞書にしてください")
+    settings_landmarks = {}
+    for name, marker in landmarks.items():
+        label = f"landmarks.{_name(name, 'landmarks')}"
+        if not isinstance(marker, dict):
+            raise ToolError(f"{label} は bone と offset の設定にしてください")
+        _refuse_unknown(marker, {"bone", "offset"}, label)
+        offset = marker.get("offset", [0, 0, 0])
+        if not isinstance(offset, list) or len(offset) != 3:
+            raise ToolError(f"{label}.offset は [x, y, z] にしてください")
+        settings_landmarks[name] = {"bone": _name(marker.get("bone"), f"{label}.bone"),
+                                    "offset": [_real(value, f"{label}.offset") for value in offset]}
+    if not isinstance(parameters.get("report_only", False), bool):
+        raise ToolError("report_only は true / false にしてください")
+    if cameras is not None:
+        ids = set()
+        for row in cameras["frames"]:
+            T = row["T"]
+            if T in ids:
+                raise ToolError(f"cameras の T が重なっています: {T}")
+            ids.add(T)
+            for value in [row.get("f", T), row["focal_px"], *row["principal_px"],
+                          *(value for column in row["matrix"] for value in column)]:
+                _real(value, f"cameras T={T}")
+        if "clip_m" in cameras:
+            near, far = [_real(value, "cameras.clip_m") for value in cameras["clip_m"]]
+            if near >= far:
+                raise ToolError("cameras.clip_m は近い境界から遠い境界の順にしてください")
+    return {"armature": _armature(parameters), "camera": camera, "cameras": cameras, "frames": _frames(parameters),
+            "landmarks": settings_landmarks, "occluders": _names(parameters.get("occluders"), "occluders"),
+            "margin_m": _real(parameters.get("margin_m", 0.001), "margin_m", 0)}
+
+
+@register("check.face_occlusion", inputs=("blend", "cameras"), outputs=("report",), cacheable=False,
+          summary="本番カメラから動く顔の目印へ光線を飛ばし、指定した袖や腕のメッシュに遮られるコマを記録する。"
+                  "cameras を使うとカットごとのカメラで検査できる。Blender が要り、入力の .blend は保存しない",
+          capability={"aliases": ["袖で顔が隠れるコマを調べる", "顔の遮蔽", "face occlusion"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def check_face_occlusion(inputs, parameters, outputs, context):
+    from pathlib import Path
+
+    from .. import contracts
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+
+    operation = "check.face_occlusion"
+    require(inputs, ("blend",), operation)
+    if "report" not in outputs:
+        raise ToolError(f"{operation} には outputs の report が要ります")
+    cameras = contracts.load("cameras", inputs["cameras"]) if "cameras" in inputs else None
+    settings = face_occlusion_settings(parameters, cameras)
+    script = Path(__file__).resolve().parents[1] / "blender_adapter" / "face_occlusion.py"
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "face_occlusion_settings.json"
+    atomic_json(settings_path, settings)
+    addons, extensions = blender_addons(parameters, context)
+    record = launcher.run_blender(_blender(parameters, context, operation), script, None,
+                                  ["--blend", inputs["blend"], "--settings", settings_path, "--report", outputs["report"]],
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    checked = sum(count["clear"] + count["occluded"] for count in report["counts"].values())
+    observation = {"kind": "face_occlusion", "blender_version": record["blender_version"], "frames": len(report["frames"]),
+                   "occluded_frames": len(report["occluded_T"]), "tested_landmarks": checked}
+    unresolved = []
+    if not parameters.get("report_only"):
+        if not checked:
+            unresolved.append("check.face_occlusion: カメラの画面内で検査できた目印がありません")
+        if report["occluded_T"]:
+            unresolved.append(f"check.face_occlusion: 顔の目印を遮る面が {len(report['occluded_T'])} コマにあります")
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
 @register("check.structure", inputs=("rig",), outputs=("report",),
           summary="骨・ウェイトを検査し、任意の入力 mesh と頂点数・topology を照合する。required_bone_roles は preset か配列")
 def check_structure(inputs, parameters, outputs, context):
