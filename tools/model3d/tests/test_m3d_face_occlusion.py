@@ -153,6 +153,25 @@ for name, z in [("Sleeve", 2), ("Behind", -1), ("Hidden", 3)]:
         obj.keyframe_insert("location", frame=2)
     if name == "Hidden":
         obj.hide_render = True
+        obj.hide_viewport = True
+
+parent = bpy.data.collections.new("Viewport off")
+scene.collection.children.link(parent)
+for name in ("Layer off", "Render off", "Layer excluded"):
+    collection = bpy.data.collections.new(name)
+    (parent if name == "Layer off" else scene.collection).children.link(collection)
+    obj = bpy.data.objects.new(f"{{name}} mesh", bpy.data.objects["Hidden"].data)
+    collection.objects.link(obj)
+    obj.location.z = 3
+    if name == "Layer off":
+        obj.keyframe_insert("location", frame=1)
+        obj.location.x = 2
+        obj.keyframe_insert("location", frame=2)
+    elif name == "Render off":
+        collection.hide_render = True
+        collection.hide_viewport = True
+    else:
+        bpy.context.view_layer.layer_collection.children[name].exclude = True
 
 for name, kind in [("Subd edge", "SUBSURF"), ("Multires edge", "MULTIRES")]:
     bpy.ops.mesh.primitive_cube_add(size=1.5, location=(0.7, 0.7, 2))
@@ -170,6 +189,12 @@ for name, kind in [("Subd edge", "SUBSURF"), ("Multires edge", "MULTIRES")]:
 scene.render.use_simplify = True
 scene.render.simplify_subdivision = 0
 scene.render.simplify_subdivision_render = 2
+scene.frame_set(2)
+sleeve = bpy.data.objects["Sleeve"]
+sleeve.hide_set(True)
+sleeve.hide_viewport = True
+bpy.context.view_layer.layer_collection.children[parent.name].children["Layer off"].hide_viewport = True
+parent.hide_viewport = True
 bpy.ops.wm.save_as_mainfile(filepath={str(source_path)!r})
 """, encoding="utf-8")
     run = subprocess.run([blender, "--background", "--factory-startup", "--python-exit-code", "1", "--python", str(script)],
@@ -183,6 +208,11 @@ bpy.ops.wm.save_as_mainfile(filepath={str(source_path)!r})
     assert report["counts"]["edge"]["out_of_view"] == 2
     nose = report["frames"][0]["landmarks"]["nose"]
     assert nose["hit"]["object"] == "Sleeve" and nose["hit"]["gap_to_landmark_m"] == pytest.approx(2)
+
+    status, report = run_recipe(tmp_path, blender, occluders=["Layer off mesh", "Render off mesh", "Layer excluded mesh", "Hidden"])
+    assert status == "needs_review" and report["occluded_T"] == [1]
+    assert report["frames"][0]["landmarks"]["nose"]["hit"]["object"] == "Layer off mesh"
+    assert set(report["occluders_excluded_by_collections"]) == {"Render off mesh", "Layer excluded mesh"}
 
     status, report = run_recipe(tmp_path, blender, occluders=["Subd edge", "Multires edge"])
     assert status == "succeeded"

@@ -77,13 +77,37 @@ def camera_ray(scene, camera, point, margin):
     return (uv, start, end) if ray.length > margin else (uv, None, None)
 
 
-def render_collections(layer_collection):
+def render_collection_paths(layer_collection, names, parents=()):
     if layer_collection.exclude or layer_collection.collection.hide_render:
-        return set()
-    names = {obj.name for obj in layer_collection.collection.objects}
+        return
+    path = (*parents, layer_collection)
+    for obj in layer_collection.collection.objects:
+        if obj.name in names:
+            yield obj.name, path
     for child in layer_collection.children:
-        names.update(render_collections(child))
-    return names
+        yield from render_collection_paths(child, names, path)
+
+
+def reveal_occluders(view_layer, objects, paths):
+    """描画に含まれる遮る物だけ、評価用の表示制限を外す。"""
+    hidden = [obj for obj in objects if not obj.visible_get(view_layer=view_layer)]
+    if not hidden:
+        return False
+    for obj in hidden:
+        for layer in paths[obj.name]:
+            if layer.collection.hide_viewport:
+                layer.collection.hide_viewport = False
+            if layer.hide_viewport:
+                layer.hide_viewport = False
+        if obj.hide_viewport:
+            obj.hide_viewport = False
+    view_layer.update()
+    for obj in hidden:
+        if obj.name in view_layer.objects and obj.hide_get(view_layer=view_layer):
+            obj.hide_set(False, view_layer=view_layer)
+        if not obj.visible_get(view_layer=view_layer):
+            raise ValueError(f"描画対象のメッシュを現在のビューレイヤーで評価できません: {obj.name}")
+    return True
 
 
 def sync_occluders_for_render(scene, objects):
@@ -120,7 +144,7 @@ def closest_hit(meshes, start, end, point, unit):
     return nearest
 
 
-def sample(bpy, scene, settings, armature, objects, rows):
+def sample(bpy, scene, settings, armature, objects, paths, rows):
     from mathutils import Vector
 
     unit = scene.unit_settings.scale_length
@@ -128,14 +152,26 @@ def sample(bpy, scene, settings, armature, objects, rows):
     counts = {name: {"clear": 0, "occluded": 0, "out_of_view": 0, "too_near": 0} for name in marks}
     output = []
     synced = set()
+    view_layer = bpy.context.view_layer
+    # 非表示のままコマを進めると、位置や描画の可否のキーが評価されない。
+    reveal_occluders(view_layer, [obj for obj in objects if not obj.hide_render or obj.animation_data is not None], paths)
     for T, f, row in rows:
         set_frame(scene, f)
         visible = [obj for obj in objects if not obj.hide_render]
+        if reveal_occluders(view_layer, visible, paths):
+            set_frame(scene, f)
+            visible = [obj for obj in objects if not obj.hide_render]
+        hidden = [obj.name for obj in visible if not obj.visible_get(view_layer=view_layer)]
+        if hidden:
+            raise ValueError(f"描画対象のメッシュがコマの評価で非表示になります（コマ {f}）: {hidden}")
         synced.update(sync_occluders_for_render(scene, visible))
         depsgraph = bpy.context.evaluated_depsgraph_get()
         camera = camera_at(scene, depsgraph, settings, row, unit)
         actor = armature.evaluated_get(depsgraph)
         meshes = [obj.evaluated_get(depsgraph) for obj in visible]
+        unevaluated = [obj.name for obj in meshes if not obj.is_evaluated]
+        if unevaluated:
+            raise ValueError(f"描画対象のメッシュが評価できません（コマ {f}）: {unevaluated}")
         meshes = [(obj, obj.matrix_world.inverted()) for obj in meshes]
         entries = {}
         for name, (bone, offset) in marks.items():
@@ -178,17 +214,19 @@ def main(argv=None):
     absent = [name for name, obj in zip(settings["occluders"], objects) if obj is None or obj.type != "MESH"]
     if absent:
         raise ValueError(f"調べるメッシュがシーンにありません: {absent}")
-    rendered = render_collections(bpy.context.view_layer.layer_collection)
-    objects = [obj for obj in objects if obj.name in rendered]
+    paths = {}
+    for name, path in render_collection_paths(bpy.context.view_layer.layer_collection, set(settings["occluders"])):
+        paths.setdefault(name, path)
+    objects = [obj for obj in objects if obj.name in paths]
     rows = frame_rows(scene, settings)
     if not rows or any(not scene.frame_start <= f <= scene.frame_end for _, f, _ in rows):
         raise ValueError("選んだ動きのコマが .blend のシーンの範囲にありません")
-    frames, counts, synced = sample(bpy, scene, settings, armature, objects, rows)
+    frames, counts, synced = sample(bpy, scene, settings, armature, objects, paths, rows)
     occluded = [item["T"] for item in frames if any(mark["status"] == "occluded" for mark in item["landmarks"].values())]
     report = {"schema_version": "model3d-face-occlusion/0.1", "armature": armature.name,
               "blender": bpy.app.version_string, "frames": frames, "occluded_T": occluded, "counts": counts,
               "occluders": settings["occluders"], "occluders_excluded_by_collections": [
-                  name for name in settings["occluders"] if name not in rendered],
+                  name for name in settings["occluders"] if name not in paths],
               "synced_modifiers": synced, "margin_m": settings["margin_m"]}
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
