@@ -121,3 +121,17 @@ def test_generated_extraction_writes_reusable_mhr70_archive(tmp_path):
     rgb_frames = (rgb + index for index in range(frames))
     runtime["frame_prediction"] = lambda _: pytest.fail("cached rows should be reused")
     exec(compile(program, "colab_full_extraction", "exec"), runtime)
+
+    cache = result.parent / "frames"
+    (cache / "0000001.npz").write_bytes(b"corrupt")
+    np.savez(cache / "0000002.npz", **{**prediction(rgb + 2), "pred_cam_t": np.zeros(2, dtype=np.float32)})
+    recomputed = []
+
+    def track_prediction(image):
+        recomputed.append(int(image[0, 0, 0]))
+        return prediction(image)
+
+    rgb_frames = (rgb + index for index in range(frames))
+    runtime["frame_prediction"] = track_prediction
+    exec(compile(program, "colab_full_extraction", "exec"), runtime)
+    assert recomputed == [1, 2]

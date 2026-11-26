@@ -159,13 +159,6 @@ def notebook():
                 return hub_load(repository, model, *args, **kwargs)
 
             device = torch.device("cuda")
-            # モデル構築時だけ読み先を差し替え、セルを再実行しても前の関数を包み直さない。
-            with patch.object(torch.hub, "load", local_dinov3):
-                model, model_config = load_sam_3d_body(
-                    str(sam_dir / "model.ckpt"), device=device, mhr_path=str(sam_dir / "assets/mhr_model.pt")
-                )
-            fov = FOVEstimator(name="moge2", device=device, path=str(fov_file))
-            estimator = SAM3DBodyEstimator(model, model_config, human_detector=None, human_segmentor=None)
 
             def video_info():
                 capture = cv2.VideoCapture(str(video))
@@ -186,6 +179,7 @@ def notebook():
                     capture.release()
 
             fps, frame_count, previews = video_info()
+            fov = FOVEstimator(name="moge2", device=device, path=str(fov_file))
             matrices = []
             for _, rgb in previews:
                 matrix = fov.get_cam_intrinsics(rgb).detach().cpu().numpy().reshape(3, 3)
@@ -197,6 +191,14 @@ def notebook():
                 raise RuntimeError("焦点距離を推定できません")
             intrinsics = np.median(matrices, axis=0).astype(np.float32)
             camera = torch.from_numpy(intrinsics[None])
+
+            # MoGe の GPU メモリを解放してから SAM 3D Body を読み込む。
+            # モデル構築時だけ読み先を差し替え、セルを再実行しても前の関数を包み直さない。
+            with patch.object(torch.hub, "load", local_dinov3):
+                model, model_config = load_sam_3d_body(
+                    str(sam_dir / "model.ckpt"), device=device, mhr_path=str(sam_dir / "assets/mhr_model.pt")
+                )
+            estimator = SAM3DBodyEstimator(model, model_config, human_detector=None, human_segmentor=None)
 
             def person_box(rgb):
                 h, w = rgb.shape[:2]
@@ -249,6 +251,7 @@ def notebook():
         """),
         _cell("code", """
             from tempfile import NamedTemporaryFile
+            from zipfile import BadZipFile
 
             def atomic_npz(destination, **arrays):
                 with NamedTemporaryFile(dir=destination.parent, suffix=".tmp", delete=False) as stream:
@@ -271,8 +274,24 @@ def notebook():
             run_dir = output / key
             cache = run_dir / "frames"
             cache.mkdir(parents=True, exist_ok=True)
-            keys = ("pred_keypoints_3d", "pred_keypoints_2d", "pred_cam_t", "bbox", "used_full_image_box")
-            collected = {name: [] for name in keys}
+            shapes = {"pred_keypoints_3d": (70, 3), "pred_keypoints_2d": (70, 2), "pred_cam_t": (3,),
+                      "bbox": (4,), "used_full_image_box": ()}
+
+            def read_cached_frame(target):
+                if not target.is_file():
+                    return None
+                try:
+                    with np.load(target, allow_pickle=False) as stored:
+                        arrays = {name: stored[name] for name in shapes}
+                    for name, shape in shapes.items():
+                        dtype = np.bool_ if name == "used_full_image_box" else np.float32
+                        if arrays[name].shape != shape or arrays[name].dtype != dtype or not np.isfinite(arrays[name]).all():
+                            return None
+                    return arrays
+                except (BadZipFile, EOFError, KeyError, TypeError, ValueError, OSError):
+                    return None
+
+            collected = {name: [] for name in shapes}
             capture = cv2.VideoCapture(str(video))
             try:
                 for index in range(frame_count):
@@ -280,13 +299,11 @@ def notebook():
                     if not ok:
                         raise ValueError(f"動画のコマ {index} を読めません。動画を事前に再エンコードしてください")
                     target = cache / f"{index:07d}.npz"
-                    if target.is_file():
-                        with np.load(target, allow_pickle=False) as stored:
-                            arrays = {name: stored[name] for name in keys}
-                    else:
+                    arrays = read_cached_frame(target)
+                    if arrays is None:
                         arrays = frame_prediction(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
                         atomic_npz(target, **arrays)
-                    for name in keys:
+                    for name in shapes:
                         collected[name].append(arrays[name])
                     if (index + 1) % 30 == 0 or index + 1 == frame_count:
                         print(f"{index + 1}/{frame_count} コマ")
