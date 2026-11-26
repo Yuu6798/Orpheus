@@ -491,3 +491,41 @@ def check_vrm_roll(inputs, parameters, outputs, context):
         if key in parameters and type(parameters[key]) is not bool:
             raise ToolError(f"{key} は true または false にしてください")
     return _finish(vrm_roll.inspect_file(inputs["vrm"], parameters), outputs, parameters, "VRM の roll 検算")
+
+
+@register("vrm.avoid_hair_arm", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="腕や袖と交差する長髪をよけ、先の骨を重力方向へ戻す補正を焼く。"
+                  "評価済みメッシュの世界座標で調べ、平滑化と焼き付けの後の交差も全コマで数える",
+          capability={"aliases": ["長髪と腕や袖の衝突回避", "hair arm sleeve collision"],
+                      "docs": "docs/model3d-hair-arm.md", "parameters": {"status": "docs", "schema": None}})
+def avoid_hair_arm(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher, vrm_avoid_hair_arm
+    from ..io import atomic_json
+
+    operation = "vrm.avoid_hair_arm"
+    controls = {"blender", "addons", "blender_extensions", "armature", "timeout"}
+    require(inputs, ("blend",), operation)
+    armature = _check(parameters, controls | vrm_avoid_hair_arm.SETTINGS, outputs, ("blend", "report"), operation)
+    settings = {key: value for key, value in parameters.items() if key not in controls}
+    try:
+        vrm_avoid_hair_arm.check_settings(settings)
+    except ValueError as error:
+        raise ToolError(f"{operation}: {error}") from error
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "hair_arm_settings.json"
+    atomic_json(settings_path, {**settings, "armature": armature})
+    script = Path(vrm_avoid_hair_arm.__file__).resolve()
+    args = ["--blend", inputs["blend"], "--settings", settings_path, "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    record = launcher.run_blender(blender, script, None, args, log=step_dir / "blender.log", timeout=_timeout(parameters),
+                                  addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    if not isinstance(report, dict) or report.get("schema_version") != vrm_avoid_hair_arm.SCHEMA:
+        raise ToolError(f"{operation} の報告の形式が違います")
+    fields = ("armature", "frames", "before_pairs", "after_pairs")
+    observation = {"kind": "vrm_avoid_hair_arm", "blender_version": record["blender_version"], "seconds": record["seconds"],
+                   **{key: report[key] for key in fields}}
+    remaining = report["after_pairs"]
+    unresolved = [f"{operation}: 交差する三角形の組が補正前の延べ {report['before_pairs']} 件から {remaining} 件になりました"] if remaining else []
+    return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))

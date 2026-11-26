@@ -1294,6 +1294,8 @@ VRM のキャラ（VRM Add-on で読み込んだ .blend）を、model3d の動�
 4. アセットにするときは `vrm.export`（VRM 1.0 の書き出し）と `check.vrm`（中身の検査。Blender なし）。表情を形状キーで作るときは、その前に
    `vrm.expressions` で VRM の表情に割り当てる（[表情を形で作る](#表情を形で作るvrm-に入る表情)）。
 
+揺れものを焼いた後、腕や袖と交差する長髪は [`vrm.avoid_hair_arm`](model3d-hair-arm.md) で補正し、コマごとの交差を確認できる。
+
 ### 骨の名前を Mixamo 式に付け替える（`vrm.motion_rig`）
 
 - 入力 `character`: VRM のキャラの .blend（VRM 1.0。VRM Add-on の人型の骨の割り当て入り）。
