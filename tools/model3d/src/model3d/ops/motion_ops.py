@@ -2,12 +2,13 @@
 import math
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
 
-from .. import motion, motion_edit
-from ..io import ToolError, atomic_json
+from .. import keypoint_resample, motion, motion_edit
+from ..io import ToolError, atomic_json, atomic_npz
 from . import StepResult, number, register, require
 
 FORMATS = ("sam3d_body",)
@@ -50,6 +51,43 @@ def _save_npz(path, **arrays):
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+@register("motion.resample_keypoints", inputs=("keypoints",), outputs=("keypoints", "report"),
+          summary="SAM 3D Body の点とカメラ並進を別の fps に補間する。入力は等間隔の MHR70 npz。"
+                  "点は単調性を保つ三次補間（PCHIP）、端では最後の値を保つ。motion.prepare_keypoints の前に使う",
+          capability={
+              "docs": "docs/model3d-keypoint-resampling.md",
+              "aliases": ["SAM 3D Body の fps をそろえる", "MHR70 フレームレート変換"],
+              "parameters": {"status": "schema", "schema": {
+                  "type": "object", "required": ["target_fps"], "additionalProperties": False,
+                  "properties": {"target_fps": {"type": "number", "exclusiveMinimum": 0},
+                                 "source_fps": {"type": "number", "exclusiveMinimum": 0}},
+              }},
+          })
+def resample_keypoints(inputs, parameters, outputs, context):
+    operation = "motion.resample_keypoints"
+    require(inputs, ("keypoints",), operation)
+    if "keypoints" not in outputs:
+        raise ToolError(f"{operation} には outputs の keypoints が要ります")
+    unknown = set(parameters) - {"source_fps", "target_fps"}
+    if unknown:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}")
+    target = number(parameters, "target_fps", minimum=0, exclusive=True)
+    source = _optional(parameters, "source_fps", minimum=0, exclusive=True)
+    try:
+        data = np.load(inputs["keypoints"], allow_pickle=False)
+        if not isinstance(data, np.lib.npyio.NpzFile):
+            raise ValueError("SAM 3D Body の npz を渡してください")
+        with data:
+            arrays = dict(data)
+        result, report = keypoint_resample.resample(arrays, target, source)
+    except (OSError, TypeError, ValueError, zipfile.BadZipFile) as error:
+        raise ToolError(f"{operation}: {error}") from error
+    atomic_npz(outputs["keypoints"], **result)
+    if "report" in outputs:
+        atomic_json(outputs["report"], {"schema_version": "model3d-resampled-keypoints/0.1", **report})
+    return StepResult(observations=[{"kind": "resample_keypoints", **report}])
 
 
 @register("motion.prepare_keypoints", inputs=("keypoints",), outputs=("points", "report"),

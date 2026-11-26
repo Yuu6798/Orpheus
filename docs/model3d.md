@@ -3171,6 +3171,7 @@ x、y、距離と幅は描く瞳の半径を 1 とした値。 `sclera` は `siz
 ## 推定した 3D の点を整える
 
 `motion.prepare_keypoints` は、動画から推定した人の 3D の点を、キャラに載せる前に整える（ツールキットの段 1 の最初の工程）。
+動画と描画の fps が異なるときは、その前に [SAM 3D Body のコマ数をそろえる](model3d-keypoint-resampling.md)。
 
 **入力**: SAM 3D Body の出力の npz。
 - `pred_keypoints_3d`（コマ × 70 × 3。MHR70 の並び）と `pred_cam_t`（コマ × 3）を使う。カメラ座標（x 右・y 下・z 前、m）。
