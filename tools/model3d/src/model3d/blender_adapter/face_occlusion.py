@@ -86,6 +86,26 @@ def render_collections(layer_collection):
     return names
 
 
+def sync_occluders_for_render(scene, objects):
+    """評価用の細分化レベルと上限を、描画時と同じ値にする。入力は保存しない。"""
+    render = scene.render
+    if render.use_simplify and render.simplify_subdivision != render.simplify_subdivision_render:
+        render.simplify_subdivision = render.simplify_subdivision_render
+    synced = set()
+    for obj in objects:
+        synced.update(sync_to_render(obj))
+        for modifier in obj.modifiers:
+            if not modifier.show_render or modifier.type not in {"SUBSURF", "MULTIRES"}:
+                continue
+            level = modifier.render_levels
+            if modifier.type == "MULTIRES":
+                level = min(level, modifier.total_levels)
+            if modifier.levels != level:
+                modifier.levels = level
+                synced.add(f"{obj.name}/{modifier.name}")
+    return synced
+
+
 def closest_hit(meshes, start, end, point, unit):
     nearest = None
     for obj, inverse in meshes:
@@ -107,12 +127,15 @@ def sample(bpy, scene, settings, armature, objects, rows):
     marks = {name: (item["bone"], Vector(item["offset"]) / unit) for name, item in settings["landmarks"].items()}
     counts = {name: {"clear": 0, "occluded": 0, "out_of_view": 0, "too_near": 0} for name in marks}
     output = []
+    synced = set()
     for T, f, row in rows:
         set_frame(scene, f)
+        visible = [obj for obj in objects if not obj.hide_render]
+        synced.update(sync_occluders_for_render(scene, visible))
         depsgraph = bpy.context.evaluated_depsgraph_get()
         camera = camera_at(scene, depsgraph, settings, row, unit)
         actor = armature.evaluated_get(depsgraph)
-        meshes = [obj.evaluated_get(depsgraph) for obj in objects if not obj.hide_render]
+        meshes = [obj.evaluated_get(depsgraph) for obj in visible]
         meshes = [(obj, obj.matrix_world.inverted()) for obj in meshes]
         entries = {}
         for name, (bone, offset) in marks.items():
@@ -128,7 +151,7 @@ def sample(bpy, scene, settings, armature, objects, rows):
             counts[name][status] += 1
             entries[name] = {"status": status, "point_m": list(point * unit), "uv": uv, "hit": hit}
         output.append({"T": T, "f": f, "landmarks": entries})
-    return output, counts
+    return output, counts, sorted(synced)
 
 
 def main(argv=None):
@@ -157,11 +180,10 @@ def main(argv=None):
         raise ValueError(f"調べるメッシュがシーンにありません: {absent}")
     rendered = render_collections(bpy.context.view_layer.layer_collection)
     objects = [obj for obj in objects if obj.name in rendered]
-    synced = [modifier for obj in objects for modifier in sync_to_render(obj)]
     rows = frame_rows(scene, settings)
     if not rows or any(not scene.frame_start <= f <= scene.frame_end for _, f, _ in rows):
         raise ValueError("選んだ動きのコマが .blend のシーンの範囲にありません")
-    frames, counts = sample(bpy, scene, settings, armature, objects, rows)
+    frames, counts, synced = sample(bpy, scene, settings, armature, objects, rows)
     occluded = [item["T"] for item in frames if any(mark["status"] == "occluded" for mark in item["landmarks"].values())]
     report = {"schema_version": "model3d-face-occlusion/0.1", "armature": armature.name,
               "blender": bpy.app.version_string, "frames": frames, "occluded_T": occluded, "counts": counts,

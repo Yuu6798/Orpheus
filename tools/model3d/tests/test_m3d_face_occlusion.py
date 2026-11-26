@@ -5,12 +5,13 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from m3d_helpers import stand_in_executable
 from model3d import executor
-from model3d.blender_adapter.face_occlusion import pixel_from_plan
+from model3d.blender_adapter.face_occlusion import pixel_from_plan, sync_occluders_for_render
 from model3d.io import ToolError, atomic_json
 from model3d.ops.check_ops import face_occlusion_settings
 
@@ -48,6 +49,20 @@ def cameras():
 def test_planned_camera_pixel_coordinates_are_top_left():
     assert pixel_from_plan((1, 2, -10), 50, (6, 8)) == [11.0, -2.0]
     assert pixel_from_plan((0, 0, 10), 50, (6, 8)) is None
+
+
+def test_sync_uses_render_subdivision_levels_and_simplify_cap():
+    render = SimpleNamespace(use_simplify=True, simplify_subdivision=1, simplify_subdivision_render=3)
+    subdiv = SimpleNamespace(name="Subd", type="SUBSURF", show_viewport=True, show_render=True, levels=0, render_levels=2)
+    multires = SimpleNamespace(name="Multi", type="MULTIRES", show_viewport=False, show_render=True,
+                              levels=1, render_levels=4, total_levels=2)
+    obj = SimpleNamespace(name="Sleeve", modifiers=[subdiv, multires])
+    scene = SimpleNamespace(render=render)
+
+    assert sync_occluders_for_render(scene, [obj]) == {"Sleeve/Subd", "Sleeve/Multi"}
+    assert render.simplify_subdivision == 3
+    assert subdiv.levels == 2 and multires.levels == 2 and multires.show_viewport
+    assert sync_occluders_for_render(scene, [obj]) == set()
 
 
 @pytest.mark.parametrize("params", [{"occluders": []}, {"occluders": ["Sleeve", "Sleeve"]},
@@ -138,6 +153,23 @@ for name, z in [("Sleeve", 2), ("Behind", -1), ("Hidden", 3)]:
         obj.keyframe_insert("location", frame=2)
     if name == "Hidden":
         obj.hide_render = True
+
+for name, kind in [("Subd edge", "SUBSURF"), ("Multires edge", "MULTIRES")]:
+    bpy.ops.mesh.primitive_cube_add(size=1.5, location=(0.7, 0.7, 2))
+    obj = bpy.context.object
+    obj.name = name
+    modifier = obj.modifiers.new("Round", kind)
+    if kind == "MULTIRES":
+        bpy.ops.object.multires_subdivide(modifier=modifier.name, mode="CATMULL_CLARK")
+        bpy.ops.object.multires_subdivide(modifier=modifier.name, mode="CATMULL_CLARK")
+    modifier.levels = 0
+    modifier.render_levels = 2
+    bpy.context.view_layer.update()
+    evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    assert evaluated.ray_cast((-0.7, -0.7, 3), (0, 0, -1), distance=5)[0]
+scene.render.use_simplify = True
+scene.render.simplify_subdivision = 0
+scene.render.simplify_subdivision_render = 2
 bpy.ops.wm.save_as_mainfile(filepath={str(source_path)!r})
 """, encoding="utf-8")
     run = subprocess.run([blender, "--background", "--factory-startup", "--python-exit-code", "1", "--python", str(script)],
@@ -151,6 +183,11 @@ bpy.ops.wm.save_as_mainfile(filepath={str(source_path)!r})
     assert report["counts"]["edge"]["out_of_view"] == 2
     nose = report["frames"][0]["landmarks"]["nose"]
     assert nose["hit"]["object"] == "Sleeve" and nose["hit"]["gap_to_landmark_m"] == pytest.approx(2)
+
+    status, report = run_recipe(tmp_path, blender, occluders=["Subd edge", "Multires edge"])
+    assert status == "succeeded"
+    assert report["occluded_T"] == [] and report["counts"]["nose"]["clear"] == 2
+    assert set(report["synced_modifiers"]) == {"Subd edge/Round", "Multires edge/Round"}
 
     atomic_json(tmp_path / "cameras.json", cameras())
     status, report = run_recipe(tmp_path, blender, report_only=True)
