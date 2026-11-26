@@ -1294,6 +1294,8 @@ VRM のキャラ（VRM Add-on で読み込んだ .blend）を、model3d の動�
 4. アセットにするときは `vrm.export`（VRM 1.0 の書き出し）と `check.vrm`（中身の検査。Blender なし）。表情を形状キーで作るときは、その前に
    `vrm.expressions` で VRM の表情に割り当てる（[表情を形で作る](#表情を形で作るvrm-に入る表情)）。
 
+揺れものを焼いた後、腕や袖と交差する長髪は [`vrm.avoid_hair_arm`](model3d-hair-arm.md) で補正し、コマごとの交差を確認できる。
+
 ### 骨の名前を Mixamo 式に付け替える（`vrm.motion_rig`）
 
 - 入力 `character`: VRM のキャラの .blend（VRM 1.0。VRM Add-on の人型の骨の割り当て入り）。
@@ -1455,12 +1457,6 @@ VRM Add-on は骨を名前ではなく骨ごとの識別子で追うので、作
 **限界**: 揺れものの計算は VRM Add-on の中の関数（`<アドオン>.editor.spring_bone1.handler.update_pose_bone_rotations`）を直接呼び、
 運ぶ区間では節の計算の状態（`animation_state`）を書き換えるので、アドオンの版が変わると動かないことがある（4.10.5 で確かめた）。食い込みの押し出しは入れていない（`collision.push_out` と `render.stage` の
 `push` を使う）。
-
-### 長髪を腕と袖からよける（`vrm.avoid_hair_arm`）
-
-`vrm.bake_springs` の出力で腕や袖と交差する長髪を、世界座標のメッシュ検査に基づいてよける。
-指定した髪の骨に補正を焼いた .blend と、補正前後のコマごとの交差数を出す。
-[髪と腕の指定、焼き付け、報告の見方](model3d-hair-arm.md)。
 
 ### VRM を書き出す（`vrm.export`）と中身を確かめる（`check.vrm`）
 
