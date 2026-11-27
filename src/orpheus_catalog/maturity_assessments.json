@@ -586,6 +586,27 @@
     },
     {
       "ids": [
+        "model3d.check.view_point"
+      ],
+      "maturity": "verified",
+      "reason": "VRM 1.0 実キャラクターの .blend へ相対形状キー付きで現行操作を実行し、交点の距離順・面・材質・島頂点数・UV・画素色の報告を確認した。",
+      "scope": "指定したメッシュ群と相対形状キーに対し、世界座標の光線交差を手前から並べて面・材質・島頂点数・UV・画素色を報告する。実素材の照合は Blender 5.2.4 LTS。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "点の奥にある面を調べる（`check.view_point`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクター（頭・髪・体）へ口開き形状キー付きで 2 光線を適用。頭正面の交点（0.9043 m・面 5816・島 1,352 頂点・UV・sRGB 画素色）と 3 交点の単調昇順を確認。"
+        }
+      ],
+      "limitations": [
+        "画像ノードの補間・UV 変換や材質の透過は計算せず、MToon/Principled のベース色画像ノードのみ読み取る。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.check.vrm"
       ],
       "maturity": "verified",
@@ -600,6 +621,27 @@
       ],
       "limitations": [
         "他アプリでの読み込み・再生は未確認。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
+        "model3d.check.vrm_roll"
+      ],
+      "maturity": "verified",
+      "reason": "24 件の roll 拘束を持つ VRM 1.0 実キャラクターへ現行操作を実行し、独立の GLB 読み出し件数一致と全拘束の検算合格を確認した。",
+      "scope": "VRM 1.0（GLB）の VRMC_node_constraint roll 拘束を、基本姿勢のローカル回転から 96 姿勢で単独検算する（Blender 不要）。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "VRM の roll 拘束を検算する（`check.vrm_roll`）",
+          "summary": "2026-11-27、roll 拘束 24 件を持つ VRM 1.0 実キャラクター（独立 GLB JSON 読み出しと 24 件一致）へ tolerance_deg=0.2 で実行。読み飛ばし 0、最大誤差 0.000377°・倒しただけの最大ねじれ 0.000377° で合格。"
+        }
+      ],
+      "limitations": [
+        "単独の roll 拘束の式を検算するもので、複数拘束の連鎖や再生アプリ側の挙動・動画中の姿勢は検査しない。"
       ],
       "promotion_criteria": [
         "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
@@ -1300,6 +1342,27 @@
       "limitations": [
         "目の板と瞳の入れ替え自体はこの操作に含めず、頭ごとの形の値を入力する。",
         "作品由来の単独頭での照合。完成した踊りへの統合や別構造の頭への適用は未確認。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
+        "model3d.model.face_normals"
+      ],
+      "maturity": "verified",
+      "reason": "VRM 1.0 実キャラクターの頭メッシュへ現行操作を適用し、頂点位置不変・対象材質コーナーの法線転写・対象外材質の保持・VRM 往復合格を独立に確認した。",
+      "scope": "指定材質の面の角へ顔（縦に伸ばした放射方向）と首（水平の筒軸放射方向）のカスタム法線を混ぜて書き込む。実素材の照合は Blender 5.2.4 LTS・VRM Add-on 4.10.5。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "顔と首の法線をならす（`model.face_normals`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクターの頭（18,359 頂点・89,256 コーナー）の顔材質 12,273 コーナーへ face と neck を適用。独立読み出しで頂点移動 0.0 m、対象回転角中央値 17.96°・p95 30.30°・最大 32.76°、対象外最大差 0.0054°、vrm.export・check.vrm 合格を確認。"
+        }
+      ],
+      "limitations": [
+        "既存のカスタム法線を持つメッシュでは、対象外材質も Blender 内部のカスタム法線量子化誤差（約 0.005°）を受ける。"
       ],
       "promotion_criteria": [
         "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
@@ -2035,6 +2098,27 @@
     },
     {
       "ids": [
+        "model3d.render.mtoon_preview"
+      ],
+      "maturity": "verified",
+      "reason": "VRM 1.0 実キャラクターの .blend へ現行操作を実行し、灯り・視点・表情ごとの PNG 出力・SHA-256・明暗と表情の反映を確認した。",
+      "scope": "VRM Add-on の MToon 材質を持つ .blend に対し、白一灯の方向光による直接光の明暗を視点・表情セットごとに PNG 描画する。実素材の照合は Blender 5.2.4 LTS・VRM Add-on 4.10.5。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "MToon の下見（`render.mtoon_preview`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクターへ 2 灯り × 2 視点 × 2 表情の計 8 枚（320×320）を描画。全 8 枚の SHA-256 が報告と一致し、灯り差 5.825・表情差 0.947（平均絶対 RGB 差）と目視の明暗・表情変化を確認。"
+        }
+      ],
+      "limitations": [
+        "落ちる影・環境光・透過・法線マップ・縁の光・輪郭・マットキャップは省く直接光の下見であり、最終表示は対象ビューアで確認する。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.render.part_colors"
       ],
       "maturity": "verified",
@@ -2229,6 +2313,27 @@
     },
     {
       "ids": [
+        "model3d.texture.cylinder_map"
+      ],
+      "maturity": "verified",
+      "reason": "実キャラクターの上腕メッシュから書き出した npz と色画像へ現行操作を実行し、覆い画素数・半径分布・未覆い黒画素・展開 PNG を独立に照合した。",
+      "scope": "model.export_mesh で書き出したメッシュ npz と色画像から、指定軸の区間と半径上限内の面を筒の展開図（PNG・NPZ・JSON）へ投影する（Blender 不要）。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "筒に沿った色の地図（`texture.cylinder_map`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクターの体メッシュから書き出した左上腕区間（0.02〜0.24 m・解像度 120×360）を展開。201 三角形・36,029 画素を覆い、独立 NPZ 検査で画素数一致・未覆い黒一致・実測半径 0.0149〜0.0578 m（平均 0.0320 m）と PNG 目視整合を確認。"
+        }
+      ],
+      "limitations": [
+        "初期姿勢のメッシュに対する軸・半径による幾何抽出であり、部位名の自動判定は行わない。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.texture.draw_mask"
       ],
       "maturity": "experimental",
@@ -2282,6 +2387,27 @@
         }
       ],
       "limitations": [],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
+        "model3d.texture.iris_atlas"
+      ],
+      "maturity": "verified",
+      "reason": "実キャラクターの瞳アートワークへ現行操作を実行し、独立の Pillow 採色検算と出力アトラス PNG の目視整合を確認した。",
+      "scope": "参照画像の指定点から中央値 RGB を採色し、指定レイヤーの瞳とグラデーション白目の RGB アトラス PNG と UV 報告を生成する（Blender 不要）。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "瞳と白目のアトラスを描く（`texture.iris_atlas`）",
+          "summary": "2026-11-27、実キャラクターの 1024×1024 瞳アートワークから 5 色を採色し、band・ellipse・ring レイヤーとぼかしで 400×264 アトラスを生成。独立 Pillow 検算で全 5 色の RGB 中央値誤差 0.0、出力 PNG の虹彩・瞳孔・白目を目視確認。"
+        }
+      ],
+      "limitations": [
+        "採色位置とレイヤー形状は入力画像に合わせて指定する必要があり、出力アトラスの実モデルへの割り当てと見た目は別途確認する。"
+      ],
       "promotion_criteria": [
         "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
       ]
@@ -2511,6 +2637,27 @@
     },
     {
       "ids": [
+        "model3d.vrm.materials_mtoon"
+      ],
+      "maturity": "verified",
+      "reason": "Principled 材質を含む実キャラクターの .blend へ現行操作を実行し、MToon 変換と透過型変更が保存・再読み込み後も保持されることを独立に確認した。",
+      "scope": "指定した Principled 材質を VRM Add-on で MToon に変換し、指定材質の透過型変更や重複材質・画像の統合を行う。実素材の照合は Blender 5.2.4 LTS・VRM Add-on 4.10.5。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "指定した材質を MToon にそろえる（`vrm.materials_mtoon`）",
+          "summary": "2026-11-27、Principled 材質を含む実キャラクターの .blend で 1 材質の MToon 変換（shade_from_base=true）と別材質の透過型変更（BLEND→OPAQUE）を実行。再読み込みで mtoon1.enabled=true と alpha_mode=OPAQUE を独立確認。"
+        }
+      ],
+      "limitations": [
+        "実素材確認は MToon 変換と透過型変更の範囲であり、重複材質・画像の統合は合成素材での照合に留まる。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.vrm.motion_rig"
       ],
       "maturity": "verified",
@@ -2525,6 +2672,27 @@
       ],
       "limitations": [
         "元VRMの人型割当の正しさは人。VRM0.x非対応。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
+        "model3d.vrm.mtoon_params"
+      ],
+      "maturity": "verified",
+      "reason": "VRM 1.0 実キャラクターの .blend へ現行操作を実行し、影色・境目・縁の光・マットキャップ PNG パックの反映と VRM 往復合格を独立に確認した。",
+      "scope": "VRM Add-on の MToon 材質の影色・shading_toony_factor・shading_shift_factor・縁の光・マットキャップ画像を材質ごとに設定する。実素材の照合は Blender 5.2.4 LTS・VRM Add-on 4.10.5。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "MToon の影・縁の光・マットキャップを設定する（`vrm.mtoon_params`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクターの頭・髪 2 材質へ影色（#RRGGBB 線形変換と配列）・toony・shift・縁の光・マットキャップ PNG パックを適用。再読み込みで全数値とパック済み PNG の SHA-256 一致、vrm.export・check.vrm 合格を確認。"
+        }
+      ],
+      "limitations": [
+        "材質の数値と画像参照の設定であり、色の掛け率（vrm.color_factor）や視線域（vrm.look_at）は別操作で設定する。"
       ],
       "promotion_criteria": [
         "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
