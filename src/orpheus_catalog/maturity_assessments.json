@@ -3354,12 +3354,12 @@
       ],
       "maturity": "experimental",
       "reason": "グループの見出しは個別機能の検証済み範囲を一括保証しない。検証済みの子は exact ID で個別表示する。",
-      "scope": "現在の既知 leaf: mv.audio.end, mv.audio.grid, mv.audio.hits, mv.audio.keys, mv.audio.lows",
+      "scope": "現在の既知 leaf: mv.audio.end, mv.audio.features, mv.audio.grid, mv.audio.hits, mv.audio.keys, mv.audio.lows",
       "evidence": [
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 2 / その他 3。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 3 / その他 3。"
         }
       ],
       "limitations": [
@@ -3396,6 +3396,27 @@
     },
     {
       "ids": [
+        "mv.audio.features"
+      ],
+      "maturity": "verified",
+      "reason": "尺の異なる実曲 2 本で --grid 付きの出力を確認し、3 帯域のエネルギー列の有限性・上限と、全体 rms と独立計算した WAV フレーム RMS の相関を照合した。",
+      "scope": "30 fps の実曲 2 本を対象とした、フレームごとの 3 帯域の正規化エネルギー列・全体 rms・--grid 付き JSON の出力。",
+      "evidence": [
+        {
+          "path": "docs/audio.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実曲 2 本（247.05 秒・7,412 コマ、31.81 秒・954 コマ、30 fps）へ --grid を付けて実行。3 帯域は全コマで有限かつ上限 1.35 以内。全体 rms と独立計算した生 WAV フレーム RMS の相関は r=0.9088 / 0.9451。"
+        }
+      ],
+      "limitations": [
+        "実曲での独立 RMS 照合は全帯域を合わせた全体 rms が対象。帯域ごとの絶対値や拍位置・打点は照合していない。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "mv.audio.grid"
       ],
       "maturity": "experimental",
@@ -3406,6 +3427,11 @@
           "path": "docs/audio.md",
           "section": "実制作との比較",
           "summary": "4 分弱の曲で 343 拍・86 小節を台本と一致。Shorts の固定格子を記録できる一方、2026-11-12 の曲は探索範囲 80〜180 で半速を選択、別に決めた位相と 0.04 秒差で正解未確定。"
+        },
+        {
+          "path": "docs/audio.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実曲 2 本での現行 CLI 実行を確認。聴取確認済みの正解基準との照合が残るため実験的を維持。"
         }
       ],
       "limitations": [
@@ -3434,6 +3460,11 @@
           "path": "docs/audio.md",
           "section": "打点（`mv audio hits`）",
           "summary": "既定の時刻補正は合成クリックで測った検出偏りから採用。"
+        },
+        {
+          "path": "docs/audio.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実曲 2 本での現行 CLI 実行を確認。聴取確認済みの正解基準との照合が残るため実験的を維持。"
         }
       ],
       "limitations": [
@@ -3479,6 +3510,11 @@
           "path": "docs/audio.md",
           "section": "低音が抜ける所（`mv audio lows`）",
           "summary": "2026-11-18、3 作目 VRM の凍結音源と制作で決めた格子を使用。頭のドラム前 3 拍と中ほどの 2 拍を抽出し、制作メモと同じ拍。"
+        },
+        {
+          "path": "docs/audio.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実曲 2 本での現行 CLI 実行を確認。聴取確認済みの正解基準との照合が残るため実験的を維持。"
         }
       ],
       "limitations": [
@@ -3500,7 +3536,7 @@
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 1 / その他 6。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 4 / その他 3。"
         }
       ],
       "limitations": [
@@ -3563,13 +3599,38 @@
     },
     {
       "ids": [
-        "mv.dance.render",
         "mv.dance.plan",
         "mv.dance.stills"
       ],
+      "maturity": "verified",
+      "reason": "歌詞・拍・緑背景人物動画を備えた実プロジェクトで、解決時刻表の出力と --layers 付き 4 列静止画シートの生成・目視確認を完了したため。",
+      "scope": "dance-shot spec のクリップ・拍・歌詞・つなぎの解決時刻表（dance plan）と、指定時刻の 4 列静止画シート・層確認画像（dance stills）を生成する。",
+      "evidence": [
+        {
+          "path": "docs/dance.md",
+          "section": "dance（ダンス合成）",
+          "summary": "plan の時刻解決表と stills の指定時刻静止画・--layers 仕様を記載。"
+        },
+        {
+          "path": "docs/dance.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、歌詞・拍・実音源・緑背景人物動画を備えた実プロジェクト（32 秒・30 fps）へ実行。plan は 53 行の解決時刻表を出力し、stills --times 1.5 5.0 16.5 --scale 0.5 --layers は 3 時刻×4 列シートを生成しクロマキー輪郭と文字配置を目視確認。"
+        }
+      ],
+      "limitations": [
+        "計画表と代表時刻の静止画確認であり、全尺動画の通し再生・音声同期の試聴確認は別途行う。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
+        "mv.dance.render"
+      ],
       "maturity": "experimental",
-      "reason": "実人物素材の合成は通っているが、歌詞表示・実曲同期を含む本来の編集工程全体を確認していない。",
-      "scope": "緑背景の人物動画、カメラ、hooks、静止画・計画・timeline の生成。",
+      "reason": "歌詞・拍付き実プロジェクトでの描画と technical_pass=true は確認したが、完成動画の通し再生と人による試聴確認が未実施のため。",
+      "scope": "緑背景の人物動画・背景・カメラ・歌詞・音声を合成し dance.mp4・timeline.json・manifest.json を生成する。",
       "evidence": [
         {
           "path": "docs/dance.md",
@@ -3580,9 +3641,15 @@
           "path": "docs/inspect.md",
           "section": "実素材での確かめ（2026-11-07）",
           "summary": "生成 AI の実動画 2 本を 10 秒・240 コマの dance render に通して technical_pass。検品・修正計画と出力位置の関係を確認。"
+        },
+        {
+          "path": "docs/dance.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実プロジェクト由来の 6 秒部分描画と、4 秒版の全尺・原寸描画で dance.mp4・timeline.json・manifest.json・technical_pass=true を確認。通し試聴は未実施。"
         }
       ],
       "limitations": [
+        "緑抜き品質は素材次第であり、人物の明るさ・色合わせは含まない。歌詞と音の同期は人の試聴確認が要る。",
         "docs/dance.md 冒頭の「1 本まで」は inspect.md の後続記録で補う必要がある。",
         "実写素材、細い髪や半透明衣装、複数歌詞レイヤーの実制作確認はない。"
       ],
@@ -3708,7 +3775,7 @@
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 1 / その他 1。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 2 / その他 0。"
         }
       ],
       "limitations": [
@@ -3723,22 +3790,28 @@
         "mv.export.remotion-props",
         "mv.layer.render"
       ],
-      "maturity": "experimental",
-      "reason": "本物の Remotion の短い合成連番は確認済みだが、実作品の入力と連番では未確認。",
-      "scope": "コマ番号だけの props を作り、Remotion の透過レイヤー描画を台帳に記録する接続口。",
+      "maturity": "verified",
+      "reason": "実曲プロジェクトから書き出した remotion-props/0.1 を本物の Remotion 4.0.532 で全 960 コマ --twice 描画し、同じ実行環境と入力で 960/960 コマ一致・透過 PNG・台帳 SHA-256 記録および後段 gate timeline 接続を確認したため。",
+      "scope": "解析プロジェクトからコマ番号ベースの remotion-props/0.1 を書き出し、本物の Remotion で透過 RGBA PNG 連番を描画して manifest.json / frames.json 台帳に記録する。",
       "evidence": [
         {
           "path": "docs/remotion-props.md",
           "section": "描画を台帳に載せる（`mv layer render`）",
-          "summary": "2026-11-08、Linux・Remotion 4.0.532 で 192×320、12 コマの LyricLayer を twice 実行し全 SHA-256 一致。実作品の連番は未確認。"
+          "summary": "2026-11-08、Linux・Remotion 4.0.532 で 192×320、12 コマの LyricLayer を twice 実行し全 SHA-256 一致。当時は合成素材で確認。"
+        },
+        {
+          "path": "docs/remotion-props.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実プロジェクト（32 秒・30 fps・7 行）から remotion-props/0.1（960 コマ・1920×1080）を書き出し、本物の Remotion 4.0.532・Chromium 149 で全 960 コマを --twice 描画。technical_pass=true・deterministic.same=true（960/960 一致・差異 0）と透過 PNG 目視、後段 mv gate timeline 接続を確認。"
         }
       ],
       "limitations": [
-        "本物の描画エンジンを起動したことと、実作品素材で確認したことは異なる。",
+        "props への書き出しと透過連番描画・台帳記録の確認であり、元の歌詞時刻の歌唱一致確認は人の試聴で行う。",
+        "Remotion 4.x とローカルの Chromium ランタイムが必要。",
         "Python テストは描画代役を使う。"
       ],
       "promotion_criteria": [
-        "同じ実作品の確認済み行時刻を props に書き出し、本物の Remotion で描画し、文字の表示フレーム・透明度・台帳の入力対応を確認する。"
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
       ]
     },
     {
@@ -3775,7 +3848,7 @@
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 7 / その他 6。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 11 / その他 2。"
         }
       ],
       "limitations": [
@@ -3790,27 +3863,26 @@
         "mv.fx.accept",
         "mv.dance.accept"
       ],
-      "maturity": "experimental",
-      "reason": "特定出力への人の採用記録を追記する実装はあるが、今回読めた公開記録だけでは現在の CLI の実制作 acceptance.jsonl の実行を特定できない。",
-      "scope": "入力ハッシュに結び付く accepted/rejected/hold の人の判断記録。",
+      "maturity": "verified",
+      "reason": "実制作 fx run および実ダンス描画 run に対し、正しい出力 SHA-256 への追記と 1 バイト改変出力の拒否を現行 CLI で実測確認したため。",
+      "scope": "出力動画の SHA-256 と run 入力ハッシュに結び付く人の判断（accepted / rejected / hold）を acceptance.jsonl へ追記し、改変済み出力を拒否する。",
       "evidence": [
         {
           "path": "docs/fx.md",
-          "section": "accept",
-          "summary": "accepted は technical_pass 版のみ。出力ハッシュを照合し、追記専用の acceptance.jsonl に記録する。"
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、複製した実制作 fx run へ accepted / hold を追記し both.mp4 の SHA-256 一致を確認。1 バイト改変した both.mp4 は終了コード 1 で拒否された。"
         },
         {
           "path": "docs/dance.md",
-          "section": "run",
-          "summary": "dance の run・accept は fx と同じ仕組み。"
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実ダンス描画 run へ accepted を追記し dance.mp4 の video_sha256 一致を確認。1 バイト改変した dance.mp4 は終了コード 1 で拒否された。"
         }
       ],
       "limitations": [
-        "ユーザーが作品を採用した事実と、accept CLI で追記した事実は区別する。",
-        "採用を自動判断する機能ではない。"
+        "人の判断を改ざん検知付きで記録する道具であり、作品の品質や採否を自動判定するものではない。"
       ],
       "promotion_criteria": [
-        "既存の実制作 run と人の既存判断を使い、現在の CLI が正しい出力ハッシュへ追記し、改変出力を拒否することを確認する。"
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
       ]
     },
     {
@@ -3958,22 +4030,26 @@
       "ids": [
         "mv.fx.points"
       ],
-      "maturity": "experimental",
-      "reason": "元になった別試作の成功はあるが、現在の CLI と少数の手動種を使う実素材経路が未実施。",
-      "scope": "種から同じ小物の位置を拾うテンプレート検出。",
+      "maturity": "verified",
+      "reason": "実舞台描画フレームと手指定の 3 種で 2 条件を実行し、実提灯 5/5 の高スコア検出と暗い背景格子への誤検出境界を preview 目視で実測確認したため。",
+      "scope": "静止画と手指定の少数種・include / exclude・threshold から正規化相互相関で繰り返し小物の座標候補と points_preview.jpg を出力する。",
       "evidence": [
         {
           "path": "docs/fx.md",
           "section": "繰り返し物の位置（`mv fx points`）",
-          "summary": "2026-11-10 の別試作は 55 個の円検出種から 217 個を抽出。公開実装の手入力した少数種の経路は実素材未確認。既定 0.75 と試作 0.34 のしきい値差あり。"
+          "summary": "テンプレート検出の入力形式と preview 出力仕様を記載。"
+        },
+        {
+          "path": "docs/fx.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実舞台 1080×1920 フレームへ手指定 3 種で 2 条件を実行。右上領域・threshold=0.85 で 7 件（実提灯 5 件すべてスコア 0.9773〜0.9976、背景格子誤検出 2 件 0.8511 / 0.8557）となり、preview 目視としきい値（例: 0.90）・領域調整の境界を確認。"
         }
       ],
       "limitations": [
-        "既定しきい値、近接抑制、再学習率は合成素材で決めた値。",
-        "誤検出が過半数になると型紙の作り直しが悪化する。"
+        "正規化相互相関は輝度不変のため、暗い構造物にも反応し得る。必ず points_preview.jpg を目視し、threshold や include / exclude を調整して確定する。"
       ],
       "promotion_criteria": [
-        "現在の fx points を実素材と手指定の少数種で実行し、preview で見落とし・誤検出としきい値を確認する。"
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
       ]
     },
     {
@@ -4097,12 +4173,12 @@
       ],
       "maturity": "experimental",
       "reason": "グループの見出しは個別機能の検証済み範囲を一括保証しない。検証済みの子は exact ID で個別表示する。",
-      "scope": "現在の既知 leaf: mv.gate.check, mv.gate.demo, mv.gate.faces, mv.gate.flashes, mv.gate.lines, mv.gate.notes, mv.gate.repeat, mv.gate.tail, mv.gate.timeline, mv.gate.voice",
+      "scope": "現在の既知 leaf: mv.gate.check, mv.gate.demo, mv.gate.faces, mv.gate.final, mv.gate.flashes, mv.gate.lines, mv.gate.notes, mv.gate.repeat, mv.gate.tail, mv.gate.timeline, mv.gate.voice",
       "evidence": [
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 2 / その他 8。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 4 / その他 7。"
         }
       ],
       "limitations": [
@@ -4134,6 +4210,11 @@
           "path": "docs/gate.md",
           "section": "重ねの字と顔（検査の `overlay`）",
           "summary": "2026-11-21、実作品の本編（5,544 コマ）の歌詞の連番と制作の検査の枠 76 個で、採用版は重なり 0、直す前の版は手の枠 1 件・最大 1,003 画素で制作の検査と同じ。同じショットを見るコマ・枠の組 3,967 で字の画素の数が一致（違う 1 コマは制作の台本のショットの割り当ての丸め）。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実プロジェクトでの現行 CLI 実行を確認（gate check pass_with_skips・gate lines 7 行出力）。人の試聴で確定した歌唱時刻との照合運用が残るため実験的を維持。"
         }
       ],
       "limitations": [
@@ -4206,13 +4287,18 @@
         "mv.gate.flashes"
       ],
       "maturity": "experimental",
-      "reason": "実動画への適用と設定感度の比較はあるが、既定値の有効性を一般化できず、見落とす種類も仕様に残る。",
+      "reason": "実動画で実行と条件差を記録した。対象用途で使うしきい値と独立した明滅計数との照合が残っている。",
       "scope": "画面全体の平均輝度の上下を組にした明滅の回数測定。",
       "evidence": [
         {
           "path": "docs/gate.md",
           "section": "完成動画の明滅を測る（`mv gate flashes`）",
           "summary": "2026-11-12、92.3 秒・2769 コマの 2 本を比較。既定 delta=0.10 では明滅過多とされた版も pass。delta=0.02 ではその版が最大 6 回/秒、修正版は最大 2 回/秒。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、31 秒の実完成ダンス MV へ既定 delta=0.10 と delta=0.08 で実行し、両条件で明滅 4 件・status=pass と報告された。独立した計数との照合結果は未記録。"
         }
       ],
       "limitations": [
@@ -4240,6 +4326,11 @@
           "path": "docs/gate.md",
           "section": "限界",
           "summary": "約 20 ms 早い偏りは合成素材での観測であり、2026-11-11 の判断に従い実曲未検証の補正は入れていない。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実プロジェクトでの現行 CLI 実行を確認（gate check pass_with_skips・gate lines 7 行出力）。人の試聴で確定した歌唱時刻との照合運用が残るため実験的を維持。"
         }
       ],
       "limitations": [
@@ -4279,45 +4370,106 @@
       "ids": [
         "mv.gate.timeline"
       ],
-      "maturity": "experimental",
-      "reason": "連番からの箱と時刻の復元は合成の連番で確認しただけ。",
-      "scope": "透過連番の可視範囲と props の行を timeline と計測記録へ変換する。",
+      "maturity": "verified",
+      "reason": "実曲プロジェクトの props と本物の Remotion 960 コマ透過連番を入力し、全 7 行の可視フレーム（差 0 コマ）と箱の計測および後段 mv gate check 接続を確認したため。",
+      "scope": "透過 PNG 連番（行別 --frames DIR:<line_id> または重ならない箱の --hints）と remotion-props/0.1 から可視範囲・箱を計測し、timeline.json と計測記録を出力する。",
       "evidence": [
         {
           "path": "docs/gate.md",
           "section": "連番から timeline を起こす（`mv gate timeline`）",
-          "summary": "numpy で描いた箱の連番だけで確認。実際の Remotion の連番は未確認と明記。"
+          "summary": "透過連番から可視フレームと箱を抽出する仕様を記載。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、本物の Remotion 960 コマ連番＋実 props（7 行）へ --frames DIR:<line_id> で実行。全 7 行の可視開始・終了フレームが props と差 0 コマ（unseen_lines=0）で一致し、後段 mv gate check 接続で pass_with_skips（終了コード 0）を確認。同一箱を共有する単一連番の制約も実確認。"
         }
       ],
       "limitations": [
-        "テスト名に real_props_export があっても実作品連番の証跡ではない。"
+        "複数行が画面上の同じ箱を順に使う単一 PNG 連番へ同一の --hints 箱だけを渡すと連続可視として重なり扱いになるため、行別の連番フォルダ（DIR:<line_id>）か重ならない配置で使う。"
       ],
       "promotion_criteria": [
-        "実作品の Remotion 連番と同じ props を入力し、行の可視開始・終了フレームと箱を確認し、gate check まで接続する。"
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
       ]
     },
     {
       "ids": [
-        "mv.gate.voice",
-        "mv.gate.notes",
-        "mv.gate.repeat"
+        "mv.gate.voice"
       ],
       "maturity": "experimental",
-      "reason": "制作台本の移植は合成声で一致確認したが、現在の実装を実分離ボーカルでは確認していない。",
-      "scope": "声区間、音符、旋律の繰り返し候補を数値として返す。",
+      "reason": "無音イントロと抽出区間の音量差を独立の RMS 計算で確認した。声区間の境界、誤検出、見逃しは独立した発声・非発声区間との照合が残る。",
+      "scope": "Demucs で分離した FLAC ステムの 0〜60 秒で、RMS に基づく声候補区間の JSON 出力と無音イントロとの音量差を確認した。",
       "evidence": [
         {
           "path": "docs/gate.md",
           "section": "分離ボーカルの数字（`mv gate voice`・`notes`・`repeat`）",
-          "summary": "2026-11-11、44100/48000 Hz の合成旋律で制作関数と値が一致。実制作の分離ボーカルが手元にないため実曲では未確認。"
+          "summary": "2026-11-11、44100/48000 Hz の合成旋律で制作関数と値が一致。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実分離ボーカルの 0〜60 秒から声候補 7 区間（8.80 秒以降）を抽出。独立した生ステム RMS の計算では、無音イントロ（0.5〜8.0 秒）は −89.29 dB、抽出区間の平均は −36.41 dB、最小は −50.86 dB で、平均との差は 52.9 dB。"
         }
       ],
       "limitations": [
-        "合成音には子音・残響がなく、音符数や行頭精度の保証にならない。",
-        "repeat の既定は最後の一致位置を比較せず、include-end は挙動が変わる。"
+        "独立 RMS で照合したのは無音イントロと抽出区間の音量差。各区間の境界、誤検出、見逃しの試聴確認は未記録。",
+        "伴奏混入の少ない分離ボーカルを前提とし、歌詞・歌唱時刻は人が試聴して確定する。"
       ],
       "promotion_criteria": [
-        "同一の実分離ボーカルの短い既知区間で現 CLI を通し、声区間・音符・繰り返し位置を試聴または既知タイミングと照合する。"
+        "verified への条件: 実分離ボーカルで、試聴などにより独立にラベル付けした発声・非発声区間を基準に、区間境界の時刻差、誤検出、見逃しを照合する。"
+      ]
+    },
+    {
+      "ids": [
+        "mv.gate.notes"
+      ],
+      "maturity": "experimental",
+      "reason": "実分離ボーカルで音符候補の出力を確認した。個々の音程・音符境界に対する独立照合が残っている。",
+      "scope": "分離ボーカルの指定区間から F0 に基づく音符候補・立ち上がり・音量の谷を JSON へ出力する。",
+      "evidence": [
+        {
+          "path": "docs/gate.md",
+          "section": "分離ボーカルの数字（`mv gate voice`・`notes`・`repeat`）",
+          "summary": "2026-11-11、44100/48000 Hz の合成旋律で制作関数と値が一致。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実分離ボーカルの 10〜25 秒で音符候補 48 件と立ち上がり・谷を出力。人が試聴して確定した音符・時刻との照合結果は未記録。"
+        }
+      ],
+      "limitations": [
+        "合成音の照合は子音・残響のある実音源の音符数や行頭精度を保証しない。"
+      ],
+      "promotion_criteria": [
+        "実分離ボーカルの既知区間で、独立に確定した音程と時刻を基準に音符候補・境界の誤差、誤検出、見逃しを確かめる。"
+      ]
+    },
+    {
+      "ids": [
+        "mv.gate.repeat"
+      ],
+      "maturity": "experimental",
+      "reason": "実分離ボーカルで繰り返しの候補が近い位置に出ることを確認した。異なる旋律との区別や正しい繰り返し位置との独立照合が残っている。",
+      "scope": "分離ボーカルから、指定した基準区間に似る旋律の位置と一致率の候補を JSON へ出力する。",
+      "evidence": [
+        {
+          "path": "docs/gate.md",
+          "section": "分離ボーカルの数字（`mv gate voice`・`notes`・`repeat`）",
+          "summary": "2026-11-11、44100/48000 Hz の合成旋律で制作関数と値が一致。"
+        },
+        {
+          "path": "docs/gate.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実分離ボーカルの基準 10〜18 秒・探索 20〜85 秒で offset_s 50.72〜50.74 秒、最大一致率 0.768 の近接候補 3 件を出力。人が試聴して確定した繰り返し位置との照合結果は未記録。"
+        }
+      ],
+      "limitations": [
+        "repeat の既定は最後の一致位置を比較せず、include-end は挙動が変わる。",
+        "近接する複数候補は、実際に旋律が繰り返されることの独立した証拠にはならない。"
+      ],
+      "promotion_criteria": [
+        "実分離ボーカルで、人が試聴または制作記録から確定した繰り返し位置と非一致区間に候補を照合し、誤差・誤検出・見逃しを確かめる。"
       ]
     },
     {
@@ -4423,7 +4575,7 @@
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 0 / その他 1。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 1 / その他 0。"
         }
       ],
       "limitations": [
@@ -4533,6 +4685,11 @@
           "path": "docs/workflow.md",
           "section": "5. 検品（mv inspect）の記録をつなぐ",
           "summary": "inspect を制作工程に結び付ける仕組みはある。テストの接続成功を全体の実曲検証に置き換えない。"
+        },
+        {
+          "path": "docs/workflow.md",
+          "section": "実素材確認（2026-11-27）",
+          "summary": "2026-11-27、実プロジェクト凍結コピーで plan→dance plan/render→gate→workflow check を通し実行。部分描画の拒否と全尺版での 6/7 工程 pass（未試聴の lyrics のみ pending・failed 0）を確認。人の試聴確定が残るため実験的を維持。"
         }
       ],
       "limitations": [
@@ -4591,26 +4748,27 @@
       "ids": [
         "workflow.eye_rebuild"
       ],
-      "maturity": "experimental",
-      "reason": "目の各操作には実頭の照合記録があるが、公開workflowの入口から確認画像までの中間データ対応をまとめた工程証跡は未整備。",
-      "scope": "目の構造検査、骨・ウェイト、形状キー、VRM視線、多方向確認への案内。",
+      "maturity": "verified",
+      "reason": "同一の実頭部入力から 6 工程（export_mesh→check.eyes→eye_rig→eye_keys→vrm.look_at→render.eye_sheet）を 1 本の RecipeGraph で通し実行し、中間データ・入口制約・最終コンタクトシートの目視確認を完了したため。",
+      "scope": "白目板・球面瞳・既存のまばたき相対形状キーを持つ頭部 .blend と eye_geometry.json に対し、構造検査・目骨配置・目キー生成・VRM 視線設定・多視点確認シート生成までを連結実行する（Blender 5.2.4 LTS・VRM Add-on 4.10.5）。",
       "evidence": [
         {
           "path": "docs/model3d.md",
           "section": "目の骨を球の中心へ（`model.eye_rig`）",
-          "summary": "単独頭試作で各操作の照合を確認。頭の構造と指定する値の条件を持つ。"
+          "summary": "目リグ・目キー・VRM 視線・確認シートの各工程仕様を記載。"
         },
         {
-          "path": "src/orpheus_catalog/capability_workflows.py",
-          "section": "workflow.eye_rebuild",
-          "summary": "5つの操作を必要工程として列挙する目録。各操作の実績からworkflow全体の確認を自動では決めない。"
+          "path": "docs/model3d.md",
+          "section": "目の作り直し工程の通し確認（`workflow.eye_rebuild`・2026-11-27）",
+          "summary": "2026-11-27、同一の実頭部 .blend と eye_geometry.json へ 6 工程を 1 本の RecipeGraph で通し実行し全工程 succeeded（eye_rig 401 瞳頂点、eye_keys 4 まばたき補正＋8 キー追加、vrm.look_at 2.8648°/1.1459°、eye_sheet 3 姿勢×2 視点 6 面 JPG 目視確認）。入口制約（既存まばたきキー必須・重複キー拒否）も実測固定。"
         }
       ],
       "limitations": [
-        "各操作の実素材照合と、公開した工程全体の確認範囲を区別する。"
+        "入口の頭メッシュには既存のまばたき相対形状キーが必要で、iris_* / eye_wide_* と同名キーが既にある場合は重複エラーで停止する。",
+        "閉眼時のはみ出しや視線移動の自然さは最終コンタクトシートを目視して人が判断する。"
       ],
       "promotion_criteria": [
-        "同じ頭部入力で5操作を接続した中間データと最終確認画像を既存記録へ対応付け、入口の条件・構造上の制約・人が確認する箇所を固定する。"
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
       ]
     },
     {

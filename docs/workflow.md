@@ -148,3 +148,7 @@ uv run mv workflow check projects/dance-a/workflow.json --run … --gate-config 
   - どれにも合わない報告は、古いか別の動画の検品として `stale`（`pending`）。
 - **状態**（`inspection_state`）: `not_run`（未実施）・`review`（検品済み・要確認の出来事あり）・`clean_with_skips`（見つけた所は無いが、見ていない検査あり）・`clean`・`stale`。要約に、検品の run_id と時刻、要確認の数（演出の時刻と重ならない数）、見ていない検査の数、VLM に見せなかった出来事の数を書く（`inspections` に報告ごとの値）。
 - **採否と混ぜない**: 検品済みは「検品をした記録がある」だけで、異常かどうか・作品の採否は人が決める（`accepted` は常に false のまま）。形の違う報告を渡したときは `fail`。
+
+## 実素材確認（2026-11-27）
+
+- **`workflow.dance_edit`（実素材通し確認）**: 歌詞・拍・実音源・緑背景人物動画を備えた実プロジェクトの凍結コピー（4 秒・原寸版と部分描画版）に対し、`mv workflow plan --purpose dance-edit --lyrics` → `mv dance plan` → `mv dance render` → `mv gate check` → `mv workflow check --run ... --gate-config ...` を実行した。部分描画（`--start` / `--duration` / `--scale`）では `workflow check` が `render` を `fail`（部分描画では完了不可）として正しく拒否し、全尺原寸版では 7 工程中 6 工程（`inputs`・`beats`・`direction`・`assets`・`render`・`verification`）が `pass`・`failed: []`、未試聴の `lyrics` 工程のみ理由付きで `pending`（`overall: incomplete`）となることを確認した。人の試聴による歌唱時刻確定が残るため、`workflow.dance_edit` は引き続き実験的とする。
