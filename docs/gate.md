@@ -202,7 +202,7 @@ uv run mv gate final final.mp4 --video-frames video_frames.json --show show.json
   - `video_frames`: 本番の仕上げたコマはもう無いので、描き直して仕上げた区間のコマ（61 コマ）の 8 コマで比べ、8 コマとも合った（同じコマとの差 1.1〜2.2/255、前後 5 コマとの差 2.1〜31.8）。
   - `render.show` の報告は、描き直した 61 コマのもの（あふれを数える前の版）だけで、`shadow_overflow` は `not_recorded`、`render_seconds` は 61 コマ 373.4 秒。表の全体は `incomplete`（本番の描画の報告が無いため。合格扱いにしない）。
 
-実素材確認（2026-11-27）: 現行 main の `mv gate final` を実完成 MP4（1080 × 1920・30 fps・918 コマ・AAC 音声 30.6 秒・BT.709）へ実行し、`structure` 合格（`technical_pass: true`）・`last_frame` 合格（平均輝度 0.538）・未指定の任意検査（`video_frames`・`shadow_overflow`・`render_seconds`）が `not_run`（全体 `incomplete`）として仕様どおり記録されることを確認した。
+実素材確認（2026-11-27）: 現行 main の `mv gate final` を実完成 MP4（1080 × 1920・30 fps・918 コマ・AAC 音声 30.6 秒・BT.709）へ実行し、動画構造の `technical_pass: true`、`last_frame` 合格（平均輝度 0.538）、未指定の任意検査（`video_frames`・`shadow_overflow`・`render_seconds`）が `not_run`（全体 `incomplete`）として仕様どおり記録されることを確認した。
 
 ## 顔の見切れを数える（`mv gate faces` と検査の `face_cut`）
 
