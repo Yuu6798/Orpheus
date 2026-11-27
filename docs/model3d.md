@@ -6076,3 +6076,11 @@ VRM 1.0 実キャラクターのメッシュ・リグ・.blend（Blender 5.2.4 L
 - **`texture.render_view`**: 実キャラクターの頭メッシュ（2,838 頂点・4,395 三角形・実 UV）と実頭テクスチャを `-Y` 正射影（320 × 320）で描画。報告の `covered_pixels: 23,634` が独立の非背景画素数 23,634 と一致し、出力 PNG を目視確認。
 - **`blender.run_script`**: RecipeGraph の `blender.run_script` から実キャラクター `.blend` へ明示スクリプトと引数（出力パス置換とタグ）を渡して実 Blender 5.2.4 で実行し、メッシュ 21・アーマチュア 1・頭 18,359 頂点の出力を独立確認。終了コード 2 で失敗するスクリプトでは `run_record.json` に `status: "failed"` とログが残ることを確認。
 - **`motion.inject_faults`**: 実キャラクターの 840 コマ実ダンス `.blend` へ左手首局所回転 `+95°`（100〜108 コマ）と腰の床沈み `-0.08 m`（140〜145 コマ）を注入。独立の Blender 読み出しで 104 コマの左手首角差 `95.0°`・142 コマの腰変位 `-0.08 m`、区間外（95・120・152 コマ）の腰変位 `0.0 m`・手首差 `0.075°` 以内を確認し、`check.animation`（90〜155 コマ、`expected` 照合）で注入 2 件中 2 件の検出を確認。
+
+## 目の作り直し工程の通し確認（`workflow.eye_rebuild`・2026-11-27）
+
+実キャラクターの同一の頭部 `.blend`（白目板・球面瞳・既存のまばたき相対形状キーを持ち、新規の目変形キー追加前の状態）と `eye_geometry.json`・実頭テクスチャを入力し、1 本の `RecipeGraph` で `model.export_mesh` → `check.eyes` → `model.eye_rig` → `model.eye_keys` → `vrm.look_at` → `render.eye_sheet` の 6 工程（Blender 5.2.4 LTS・VRM Add-on 4.10.5）を通し実行した。
+
+- **中間データと結果**: 全 6 工程が `succeeded` で完了。`model.eye_rig`（左右 401 瞳頂点・骨長 100.0 mm）、`model.eye_keys`（既存まばたき 4 キーの補正と新規 8 キー追加）、`vrm.look_at`（`input_max: 30.0°`・`slide: {horizontal: 0.005, vertical: 0.002}` → 回転 `2.8648° / 1.1459°`）、`render.eye_sheet`（3 姿勢 `neutral / blink / look_r` × 2 視点 `front / oblique` の 6 面コンタクトシート JPG）を確認した。
+- **入口の条件・構造上の制約・目視確認箇所**: 入口の頭メッシュには既存のまばたき相対形状キーが必要であり、`iris_*` / `eye_wide_*` と同名の形状キーが既にある場合は重複エラーで停止することを実測確認した。出力コンタクトシートを目視し、閉眼時の瞳はみ出しが無いことと視線移動時に瞳が白目板に沿って動くことを人が最終確認する。
+

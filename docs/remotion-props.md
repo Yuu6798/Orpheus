@@ -40,3 +40,9 @@ uv run mv layer render --props props.json --entry my/lyrics.tsx --composition Ly
 - `--renderer` で描画スクリプトを差し替えられる（同じ引数と、標準出力の最後の行の JSON の決まり）。テストは Remotion を呼ばない代役で確かめる。描画スクリプトの標準出力と標準エラーは `render.log`（UTF-8）に残す。Python の描画スクリプトには `PYTHONIOENCODING=utf-8` を渡す（利用者が決めていればそれを使う）。
 - 連番の中身の良し悪しは判定しない。見るのは `mv sheet`、重ねるのは `mv overlay`、timeline を起こすのは `mv gate timeline`。
 - 2026-11-08 にこの環境（Linux、Remotion 4.0.532、Remotion が用意した Chromium）で、192×320・12 コマの `LyricLayer` を `--twice` で描き、全コマの sha256 が一致した。実作品の連番では未確認。
+
+## 実素材確認（2026-11-27）
+
+- **`mv export remotion-props`**: 実曲の解析・歌詞プロジェクト（32 秒・30 fps・7 行・拍あり）から `remotion-props/0.1`（`duration_frames: 960`・`1920×1080`・`lines: 7`・`untimed: 0`・`beats: 4`）を書き出し、後段の `mv layer render` と `mv gate timeline` へそのまま接続できることを確認した。歌詞時刻そのものの歌唱一致確認は別途人の試聴で行う。
+- **`mv layer render`**: 上記 `props.json` に対し、Windows 環境・本物の Remotion 4.0.532・headless Chromium 149 で `LyricLayer` の全 960 コマ（1920 × 1080 RGBA PNG）を `--twice` 付きで描画した。`manifest.json` で `technical_pass: true`、`deterministic.same: true`（`frames_compared: 960`、`differing_frames: []`）、およびエントリ・props・描画スクリプト・各フレームの SHA-256 記録を確認し、代表 PNG の透過と文字描画を目視確認した。
+

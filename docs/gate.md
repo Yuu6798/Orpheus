@@ -356,3 +356,10 @@ uv run mv gate repeat vocals.flac --ref 66.0 72.0 --search 125 140 [--top 3] [--
 - 揺れの位置の列・骨格は別途用意する（推定の道具は持っていない）。無ければその検査は未実施になる。顔は `"faces": "auto"` で粗く推定できるが、正面を向いた 1 人の全身を前提にした頭の帯で、顔の検出ではない。
 - 入力の `timeline.json` は `mv dance render` の出力か、同じ形式で書いたもの。
 - 書き出しの表（`mv gate final`）は、渡した報告を読むだけで、`check.video_frames` を自分では回さない。最後のコマの明るさは、画面全体の平均だけを見る（暗い場面で終わる動画は `--min-last-mean` を下げる）。
+
+## 実素材確認（2026-11-27）
+
+- **`mv gate timeline`**: `mv export remotion-props`（32 秒・30 fps・7 行）と本物の Remotion 4.0.532 で描画した実 960 コマ RGBA PNG 連番を入力し、行ごとの `--frames DIR:<line_id>` で全 7 行の可視開始・終了フレーム（`[18, 119]`・`[131, 226]`・`[243, 407]`・`[474, 565]`・`[565, 692]`・`[692, 789]`・`[792, 924]`、`unseen_lines: 0`、props との差 0 コマ）と下帯の箱（`y = 0.846〜0.899`）を計測し、出力 `timeline.json` をそのまま `mv gate check` へ接続して合格（`overall: pass_with_skips`・終了コード 0）することを確認した。なお、複数行が同一位置を共有する単一連番へ同じ `--hints` 箱を渡した場合は連続可視として扱われ、`mv gate check` が「字の重なり」として検出することも実確認した。
+- **`mv gate flashes`**: 31 秒の実完成ダンス MV に対し、既定しきい値と `--delta 0.08` の 2 条件で実行し、いずれも明滅 4 件・`status: pass` を確認した。画面全体の平均輝度差に基づく計数であり、局所的な点滅や安全認証・好み判定は対象外。
+- **`mv gate voice`・`mv gate notes`・`mv gate repeat`**: 同一の実分離ボーカル音源（Demucs 抽出の FLAC ステム）の 0〜85 秒区間へ 3 コマを連続実行した。`gate voice`（0〜60 秒）は声区間 7 件（8.80 秒以降）を抽出し、独立の生ステム RMS 検算で無音イントロ（0.5〜8.0 秒: `-89.29 dB`）と抽出区間（平均 `-36.41 dB`、最小 `-50.86 dB`）の 52.9 dB 差を確認。`gate notes`（10〜25 秒）は音符 48 件（`E5`・`D5` 等）と立ち上がり・谷を出力、`gate repeat`（基準 10〜18 秒、探索 20〜85 秒）は繰り返し候補 3 件が `offset_s = 50.72〜50.74 秒`（一致率 `0.768`）へ収束することを確認した。
+- **`mv gate check`・`mv gate lines`**: 実プロジェクトのダンス run に対する `mv gate check`（終了コード 0・`pass_with_skips`）および実音源での `mv gate lines`（7 行中 `vocals_onset` 4 件・`not_found` 3 件、`lines_measured.json`・`lines_table.csv` 出力）の実行を確認した。人の試聴で確定した歌唱時刻との照合運用が残るため、これら 2 コマンドは引き続き実験的とする。
