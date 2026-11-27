@@ -529,3 +529,43 @@ def avoid_hair_arm(inputs, parameters, outputs, context):
     remaining = report["after_pairs"]
     unresolved = [f"{operation}: 交差する三角形の組が補正前の延べ {report['before_pairs']} 件から {remaining} 件になりました"] if remaining else []
     return StepResult(observations=[observation], unresolved=unresolved, review=bool(unresolved))
+
+
+@register("vrm.hair_colliders", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="VRM 1.0 の肩・上腕と胸の周辺に、髪の揺れもの専用のカプセルを足す。"
+                  "HairShoulders は髪の鎖へ、HairBackShield は後ろ髪または指定したすべての髪の鎖へ接続する",
+          capability={"aliases": ["髪専用の肩コライダー", "hair shoulder spring bone collider"],
+                      "tools": ["blender"], "parameters": {"status": "docs", "schema": None}})
+def hair_colliders(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher, vrm_hair_colliders
+
+    operation = "vrm.hair_colliders"
+    require(inputs, ("blend",), operation)
+    armature = _check(parameters, {"blender", "addons", "blender_extensions", "armature", "timeout",
+                                   "hair_prefix", "back_prefix", "back_shield", "radius_scale", "bones"},
+                      outputs, ("blend", "report"), operation)
+    if Path(outputs["blend"]).suffix.lower() != ".blend":
+        raise ToolError(f"{operation} の outputs.blend は .blend にしてください")
+    try:
+        settings = vrm_hair_colliders.check_settings(parameters)
+    except ValueError as error:
+        raise ToolError(f"{operation}: {error}") from error
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "hair_collider_settings.json"
+    atomic_json(settings_path, {**settings, "armature": armature})
+    args = ["--blend", inputs["blend"], "--settings", settings_path,
+            "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    record = launcher.run_blender(blender, Path(vrm_hair_colliders.__file__), None, args,
+                                  log=step_dir / "blender.log", timeout=_timeout(parameters),
+                                  addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    if not isinstance(report, dict) or report.get("schema_version") != vrm_hair_colliders.SCHEMA:
+        raise ToolError(f"{operation} の報告の形式が違います")
+    groups = report["groups"]
+    summary = {name: {"created": group["created"], "capsules": len(group["capsules"]),
+                      "springs": len(group["springs"]), "attached": len(group["attached"])}
+               for name, group in groups.items()}
+    return StepResult(observations=[{"kind": "vrm_hair_colliders", "armature": report["armature"],
+                                     "blender_version": record["blender_version"], "groups": summary}])

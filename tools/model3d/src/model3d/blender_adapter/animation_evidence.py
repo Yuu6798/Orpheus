@@ -136,7 +136,8 @@ def main(argv=None):
         location = Vector(event["location"])
         camera.location = camera_place(event["location"], event.get("normal"), hips_matrix.translation, front, event["kind"], Vector)
         camera.rotation_quaternion = (location - camera.location).to_track_quat("-Z", "Y")
-        mark.hide_render = not (event["category"] == "貫通" and event["signal"] != "penetration.floor")
+        mark.hide_render = event["signal"] != "cloth.hem_tear" and not (
+            event["category"] == "貫通" and event["signal"] != "penetration.floor")
         mark.location = location
         mark.scale = (MARK_RADIUS_M, MARK_RADIUS_M, MARK_RADIUS_M)
         names = []

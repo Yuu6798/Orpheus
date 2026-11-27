@@ -21,14 +21,15 @@ IMAGE_SIZE, IMAGE_QUALITY = 480, 88          # 証拠の絵（試作と同じ）
 
 def _parameters():
     from ..animation_check import DEFAULTS
-    return {"armature", "frames", "skip_bones", "foot_lowest", "cloth", "max_images", "report_only", "blender", "addons",
-            "blender_extensions", "timeout", *DEFAULTS}
+    return {"armature", "frames", "skip_bones", "foot_lowest", "cloth", "hem_tear", "hair", "hair_objects", "max_images", "report_only", "blender",
+            "addons", "blender_extensions", "timeout", *DEFAULTS}
 
 
 @register("check.animation", inputs=("blend", "expected"), outputs=("report", "table", "sheet", "expected_table"), cacheable=False,
           summary="動きを付けた .blend（VRM の人型の骨）を全コマ調べて、破綻の候補を出来事（信号・場所・最初と最後のコマと秒・いちばん大きい"
                   "コマと値と位置）にまとめる。静的: 腕が胴・頭・脚に入る、腕どうし・脚どうしの重なり、体が布（揺れものの骨で動くメッシュ）を"
-                  "突き抜ける、足が床より下、手首の曲げとねじれ・首・ひざの逆曲がり。動的: 向きの飛び、位置の飛び、震え、着いた足の滑り、"
+                  "突き抜ける、兄弟鎖の布の辺が伸びる、髪が肩・上腕・胸上部に入る（hair: true）、足が床より下、手首の曲げとねじれ・"
+                  "首・ひざの逆曲がり。動的: 向きの飛び、位置の飛び、震え、着いた足の滑り、"
                   "全身の切り替え。体の形はそのモデルの初期姿勢のメッシュから作る。table は読む用の表（Markdown）、sheet は証拠の絵"
                   "（場所を狙うカメラと赤い印。max_images 件まで）の一覧。入力 expected（motion.inject_faults の、わざと入れた破綻）が"
                   "あれば、見つけたかを照らし合わせる（報告の expected と expected_table）。直さない・採点しない（出来事はどれも status: review。"
@@ -79,6 +80,16 @@ def check_animation(inputs, parameters, outputs, context):
     for key in ("report_only", "cloth"):
         if parameters.get(key) is not None and not isinstance(parameters[key], bool):
             raise ToolError(f"{key} は true か false にしてください: {parameters[key]!r}")
+    for key in ("hem_tear", "hair"):
+        if key in parameters and not isinstance(parameters[key], bool):
+            raise ToolError(f"{key} は true か false にしてください: {parameters[key]!r}")
+    hair_objects = parameters.get("hair_objects")
+    if "hair_objects" in parameters:
+        if (not isinstance(hair_objects, list) or not hair_objects or not all(isinstance(name, str) and name for name in hair_objects)
+                or len(set(hair_objects)) != len(hair_objects)):
+            raise ToolError(f"hair_objects は重複のないメッシュ名の並びにしてください: {hair_objects!r}")
+        if parameters.get("hair") is False:
+            raise ToolError("hair_objects は hair: false と一緒に使えません")
     max_images = number(parameters, "max_images", 30, minimum=1, integer=True)
     if parameters.get("timeout") is not None:
         number(parameters, "timeout", minimum=0, exclusive=True)
@@ -86,8 +97,12 @@ def check_animation(inputs, parameters, outputs, context):
     addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
     step_dir = Path(context.step_dir)
     settings_path, sample_path, meta_path = step_dir / "animation_settings.json", step_dir / "sample.npz", step_dir / "sample.json"
-    atomic_json(settings_path, {"armature": armature, "frames": span, "cloth": parameters.get("cloth", True),
-                                "cloth_near_m": cfg["cloth_near_m"], "cloth_depth_min_m": cfg["cloth_depth_min_m"]})
+    cloth = parameters.get("cloth", True)
+    sample_thresholds = ("cloth_near_m", "cloth_depth_min_m", "hem_tear_ratio", "hem_tear_delta_min_m", "hem_tear_rest_min_m",
+                         "hair_depth_min_m", "hair_min_vertices", "hair_near_m")
+    atomic_json(settings_path, {"armature": armature, "frames": span, "cloth": cloth,
+                                "hem_tear": parameters.get("hem_tear", bool(cloth)), "hair": parameters.get("hair", bool(hair_objects)),
+                                "hair_objects": hair_objects, **{key: cfg[key] for key in sample_thresholds}})
     record = launcher.run_blender(blender, SAMPLE_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
                                                                   "--out", str(sample_path), "--meta", str(meta_path)],
                                   log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions)

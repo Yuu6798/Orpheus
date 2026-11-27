@@ -15,9 +15,11 @@
 - 布（cloth が true で、布のメッシュがあるとき）: 初期姿勢で布の近くにある体の頂点を選び（もう布の外にある頂点は見ない）、コマごとに、
   その頂点から骨の軸へ向けた光線が布に当たった所を、(骨, 布) ごとに数・いちばん深い所・位置の平均・外向きの向きにまとめる
   （光線の当たり判定は Blender の BVHTree。試作と同じ手順と計算（mathutils））
+- 裾割れ（hem_tear）: VRM の兄弟 SpringBone 鎖をまたぐ布の辺を初期姿勢と比べ、伸びた辺の位置を測る。
+- 髪（hair）: 頭の下の揺れものの頂点と、肩・上腕・胸上部の重みを持つ体表との符号付き距離を測る。
 
 settings.json（check.animation が書く）: armature（省くと VRM 1.0 の人型の骨の割り当てのあるアーマチュアが 1 つのときそれ）、
-frames（[最初, 最後]。省くとシーンの全コマ）、cloth（布を見るか）・cloth_near_m・cloth_depth_min_m。
+frames（[最初, 最後]。省くとシーンの全コマ）、cloth・hem_tear・hair（検査の有効化）、各検査のしきい値。
 シーンの scale_length が 1 でないとき、アーマチュアの物体に大きさ（scale）があるときは止める（長さを m で測るため）。
 **検証**: 本物の Blender 5.2.4 で、リポジトリ外の試作と同じ入力から同じ出来事になることを確かめた（docs/model3d.md）。
 """
@@ -29,9 +31,11 @@ import sys
 import numpy as np
 
 try:   # パッケージとして読むとき（テスト）
+    from .animation_cloth_hair import ClothHairSampler, dominant
     from .vrm_apply_motion import use_scene_of
 except ImportError:   # Blender が台本として動かすとき
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from animation_cloth_hair import ClothHairSampler, dominant
     from vrm_apply_motion import use_scene_of
 
 SCHEMA = "model3d-animation-sample/0.1"
@@ -64,19 +68,6 @@ def humanoid_map(armature):
         if node is not None and getattr(node, "bone_name", ""):
             found[role] = node.bone_name
     return found
-
-
-def dominant(vertices, names):
-    """頂点ごとの、いちばん重みの大きい頂点グループの名前（重みが 0 より大きいものが無ければ None）。同じ重みなら先のもの。
-    vertices は頂点ごとの (グループの番号, 重み) の並び、names は番号 → 名前。"""
-    out = []
-    for groups in vertices:
-        best, weight = None, 0.0
-        for index, value in groups:
-            if value > weight:
-                best, weight = names.get(index), value
-        out.append(best)
-    return out
 
 
 def descendants(children, root):
@@ -234,6 +225,10 @@ def main(argv=None):
         top = dominant(vertices, names)
         meshes.append({"object": obj, "names": names, "vertices": vertices, "dominant": top,
                        "kind": classify(top, human, head_tree)})
+    spring_bone = armature.data.vrm_addon_extension.spring_bone1
+    spring_chains = [[joint.node.bone_name for joint in spring.joints] for spring in spring_bone.springs]
+    deform_bones = {bone.name for bone in armature.data.bones if bone.use_deform}
+    cloth_hair = ClothHairSampler(meshes, spring_chains, humanoid, dict(zip(bones, parents)), head_tree, deform_bones, settings)
     arrays = {"rest": np.array([np.array(bone.matrix_local) for bone in (armature.data.bones[name] for name in bones)])}
     cloth_objects = [m["object"] for m in meshes if m["kind"] == "cloth"]
     look_at_cloth = bool(settings.get("cloth", True)) and bool(cloth_objects)
@@ -307,6 +302,8 @@ def main(argv=None):
     for fi, frame in enumerate(frames):
         scene.frame_set(frame)
         depsgraph = bpy.context.evaluated_depsgraph_get()
+        cloth_hair.sample_hem(depsgraph, frame)
+        cloth_hair.sample_hair(depsgraph, frame, BVHTree)
         worlds[fi] = np.array(world)                                     # アーマチュアの物体が動いていても、そのコマの置き場所
         if not np.allclose(worlds[fi][:3, :3].T @ worlds[fi][:3, :3], np.eye(3), atol=1e-5):   # 大きさのキーがあっても止める
             raise SystemExit(f"コマ {frame} で、アーマチュアの物体に大きさ（scale）かずれ（shear）があります（長さを m で測れません）")
@@ -376,7 +373,7 @@ def main(argv=None):
             "parents": parents, "groups": groups, "deform": deform, "body": body_meta,
             "cloth_objects": [obj.name for obj in cloth_objects], "cloth_measured": look_at_cloth,
             "cloth_watched": int(sum(len(picked) for _, picked, _ in watch)), "cloth_tucked": tucked, "cloth_unwatched": cloth_unwatched,
-            "hair_objects": [m["object"].name for m in meshes if m["kind"] == "hair"],
+            "hair_objects": [obj.name for obj in cloth_hair.hair_objects], **cloth_hair.meta,
             "foot_objects": {side: [obj.name for obj, _ in feet[side]] for side in feet}}
     with open(a.meta, "w", encoding="utf-8") as stream:
         json.dump(meta, stream, ensure_ascii=False, indent=1)

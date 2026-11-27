@@ -4,12 +4,14 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from m3d_helpers import stand_in_executable
 from model3d import animation_check as ac
+from model3d.blender_adapter import animation_cloth_hair as cloth_hair
 from model3d.blender_adapter import animation_evidence as evidence
 from model3d.blender_adapter import animation_sample as sampler
 from model3d.blender_adapter import fault_inject
@@ -919,7 +921,9 @@ def test_check_animation_runs_blender_and_reports_events(tmp_path):
     assert report["armature"] == "Rig" and report["cloth_objects"] == ["Skirt"] and report["overall"] == "review"
     assert any(e["signal"] == "joint.wrist_bend" for e in report["events"])
     meta = json.loads((Path(step["artifacts"]["report"]).parent / "sample.json").read_text(encoding="utf-8"))
-    assert meta["x_settings"] == {"armature": None, "frames": [1, 120], "cloth": True, "cloth_near_m": 0.05, "cloth_depth_min_m": 0.008}
+    assert meta["x_settings"] == {"armature": None, "frames": [1, 120], "cloth": True, "cloth_near_m": 0.05, "cloth_depth_min_m": 0.008,
+                                  "hem_tear": True, "hem_tear_ratio": 2.2, "hem_tear_delta_min_m": 0.020, "hem_tear_rest_min_m": 0.002,
+                                  "hair": False, "hair_objects": None, "hair_depth_min_m": 0.004, "hair_min_vertices": 20, "hair_near_m": 0.06}
     argv = meta["x_argv"]
     assert Path(argv[argv.index("--python") + 1]).name == "animation_sample.py" and "--factory-startup" in argv
     assert "bl_ext.user_default.vrm" in argv[argv.index("--python-expr") + 1]          # VRM Add-on を既定で有効にする
@@ -1026,6 +1030,9 @@ def test_check_animation_matches_the_expected_faults(tmp_path):
     ({"strict": True}, "知らないパラメーター"), ({"frames": [10, 5]}, "frames"), ({"skip_bones": "twist"}, "skip_bones"),
     ({"foot_lowest": "lowest"}, "foot_lowest"), ({"arm_upper": [[1.0, 0.04]]}, "3 点"), ({"armature": ""}, "armature"),
     ({"report_only": "yes"}, "report_only"), ({"cloth": 1}, "cloth"), ({"cloth_min_vertices": 2.5}, "整数"),
+    ({"hair": "yes"}, "hair"), ({"hair_objects": ["Hair", "Hair"]}, "hair_objects"),
+    ({"hair": False, "hair_objects": ["Hair"]}, "hair_objects"), ({"hem_tear": 1}, "hem_tear"),
+    ({"hem_tear_ratio": 1}, "hem_tear_ratio"), ({"hair_depth_min_m": 0.08}, "hair_depth_min_m"),
     ({"max_images": 0}, "max_images")])
 def test_check_animation_refuses_bad_parameters(tmp_path, parameters, message):
     from model3d import executor
@@ -1033,3 +1040,91 @@ def test_check_animation_refuses_bad_parameters(tmp_path, parameters, message):
     _write_sample(make_sample(_clean, frames=5), tmp_path)
     result = executor.run_recipe(_recipe(tmp_path, {"blender": blender, **parameters}), tmp_path / "runs")
     assert result["status"] == "failed" and message in result["steps"]["check"]["error"]
+
+
+def test_hem_stretch_requires_shared_chain_parent_and_both_thresholds():
+    parents = {"hips": None, "wrap_a": "hips", "a_tip": "wrap_a", "wrap_b": "hips", "b_tip": "wrap_b",
+               "upper_arm": "hips", "lower_arm": "upper_arm", "sleeve_a": "upper_arm", "sleeve_b": "lower_arm"}
+    chains = [("wrap_a", "a_tip"), ("wrap_b", "b_tip"), ("sleeve_a",), ("sleeve_b",)]
+    roots = cloth_hair.spring_chain_roots(chains, parents, {"hips", "upper_arm", "lower_arm"})
+    edges = np.arange(14).reshape(-1, 2)
+    dominant = ["a_tip", "b_tip"] * 4 + ["sleeve_a", "sleeve_b", "wrap_a", "a_tip", "wrap_b", None]
+    co = np.zeros((14, 3))
+    co[1::2, 0] = [0.02, 0.01, 0.04, 0.001, 0.02, 0.02, 0.02]
+    selected, rest, boundaries = cloth_hair.hem_candidates(edges, co, dominant, roots, 0.002)
+    assert selected.tolist() == [[0, 1], [2, 3], [4, 5]]
+    co[1::2, 0] = [0.05, 0.023, 0.079, 0.031, 0.10, 0.10, 0.1]
+    hits = list(cloth_hair.hem_stretches(co, selected, rest, boundaries, 2.2, 0.020))
+    assert len(hits) == 1
+    assert hits[0]["chain_roots"] == ["wrap_a", "wrap_b"]
+    assert hits[0]["edge"] == [0, 1]
+    assert hits[0]["depth_m"] == pytest.approx(0.03)
+    assert hits[0]["stretch_ratio"] == pytest.approx(2.5)
+
+
+def test_hem_candidates_on_mixed_mesh_ignore_region_masks_and_head_springs(monkeypatch):
+    parents = {"hips": None, "head": "hips", "wrap_a": "hips", "wrap_b": "hips", "hair_a": "head", "hair_b": "head"}
+    chains = [("wrap_a",), ("wrap_b",), ("hair_a",), ("hair_b",)]
+    names = {0: "wrap_a", 1: "wrap_b", 2: "hair_a", 3: "hair_b", 4: "region_mask", 5: "hips"}
+    mesh = {"object": SimpleNamespace(name="Combined", data=object()), "kind": "body", "names": names,
+            "vertices": [[(i, 0.8), (4, 1.0)] for i in (0, 1, 2, 3, 5, 5, 5, 5)]}
+    monkeypatch.setattr(cloth_hair, "world_coordinates", lambda _obj: np.arange(24).reshape(8, 3) * 0.01)
+    monkeypatch.setattr(cloth_hair, "vertex_edges", lambda _mesh: np.array([[0, 1], [2, 3], [4, 5]]))
+    probe = cloth_hair.ClothHairSampler([mesh], chains, {"hips": "hips", "head": "head"}, parents, {"head", "hair_a", "hair_b"},
+                                        set(parents), {"hem_tear": True, "hem_tear_rest_min_m": 0.002})
+    assert probe.meta["hem_tear"]["candidate_edges"] == {"Combined": 1}
+    assert probe.hem_edges[0][2].tolist() == [[0, 1]]
+
+
+def test_hair_penetration_uses_nearest_target_surface_and_inward_depth():
+    human = {"head": "head", "left_upper_arm": "upper", "left_lower_arm": "lower", "chest": "chest"}
+    parents = {"chest": None, "head": "chest", "upper": "chest", "twist": "upper",
+               "lower": "upper", "lower_twist": "lower", "scarf": "chest"}
+    roles = cloth_hair.shoulder_bones(human, parents, {"scarf"})
+    assert roles == {"chest": "chest", "upper": "left_upper_arm", "twist": "left_upper_arm"}
+    body_regions = cloth_hair.polygon_regions([(0, 1, 2), (1, 3, 4)],
+                                             [[(0, 0.28)], [(0, 0.25)], [], [(1, 1.0)], []],
+                                             {0: "twist", 1: "lower_twist"}, roles)
+    assert body_regions == ["left_upper_arm", None]
+
+    class Surface:
+        def find_nearest(self, point, near):
+            x, y, z = point
+            return ((x, y, 0), (0, 0, 1), int(x), abs(z))
+
+    points = [(0, 0, -0.010), (0, 0, -0.006), (0, 0, -0.003), (0, 0, 0.020), (1, 0, -0.020)]
+    assert cloth_hair.hair_penetration(points, Surface(), body_regions, 0.06, 0.004, 3) is None
+    hit = cloth_hair.hair_penetration(points, Surface(), body_regions, 0.06, 0.004, 2)
+    assert hit == {"vertices": 2, "depth_m": 0.01, "location": [0, 0, 0], "normal": [0, 0, 1], "body_region": "left_upper_arm"}
+
+
+def test_check_animation_reports_hem_and_hair_measurements(tmp_path):
+    from model3d import executor
+    blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
+    _write_sample(make_sample(_clean, frames=7), tmp_path)
+    path = tmp_path / "sample.json"
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta.update(hem_tear={"enabled": True, "candidate_edges": {"Skirt": 10}, "unwatched": {"Skirt": [4, 5]}, "hits": [
+        {"frame": frame, "object": "Skirt", "chain_roots": ["a", "b"], "edge": [1, 2], "depth_m": depth,
+         "stretch_ratio": ratio, "location": [0, 0, 1]}
+        for frame, depth, ratio in ((1, 0.020, 2.2), (3, 0.023, 2.35))]},
+        hair_objects=["Long Hair"],
+        hair_shoulder={"enabled": True, "target_faces": {"Body": 20}, "unwatched": {}, "hits": [
+            {"frame": 2, "object": "Long Hair", "body_object": "Body", "body_region": "left_shoulder",
+             "depth_m": 0.009, "location": [0, 0, 1], "normal": [0, -1, 0], "vertices": 24}]})
+    atomic_json(path, meta)
+    recipe = _recipe(tmp_path, {"blender": blender, "cloth": False, "hem_tear": True, "hair_objects": ["Long Hair"]},
+                     outputs={"table": "report.md"})
+    result = executor.run_recipe(recipe, tmp_path / "runs")
+    assert result["status"] == "needs_review", result
+    artifacts = result["steps"]["check"]["artifacts"]
+    report = json.loads(Path(artifacts["report"]).read_text(encoding="utf-8"))
+    events = {e["signal"]: e for e in report["events"]}
+    tear, hair = events["cloth.hem_tear"], events["penetration.hair_shoulder"]
+    assert tear["frames"] == [1, 3] and tear["hit_frames"] == 2 and tear["peak_frame"] == 3
+    assert tear["part"] == "Skirt: a ↔ b" and tear["peak_value"] == 2.3 and tear["stretch_ratio"] == 2.35
+    assert hair["part"] == "Long Hair → Body" and hair["body_region"] == "left_shoulder" and hair["vertices"] == 24
+    assert any(skip["check"] == "cloth.hem_tear" and skip["frames"] == [[4, 5]] for skip in report["skipped"])
+    assert "2.350 倍" in Path(artifacts["table"]).read_text(encoding="utf-8")
+    settings = json.loads((Path(artifacts["report"]).parent / "sample.json").read_text(encoding="utf-8"))["x_settings"]
+    assert settings["cloth"] is False and settings["hem_tear"] and settings["hair"] and settings["hair_objects"] == ["Long Hair"]

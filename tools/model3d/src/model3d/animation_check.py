@@ -12,6 +12,8 @@ evidence: measured。異常と読むかは、絵を見て人やエージェン�
   - penetration.leg_leg: 左右の脚が重なる
   - penetration.floor: 足のメッシュの低い点が床（z = 0）より下
   - penetration.body_cloth: 体が、上に重なる布（裾など。揺れものの骨で動くメッシュ）を突き抜ける
+  - penetration.hair_shoulder: 髪の頂点が肩・上腕・胸上部の体表より内側に入る
+  - cloth.hem_tear: 同じ親を持つ別の SpringBone 鎖の間で、布の辺が初期姿勢より伸びる
   - joint.wrist_bend・joint.wrist_twist・joint.neck・joint.knee_back: 関節の無理
 - 動的（前後のコマと比べて分かる）
   - motion.pop: 骨の向きが 1 コマで飛ぶ（戻る／切り替わる）
@@ -61,10 +63,13 @@ DEFAULTS = {
     "jitter_window": 8, "jitter_reversals": 5, "jitter_min_deg": 2.0,
     "slide_min_m_per_frame": 0.008, "slide_max_m_per_frame": 0.04, "slide_frames": 3, "plant_height_m": 0.015, "plant_dz_m": 0.004,
     "cloth_depth_min_m": 0.008, "cloth_min_vertices": 22, "cloth_near_m": 0.06,   # 22 頂点より小さい所（結び目・垂れの先）は挙げない
+    "hem_tear_ratio": 2.2, "hem_tear_delta_min_m": 0.020, "hem_tear_rest_min_m": 0.002,
+    "hair_depth_min_m": 0.004, "hair_min_vertices": 20, "hair_near_m": 0.06,
     "merge_gap_frames": 2,
 }
 ARM_BODY_KEYS = ("upper_arm", "elbow", "forearm", "wrist", "fist")
-INTEGER_KEYS = {"pop_window", "jitter_window", "jitter_reversals", "slide_frames", "merge_gap_frames", "cloth_min_vertices"}
+INTEGER_KEYS = {"pop_window", "jitter_window", "jitter_reversals", "slide_frames", "merge_gap_frames", "cloth_min_vertices",
+                "hair_min_vertices"}
 FOOT_LOWEST = ("world", "object")   # 足のメッシュの低い点の選び方: 世界の z（既定）か、物体の中の z（試作と同じ。誤り）
 LEG_RADIUS_GUESS_M = 0.05           # 脚の太さを測れないとき（その骨にいちばん重い頂点が無い）の推定の太さ（仮の値。試作と同じ）
 
@@ -86,6 +91,8 @@ JP_WORDS = (("left_", "左の"), ("right_", "右の"), ("upper_chest", "胸の�
 LABEL = {"penetration.arm_body": ("貫通", "腕が体に入る", "cm"), "penetration.arm_arm": ("貫通", "腕どうしが重なる", "cm"),
          "penetration.arm_leg": ("貫通", "腕が脚に入る", "cm"), "penetration.leg_leg": ("貫通", "脚どうしが重なる", "cm"),
          "penetration.body_cloth": ("貫通", "体が布を突き抜ける", "cm"), "penetration.floor": ("貫通", "足が床より下", "cm"),
+         "penetration.hair_shoulder": ("貫通", "髪が肩・上腕・胸上部に入る", "cm"),
+         "cloth.hem_tear": ("布", "兄弟鎖の間で布が伸びる", "cm"),
          "joint.wrist_bend": ("関節", "手首の曲げすぎ", "度"), "joint.wrist_twist": ("関節", "手首のねじれすぎ", "度"),
          "joint.neck": ("関節", "首の曲げすぎ", "度"), "joint.knee_back": ("関節", "ひざが逆に曲がる", "cm"),
          "motion.pop": ("飛び", "向きが 1 コマで飛ぶ", "度"), "motion.position_pop": ("飛び", "位置が 1 コマだけ飛ぶ", "cm"),
@@ -137,6 +144,10 @@ def settings(parameters):
         raise SettingsError(f"cut_share は 0 より大きく 1 以下にしてください: {out['cut_share']}")
     if out["slide_min_m_per_frame"] > out["slide_max_m_per_frame"]:
         raise SettingsError("slide_min_m_per_frame は slide_max_m_per_frame 以下にしてください")
+    if out["hem_tear_ratio"] <= 1:
+        raise SettingsError("hem_tear_ratio は 1 より大きくしてください")
+    if not 0 <= out["hair_depth_min_m"] < out["hair_near_m"] or out["hair_min_vertices"] < 1:
+        raise SettingsError("hair_depth_min_m は hair_near_m 未満にし、hair_min_vertices は 1 以上にしてください")
     return out
 
 
@@ -808,6 +819,34 @@ def _quat_angle(a, b):
 
 
 # ---------------------------------------------------------------- 出来事にまとめる（検-1）
+def cloth_hair_hits(sample, hits, skipped):
+    """サンプラーで測れた部位を出来事の候補に加え、測れなかった範囲を控える。"""
+    for key, geometry, no_geometry in (
+        ("hem_tear", "candidate_edges", "布に兄弟 SpringBone 鎖をまたぐ測定対象の辺がありません"),
+        ("hair_shoulder", "target_faces", "髪のメッシュまたは肩・上腕・胸上部の対象面がありません"),
+    ):
+        probe = sample.meta.get(key)
+        if not probe or not probe["enabled"]:
+            continue
+        signal = "cloth.hem_tear" if key == "hem_tear" else "penetration.hair_shoulder"
+        if not probe[geometry]:
+            skipped.append({"check": signal, "reason": no_geometry})
+        if probe["unwatched"]:
+            unwatched = probe["unwatched"]
+            skipped.append({
+                "check": signal, "reason": "対応する頂点・面の並びが変わるコマは見ない",
+                "objects": sorted(unwatched), "frames": _frame_spans(sorted({f for frames in unwatched.values() for f in frames})),
+            })
+        for hit in probe["hits"]:
+            if key == "hem_tear":
+                part = f"{hit['object']}: {' ↔ '.join(hit['chain_roots'])}"
+                extra = {k: hit[k] for k in ("chain_roots", "edge", "stretch_ratio")}
+            else:
+                part = f"{hit['object']} → {hit['body_object']}"
+                extra = {k: hit[k] for k in ("body_region", "vertices")}
+            hits.append((hit["frame"], signal, part, hit["depth_m"], hit["location"], hit.get("normal"), extra))
+
+
 def events_from(hits, frames, fps, merge_gap):
     """同じ信号・同じ場所の続いたコマ（merge_gap コマ以下のすき間）を 1 件にまとめる。いちばん大きいコマの値と場所を出し、
     静的な物が 2 コマ以下なら「一瞬」と印を付ける。並びは最初のコマ・信号の順で、番号を付ける。"""
@@ -825,7 +864,7 @@ def events_from(hits, frames, fps, merge_gap):
             peak = max(run, key=lambda r: r[3])
             category, title, unit = LABEL[signal]
             value = peak[3] * 100 if unit == "cm" else peak[3]
-            static = signal.startswith("penetration") or signal.startswith("joint")
+            static = signal.startswith(("penetration", "joint", "cloth."))
             event = {"category": category, "signal": signal, "title": title, "part": part, "frames": [run[0][0], run[-1][0]],
                      "seconds": [round((run[0][0] - frames[0]) / fps, 2), round((run[-1][0] - frames[0]) / fps, 2)],
                      "peak_frame": peak[0], "peak_value": round(value, 1), "unit": unit, "kind": "静的" if static else "動的",
@@ -834,6 +873,12 @@ def events_from(hits, frames, fps, merge_gap):
                      "evidence": "measured", "status": "review"}
             if signal == "penetration.body_cloth":
                 event["vertices"] = max(r[6] for r in run)
+            elif signal in ("cloth.hem_tear", "penetration.hair_shoulder"):
+                event.update(peak[6], hit_frames=len(run))
+                if signal == "cloth.hem_tear":
+                    event["stretch_ratio"] = round(event["stretch_ratio"], 3)
+                else:
+                    event["vertices"] = max(r[6]["vertices"] for r in run)
             events.append(event)
             run = [hit] if hit is not None else []
     for event in events:
@@ -878,6 +923,8 @@ def table_markdown(report, image_dir=IMAGE_DIRECTORY):
         frames = "%d" % a if a == b else "%d〜%d" % (a, b)
         kind = event["kind"] + ("・一瞬" if event.get("momentary") else "")
         extra = "（%d 頂点）" % event["vertices"] if "vertices" in event else ""
+        if "stretch_ratio" in event:
+            extra = "（%.3f 倍）" % event["stretch_ratio"]
         images = " ".join("`%s/%s`" % (image_dir, name) for name in event.get("images", [])) or "—"
         lines.append("| %d | %s | %s | %s | %s | %s | %s %s%s（コマ %d） | %s |" % (
             event["id"], seconds, frames, kind, event["title"], event["part"], ("%.1f" % event["peak_value"]), event["unit"], extra,
@@ -979,16 +1026,16 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
     if foot_lowest not in FOOT_LOWEST:
         raise SettingsError(f"foot_lowest は {' か '.join(FOOT_LOWEST)} にしてください: {foot_lowest!r}")
     body = Body(sample, cfg, skip_bones)
-    hits, contact = [], {}
+    hits, contact, skipped = [], {}, []
     static_hits(body, cfg, foot_lowest, hits, contact)
     cuts = dynamic_hits(body, cfg, foot_lowest, hits)
+    cloth_hair_hits(sample, hits, skipped)
     events = events_from(hits, sample.frames, sample.fps, cfg["merge_gap_frames"])
     counts = {}
     for event in events:
         counts[event["signal"]] = counts.get(event["signal"], 0) + 1
         if (event["signal"], event["part"]) in body.estimated_labels:       # 推定の脚の太さで測った重なりは、実測と分ける
             event["evidence"] = "estimated"
-    skipped = []
     if body.head_tris is None:
         skipped.append({"check": "head", "reason": "頭の骨だけに重みのある面がありません（腕と頭の重なりは、頭の中の球だけで見ない）"})
     feet = sample.foot_world if foot_lowest == "world" else sample.foot_object
@@ -1010,12 +1057,15 @@ def check(sample, cfg, skip_bones=(), foot_lowest="world"):
     if measured and unwatched:                                            # 頂点を足し引きする変形のコマ
         skipped.append({"check": "cloth", "reason": "体のメッシュの頂点の数が変わるコマ（頂点を足し引きする変形）は、体が布を突き抜けるを見ない",
                         "objects": sorted(unwatched), "frames": _frame_spans(sorted({f for frames in unwatched.values() for f in frames}))})
+    probes = {key: {field: value for field, value in sample.meta[key].items() if field != "hits"}
+              for key in ("hem_tear", "hair_shoulder") if key in sample.meta}
     return {"schema_version": SCHEMA, "frames": [sample.frames[0], sample.frames[-1]] if sample.frames else [], "fps": sample.fps,
             "overall": "review" if events else ("clean_with_skips" if skipped else "clean"),
             "thresholds": cfg, "skip_bones": list(skip_bones), "foot_lowest": foot_lowest,
             "bones": len(body.pop_bones), "body_objects": [mesh["name"] for mesh in sample.body], "cloth_objects": list(sample.cloth),
             "cloth": {"measured": measured, "watched_vertices": sample.meta.get("cloth_watched"),
                       "tucked_vertices": sample.meta.get("cloth_tucked")},
+            **probes,
             "torso": {"points": body.torso_points, "slices": len(body.slices)},
             "head_triangles": 0 if body.head_tris is None else int(len(body.head_tris)),
             "leg_radius_m": {f"{side}_{part}": round(value, 4) for (side, part), value in body.leg_radius.items()},
