@@ -102,4 +102,3 @@ VRM 1.0 実キャラクターの実ダンス `.blend` と、同一モーショ�
 
 - **`check.character_roundtrip`**: 3 コマ（1・15・25）で左前腕（ねじり補助骨を含む 6 頂点グループ・9 頂点・レスト骨長 `0.194907 m`）の断面比 `1.0000015 / 1.0000007 / 1.0000012`、まばたき形状キー評価値 `0.0 / 0.85000002 / 0.22037041`（原本と配布版の差 `0.0`）を確認し、独立の Blender depsgraph 読み出しと一致した。
 - **`review.character_views`**: 上記の `roundtrip.json` を入力として接続し、立ち姿（`rest`）・まばたき最大コマ（`peak`＋`disable` 列）・`finding` による左前腕イベントの 3 イベント × 6 視点で 43 枚の PNG、`index.html`、`views/cameras.json`、`sources.json` を生成し、出力画像を目視確認した。
-
