@@ -605,4 +605,4 @@ run の形・manifest・キャッシュ・`technical_pass`・`accept` は fx と
 
 - **`mv dance plan`・`mv dance stills`**: 歌詞・拍・実音源・緑背景の人物動画・実舞台画像を備えた実プロジェクト（32 秒・30 fps）へ実行。`dance plan` は解決済みのクリップ・拍・歌詞・つなぎ一覧（53 行）を出力し、`dance stills --times 1.5 5.0 16.5 --scale 0.5 --layers` は 3 時刻 × 4 列（合成・舞台・人物マスク・歌詞層）の静止画シートを生成し、クロマキー輪郭と文字配置を目視確認した。
 - **`mv dance accept`**: 実ダンス描画 run（`dance.mp4`）へ `accepted` を記録し、`acceptance.jsonl` に出力 MP4 の正確な `video_sha256` が結び付くこと、および `dance.mp4` を 1 バイト改変した複製に対しては終了コード 1 で拒否されることを確認した。
-- **`mv dance render`**: 同一実プロジェクトの 6 秒切り出しおよび 4 秒全尺版を描画し、`dance.mp4`・`timeline.json`・`manifest.json`・`technical_pass: true` を確認した。歌詞付きの通し再生・人の試聴確認が残るため、`mv dance render` は引き続き実験的とする。
+- **`mv dance render`**: 実プロジェクト由来の 6 秒部分描画と、4 秒版の全尺・原寸描画を行い、`dance.mp4`・`timeline.json`・`manifest.json`・`technical_pass: true` を確認した。歌詞付きの通し再生・人の試聴確認が残るため、`mv dance render` は引き続き実験的とする。
