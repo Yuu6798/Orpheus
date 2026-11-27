@@ -326,7 +326,7 @@ uv run model3d run recipe.json [--out DIR] [--force] [--preset P] [--tool blende
 | `generate.initial_model` | image → mesh, record, prepared | 前処理 → `backend`（生成器の設定）の別プロセス → OBJ を読む → 検査 → 記録。`resolution`・`density_threshold`・`seed` を渡す。**常に needs_review**。再利用しない |
 | `generate.inspect_initial_model` | mesh → report | 頂点・三角形・有限・bounds・連結成分・閉じているか・巻き方・頂点色・実寸の校正 |
 | `external.run` | 任意 → 任意 | 設定 JSON の argv で別プロセスを呼ぶ（`{入力名}`・`{出力名}`・`{work}`）。版・ライセンス・重み・実行ファイルの sha256 を記録。シェルは使わない。任意の `review_note`（空でない文字列）は `unresolved` に残して `needs_review` にする。再利用しない |
-| `blender.run_script` | 任意 → 任意 | `blender --background --factory-startup [blend] --python script -- args…`（利用者の設定・アドオンが要るときだけ `factory_startup: false`）。再利用しない。起動は本物の Blender で確かめた。recipe の工程としては**未検証** |
+| `blender.run_script` | 任意 → 任意 | `blender --background --factory-startup [blend] --python script -- args…`（利用者の設定・アドオンが要るときだけ `factory_startup: false`）。再利用しない。実 Blender 5.2.4 で実素材に対する recipe の成功・失敗を確認済み（2026-11-27） |
 
 `mesh.weld` のウェイト移し替えは結合時に得た正確な頂点対応だけを使う。別メッシュへの近傍転送ではない。
 元のリグが入力の頂点数・topology と一致しなければ止まり、未正規化や負のウェイトを黙って修復しない。
@@ -5987,7 +5987,7 @@ def frame(ctx):
 
 既存制作 worker による描画と動画化は `model3d dance-recipe` の経路を使う（[手順](model3d-dance.md)）。
 Blender での30秒描画と最終品質の全編出力は、まだこの経路で確かめていない。リポジトリ外の手順では、2026-11-06 に 32 秒を描いた。
-汎用 `blender.run_script` を recipe の工程として通す確認も、まだしていない。
+汎用 `blender.run_script` を実キャラクターの `.blend` で recipe の工程として実行した記録は、末尾の「基本操作の実素材確認（2026-11-27）」に記載した。
 
 ## Blender 5.2 安全化ヘルパー（`blender_adapter.blender5_safe`）
 
@@ -6050,9 +6050,10 @@ Blender 5.2.4 LTS（日本語 UI ロケール環境を含む）の台本で実�
   `texture.view_parts` の手前の部品の地図を `occlusion` に渡したときだけ見る（地図の画素の中心の奥行きで比べる。同じ部品に溶け込んだ
   髪などは分けられないので、顔の面領域を `select` で選ぶ）。目印の自動検出・枠の自動の決め方（色合わせの枠は手で書く）・
   複数の視点を 1 工程で混ぜる処理は無い（視点ごとに工程を重ねる）。uv を共有する面（左右で同じ uv など）は、見える面と隠れた面の重みを平均する。
+
 ## 基本操作の実素材確認（2026-11-27）
 
-VRM 1.0 実キャラクターのメッシュ・リグ・.blend（Blender 5.2.4 LTS・VRM Add-on 4.10.5）および 840 コマの実ダンス `.blend` へ、現行の単独基本操作 12 本を RecipeGraph（`model3d run`）から通して独立検算した記録。
+VRM 1.0 実キャラクターのメッシュ・リグ・.blend（Blender 5.2.4 LTS・VRM Add-on 4.10.5）および 840 コマの実ダンス `.blend` へ、現行の単独基本操作 12 本を RecipeGraph（`model3d run`）から実行した記録。各操作で照合した範囲を以下に示す。貫通検査と押し出しは内外判定を共有しており、実素材での判定と補正先の独立照合が残る。正射影は投影と奥行きの独立照合が残る。
 
 - **`mesh.export_obj`・`mesh.import`**: 実キャラクターの外側裾メッシュ（622 頂点・1,133 面・UV・単位 m・軸 `+Z`/`-Y`）を OBJ へ書き出し（`v 622`・`vt 622`・`f 1133`）、`mesh.import` で読み戻した。独立比較で頂点誤差 0.0 m・UV 誤差 0.0・面および単位・軸の完全一致を確認。
 - **`mesh.smooth_normals`**: 上記の実メッシュ（`model3d-mesh/0.1`・622 頂点、`iterations: 3`・`weld: 1e-5 m`）へ適用。頂点・面は不変（差 0.0）、全 622 法線の単位長誤差 `2.22e-16` 以下、平均回転 6.137°・最大 36.186°・ゼロ法線 0 件を確認。
@@ -6060,7 +6061,7 @@ VRM 1.0 実キャラクターのメッシュ・リグ・.blend（Blender 5.2.4 L
 - **`mesh.extract_region`**: 確認済み `semantic_map` の面領域（`garment.sash.front`・502 面・298 頂点）を上記実メッシュから切り出し。`mapping` の新旧頂点・面対応の誤差 0.0、単位・軸の保持を独立確認。
 - **`check.structure`**: 上記実メッシュ（622 頂点・topology SHA-256 一致）と実リグの組で合格（`pass: true`）を確認。頂点数を 639 へ改変し重み合計を 2.5 に壊した不正リグでは `pass: false`（頂点数不一致・未割当 17 件・合計不整合 1 件の計 3 件）を検出。
 - **`check.penetration`・`collision.push_out`**: 実キャラクターの裾メッシュ（622 頂点）と閉じたコライダー（162 頂点）で、押し出し前は内側 129 頂点・最大深さ 0.04979 m を検出。公開 NumPy 操作 `collision.push_out`（`clearance: 0.005 m`）で 153 頂点を押し出し（最大移動 0.05479 m、`deltas` と座標差の誤差 0.0 m）、押し出し後の `check.penetration` で内側 0 頂点（`pass: true`）を確認。あわせて、全 3 頂点が閉じたコライダー外にあり面だけが貫通する例では `inside: 0`（見逃し）となる頂点検査の適用範囲を実測で確認。
-- **`texture.draw_mask`**: 実キャラクター正面描画（320 × 320）を `like` 入力とし、楕円（255）と口枠多角形くり抜き（0）・`feather: 3.0` で生成（覆い 14,444 画素・最大値 7,152 画素）。独立の画素読み出し（楕円内 255・くり抜き中心 4・外側 0）と PNG 目視を確認。
+- **`texture.draw_mask`**: 実キャラクター正面描画（320 × 320）を `like` 入力とし、楕円（255）と口枠多角形くり抜き（0）・`feather: 3.0` で生成（覆い 14,444 画素・値 255 の画素 7,152）。独立の画素読み出し（楕円内 255・くり抜き中心 4・外側 0）と PNG 目視を確認。
 - **`texture.render_view`**: 実キャラクターの頭メッシュ（2,838 頂点・4,395 三角形・実 UV）と実頭テクスチャを `-Y` 正射影（320 × 320）で描画。報告の `covered_pixels: 23,634` が独立の非背景画素数 23,634 と一致し、出力 PNG を目視確認。
-- **`blender.run_script`**: RecipeGraph の `blender.run_script` から実キャラクター `.blend` へ明示スクリプトと引数（`--out {report} --tag verify_b5`）を渡して実 Blender 5.2.4 で実行し、メッシュ 21・アーマチュア 1・頭 18,359 頂点の出力を独立確認。終了コード 2 で失敗するスクリプトでは `run_record.json` に `status: "failed"` とログが残ることを確認。
+- **`blender.run_script`**: RecipeGraph の `blender.run_script` から実キャラクター `.blend` へ明示スクリプトと引数（出力パス置換とタグ）を渡して実 Blender 5.2.4 で実行し、メッシュ 21・アーマチュア 1・頭 18,359 頂点の出力を独立確認。終了コード 2 で失敗するスクリプトでは `run_record.json` に `status: "failed"` とログが残ることを確認。
 - **`motion.inject_faults`**: 実キャラクターの 840 コマ実ダンス `.blend` へ左手首局所回転 `+95°`（100〜108 コマ）と腰の床沈み `-0.08 m`（140〜145 コマ）を注入。独立の Blender 読み出しで 104 コマの左手首角差 `95.0°`・142 コマの腰変位 `-0.08 m`、区間外（95・120・152 コマ）の腰変位 `0.0 m`・手首差 `0.075°` 以内を確認し、`check.animation`（90〜155 コマ、`expected` 照合）で注入 2 件中 2 件の検出を確認。
