@@ -4178,7 +4178,7 @@
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 5 / その他 6。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 4 / その他 7。"
         }
       ],
       "limitations": [
@@ -4396,8 +4396,8 @@
       "ids": [
         "mv.gate.voice"
       ],
-      "maturity": "verified",
-      "reason": "実分離ボーカルの 0〜60 秒で声候補を 7 区間抽出し、無音イントロと抽出区間の音量差を独立の RMS 計算で確認した。",
+      "maturity": "experimental",
+      "reason": "無音イントロと抽出区間の音量差を独立の RMS 計算で確認した。声区間の境界、誤検出、見逃しは独立した発声・非発声区間との照合が残る。",
       "scope": "Demucs で分離した FLAC ステムの 0〜60 秒で、RMS に基づく声候補区間の JSON 出力と無音イントロとの音量差を確認した。",
       "evidence": [
         {
@@ -4416,7 +4416,7 @@
         "伴奏混入の少ない分離ボーカルを前提とし、歌詞・歌唱時刻は人が試聴して確定する。"
       ],
       "promotion_criteria": [
-        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+        "verified への条件: 実分離ボーカルで、試聴などにより独立にラベル付けした発声・非発声区間を基準に、区間境界の時刻差、誤検出、見逃しを照合する。"
       ]
     },
     {
