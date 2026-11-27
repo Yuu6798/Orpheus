@@ -11,6 +11,7 @@ from . import StepResult, number, register, require, selected
 EXTRACT_PARAMETERS = ("slot", "material", "decode")
 APPLY_PARAMETERS = ("match", "min_replacements", "image_name", "preserve_image_datablocks", "blender", "timeout")
 APPLY_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "apply_texture.py"
+EYE_EMISSIVE_SCRIPT = APPLY_SCRIPT.with_name("eye_emissive_mask.py")
 
 
 PROJECTION_PARAMETERS = ("view", "alignment", "min_facing", "facing_ramp", "depth_tolerance", "expand", "max_stretch",
@@ -291,6 +292,67 @@ def apply_to_blend(inputs, parameters, outputs, context):
                    "unrelated_unchanged": report.get("unrelated_image_nodes_verified_unchanged"),
                    "atlas_size_wh": report.get("atlas_size_wh"), "packed_texture_sha256": report.get("packed_texture_sha256")}
     return StepResult(observations=[observation])
+
+
+def eye_emissive_settings(parameters):
+    from .face_ops import _name, _real
+
+    keys = ("material", "iris_box", "luminance", "sclera", "emissive_factor",
+            "blender", "addons", "blender_extensions", "timeout")
+    _refuse_unknown(parameters, keys, "texture.eye_emissive_mask")
+
+    def values(key, length, default=None):
+        value = parameters.get(key, default)
+        if not isinstance(value, list) or len(value) != length:
+            raise ToolError(f"{key} は 0〜1 の数 {length} 個の配列にしてください")
+        return [_real(component, key, 0, maximum=1) for component in value]
+
+    box = values("iris_box", 4)
+    if box[0] >= box[2] or box[1] >= box[3]:
+        raise ToolError("iris_box は画像左上を原点とし [左, 上, 右, 下] の幅と高さのある範囲にしてください")
+    luminance = values("luminance", 2, [0.24, 0.54])
+    if luminance[0] >= luminance[1]:
+        raise ToolError("luminance は [無発光のしきい値, 最大発光のしきい値] の昇順にしてください")
+    return {"material": _name(parameters.get("material"), "material"), "iris_box": box, "luminance": luminance,
+            "sclera": _real(parameters.get("sclera", 0.08), "sclera", 0, maximum=1),
+            "emissive_factor": values("emissive_factor", 3, [1, 1, 1])}
+
+
+@register("texture.eye_emissive_mask", inputs=("blend",), outputs=("blend", "report", "mask"), cacheable=False,
+          summary="MToon の目の色アトラスから瞳孔に光を足さない発光マスクを作る。material と iris_box（画像左上原点の"
+                  "正規化矩形）を指定する。発光 PNG を詰め、MToon とシェーダーの両方へ設定する。Blender と VRM Add-on が必要",
+          capability={"aliases": ["瞳孔を保護した発光マスク", "目の発光テクスチャ", "pupil-safe iris emission mask"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def texture_eye_emissive_mask(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from ..io import read_json
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+    from .vrm_ops import VRM_ADDON
+
+    operation = "texture.eye_emissive_mask"
+    require(inputs, ("blend",), operation)
+    settings = eye_emissive_settings(parameters)
+    if not {"blend", "report"} <= outputs.keys():
+        raise ToolError(f"{operation} には outputs の blend と report が要ります")
+    for key, suffix in (("blend", ".blend"), ("mask", ".png")):
+        if key in outputs and Path(outputs[key]).suffix.lower() != suffix:
+            raise ToolError(f"outputs.{key} は {suffix} にしてください")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context, default=(VRM_ADDON,))
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / "eye_emissive_settings.json"
+    atomic_json(settings_path, settings)
+    args = ["--blend", inputs["blend"], "--settings", settings_path, "--out-blend", outputs["blend"], "--report", outputs["report"]]
+    if "mask" in outputs:
+        args.extend(("--mask", outputs["mask"]))
+    record = launcher.run_blender(blender, EYE_EMISSIVE_SCRIPT, None, args, log=step_dir / "blender.log", timeout=_timeout(parameters),
+                                  addons=addons, extensions=extensions)
+    report = read_json(outputs["report"])
+    return StepResult(observations=[{"kind": "eye_emissive_mask", "material": settings["material"],
+                                     "protected_iris_pixels": report["protected_iris_pixels"], "iris_mask_max": report["iris_mask_max"],
+                                     "packed_sha256": report["packed_sha256"], "blender_version": record["blender_version"]}])
 
 
 @register("texture.render_view", inputs=("mesh", "texture"), outputs=("image", "report"),

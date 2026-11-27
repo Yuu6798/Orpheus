@@ -6,6 +6,7 @@
 - cloth.pushout: 衣装が体に入った分を、骨盤と太ももの閉じた筒の外へ、層ごとの距離で押し出す補正（Shrinkwrap）を付ける。
 - cloth.lining_gap: 重なった布の裏地を、表から決まった距離まで内側へ離す（形を書き換える。モデル用）。
 - cloth.follow: 上に重なる布を、下の布の表面と同じ動きにする（骨の重みを、すぐ下の布の重みで置きかえる）。
+- cloth.smooth_weights: 揺れものの骨の重みを、裾などのメッシュの辺に沿ってならす。
 - check.cloth_over: 上に重なる布が、下の布の内側へ入っているコマを数える。
 - cloth.patch_lining: 布の内側から見て裏地の色でなく見える所に、裏地の色の当て布（面）を足す。
 - check.cloth_layers: 重なった布の順番が入れ替わっているコマを数える。
@@ -338,6 +339,7 @@ def cloth_lining_gap(inputs, parameters, outputs, context):
 
 
 FOLLOW_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_follow.py"
+WEIGHTS_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_smooth_weights.py"
 OVER_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "cloth_over.py"
 
 
@@ -352,7 +354,8 @@ def _positive(parameters, key, default, integer=False, exclusive=True):
 @register("cloth.follow", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
           summary="上に重なる布（follower。腰の垂れなど）を、下の布（leader。裾など）の表面と同じ動きにする（Blender の中で）: 初期姿勢で、"
                   "上の布の頂点ごとに、下の布のいちばん外の面の頂点を k 個さがし、その骨の重みを距離で混ぜた値で、上の布の骨の重みを置きかえる"
-                  "（上の布自身の揺れものの骨は使わなくなる）。1 頂点の骨は max_influences 本まで。踊りの .blend にもモデルの .blend にも使える。"
+                  "（上の布自身の揺れものの骨は使わなくなる）。include_groups / exclude_groups で追従させる頂点を選べる。"
+                  "1 頂点の骨は max_influences 本まで。踊りの .blend にもモデルの .blend にも使える。"
                   "元のファイルは変えない")
 def cloth_follow(inputs, parameters, outputs, context):
     from ..blender_adapter import launcher
@@ -360,7 +363,7 @@ def cloth_follow(inputs, parameters, outputs, context):
     from .motion_ops import _blender, _timeout
     require(inputs, ("blend",), "cloth.follow")
     allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "follower", "leader", "axis_bone", "k", "max_influences",
-               "layer_gap"}
+               "layer_gap", "include_groups", "exclude_groups"}
     unknown = set(parameters) - allowed
     if unknown:
         raise ToolError(f"cloth.follow の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
@@ -371,6 +374,9 @@ def cloth_follow(inputs, parameters, outputs, context):
         settings["armature"] = _name(parameters, "armature", "cloth.follow")
     settings.update({"k": _positive(parameters, "k", 6, integer=True), "max_influences": _positive(parameters, "max_influences", 4, integer=True),
                      "layer_gap": float(_positive(parameters, "layer_gap", 0.015))})
+    for key in ("include_groups", "exclude_groups"):
+        if key in parameters:
+            settings[key] = _names(parameters[key], key)
     missing = [name for name in ("blend", "report") if name not in outputs]
     if missing:
         raise ToolError(f"cloth.follow には outputs の {', '.join(missing)} が要ります")
@@ -387,6 +393,49 @@ def cloth_follow(inputs, parameters, outputs, context):
                    "blender_version": record["blender_version"],
                    **{key: report.get(key) for key in ("follower", "leader", "reweighted", "leader_outer_verts", "farthest_neighbour_mm",
                                                         "verts_cut_to_max_influences", "largest_weight_share_cut")}}
+    observation.update({key: report[key] for key in ("follower_selected_verts", "follower_excluded_verts") if key in report})
+    return StepResult(observations=[observation])
+
+
+@register("cloth.smooth_weights", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="裾などの揺れものの骨の重みを、メッシュの辺に沿ってならす（Blender の中で）。groups で揺れものの変形骨を指定する。"
+                  "腰など範囲外の骨の重みを増やさず、対象頂点の骨を 4 本までにして合計を 1 にする。元のファイルは変えない",
+          capability={"aliases": ["裾 割れ ウェイト 平滑化", "SpringBone Laplacian skin weights"],
+                      "tools": ["blender"], "parameters": {"status": "docs", "schema": None}})
+def cloth_smooth_weights(inputs, parameters, outputs, context):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+
+    operation = "cloth.smooth_weights"
+    require(inputs, ("blend",), operation)
+    allowed = {"blender", "addons", "blender_extensions", "timeout", "armature", "mesh", "groups", "iterations", "alpha"}
+    if unknown := set(parameters) - allowed:
+        raise ToolError(f"{operation} の知らないパラメーター: {sorted(unknown)}（使えるのは {sorted(allowed)}）")
+    settings = {
+        "mesh": _name(parameters, "mesh", operation),
+        "groups": _names(parameters.get("groups"), "groups"),
+        "iterations": _positive(parameters, "iterations", 16, integer=True),
+        "alpha": float(_positive(parameters, "alpha", 0.5)),
+    }
+    if settings["alpha"] > 1:
+        raise ToolError(f"alpha は 1 以下にしてください: {settings['alpha']!r}")
+    if "armature" in parameters:
+        settings["armature"] = _name(parameters, "armature", operation)
+    if missing := [name for name in ("blend", "report") if name not in outputs]:
+        raise ToolError(f"{operation} には outputs の {', '.join(missing)} が要ります")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    settings_path = Path(context.step_dir) / "smooth_weights_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(blender, WEIGHTS_SCRIPT, None, ["--blend", inputs["blend"], "--settings", str(settings_path),
+                                                                 "--out-blend", outputs["blend"], "--report", outputs["report"]],
+                                  log=Path(context.step_dir) / "blender.log", timeout=_timeout(parameters), addons=addons,
+                                  extensions=extensions)
+    report = read_json(outputs["report"])
+    observation = {"kind": "cloth_smooth_weights", "exit_code": record["exit_code"], "seconds": record["seconds"],
+                   "blender_version": record["blender_version"],
+                   **{key: report[key] for key in ("mesh", "target_vertices", "changed_vertices", "trimmed_vertices", "max_influences_after")}}
     return StepResult(observations=[observation])
 
 

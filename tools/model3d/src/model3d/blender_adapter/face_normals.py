@@ -56,29 +56,26 @@ def _turns(before, after):
     return np.degrees(np.arctan2(cross, dot))
 
 
-def _apply(obj, settings, unit):
+def _world_corners(obj, unit):
     mesh = obj.data
-    slots = {index for index, slot in enumerate(obj.material_slots)
-             if slot.material is not None and slot.material.name == settings["material"]}
-    selected = np.zeros(len(mesh.loops), dtype=bool)
-    for polygon in mesh.polygons:
-        if polygon.material_index in slots:
-            selected[polygon.loop_start:polygon.loop_start + polygon.loop_total] = True
-    if not selected.any():
-        raise ValueError(f"{obj.name} に指定材質の面がありません: {settings['material']}")
     matrix = np.asarray(obj.matrix_world, dtype=np.float64)
     coords = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
     mesh.vertices.foreach_get("co", coords)
     world = (coords.reshape(-1, 3) @ matrix[:3, :3].T + matrix[:3, 3]) * unit
     loops = np.empty(len(mesh.loops), dtype=np.int64)
     mesh.loops.foreach_get("vertex_index", loops)
-    old = _corner_normals(mesh)
-    new = old.copy()
-    new[selected] = custom_normals(world[loops[selected]], old[selected], matrix[:3, :3], settings.get("face"), settings.get("neck"))
+    return world[loops], matrix[:3, :3]
+
+
+def _write_normals(obj, old, new, selected, preserve_auto=False):
     if not np.isfinite(new).all():
         raise ValueError("計算したカスタム法線に有限でない値があります")
+    mesh = obj.data
     copied = False
     if not np.array_equal(new, old):
+        if preserve_auto and not mesh.has_custom_normals:
+            # 0 は Blender の自動法線を使う印。マスク外を固定法線に変えない。
+            new[~selected] = 0
         copied = mesh.users > 1
         if copied:
             mesh = mesh.copy()
@@ -92,6 +89,63 @@ def _apply(obj, settings, unit):
             "other_corners_max_turn_deg": float(angle[~selected].max(initial=0.0)), "mesh_copied": copied}
 
 
+def _apply(obj, settings, unit):
+    mesh = obj.data
+    slots = {index for index, slot in enumerate(obj.material_slots)
+             if slot.material is not None and slot.material.name == settings["material"]}
+    selected = np.zeros(len(mesh.loops), dtype=bool)
+    for polygon in mesh.polygons:
+        if polygon.material_index in slots:
+            selected[polygon.loop_start:polygon.loop_start + polygon.loop_total] = True
+    if not selected.any():
+        raise ValueError(f"{obj.name} に指定材質の面がありません: {settings['material']}")
+    world, linear = _world_corners(obj, unit)
+    old = _corner_normals(mesh)
+    new = old.copy()
+    new[selected] = custom_normals(world[selected], old[selected], linear, settings.get("face"), settings.get("neck"))
+    return _write_normals(obj, old, new, selected)
+
+
+def crown_normals(points, corners, linear, settings):
+    """中心から放射状に楕円体へ投影し、その点の法線を高さマスクで混ぜる。"""
+    low, high = settings["height"]
+    if not np.isfinite(points).all():
+        raise ValueError("世界座標に有限でない値があります")
+    selected = points[:, 2] > low
+    mapped = corners.copy()
+    if not selected.any() or not settings["weight"]:
+        return mapped, selected
+    try:
+        inverse = np.linalg.inv(linear)
+    except np.linalg.LinAlgError as error:
+        raise ValueError("物体の変換に逆行列がありません。縮尺 0 の軸を確認してください") from error
+    if not np.isfinite(inverse).all():
+        raise ValueError("物体の変換に有限でない値があります")
+    original = normalized(corners[selected] @ inverse, corners[selected])
+    radii = np.asarray(settings["radii"])
+    # 投影点と元の点の位置ベクトルは平行なので、楕円体上の距離を解かずに勾配の向きを求められる。
+    with np.errstate(over="ignore", invalid="ignore"):
+        outward = (points[selected] - settings["centre"]) / radii / radii
+    if not np.isfinite(outward).all():
+        raise ValueError("楕円体の法線を計算できません。centre と radii を確認してください")
+    target = normalized(outward, original)
+    ramp = np.clip((points[selected, 2] - low) / (high - low), 0, 1)
+    weight = (settings["weight"] * ramp * ramp * (3 - 2 * ramp))[:, None]
+    current = normalized((1 - weight) * original + weight * target, original)
+    mapped[selected] = np.where(np.any(current != original, axis=1, keepdims=True),
+                                normalized(current @ linear, corners[selected]), corners[selected])
+    return mapped, selected
+
+
+def _apply_crown(obj, settings, unit):
+    points, linear = _world_corners(obj, unit)
+    old = _corner_normals(obj.data)
+    new, selected = crown_normals(points, old, linear, settings)
+    if not selected.any():
+        raise ValueError(f"{obj.name} に height の下端より高い面の角がありません")
+    return {"object": obj.name, **_write_normals(obj, old, new, selected, preserve_auto=True)}
+
+
 def main(argv=None):
     import bpy
 
@@ -100,14 +154,21 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     for argument in ("blend", "settings", "out-blend", "report"):
         parser.add_argument(f"--{argument}", type=Path, required=True)
+    parser.add_argument("--crown", action="store_true")
     args = parser.parse_args(argv)
     settings = json.loads(args.settings.read_text(encoding="utf-8"))
     bpy.ops.wm.open_mainfile(filepath=str(args.blend.resolve()), use_scripts=False)
-    obj = bpy.context.scene.objects.get(settings["object"])
-    if obj is None or obj.type != "MESH":
-        raise ValueError(f"対象のメッシュがありません: {settings['object']}")
-    values = _apply(obj, settings, bpy.context.scene.unit_settings.scale_length)
-    report = {"schema_version": "model3d-face-normals/0.1", "settings": settings, **values}
+    names = settings["objects"] if args.crown else [settings["object"]]
+    objects = [bpy.context.scene.objects.get(name) for name in names]
+    for name, obj in zip(names, objects):
+        if obj is None or obj.type != "MESH":
+            raise ValueError(f"対象のメッシュがありません: {name}")
+    unit = bpy.context.scene.unit_settings.scale_length
+    if args.crown:
+        report = {"schema_version": "model3d-crown-normals/0.1", "settings": settings,
+                  "objects": [_apply_crown(obj, settings, unit) for obj in objects]}
+    else:
+        report = {"schema_version": "model3d-face-normals/0.1", "settings": settings, **_apply(objects[0], settings, unit)}
     bpy.ops.wm.save_as_mainfile(filepath=str(args.out_blend.resolve()), copy=True)
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 

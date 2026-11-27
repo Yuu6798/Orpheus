@@ -351,6 +351,26 @@ def face_normals_settings(parameters):
     return settings
 
 
+def _run_normals(operation, inputs, parameters, outputs, context, settings, args=()):
+    from ..blender_adapter import launcher
+    from .blender_ops import blender_addons
+    from .motion_ops import _blender, _timeout
+
+    if not {"blend", "report"} <= outputs.keys():
+        raise ToolError(f"{operation} には outputs の blend と report が要ります")
+    blender = _blender(parameters, context, operation)
+    addons, extensions = blender_addons(parameters, context)
+    step_dir = Path(context.step_dir)
+    settings_path = step_dir / f"{operation.removeprefix('model.')}_settings.json"
+    atomic_json(settings_path, settings)
+    record = launcher.run_blender(
+        blender, FACE_NORMALS_SCRIPT, None,
+        ["--blend", inputs["blend"], "--settings", settings_path, "--out-blend", outputs["blend"], "--report", outputs["report"], *args],
+        log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions,
+    )
+    return read_json(outputs["report"]), record["blender_version"]
+
+
 @register("model.face_normals", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
           summary="指定材質の面のカスタム法線を、顔は縦に伸ばした放射方向へ、首は水平の放射方向へ混ぜて .blend に保存する。"
                   "中心・強さ・首の高さは設定で指定する。頂点位置を動かさない。Blender が必要",
@@ -358,28 +378,44 @@ def face_normals_settings(parameters):
                       "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
                       "parameters": {"status": "docs", "schema": None}})
 def face_normals(inputs, parameters, outputs, context):
-    from ..blender_adapter import launcher
-    from .blender_ops import blender_addons
-    from .motion_ops import _blender, _timeout
-
     operation = "model.face_normals"
     require(inputs, ("blend",), operation)
-    settings = face_normals_settings(parameters)
-    if not {"blend", "report"} <= outputs.keys():
-        raise ToolError(f"{operation} には outputs の blend と report が要ります")
-    blender = _blender(parameters, context, operation)
-    addons, extensions = blender_addons(parameters, context)
-    step_dir = Path(context.step_dir)
-    settings_path = step_dir / "face_normals_settings.json"
-    atomic_json(settings_path, settings)
-    record = launcher.run_blender(
-        blender, FACE_NORMALS_SCRIPT, None,
-        ["--blend", inputs["blend"], "--settings", settings_path, "--out-blend", outputs["blend"], "--report", outputs["report"]],
-        log=step_dir / "blender.log", timeout=_timeout(parameters), addons=addons, extensions=extensions,
-    )
-    report = read_json(outputs["report"])
+    report, version = _run_normals(operation, inputs, parameters, outputs, context, face_normals_settings(parameters))
     return StepResult(observations=[{"kind": "face_normals", "target_corners": report["target_corners"],
-                                     "changed_corners": report["changed_corners"], "blender_version": record["blender_version"]}])
+                                     "changed_corners": report["changed_corners"], "blender_version": version}])
+
+
+def crown_normals_settings(parameters):
+    _refuse_unknown(parameters, COMMON | {"objects", "centre", "radii", "height", "weight"}, "model.crown_normals")
+    objects = parameters.get("objects")
+    if (not isinstance(objects, list) or not objects or not all(isinstance(name, str) and name.strip() for name in objects)
+            or len(set(objects)) != len(objects)):
+        raise ToolError("objects は重ならないメッシュ名の配列にしてください")
+    centre = _normal_coordinates(parameters.get("centre"), 3, "centre")
+    radii = _normal_coordinates(parameters.get("radii"), 3, "radii")
+    if any(radius <= 0 for radius in radii):
+        raise ToolError("radii は正の半径 [X, Y, Z] にしてください")
+    height = _span(parameters.get("height"), "height")
+    if not math.isfinite(height[1] - height[0]):
+        raise ToolError("height の幅を有限の数にしてください")
+    return {"objects": objects, "centre": centre, "radii": radii, "height": height,
+            "weight": _real(parameters.get("weight", 0.7), "weight", 0, maximum=1)}
+
+
+@register("model.crown_normals", inputs=("blend",), outputs=("blend", "report"), cacheable=False,
+          summary="髪の頭頂の面の角に楕円体の法線を転写する。objects を指定し、centre・radii・height（世界座標系、m）で"
+                  "ドームと高さマスクを決める。height の下端から上端にかけて weight（既定 0.7）まで混ぜる。Blender が必要",
+          capability={"aliases": ["頭頂のドーム法線を転写", "髪の影をなめらかにする", "crown z-masked hair dome normals"],
+                      "tools": ["blender"], "network_mode": "never", "external_process_mode": "always",
+                      "parameters": {"status": "docs", "schema": None}})
+def model_crown_normals(inputs, parameters, outputs, context):
+    operation = "model.crown_normals"
+    require(inputs, ("blend",), operation)
+    if "blend" in outputs and Path(outputs["blend"]).suffix.lower() != ".blend":
+        raise ToolError(f"{operation} の outputs.blend は .blend にしてください")
+    settings = crown_normals_settings(parameters)
+    report, version = _run_normals(operation, inputs, parameters, outputs, context, settings, args=("--crown",))
+    return StepResult(observations=[{"kind": "crown_normals", "objects": report["objects"], "blender_version": version}])
 
 
 FACE_SHEET_SCRIPT = Path(__file__).resolve().parents[1] / "blender_adapter" / "face_sheet.py"

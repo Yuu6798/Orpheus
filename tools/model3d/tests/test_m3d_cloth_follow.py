@@ -57,6 +57,23 @@ def test_too_many_bones_are_cut_and_the_rest_rescaled():
     assert cf.blend_weights([(0.01, [("a", 0.0)])], 4) == (None, False, 0.0)          # 重みが無ければ置きかえない
 
 
+def test_follow_selects_by_original_positive_membership_and_exclusion_wins():
+    vertices = [
+        NS(groups=[NS(group=1, weight=0.5)]),
+        NS(groups=[NS(group=1, weight=0.5), NS(group=2, weight=0.1)]),
+        NS(groups=[NS(group=1, weight=0.0)]),
+        NS(groups=[NS(group=2, weight=0.0)]),
+    ]
+    mesh = NS(name="Lining", data=NS(vertices=vertices), vertex_groups=[NS(name="back", index=1), NS(name="slit", index=2)])
+    assert cf.selected_vertices(mesh, [], []) == vertices
+    assert cf.selected_vertices(mesh, ["back"], ["slit"]) == [vertices[0]]
+    assert cf.selected_vertices(mesh, [], ["slit"]) == [vertices[0], *vertices[2:]]
+    with pytest.raises(SystemExit, match="missing"):
+        cf.selected_vertices(mesh, ["missing"], [])
+    with pytest.raises(SystemExit, match="選ばれた頂点がありません"):
+        cf.selected_vertices(mesh, ["back"], ["back"])
+
+
 def test_over_summary_counts_frames_runs_and_means():
     raw = {"over": "Panels", "under": "Skirt", "over_verts": 700, "ignored_at_rest": 16,
            "rows": [{"frame": 1, "verts": 0, "max_mm": 0.0}, {"frame": 2, "verts": 5, "max_mm": 4.0}, {"frame": 3, "verts": 40, "max_mm": 12.0},
@@ -102,13 +119,14 @@ json.dump(report, open(value("--report"), "w", encoding="utf-8"))
 '''
 
 
-def test_follow_and_over_steps(tmp_path):
+@pytest.mark.parametrize("mask", [{}, {"include_groups": ["Back", "Side"], "exclude_groups": ["Slit"]}])
+def test_follow_and_over_steps(tmp_path, mask):
     from model3d import executor
     blender = str(stand_in_executable(tmp_path, "blender", STAND_IN))
     (tmp_path / "model.blend").write_bytes(b"model")
     atomic_json(tmp_path / "recipe.json", {"schema_version": "model3d-recipe/0.1", "name": "follow", "inputs": {"model": {"path": "model.blend"}},
                                            "steps": [{"id": "follow", "operation": "cloth.follow", "inputs": {"blend": "$inputs.model"},
-                                                      "parameters": {"blender": blender, "follower": "Panels", "leader": "Skirt", "axis_bone": "hips"},
+                                                      "parameters": {"blender": blender, "follower": "Panels", "leader": "Skirt", "axis_bone": "hips", **mask},
                                                       "outputs": {"blend": "follow.blend", "report": "follow.json"}},
                                                      {"id": "over", "operation": "check.cloth_over", "inputs": {"blend": "$steps.follow.blend"},
                                                       "parameters": {"blender": blender, "over": "Panels", "under": "Skirt", "axis_bone": "hips",
@@ -116,7 +134,8 @@ def test_follow_and_over_steps(tmp_path):
                                                       "outputs": {"report": "over.json"}}]})
     result = executor.run_recipe(tmp_path / "recipe.json", tmp_path / "runs")
     follow = json.loads(Path(result["steps"]["follow"]["artifacts"]["report"]).read_text(encoding="utf-8"))
-    assert follow["settings"] == {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "k": 6, "max_influences": 4, "layer_gap": 0.015}
+    assert follow["settings"] == {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "k": 6, "max_influences": 4,
+                                  "layer_gap": 0.015, **mask}
     over = json.loads(Path(result["steps"]["over"]["artifacts"]["report"]).read_text(encoding="utf-8"))
     assert result["steps"]["over"]["status"] == "needs_review" and over["pass"] is False and over["frames_inside"] == 1
 
@@ -134,6 +153,8 @@ class Context:
     ("cloth.follow", {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "k": 0}, "k"),
     ("cloth.follow", {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "max_influences": 2.5}, "max_influences"),
     ("cloth.follow", {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "bones": []}, "知らない"),
+    ("cloth.follow", {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "include_groups": "Back"}, "include_groups"),
+    ("cloth.follow", {"follower": "Panels", "leader": "Skirt", "axis_bone": "hips", "exclude_groups": ["Slit", "Slit"]}, "exclude_groups"),
     ("check.cloth_over", {"over": "Panels", "under": "Skirt", "axis_bone": "hips", "depth": 0}, "depth"),
     ("check.cloth_over", {"over": "Panels", "under": "Skirt", "axis_bone": "hips", "frames": [3, 1]}, "frames"),
     ("check.cloth_over", {"over": "Panels", "under": "Skirt", "axis_bone": "hips", "max_frames": -1}, "max_frames"),

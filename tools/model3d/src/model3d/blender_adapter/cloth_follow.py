@@ -12,6 +12,7 @@
 上の布自身の揺れものの骨は使わなくなる。1 頂点に付ける骨は max_influences 本まで（重みの大きい順に残して合計を 1 に直す。VRM は 4 本まで）。
 下の布の「いちばん外の面」は、縦の軸（axis_bone の付け根を通る）から頂点へ水平に線を引き、外側の layer_gap 以内に下の布の面が無い頂点。
 骨の重みは、アーマチュアの骨の名前の頂点グループだけを読み・書く（選択などのグループは変えない）。踊りの .blend にもモデルの .blend にも使える。
+include_groups・exclude_groups で follower の頂点を選べる。元の重みが正の頂点で選び、除外を優先する。
 
 報告は model3d-cloth-follow/0.1。**検証**: 本物の Blender 5.2.4 で、3 作目の VRM のダンスで、リポジトリの外の台本と同じ重みになることを
 確かめた（docs/model3d.md）。CI には Blender が無い（重みの混ぜ方と切り方はテストする）。
@@ -61,6 +62,26 @@ def blend_weights(neighbours, limit):
     return {name: value / kept_total for name, value in kept}, cut, dropped
 
 
+def selected_vertices(obj, include_groups, exclude_groups):
+    """元のグループで範囲を決める。除外は、含めるグループと重なる頂点にも効く。"""
+    if not include_groups and not exclude_groups:
+        return list(obj.data.vertices)
+    group_ids = {group.name: group.index for group in obj.vertex_groups}
+    unknown = (set(include_groups) | set(exclude_groups)).difference(group_ids)
+    if unknown:
+        raise SystemExit(f"{obj.name} の follower に頂点グループがありません: {sorted(unknown)}")
+    include = {group_ids[name] for name in include_groups}
+    exclude = {group_ids[name] for name in exclude_groups}
+    selected = []
+    for vertex in obj.data.vertices:
+        memberships = {group.group for group in vertex.groups if group.weight > 0}
+        if (not include or include & memberships) and not exclude & memberships:
+            selected.append(vertex)
+    if not selected:
+        raise SystemExit(f"{obj.name} の include_groups / exclude_groups で選ばれた頂点がありません")
+    return selected
+
+
 def main(argv=None):
     import bpy  # Blender の中でだけ使える
     from mathutils import Vector, kdtree
@@ -83,10 +104,13 @@ def main(argv=None):
     for label, obj, name in (("follower", follower, s["follower"]), ("leader", leader, s["leader"])):
         if obj is None or obj.type != "MESH":
             raise SystemExit(f"{label} のメッシュがありません: {name}")
-    if mesh_problem(follower):                           # 重みを書きかえる（共有しているメッシュは全部に効く）
-        raise SystemExit(mesh_problem(follower))
+    if problem := mesh_problem(follower):                # 重みを書きかえる（共有しているメッシュは全部に効く）
+        raise SystemExit(problem)
     if s["axis_bone"] not in armature.data.bones:
         raise SystemExit(f"{armature.name} に縦の軸の骨 {s['axis_bone']} がありません（axis_bone）")
+    include_groups, exclude_groups = s.get("include_groups", []), s.get("exclude_groups", [])
+    masked = bool(include_groups or exclude_groups)
+    selected = selected_vertices(follower, include_groups, exclude_groups)
     saved = armature.data.pose_position
     armature.data.pose_position = "REST"
     bpy.context.view_layer.update()
@@ -115,18 +139,8 @@ def main(argv=None):
     kd.balance()
 
     leader_groups = {g.index: g.name for g in leader.vertex_groups if g.name in bones}
-    for g in leader.vertex_groups:                       # 足すグループは下の布のグループの並びで（決まった並び）
-        if g.name in bones and follower.vertex_groups.get(g.name) is None:
-            follower.vertex_groups.new(name=g.name)
-    own = [g for g in follower.vertex_groups if g.name in bones]
-    before = {}
-    for v in follower.data.vertices:
-        for g in v.groups:
-            name = follower.vertex_groups[g.group].name
-            if name in bones and g.weight > 0.01:
-                before[name] = before.get(name, 0) + 1
     plan, far, over_limit, most_dropped = [], 0.0, 0, 0.0
-    for v in follower.data.vertices:
+    for v in selected:
         p = follower.matrix_world @ v.co
         neighbours = []
         for _, index, dist in kd.find_n(p, s["k"]):
@@ -139,9 +153,26 @@ def main(argv=None):
             over_limit += 1
             most_dropped = max(most_dropped, dropped)
         plan.append((v.index, weights))
+    # 全体を追従させるときは従来のグループ順にそろえ、範囲指定時は使うグループだけ作る。
+    transfer_groups = set(leader_groups.values())
+    if masked:
+        transfer_groups = {name for _, weights in plan for name, value in weights.items() if value >= 0.001}
+    for g in leader.vertex_groups:
+        if g.name in transfer_groups and follower.vertex_groups.get(g.name) is None:
+            follower.vertex_groups.new(name=g.name)
+    own = [g for g in follower.vertex_groups if g.name in bones]
+    reweighted = [i for i, _ in plan]
+    reweighted_ids = set(reweighted)
+    before, after = {}, {}
+    for v in follower.data.vertices:
+        for g in v.groups:
+            name = follower.vertex_groups[g.group].name
+            if name in bones and g.weight > 0.01:
+                before[name] = before.get(name, 0) + 1
+                if masked and v.index not in reweighted_ids:
+                    after[name] = after.get(name, 0) + 1
     for g in own:
-        g.remove([i for i, _ in plan])
-    after = {}
+        g.remove(reweighted)
     for i, weights in plan:
         for name, value in weights.items():
             if value < 0.001:
@@ -156,6 +187,8 @@ def main(argv=None):
               "leader_outer_verts": len(outer), "farthest_neighbour_mm": round(far * 1000, 1), "verts_cut_to_max_influences": over_limit,
               "largest_weight_share_cut": round(most_dropped, 3), "bones_before": dict(sorted(before.items(), key=lambda kv: -kv[1])),
               "bones_after": dict(sorted(after.items(), key=lambda kv: -kv[1])), "settings": s}
+    if masked:
+        report.update({"follower_selected_verts": len(selected), "follower_excluded_verts": len(follower.data.vertices) - len(selected)})
     os.makedirs(os.path.dirname(os.path.abspath(a.report)), exist_ok=True)
     with open(a.report, "w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=1)
