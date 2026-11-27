@@ -302,6 +302,27 @@
     },
     {
       "ids": [
+        "model3d.check.face_occlusion"
+      ],
+      "maturity": "verified",
+      "reason": "VRM 1.0 実キャラクターの 840 コマ実ダンスと実カメラ記録へ現行操作を実行し、clear・occluded・out_of_view の全分類と遮蔽検出を確認した。",
+      "scope": "動きの .blend とシーンカメラまたは model3d-cameras/0.1 を使い、指定した顔の目印と遮蔽候補メッシュの交差をコマごとに記録する。実素材の照合は Blender 5.2.4 LTS。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "本番カメラから顔の遮りを調べる（`check.face_occlusion`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクターの 840 コマ実ダンスと実カメラ記録に対し、3 目印（鼻・左右目）と 4 遮蔽候補（左右袖・長髪・体）で全 840 コマを検査。2,496 画面内目印のうち 2,183 clear・313 occluded（149 コマ）・24 out_of_view を記録。"
+        }
+      ],
+      "limitations": [
+        "ビューポート評価に基づく幾何学的な遮蔽検査であり、透ける材質・描画フック・モーションブラーは再現しない。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.check.frames"
       ],
       "maturity": "verified",
@@ -1676,6 +1697,27 @@
     },
     {
       "ids": [
+        "model3d.motion.resample_keypoints"
+      ],
+      "maturity": "verified",
+      "reason": "実ダンス動画から抽出した SAM 3D Body MHR70 npz へ 60 fps・24 fps 変換を実行し、独立の NumPy 検算と後段 motion.prepare_keypoints への接続を確認した。",
+      "scope": "等間隔の SAM 3D Body MHR70 npz を PCHIP 補間で別のフレームレートへ変換し、valid・used_full_image_box・cam_int_fixed を整合保持する（Blender 不要）。",
+      "evidence": [
+        {
+          "path": "docs/model3d-keypoint-resampling.md",
+          "section": "実素材確認",
+          "summary": "2026-11-27、実ダンス由来の MHR70 npz（300 コマ・30 fps）へ target_fps=60（600 コマ）と target_fps=24（240 コマ）を実行。独立 NumPy 検算で共有コマ誤差 0.0 m・PCHIP オーバーシュート 0.0 m・cam_int_fixed 一致、および後段 motion.prepare_keypoints への接続を確認。"
+        }
+      ],
+      "limitations": [
+        "入力は等間隔のフレームレートを前提とし、可変フレームレート動画の補正は含まない。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.motion.retarget"
       ],
       "maturity": "verified",
@@ -2404,6 +2446,27 @@
     },
     {
       "ids": [
+        "model3d.vrm.avoid_hair_arm"
+      ],
+      "maturity": "verified",
+      "reason": "長髪・広い袖を持つ VRM 1.0 実キャラクターの 840 コマ実ダンスへ現行操作を実行し、BVH 交差三角形組の大幅低減と非対象骨の保持を独立に確認した。",
+      "scope": "動きを焼いた .blend に対し、指定した 3 骨の長髪鎖を腕・袖メッシュとの BVH 交差が減る角度へ探索・平滑化して回転キーを焼く。実素材の照合は Blender 5.2.4 LTS・VRM Add-on 4.10.5。",
+      "evidence": [
+        {
+          "path": "docs/model3d-hair-arm.md",
+          "section": "長髪を腕と袖からよける（`vrm.avoid_hair_arm`）",
+          "summary": "2026-11-27、VRM 1.0 実キャラクターの 840 コマ実ダンス（左右前髪 2 鎖・腕と袖コライダー・sample_step=6）へ実行。BVH 交差組が延べ 43,881 → 14,254（−67.5%、最大回転角 左 52°・右 56°）へ減少し、仕様どおり needs_review を返却。独立読み出しで非対象の胴・腕・袖骨の保持（最大 0.051°）を確認。"
+        }
+      ],
+      "limitations": [
+        "有限角度探索のためすべての交差を 0 にできるとは限らず、三角形交差を伴わない完全な包み込みやサブフレームの見え方は対象外。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
         "model3d.vrm.bake_springs"
       ],
       "maturity": "verified",
@@ -2440,6 +2503,27 @@
       ],
       "limitations": [
         "記載したBlender・アドオン版での確認。異なる版や別構造への一般化は未保証。"
+      ],
+      "promotion_criteria": [
+        "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
+      ]
+    },
+    {
+      "ids": [
+        "model3d.vrm.drape_sleeves"
+      ],
+      "maturity": "verified",
+      "reason": "広い和服袖を持つ VRM 1.0 実キャラクターの実ダンスへ現行操作を実行し、焼き付け読み戻し精度と対象外骨・区間外コマの保持を独立に確認した。",
+      "scope": "回転を焼いた .blend で胸の高さや頭への近さに応じて広い袖の鎖を下・外・後ろへ垂らし、時間平滑化して回転キーを焼く。実素材の照合は Blender 5.2.4 LTS・VRM Add-on 4.10.5。",
+      "evidence": [
+        {
+          "path": "docs/model3d.md",
+          "section": "胸や頭に寄った袖を垂らす（`vrm.drape_sleeves`）",
+          "summary": "2026-11-27、広い袖 6 鎖（18 骨）を持つ VRM 1.0 実キャラクターの 840 コマ実ダンスの 1〜240 コマへ適用。240 コマ・4,320 キーを書き込み、bake_check_deg=6.13e−5°、左右最大効き目 0.792・0.753。独立読み出しで対象袖の最大 63.40° 回転と、非対象骨（最大 0.033°）・区間外コマ（最大 0.051°）の保持を確認。"
+        }
+      ],
+      "limitations": [
+        "胸・頭と袖根元の骨位置に基づく補正であり、袖メッシュやカメラからの顔遮蔽そのものは直接測らない（check.face_occlusion と併用する）。"
       ],
       "promotion_criteria": [
         "stable への条件: 確認範囲を明記した上で、入出力・設定の互換方針、対応環境、変更時の移行方法を固定し、正式契約として承認する。"
