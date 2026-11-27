@@ -95,3 +95,11 @@ uv run model3d character-roundtrip portable.json --blender /path/to/blender --ou
 ```
 
 すでに描画してある動画同士を並べる場合は [同時刻の比較シート](sheet.md) を使える。作品固有の骨名や演技の時刻は各作品の設定に置く。
+
+## 実素材確認（2026-11-27）
+
+VRM 1.0 実キャラクターの実ダンス `.blend` と、同一モーションを単一アニメーションとして書き出した `.glb` を用い、Blender 5.2.4 LTS で `check.character_roundtrip` → `review.character_views` を RecipeGraph から連続実行して照合した。
+
+- **`check.character_roundtrip`**: 3 コマ（1・15・25）で左前腕（ねじり補助骨を含む 6 頂点グループ・9 頂点・レスト骨長 `0.194907 m`）の断面比 `1.0000015 / 1.0000007 / 1.0000012`、まばたき形状キー評価値 `0.0 / 0.85000002 / 0.22037041`（原本と配布版の差 `0.0`）を確認し、独立の Blender depsgraph 読み出しと一致した。
+- **`review.character_views`**: 上記の `roundtrip.json` を入力として接続し、立ち姿（`rest`）・まばたき最大コマ（`peak`＋`disable` 列）・`finding` による左前腕イベントの 3 イベント × 6 視点で 43 枚の PNG、`index.html`、`views/cameras.json`、`sources.json` を生成し、出力画像を目視確認した。
+
