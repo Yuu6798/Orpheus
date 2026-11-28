@@ -404,3 +404,27 @@ def test_frozen_frames_follow_the_inspect_rule():
     assert quick_check.frozen(stopped, 24) == [(pytest.approx(12 / 24, abs=1e-3), pytest.approx(16 / 24, abs=1e-3))]
     slow = [math.nan] + [0.001] * 12 + [0.0001] * 4 + [0.001] * 12             # 全体がゆっくりなら止まったとは読まない
     assert quick_check.frozen(slow, 24) == []
+
+
+def test_a_picture_too_small_to_zoom_keeps_every_key_at_zoom_one_or_more(tmp_path):
+    # 寄れない絵（寄りが zoom 1 で止まる）に山場や線を付けても、カメラのキーは schema の下限（zoom 1）を割らない
+    image = picture(tmp_path / "small.png", 600, 900)
+    for name, points in (("impact", dict(impact=(0.5, 0.8))),
+                         ("all", dict(zoom=1.0, focus=(0.5, 0.3), path=((0.4, 0.5), (0.6, 0.8)), impact=(0.6, 0.85)))):
+        quick.run(image, tmp_path / name, **points)
+        keys = json.loads((tmp_path / name / quick.SPEC).read_text(encoding="utf-8"))["camera"]["keys"]
+        assert min(key["zoom"] for key in keys) >= 1.0
+
+
+def test_render_checks_with_the_output_of_an_edited_timeline(tmp_path):
+    # timeline.json の fps を手で変えて描き直しても、確認は描いた動画の fps で数える（引数の fps のままだとコマが足りなくなる）
+    image = picture(tmp_path / "art.jpg", 1600, 900, seed=4)
+    out = tmp_path / "q"
+    quick.run(image, out, impact=(0.6, 0.7), size=(256, 144), seconds=5.0, fps=12)
+    timeline = json.loads((out / quick.TIMELINE).read_text(encoding="utf-8"))
+    timeline["output"]["fps"] = 6
+    (out / quick.TIMELINE).write_text(json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = quick.run(image, out, render=True)
+    assert summary["render"]["technical_pass"] and summary["check"]
+    assert quick._timeline_output(out, (256, 144), 12, 5.0) == ((256, 144), 6, 5.0)
+    assert quick._timeline_output(tmp_path / "missing", (256, 144), 12, 5.0) == ((256, 144), 12, 5.0)

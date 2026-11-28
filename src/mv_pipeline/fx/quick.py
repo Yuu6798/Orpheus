@@ -558,7 +558,7 @@ def _layout(base, image_size, size, share, framing, path, impact, impact_at, ful
         # 山場（か線の終わり）に着いた後も、着いた向きへ少しだけ流しながら引き始めてから向きを返す（揺れの間。着いた所で止まらない。
         # 向きを返す所では zoom が引き続けている）
         arrive_zoom, arrive, came_from = waypoints[-1][1], waypoints[-1][2], waypoints[-2][2]
-        settle_zoom = _floor4(arrive_zoom * SETTLE_ZOOM)
+        settle_zoom = max(1.0, _floor4(arrive_zoom * SETTLE_ZOOM))   # 寄れない絵（zoom 1）でも schema の下限 1 を守る
         view_diag = math.hypot(size[0] / (cover * arrive_zoom), size[1] / (cover * arrive_zoom))
         nudge = toward(came_from, arrive, SETTLE_SHARE * view_diag)
         pull_start = route_end + SETTLE_S
@@ -571,7 +571,7 @@ def _layout(base, image_size, size, share, framing, path, impact, impact_at, ful
     waypoints += pull
     keys = []
     for t, zoom, center in waypoints:
-        zoom = _floor4(zoom)                  # 丸めた zoom で視野を数えてから center を寄せる
+        zoom = max(1.0, _floor4(zoom))        # 丸めた zoom で視野を数えてから center を寄せる（schema の下限 1 を守る）
         cx, cy = clamp(center, zoom)
         keys.append({"t": round(t, 4), "zoom": zoom, "center": [round(cx, 4), round(cy, 4)]})
     times = [k["t"] for k in keys]
@@ -1103,19 +1103,32 @@ def run(image, out, focus=None, path=None, impact=None, size=None, seconds=None,
         from . import quick_check
         result = sequence.render_run(out / TIMELINE, None, 0.0, None, 1.0, False, _render_progress(progress), False, out / HOOKS)
         video = Path(result["video"])
-        atomic_json(out / INSPECT, inspect_data(layout, _relative(video, out), out_fps))
+        # timeline.json を手で直した（fps・大きさ・長さ）ときは、描いた動画に合わせてその値で確かめる
+        check_size, check_fps, check_seconds = _timeline_output(out, out_size, out_fps, layout["seconds"])
+        atomic_json(out / INSPECT, inspect_data(dict(layout, seconds=check_seconds), _relative(video, out), check_fps))
         summary["render"] = {"video": result["video"], "technical_pass": result["technical_pass"], "reused": result["reused"],
                              "seconds": result.get("seconds"), "warnings": result["warnings"]}
         report, _ = flashes.run(video)                 # mv gate flashes と同じ（報告は動画の横の *_flash_report）
-        check_layout = dict(layout, keys=_shot_keys(out, layout))
-        if check_layout["keys"] != layout["keys"]:   # shot.json を手で直したときは、そのカメラで数え直す
-            check_layout["edge"] = edge_times(check_layout, image_size, out_size, out_fps)
-        summary["check"] = quick_check.run(out, check_layout, image, image_size, out_size, out_fps, video, report)
+        check_layout = dict(layout, keys=_shot_keys(out, layout), seconds=check_seconds)
+        if check_layout["keys"] != layout["keys"] or (check_size, check_fps, check_seconds) != (tuple(out_size), out_fps, layout["seconds"]):
+            check_layout["edge"] = edge_times(check_layout, image_size, check_size, check_fps)   # 手で直したカメラ・出力で数え直す
+        summary["check"] = quick_check.run(out, check_layout, image, image_size, check_size, check_fps, video, report)
         summary["next"] = [f"{quick_check.CHECK_IMAGE} を見る（直すなら {PLAN} の表のとおり引数を変えて --render。"
                            f"任意: uv run mv inspect check {out_arg}/{INSPECT} --brief）"]
     summary["elapsed_s"] = round(time.monotonic() - began, 1)
     append_log(out, summary, argv_text, summary["elapsed_s"])
     return summary
+
+
+def _timeline_output(out, size, fps, seconds):
+    """OUT/timeline.json の出力の大きさ・fps・長さ（読めなければ引数の値）。"""
+    try:
+        data = read_json(Path(out) / TIMELINE)
+        output = data["output"]
+        return ((int(output["width"]), int(output["height"])), int(output.get("fps", fps)),
+                float(data.get("duration_s", seconds)))
+    except (OSError, KeyError, ValueError, TypeError, PipelineError):
+        return tuple(size), fps, seconds
 
 
 def _shot_keys(out, layout):
