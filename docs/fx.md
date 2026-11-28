@@ -1280,3 +1280,8 @@ timeline・clips が同じものを使う（`fx/render.py` からも同じ名前
 
 `uv sync --locked --extra fx` の後、pytest と、合成素材（320x180・2 秒）の `fx demo → fx render → technical_pass` を回す。
 これは構造検査であり、見た目や実素材での挙動の保証ではない。
+
+## 実素材確認（2026-11-27）
+
+- **`mv fx accept`**: 既存の実制作 fx run を複製し、`both`（`accepted`）と `light`（`hold`）を記録。`acceptance.jsonl` へ `both.mp4` の SHA-256 と一致するハッシュが追記されること、および `both.mp4` を 1 バイト改変した複製に対しては終了コード 1 で拒否されることを確認した。
+- **`mv fx points`**: 実舞台描画フレーム（1080 × 1920）へ手指定の 3 種（上部の提灯中心）と `patch_px: 51`・`min_distance_px: 40`・`refine: 1` で 2 条件を実行し、`points_preview.jpg` を目視確認した。広い領域＋`threshold: 0.65` では背景の柱を含む 42 件を検出、右上領域＋`threshold: 0.85` では 7 件（実提灯 5 件すべてがスコア `0.9773〜0.9976`、背景格子への誤検出 2 件が `0.8511` / `0.8557`）となった。正規化相互相関は輝度不変のため暗い構造にも反応し得ること、および `points_preview.jpg` の目視確認と `threshold`（例: `0.90`）・`include`/`exclude` 調整が必須であることを実素材で確認した。

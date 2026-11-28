@@ -204,6 +204,8 @@ uv run mv gate final final.mp4 --video-frames video_frames.json --show show.json
   - `video_frames`: 本番の仕上げたコマはもう無いので、描き直して仕上げた区間のコマ（61 コマ）の 8 コマで比べ、8 コマとも合った（同じコマとの差 1.1〜2.2/255、前後 5 コマとの差 2.1〜31.8）。
   - `render.show` の報告は、描き直した 61 コマのもの（あふれを数える前の版）だけで、`shadow_overflow` は `not_recorded`、`render_seconds` は 61 コマ 373.4 秒。表の全体は `incomplete`（本番の描画の報告が無いため。合格扱いにしない）。
 
+実素材確認（2026-11-27）: 現行 main の `mv gate final` を実完成 MP4（1080 × 1920・30 fps・918 コマ・AAC 音声 30.6 秒・BT.709）へ実行し、動画構造の `technical_pass: true`、`last_frame` 合格（平均輝度 0.538）、未指定の任意検査（`video_frames`・`shadow_overflow`・`render_seconds`）が `not_run`（全体 `incomplete`）として仕様どおり記録されることを確認した。
+
 ## 顔の見切れを数える（`mv gate faces` と検査の `face_cut`）
 
 縦の画面に横の絵を写すと、寄りで顔が窓の端に掛かりやすい。2026-11 に完成した MV の縦の Shorts では、ユーザーがスマホで 3 カットの顔の見切れを
@@ -356,3 +358,12 @@ uv run mv gate repeat vocals.flac --ref 66.0 72.0 --search 125 140 [--top 3] [--
 - 揺れの位置の列・骨格は別途用意する（推定の道具は持っていない）。無ければその検査は未実施になる。顔は `"faces": "auto"` で粗く推定できるが、正面を向いた 1 人の全身を前提にした頭の帯で、顔の検出ではない。
 - 入力の `timeline.json` は `mv dance render` の出力か、同じ形式で書いたもの。
 - 書き出しの表（`mv gate final`）は、渡した報告を読むだけで、`check.video_frames` を自分では回さない。最後のコマの明るさは、画面全体の平均だけを見る（暗い場面で終わる動画は `--min-last-mean` を下げる）。
+
+## 実素材確認（2026-11-27）
+
+- **`mv gate timeline`**: `mv export remotion-props`（32 秒・30 fps・7 行）と本物の Remotion 4.0.532 で描画した実 960 コマ RGBA PNG 連番を入力し、行ごとの `--frames DIR:<line_id>` で全 7 行の可視開始・終了フレーム（`[18, 119]`・`[131, 226]`・`[243, 407]`・`[474, 565]`・`[565, 692]`・`[692, 789]`・`[792, 924]`、`unseen_lines: 0`、props との差 0 コマ）と下帯の箱（`y = 0.846〜0.899`）を計測し、出力 `timeline.json` をそのまま `mv gate check` へ接続して合格（`overall: pass_with_skips`・終了コード 0）することを確認した。なお、複数行が同一位置を共有する単一連番へ同じ `--hints` 箱を渡した場合は連続可視として扱われ、`mv gate check` が「字の重なり」として検出することも実確認した。
+- **`mv gate flashes`**: 31 秒の実完成ダンス MV へ既定の `delta: 0.10` と `--delta 0.08` で実行し、両条件で明滅 4 件・`status: pass` と報告された。独立した計数との照合や、用途別のしきい値の確認が残るため、実験的を維持する。
+- **`mv gate voice`**: 実分離ボーカル（Demucs の FLAC ステム）の 0〜60 秒から声候補を 7 区間（8.80 秒以降）抽出した。独立計算した生ステム RMS は無音イントロ（0.5〜8.0 秒）が `−89.29 dB`、抽出区間の平均が `−36.41 dB`（最小 `−50.86 dB`）で、平均との差は 52.9 dB だった。独立にラベル付けした発声・非発声区間との照合が残るため、実験的を維持する。
+- **`mv gate notes`**: 同じステムの 10〜25 秒で 48 件の音符候補（`E5`・`D5` 等）と立ち上がり・谷を出力した。独立に確定した音程・境界との照合が残るため、実験的を維持する。
+- **`mv gate repeat`**: 同じステムの基準 10〜18 秒・探索 20〜85 秒で `offset_s = 50.72〜50.74 秒`（最大一致率 `0.768`）の近接候補 3 件を出力した。試聴などで確定した繰り返し位置との照合が残るため、実験的を維持する。
+- **`mv gate check`・`mv gate lines`**: 実プロジェクトのダンス run に対する `mv gate check`（終了コード 0・`pass_with_skips`）および実音源での `mv gate lines`（7 行中 `vocals_onset` 4 件・`not_found` 3 件、`lines_measured.json`・`lines_table.csv` 出力）の実行を確認した。人の試聴で確定した歌唱時刻との照合運用が残るため、これら 2 コマンドは引き続き実験的とする。

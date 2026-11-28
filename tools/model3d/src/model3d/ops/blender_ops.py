@@ -1,4 +1,4 @@
-"""Blender を工程として呼ぶ。起動は Windows の Blender 4.5.15 で確かめた（2026-11-06）。recipe の工程としては未検証（CI に Blender が無い）。
+"""Blender を工程として呼ぶ。起動は Windows の Blender 4.5.15 で確かめた（2026-11-06）。recipe の成功・失敗は実素材と Blender 5.2.4 で確かめた（2026-11-27）。
 アドオンを有効にした起動は、Windows の Blender 5.2.4 と VRM Add-on 4.10.5 で確かめた（2026-11-16）。"""
 from ..adapters import process
 from ..blender_adapter import launcher
