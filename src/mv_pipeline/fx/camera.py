@@ -3,7 +3,7 @@
 視野の取り方: camera.frame が cover（既定）なら下の「切った後の画面」の上で動く。source なら板は元画像の全体
 （assets.Assets.plate_size）で、center は元画像の正規化座標のまま、視野の大きさは zoom 1 で元画像に収まる出力の縦横比の
 いちばん大きい範囲（実制作の縦のレンダラの crop と同じ取り方。実制作は出力の画素の番号をそのまま元画像の画素の番号へ写すので、
-画素の端の座標で写すこちらとは最大で半画素ずれる）。clamp なら視野を画像の中に止めるよう center を寄せる。punch は 0〜duration_s 秒の zoom に
+画素の端の座標で写すこちらとは最大で半画素ずれる）。clamp なら視野を画像の中に止めるよう center を寄せる。camera.plate: full なら板は元画像の画素のままで、縮める写しは warp_fine が面積平均で縮めてから写す。punch は 0〜duration_s 秒の zoom に
 1 − amount·(1 − ease_out(t/duration_s)) を掛け、zoom は 1 より小さくしない。fx-timeline の pulse（拍の脈）は zoom に (1 + 脈) を
 掛ける（punch があれば (1 + 脈)·押し込み を掛けてから 1 で止める）。
 
@@ -31,6 +31,7 @@ center は画面上の位置（符号つきの移動）なので線形のまま�
 """
 import copy
 import functools
+import math
 from dataclasses import dataclass
 
 import cv2
@@ -92,6 +93,10 @@ class CameraPath:
         self.clamp = bool(camera.get("clamp", False))
         self.punch = camera.get("punch")
         self.pulse = pulse
+        # curve: smooth は keys の ease を使わず、zoom の対数と center を速さが続く曲線でつなぐ（timeline.SmoothCurve）
+        self.curve = None if camera.get("curve", "ease") != "smooth" else timeline.SmoothCurve(
+            [key["t"] for key in self.keys], [[math.log(key["zoom"]), key["center"][0], key["center"][1]] for key in self.keys],
+            path=(1, 2), scale=self.plate or size)
         first = self.keys[0]
         if self.clamp or self.punch is not None or self.plate is not None:
             # 押し込み・止めた後の最初の状態（層が最初のコマで重なるように）。拍の脈は入れない（脈の無い時刻は脈が無いときと同じ画）
@@ -108,7 +113,11 @@ class CameraPath:
 
     def at(self, t, pulsed=True):
         """時刻 t のカメラ (zoom, cx, cy)。cx, cy は切った後の画面の正規化座標（keys は元画像の座標）。pulsed=False なら拍の脈を入れない。"""
-        state = timeline.interp(self.keys, t, ["zoom", "center"])
+        if self.curve is not None:
+            u, ux, uy = self.curve(t)
+            state = {"zoom": math.exp(u), "center": [float(ux), float(uy)]}
+        else:
+            state = timeline.interp(self.keys, t, ["zoom", "center"])
         zoom = state["zoom"]
         pulse = self.pulse if pulsed else None
         factor = 1.0 if pulse is None else 1.0 + pulse(t)
@@ -306,6 +315,22 @@ def warp_with_depth(img, matrix, size, depth, motion):
         return warp(img, matrix, size)
     map_x, map_y = sample_maps(matrix, size, warp(depth, matrix, size), motion)
     return cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def warp_fine(img, matrix, size, depth=None, motion=None):
+    """camera.plate: full の写し（板は元画像の画素のまま）。寄る写し（倍率 ≥ 1）は warp_with_depth と同じ。
+
+    縮める写し（倍率 s < 1）は、板を cv2.resize の INTER_AREA（fx = fy = s。小さい板の画素 j の中心は板の (j + 0.5)/s − 0.5）で
+    そのコマの倍率まで縮めてから、残りの平行移動だけで写す（双線形で縮めると細かい模様がちらつくため）。深度も同じ大きさに縮める。
+    s が 1 に近づくと縮めた板は板そのものに、平行移動は元の行列に近づくので、倍率 1 の前後で絵は跳ばない。"""
+    scale = float(matrix[0, 0])
+    if scale >= 1.0:
+        return warp_with_depth(img, matrix, size, depth, motion)
+    small = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    shift = 0.5 * (1.0 - scale)
+    moved = np.array([[1.0, 0.0, float(matrix[0, 2]) + shift], [0.0, 1.0, float(matrix[1, 2]) + shift]], dtype=np.float32)
+    small_depth = None if depth is None else cv2.resize(depth, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_AREA)
+    return warp_with_depth(small, moved, size, small_depth, motion)
 
 
 def depth_out_of_bounds(path, depth, parallaxes=(1.0,), samples=41, tolerance_px=0.5):

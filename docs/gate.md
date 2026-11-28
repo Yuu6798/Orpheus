@@ -131,8 +131,10 @@ uv run mv gate check gate.json      # {"timeline": "timeline.json", "beats": …
 hooks で足した光（拍に合わせた閃光など）は timeline に載らないので、描き終えた動画そのものから、画面全体の明るさの明滅を数える。timeline は要らず、完成した動画 1 本だけに掛けられる。
 
 ```sh
-uv run mv gate flashes final.mp4 [--out DIR] [--delta 0.10] [--max-per-s 3]
+uv run mv gate flashes final.mp4 [--out DIR] [--delta 0.10] [--max-per-s 3] [--brief]
 ```
+
+`--brief` は stdout を 1 行の要約（状態・回数・1 秒の最大・報告のパス）にする（既定は JSON の要約。報告のファイルはどちらも同じ）。
 
 - **機械で測った回数の報告で、規格への適合を判定するものではない。** 既定値は、広く使われている目安（1 秒間に 3 回を超える明滅を避ける。変化の大きさは最大の明るさの 10%）に合わせた仮の値。`pass` は「この測り方で上限を超えなかった」だけを意味し、放送・配信の基準への適合や、見る人への安全を示さない。光の強さや速さの好みも判定しない。
 - 測り方:

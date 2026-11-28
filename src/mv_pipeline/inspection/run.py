@@ -512,6 +512,13 @@ def _libraries():
     return fxrender.library_versions()
 
 
+def brief(result, out):
+    """CLI の stdout に出す 1〜2 行の要約（--brief）。"""
+    by = "・".join(f"{name} {count}" for name, count in result["summary"]["by_category"].items()) or "なし"
+    return (f"inspect {result['overall']}: 出来事 {result['summary']['events']}（{by}）。出来事は要確認で、合否ではない\n"
+            f"report: {Path(out) / 'inspect_report.md'}")
+
+
 def summarize(result, out):
     """CLI の stdout に出す短い要約。"""
     return {"overall": result["overall"], "out": str(out), "run_id": result["run"]["id"], "events": result["summary"]["events"],

@@ -34,6 +34,7 @@ Python が入力の検証と工程の記録を担い、描画は Remotion（2D �
 | `mv audio keys` | 打点の記録から fx-shot の光の強さのキー（稲妻の明滅）を作り、その光のキーだけを置き換えた spec を隣に書く | 実制作検証済み（記載範囲） | [audio](docs/audio.md) |
 | `mv audio end` / `mv gate tail` | 指定窓で音の終わりと、その後に続く映像の長さを測る | 実制作検証済み（計測の範囲） | [audio](docs/audio.md) / [gate](docs/gate.md) |
 | `mv fx render` / `stills` | 1 枚絵から、カメラ・空間レイヤー・局所光・調色で動画を作り、4 版を並べて比べる（深度とマスクは任意。無ければ、それを使う機能だけが使えない） | 実制作検証済み（記載範囲） | [fx](docs/fx.md) |
+| `mv fx quick` | 一枚絵から、寄り → 線に沿って移る → 山場（閃光・揺れ・火花・衝撃の輪。静かな絵は山場なしの型）→ 全景へ引く → 暗転の一式（spec・timeline・hooks・plan.md）を組み、下見の一覧と本番を描いて、確認の画像と要約を出す | 実験的 | [一枚の画像から動画](docs/recipes/one-image.md) |
 | `mv fx timeline` | いくつもの fx のショットを、カット・クロスフェード・黒・フラッシュ・焼け抜けでつないで 1 本にする。`--hooks` で、炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒などの演出の部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`）を掛ける | 実験的 | [fx › timeline](docs/fx.md#timeline複数のショットをつなぐfx-timeline02)、[演出の hooks](docs/fx.md#演出の-hooks火空と天気明かり) |
 | `mv fx guides` | 素材の絵に座標の目盛りを重ねて、光や炎を置く位置を読む | 実制作検証済み（PNG） | [fx › 見比べの補助](docs/fx.md#見比べの補助目盛り基準の列比較動画) |
 | `mv fx legacy` | 手元の描画スクリプトを、リポジトリに入れずに呼んで run として記録する。`--cuts` で区間を同時に描き、`mv deliver join` でつなぐ | 実制作検証済み（接続口） | [fx › legacy 接続](docs/fx.md#legacy-接続) |

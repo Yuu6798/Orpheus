@@ -251,11 +251,12 @@ options:
 {"options": [], "dest": "config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--kind"], "dest": "kind", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": ["alignment", "separation"], "required": true, "metavar": null}
 ==== mv fx
-usage: mv fx [-h] {demo,render,stills,guides,compare,masks,points,clips,legacy,accept,timeline} ...
+usage: mv fx [-h] {demo,quick,render,stills,guides,compare,masks,points,clips,legacy,accept,timeline} ...
 
 positional arguments:
-  {demo,render,stills,guides,compare,masks,points,clips,legacy,accept,timeline}
+  {demo,quick,render,stills,guides,compare,masks,points,clips,legacy,accept,timeline}
     demo                write synthetic demo assets and a spec
+    quick               one image -> a ready-to-render set: shot spec, timeline, hooks and plan.md (close-up, move along a line, impact, pull back, fade). Experimental
     render              render variants (base, layers, light, both) and a 2x2 grid
     stills              still sheet: rows = times, columns = variants
     guides              draw a coordinate grid on a source image (to read positions for a spec)
@@ -271,7 +272,7 @@ options:
   -h, --help            show this help message and exit
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
-{"options": [], "dest": "fx_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "render", "stills", "guides", "compare", "masks", "points", "clips", "legacy", "accept", "timeline"], "required": true, "metavar": null}
+{"options": [], "dest": "fx_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["demo", "quick", "render", "stills", "guides", "compare", "masks", "points", "clips", "legacy", "accept", "timeline"], "required": true, "metavar": null}
 ==== mv fx demo
 usage: mv fx demo [-h] [--width WIDTH] [--height HEIGHT] [--duration DURATION] [--fps FPS] [--look] dir
 
@@ -293,6 +294,47 @@ options:
 {"options": ["--duration"], "dest": "duration", "action": "_StoreAction", "nargs": null, "const": null, "default": 10.0, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": 24, "type": "int", "choices": null, "required": false, "metavar": null}
 {"options": ["--look"], "dest": "look", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+==== mv fx quick
+usage: mv fx quick [-h] [--focus FOCUS] [--focus-radius FOCUS_RADIUS] [--path PATH] [--impact IMPACT] [--impact-at IMPACT_AT] [--zoom ZOOM] [--size SIZE] [--seconds SECONDS] [--fps FPS] [--preview] [--render] [--force] [--json] image out
+
+positional arguments:
+  image
+  out
+
+options:
+  -h, --help            show this help message and exit
+  --focus FOCUS         x,y in 0..1 of the image: the close-up (face, eyes). Options carry over from the last call in OUT; 'none' removes a point
+  --focus-radius FOCUS_RADIUS
+                        radius around the close-up point (a face) as a share of the image's short side (default 0.075); warns when it stays cut by the frame edge over 0.4 s
+  --path PATH           x0,y0:x1,y1 in 0..1: a line the camera moves along (an arm, a road), or none
+  --impact IMPACT       x,y in 0..1: the climax (flash, shake, sparks, shock ring), or none
+  --impact-at IMPACT_AT
+                        seconds of the climax (default: from the layout)
+  --zoom ZOOM           close-up zoom, 1 = full view (default 2.2; capped at 1.5 output pixels per source pixel)
+  --size SIZE           WxH (default: 1080x1920 for a portrait image, 1920x1080 otherwise)
+  --seconds SECONDS     length in seconds (default 12)
+  --fps FPS             frames per second (default 24)
+  --preview             also write preview.jpg: one sheet of half-size frames
+  --render              also render the video (fx timeline render with the hooks) and inspect.json
+  --force               rewrite the set even if its files were edited by hand
+  --json                print the full summary as JSON (default: a few lines; the run is also added to OUT/log.md)
+---- arguments
+{"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
+{"options": [], "dest": "image", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": [], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
+{"options": ["--focus"], "dest": "focus", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--focus-radius"], "dest": "focus_radius", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--path"], "dest": "path", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--impact"], "dest": "impact", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--impact-at"], "dest": "impact_at", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--zoom"], "dest": "zoom", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--size"], "dest": "size", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--seconds"], "dest": "seconds", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--fps"], "dest": "fps", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--preview"], "dest": "preview", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--render"], "dest": "render", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
+{"options": ["--json"], "dest": "json", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv fx render
 usage: mv fx render [-h] [--variants VARIANTS] [--start START] [--duration DURATION] [--out OUT] [--scale SCALE] [--no-grid] [--force] [--no-look] [--no-overlays] spec
 
@@ -360,7 +402,7 @@ options:
 {"options": ["--reference-offset"], "dest": "reference_offset", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.0, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--reference-label"], "dest": "reference_label", "action": "_StoreAction", "nargs": null, "const": null, "default": "reference", "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv fx guides
-usage: mv fx guides [-h] --out OUT [--crop X0 Y0 X1 Y1] [--units {norm,px}] [--step STEP] [--width WIDTH] image
+usage: mv fx guides [-h] --out OUT [--crop X0 Y0 X1 Y1] [--units {norm,px}] [--step STEP] [--width WIDTH] [--brief] image
 
 positional arguments:
   image
@@ -372,6 +414,7 @@ options:
   --units {norm,px}   norm: 0..1 of the image (default), px: image pixels
   --step STEP         grid spacing in --units (default: 0.05/0.02/0.01 from the crop, or 100 px)
   --width WIDTH       output width in pixels (default 1600)
+  --brief             print one line instead of the JSON summary
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
 {"options": [], "dest": "image", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
@@ -380,6 +423,7 @@ options:
 {"options": ["--units"], "dest": "units", "action": "_StoreAction", "nargs": null, "const": null, "default": "norm", "type": null, "choices": ["norm", "px"], "required": false, "metavar": null}
 {"options": ["--step"], "dest": "step", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--width"], "dest": "width", "action": "_StoreAction", "nargs": null, "const": null, "default": 1600, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--brief"], "dest": "brief", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv fx compare
 usage: mv fx compare [-h] --reference REFERENCE [--reference-offset REFERENCE_OFFSET] [--reference-label REFERENCE_LABEL] [--out OUT] run_dir
 
@@ -858,7 +902,7 @@ options:
 {"options": ["--flashes"], "dest": "flashes", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 ==== mv gate flashes
-usage: mv gate flashes [-h] [--out OUT] [--delta DELTA] [--max-per-s MAX_PER_S] video
+usage: mv gate flashes [-h] [--out OUT] [--delta DELTA] [--max-per-s MAX_PER_S] [--brief] video
 
 positional arguments:
   video
@@ -869,12 +913,14 @@ options:
   --delta DELTA         a change is a rise or fall of at least this from the last peak or valley (linear relative luminance 0-1)
   --max-per-s MAX_PER_S
                         most flashes allowed in any one-second window
+  --brief               print one line instead of the JSON summary
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
 {"options": [], "dest": "video", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 {"options": ["--delta"], "dest": "delta", "action": "_StoreAction", "nargs": null, "const": null, "default": 0.1, "type": "float", "choices": null, "required": false, "metavar": null}
 {"options": ["--max-per-s"], "dest": "max_per_s", "action": "_StoreAction", "nargs": null, "const": null, "default": 3, "type": "float", "choices": null, "required": false, "metavar": null}
+{"options": ["--brief"], "dest": "brief", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv gate tail
 usage: mv gate tail [-h] [--out OUT] [--max-tail-s MAX_TAIL_S] [--window WINDOW] [--floor-db FLOOR_DB] video
 
@@ -1052,7 +1098,7 @@ options:
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
 {"options": [], "dest": "inspect_command", "action": "_SubParsersAction", "nargs": "A...", "const": null, "default": null, "type": null, "choices": ["check", "demo"], "required": true, "metavar": null}
 ==== mv inspect check
-usage: mv inspect check [-h] [--out OUT] [--vlm VLM] [--allow-send] [--vlm-packet] [--vlm-response VLM_RESPONSE] [--vlm-legacy-response] [--quiet] config
+usage: mv inspect check [-h] [--out OUT] [--vlm VLM] [--brief] [--allow-send] [--vlm-packet] [--vlm-response VLM_RESPONSE] [--vlm-legacy-response] [--quiet] config
 
 positional arguments:
   config                inspect.json (inspect/0.1)
@@ -1061,6 +1107,7 @@ options:
   -h, --help            show this help message and exit
   --out OUT             default: <config dir>/inspect_report
   --vlm VLM             VLM adapter config (tool, version, argv, sends_data). Runs only when given here
+  --brief               print one or two lines instead of the JSON summary
   --allow-send          allow a VLM adapter with sends_data: true to send frames and sheets
   --vlm-packet          write the VLM request packet only (nothing is sent)
   --vlm-response VLM_RESPONSE
@@ -1073,6 +1120,7 @@ options:
 {"options": [], "dest": "config", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
 {"options": ["--out"], "dest": "out", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 {"options": ["--vlm"], "dest": "vlm", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
+{"options": ["--brief"], "dest": "brief", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--allow-send"], "dest": "allow_send", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--vlm-packet"], "dest": "vlm_packet", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 {"options": ["--vlm-response"], "dest": "vlm_response", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
@@ -1255,7 +1303,7 @@ options:
 {"options": ["--description-body"], "dest": "description_body", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": false, "metavar": null}
 {"options": ["--force"], "dest": "force", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv sheet
-usage: mv sheet [-h] --out OUT [--at AT [AT ...]] [--events EVENTS] [--every S] [--count N] [--crop X0 Y0 X1 Y1] [--units {norm,px}] [--kinds KINDS] [--fps FPS] [--backgrounds BACKGROUNDS] [--cell-width CELL_WIDTH] [--columns COLUMNS] [--font FONT] [--with ALSO] [--labels LABELS] [--height HEIGHT] [--audio AUDIO] [--crf CRF] source
+usage: mv sheet [-h] --out OUT [--at AT [AT ...]] [--events EVENTS] [--every S] [--count N] [--crop X0 Y0 X1 Y1] [--units {norm,px}] [--kinds KINDS] [--fps FPS] [--backgrounds BACKGROUNDS] [--cell-width CELL_WIDTH] [--columns COLUMNS] [--font FONT] [--with ALSO] [--labels LABELS] [--height HEIGHT] [--audio AUDIO] [--crf CRF] [--brief] source
 
 positional arguments:
   source                video file or PNG sequence folder
@@ -1282,6 +1330,7 @@ options:
   --height HEIGHT       side-by-side video: panel height (default: the lowest video)
   --audio AUDIO         side-by-side video: take the audio of this video (1 = the first, 0 = none)
   --crf CRF             side-by-side video: H.264 CRF
+  --brief               print one line instead of the JSON summary
 ---- arguments
 {"options": ["-h", "--help"], "dest": "help", "action": "_HelpAction", "nargs": 0, "const": null, "default": "==SUPPRESS==", "type": null, "choices": null, "required": false, "metavar": null}
 {"options": [], "dest": "source", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "Path", "choices": null, "required": true, "metavar": null}
@@ -1303,6 +1352,7 @@ options:
 {"options": ["--height"], "dest": "height", "action": "_StoreAction", "nargs": null, "const": null, "default": null, "type": "int", "choices": null, "required": false, "metavar": null}
 {"options": ["--audio"], "dest": "audio", "action": "_StoreAction", "nargs": null, "const": null, "default": 1, "type": "int", "choices": null, "required": false, "metavar": null}
 {"options": ["--crf"], "dest": "crf", "action": "_StoreAction", "nargs": null, "const": null, "default": 20, "type": "int", "choices": null, "required": false, "metavar": null}
+{"options": ["--brief"], "dest": "brief", "action": "_StoreTrueAction", "nargs": 0, "const": true, "default": false, "type": null, "choices": null, "required": false, "metavar": null}
 ==== mv layer
 usage: mv layer [-h] {render} ...
 

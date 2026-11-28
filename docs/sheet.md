@@ -10,6 +10,7 @@ uv run mv sheet dance_runs/<run_id>/dance.mp4 --out sheet.png --events dance_run
 uv run mv sheet out/lyrics_png --out sheet.png --at 3.0 5.5 --fps 30 --backgrounds white,black,gray     # 透過の連番
 uv run mv sheet dance_runs/<run_id>/dance.mp4 --out every.jpg --every 5                                 # 0 秒から 5 秒おき。JPEG
 uv run mv sheet dance_runs/<run_id>/dance.mp4 --out parts.jpg --count 12 --at 1.0 2.5                   # 12 等分した各区間の中央と、指定の時刻
+uv run mv sheet dance_runs/<run_id>/dance.mp4 --out parts.jpg --count 12 --brief                          # stdout を 1 行（パス・コマ数・大きさ）にする
 uv run mv sheet dance_runs/<run_id>/dance.mp4 --out detail.png --every 2 --crop 0.55 0.30 0.75 0.50     # その範囲を縮めず原寸で並べる
 ```
 

@@ -3,6 +3,7 @@
 `orpheus` は、Orpheus にある道具を**実行せずに**一覧・検索する入口です。制作依頼から既存の道具を逆引きし、READMEや各資料を端から読む前に候補を絞ります。
 
 ```sh
+uv run orpheus search "目の破綻を確認して直したい" --limit 3 --brief
 uv run orpheus search "目の破綻を確認して直したい"
 uv run orpheus show workflow.eye_rebuild
 uv run orpheus capabilities --domain model3d --available-only
@@ -14,6 +15,8 @@ uv run orpheus validate
 ```
 
 出力は成功・失敗ともJSONです。成功は `{"ok": true, ...}`、失敗は次の形です。
+
+`search`と`workflows`に`--brief`を付けると、結果ごとに`id`・`kind`・`maturity`・`score`（検索のときだけ）・`summary`・`docs`・使えるか（`available`。使えなければ`reason`と`missing`）・workflowの`starters`のコマンドだけを、字下げなしのJSONで出します（`orpheus schema brief`。`--limit 3 --brief`で1〜2 KBほど。既定の10件の全項目は70 KBほど）。引数・工程・成熟度の根拠など詳しくは`uv run orpheus show ID`で読みます。
 
 ```json
 {
@@ -154,12 +157,19 @@ uv run --no-sync python examples/workflow/run.py PROJECT_DIR
 3. `mv overlay`: 歌詞と終わりのカードの透過連番を重ねる（任意。`first_frame`は区間の頭のコマ番号）。
 4. `mv deliver join`: 同じ区間の音を付ける（`--audio-start`は区間の頭）。そのあとの確認版と分割は`workflow.delivery`と同じです。
 
+`workflow.one_image`は、一枚の画像から短い動画を作る最短の順を示します（手順と罠は[一枚の画像から動画](recipes/one-image.md)。`mv.fx.quick`の資料もこのレシピ）。
+
+1. `mv fx guides --brief`: 顔・線・山場の座標を読む（任意）。
+2. `mv fx quick`: spec・timeline・hooks・plan.md を組み、`--preview`で下見の一覧、`--render`で本番と確認（`check.jpg`と要約: 寄りの最大・明滅・顔の切れ・元画像との差・止まったコマ）を出す。実行のたびに`log.md`へ記録を足す。
+3. `mv inspect check --brief`: 検品（任意。`mv gate flashes`は quick の確認が同じ測り方で済ませる）。
+
 ## 追加・更新
 
 - 目的別workflowは `src/orpheus_catalog/capability_workflows.py` に追加する。
-- `mv`の用途語・資料・成熟度・実行効果は `src/orpheus_catalog/capability_catalog.py` の `MV_OVERRIDES`と`MV_RUNTIME`で補う。引数仕様は既存parserを正典とする。
+- `mv`の用途語・資料・成熟度・実行効果は `src/orpheus_catalog/capability_catalog.py` の `MV_OVERRIDES`と`MV_RUNTIME`で補う。まとまりの中の1つの命令だけに足す用途語と資料（レシピなど）は`MV_COMMAND_OVERRIDES`に置く。引数仕様は既存parserを正典とする。
+- よく頼まれる目的の最短の手順は `docs/recipes/` に置き（4,000字程度まで）、対応するworkflowと命令の`docs`から指す。`AGENTS.md`の最初の項目が、docsの全体より先にレシピを読むよう案内する。
 - 実制作に基づく成熟度の見直しは `src/orpheus_catalog/maturity_assessments.json` に完全な能力IDで記録し、`docs/maturity.md` の一覧も更新する。グループの既定値より個別の見直しを優先する。実装の挙動が変わったときは根拠の適用範囲も見直す。
 - `model3d`の操作は登録表から自動収集される。検索語を補う必要がある重要操作だけ `MODEL3D_OVERRIDES` に別名と説明を置く。
 - 操作は `model3d.ops.register(..., capability={...})` で任意の検索語、資料、必要ツール、parameter schema、通信・外部プロセスのmodeを公開できる。仕様が無い間は `undocumented` のままにする。
-- 公開schemaは `src/orpheus_catalog/schemas/` に置き、`uv run orpheus schema NAME`で返す。
+- 公開schemaは `src/orpheus_catalog/schemas/` に置き、`uv run orpheus schema NAME`で返す（`catalog`・`search`・`response`・`brief`）。
 - `uv run orpheus validate` と能力カタログのテストで、JSON Schema、IDの重複、workflowの参照切れ、スターターのargv、tool解決情報、コンポーネント破損、実行効果のmodeを確認する。

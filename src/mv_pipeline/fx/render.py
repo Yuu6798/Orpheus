@@ -168,7 +168,9 @@ def _flat(ctx, t, active):
         add, roi = light.compose(active, image, ctx.size, None, "all")
         if add is not None:
             image = soft_add(image, add, roi)
-    return camera.warp_with_depth(image, ctx.path.matrix(t, 1.0), ctx.size, ctx.assets.depth, ctx.path.depth_motion(t))
+    # camera.plate: full（frame: source だけ。lights とは一緒に使えない）は、縮める写しを面積平均で縮めてから写す
+    warp = camera.warp_fine if ctx.spec.data["camera"].get("plate") == "full" else camera.warp_with_depth
+    return warp(image, ctx.path.matrix(t, 1.0), ctx.size, ctx.assets.depth, ctx.path.depth_motion(t))
 
 
 def _layered(ctx, t, active):

@@ -241,3 +241,23 @@ def test_real_model3d_registry_exposes_workflow_operations():
     assert expected <= set(by_id)
     assert by_id["model3d.check.eyes"]["requires"]["tools"] == []
     assert by_id["model3d.external.run"]["requires"]["network"]["mode"] == "recipe-defined"
+
+
+@pytest.mark.parametrize("query", ["一枚絵を動かす", "一枚の画像から動画", "静止画から動画", "一枚の画像から動画を作りたい",
+                                   "静止画を動画にしたい", "一枚の画像から動画生成してください"])
+def test_one_image_goals_find_the_quick_command_and_the_recipe_first(query):
+    try:
+        import mv_pipeline.cli  # noqa: F401
+    except ImportError:
+        pytest.skip("最小単体試験には既存のmv CLIを置いていない")
+    catalog = build_catalog()
+    top = [row["item"]["id"] for row in search_catalog(catalog, query, limit=3)["results"]]
+    assert top[0] in {"workflow.one_image", "mv.fx.quick"}               # 最初に出るのは、レシピを指す workflow か命令
+    assert {"workflow.one_image", "mv.fx.quick"} <= set(top)
+    workflow = get_item(catalog, "workflow.one_image")
+    quick = get_item(catalog, "mv.fx.quick")
+    assert workflow["docs"] == quick["entrypoint"]["docs"] == "docs/recipes/one-image.md"
+    assert quick["requires"]["external_process"]["mode"] == "opt-in" and quick["maturity"] == "experimental"
+    starter = workflow["starters"][0]
+    assert starter["commands"][0] == ["uv", "sync", "--locked", "--extra", "fx"]
+    assert all("--no-sync" in command for command in starter["commands"][1:])

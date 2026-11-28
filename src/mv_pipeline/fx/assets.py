@@ -2,7 +2,7 @@
 
 - 基準画像: 出力の縦横比に cover で中央合わせし（余る側を切る）、描画サイズへ縮尺して線形 float32 に。
   camera.frame: source（fx-shot/0.3）なら切らずに元画像の全体を板にする（Assets.plate_size。出力より大きい元画像は、zoom 1 の
-  視野が出力と同じ画素になるまで縮める）。マスクと深度も同じ大きさにそろえる。
+  視野が出力と同じ画素になるまで縮める。camera.plate: full なら縮めず元画像の画素のまま）。マスクと深度も同じ大きさにそろえる。
   切った割合は warnings に残す（黙って切らない）。切り出し範囲は Assets.box（元画像の正規化座標）。
   spec の座標（light.position・radius・emitter.size・camera.center）は**元画像**の正規化座標で、
   to_screen() / width_scale() が box を使って出力画素へ写す（出力の縦横比が変わっても対象に付いてくる）。
@@ -262,10 +262,12 @@ def load_assets(spec, size):
     base_size = base_image.size
     plate_size = None
     if data["camera"]["frame"] == "source":
-        # 元画像の全体が板。出力より大きい元画像は、zoom 1 の視野が出力と同じ画素になるまで縮める（縮める warp で荒れないように）
+        # 元画像の全体が板。出力より大きい元画像は、zoom 1 の視野が出力と同じ画素になるまで縮める（縮める warp で荒れないように）。
+        # camera.plate: full なら縮めない（寄っても元画像の画素から引く。縮める写しは render が面積平均で縮めてから写す）
         box = (0.0, 0.0, 1.0, 1.0)
         cover = max(width / base_size[0], height / base_size[1])
-        plate_size = tuple(base_size) if cover >= 1 else (max(1, int(round(base_size[0] * cover))), max(1, int(round(base_size[1] * cover))))
+        full = data["camera"].get("plate") == "full"
+        plate_size = tuple(base_size) if cover >= 1 or full else (max(1, int(round(base_size[0] * cover))), max(1, int(round(base_size[1] * cover))))
         kpx = kpx / max(width / plate_size[0], height / plate_size[1])        # 出力幅 1920 換算 px → 板の画素
         if cover > 1:
             warnings.append(f"基準画像 {base_size[0]}x{base_size[1]} は、zoom 1 の視野（出力 {width}x{height} の縦横比）でも"

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orpheus-capability-brief/0.1",
+  "title": "Orpheus capability search / workflow list, brief form (orpheus search --brief, orpheus workflows --brief)",
+  "type": "object",
+  "required": ["schema_version", "results"],
+  "properties": {
+    "schema_version": {"const": "orpheus-capability-brief/0.1"},
+    "query": {"type": "string"},
+    "searched": {"type": "integer", "minimum": 0},
+    "count": {"type": "integer", "minimum": 0},
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "maturity", "summary", "docs", "available"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["command", "command-group", "operation", "workflow"]},
+          "maturity": {"enum": ["stable", "verified", "experimental", "external"]},
+          "score": {"type": "number"},
+          "summary": {"type": "string"},
+          "docs": {"type": ["string", "null"]},
+          "available": {"type": "boolean"},
+          "reason": {"type": ["string", "null"]},
+          "missing": {"type": "array", "items": {"type": "string"}},
+          "starters": {"type": "array", "items": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

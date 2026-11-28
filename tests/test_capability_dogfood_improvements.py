@@ -102,4 +102,34 @@ def test_all_synthetic_starters_install_their_optional_extras():
         starter = get_item(catalog, workflow_id)["starters"][0]
         assert starter["commands"][0] == ["uv", "sync", "--locked", "--extra", extra]
         assert all("--no-sync" in command for command in starter["commands"][1:])
-    
+
+
+def test_brief_search_and_workflows_are_small_and_follow_their_schema(capsys):
+    assert capabilities_cli.main(["search", "一枚の画像から動画を作る", "--limit", "3", "--brief"]) == 0
+    text = capsys.readouterr().out
+    assert len(text.encode("utf-8")) <= 3000 and "\n " not in text                  # 字下げなし・3 KB まで
+    envelope = json.loads(text)
+    assert validation_errors("response", envelope) == [] and validation_errors("brief", envelope["result"]) == []
+    results = envelope["result"]["results"]
+    assert [row["id"] for row in results[:2]] == ["workflow.one_image", "mv.fx.quick"]
+    assert results[0]["docs"] == results[1]["docs"] == "docs/recipes/one-image.md" and results[0]["available"] is True
+    assert results[0]["starters"][0][0] == ["uv", "sync", "--locked", "--extra", "fx"] and "starters" not in results[1]
+    assert capabilities_cli.main(["search", "一枚の画像から動画を作る", "--limit", "3"]) == 0     # 既定の出力は今までどおり
+    full = json.loads(capsys.readouterr().out)
+    assert validation_errors("search", full["result"]) == [] and full["result"]["results"][0]["item"]["id"] == "workflow.one_image"
+    assert capabilities_cli.main(["workflows", "--brief"]) == 0
+    listing = json.loads(capsys.readouterr().out)["result"]
+    assert validation_errors("brief", listing) == [] and listing["count"] == len(listing["results"]) >= 10
+    assert all(row["kind"] == "workflow" and "score" not in row for row in listing["results"])
+
+
+def test_brief_items_say_why_a_tool_cannot_run():
+    tool = {"id": "mv.x", "kind": "command", "maturity": "experimental", "summary": "s", "entrypoint": {"argv": ["mv", "x"], "docs": "docs/x.md"},
+            "availability": {"available": False, "reason": "optional extra が現在のPython環境にありません",
+                             "missing_extras": [{"extra": "fx", "import": "cv2"}]}}
+    assert capabilities_cli.brief_item(tool, 12.345) == {
+        "id": "mv.x", "kind": "command", "maturity": "experimental", "score": 12.3, "summary": "s", "docs": "docs/x.md",
+        "available": False, "reason": "optional extra が現在のPython環境にありません", "missing": ["fx"]}
+    flow = {"id": "workflow.x", "kind": "workflow", "maturity": "stable", "summary": "s", "docs": "docs/w.md", "starters": [],
+            "availability": {"available": False, "reason": "必須の道具が現在の環境で使えません", "unavailable": ["mv.x"]}}
+    assert capabilities_cli.brief_item(flow)["missing"] == ["mv.x"] and "starters" not in capabilities_cli.brief_item(flow)

@@ -17,7 +17,7 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
 版（variants）は VARIANTS。fingerprint() は fx パッケージの全ファイル（.py と schema）から作る
 エンジン指紋で、run の manifest とキャッシュ key に入れる。
 
-モジュールの構成（CLI は `mv fx demo|render|stills|guides|compare|masks|points|clips|legacy|accept|timeline`。詳細は docs/fx.md）:
+モジュールの構成（CLI は `mv fx demo|quick|render|stills|guides|compare|masks|points|clips|legacy|accept|timeline`。詳細は docs/fx.md）:
   - spec / timeline / assets / camera / layers / light / color / render: 描画の中核（cv2 を使う。上の使い方）。
   - look: 最終フレームの色調整・周辺減光・粒状感（実制作レンダラと同じ式。spec に look があるときだけ、全版に同じものを掛ける）。
   - compare: 2×2 グリッド動画（書き出し済みの各版を復号して並べる）と、行=時刻・列=版の静止画シート（基準の列つき）と、
@@ -42,6 +42,9 @@ cv2 が要るのは layers / light / camera / assets / render / compare / demo�
   - hooks / view / fire: fx-timeline の演出の hooks（--hooks。prepare・shot・final）と、hooks に渡すショットの見え方（素材の座標 → 画面）と、
     火の演出の部品（炎の舌・小さい炎・火の粉・刃の火。実制作の演出の部品と同じ式）。
   - particles: hooks の部品。アルファ（透過の題字カードなど）から取った点へ、光の粒が集まって形になる（字は描かない。時刻と seed だけで決まる）。
+  - impact: hooks の部品。山場の一斉に飛ぶ火花・衝撃の輪・閃光・揺れ・点の閃き・暗転（時刻と seed だけで決まる）。
+  - quick: `mv fx quick`。一枚絵から spec（camera.frame: source・plate: full）・timeline・hooks（impact）・plan.md を組み、
+    下見の一覧と本番を描く（docs/recipes/one-image.md）。
   runs / legacy / probe / sequence / burn は cv2 を import しない（fx accept・fx legacy・fx timeline plan は fx extra なしで動く）。
   例外はすべて io.PipelineError。メッセージは原因と直し方を含む。
 """

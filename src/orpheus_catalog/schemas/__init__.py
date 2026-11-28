@@ -14,6 +14,7 @@ SCHEMA_FILES = {
     "catalog": "catalog.schema.json",
     "search": "search.schema.json",
     "response": "response.schema.json",
+    "brief": "brief.schema.json",
 }
 
 
