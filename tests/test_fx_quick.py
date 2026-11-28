@@ -3,6 +3,7 @@
 import json
 import math
 import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -416,15 +417,42 @@ def test_a_picture_too_small_to_zoom_keeps_every_key_at_zoom_one_or_more(tmp_pat
         assert min(key["zoom"] for key in keys) >= 1.0
 
 
-def test_render_checks_with_the_output_of_an_edited_timeline(tmp_path):
-    # timeline.json の fps を手で変えて描き直しても、確認は描いた動画の fps で数える（引数の fps のままだとコマが足りなくなる）
-    image = picture(tmp_path / "art.jpg", 1600, 900, seed=4)
+@pytest.mark.parametrize(("edited_output", "render_size", "render_fps", "inspect_end"), [
+    ({"fps": 6}, (256, 144), 6, 29),
+    ({}, (256, 144), 24, 115),
+    ({"fps": 23.976}, (256, 144), 23.976, 115),
+    ({"fps": 0.5}, (256, 144), 0.5, 2),
+    ({"fps": 12, "width": 295, "height": 167}, (296, 168), 12, 58),
+])
+def test_render_checks_with_the_output_of_an_edited_timeline(tmp_path, edited_output, render_size, render_fps, inspect_end):
+    image = picture(tmp_path / "art.jpg", 640, 360, seed=4)
     out = tmp_path / "q"
-    quick.run(image, out, impact=(0.6, 0.7), size=(256, 144), seconds=5.0, fps=12)
+    quick.run(image, out, impact=(0.6, 0.7), size=(256, 144), seconds=5.0, fps=30)
     timeline = json.loads((out / quick.TIMELINE).read_text(encoding="utf-8"))
-    timeline["output"]["fps"] = 6
+    timeline["output"].pop("fps")
+    timeline["output"].update(edited_output)
     (out / quick.TIMELINE).write_text(json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = quick.run(image, out, render=True)
     assert summary["render"]["technical_pass"] and summary["check"]
-    assert quick._timeline_output(out, (256, 144), 12, 5.0) == ((256, 144), 6, 5.0)
-    assert quick._timeline_output(tmp_path / "missing", (256, 144), 12, 5.0) == ((256, 144), 12, 5.0)
+    manifest = json.loads(Path(summary["render"]["video"]).with_name("manifest.json").read_text(encoding="utf-8"))
+    assert manifest["output"]["size"] == list(render_size)
+    assert manifest["interval"]["fps"] == render_fps
+    inspect = json.loads((out / quick.INSPECT).read_text(encoding="utf-8"))
+    assert inspect["clips"][0]["frames"] == [0, inspect_end]
+
+
+def test_render_checks_at_least_one_frame_for_a_short_edited_timeline(tmp_path):
+    image = picture(tmp_path / "art.jpg", 320, 180)
+    out = tmp_path / "q"
+    quick.run(image, out, size=(160, 90), seconds=5.0, fps=12)
+    timeline = json.loads((out / quick.TIMELINE).read_text(encoding="utf-8"))
+    timeline["duration_s"] = 0.02
+    timeline["shots"][0]["transition_in"] = {"type": "cut"}
+    (out / quick.TIMELINE).write_text(json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = quick.run(image, out, render=True)
+    assert summary["render"]["technical_pass"]
+    assert set(summary["check"]["times"].values()) == {0.0}
+    inspect = json.loads((out / quick.INSPECT).read_text(encoding="utf-8"))
+    assert inspect["clips"][0]["frames"] == [0, 1]
+    reused = quick.run(image, out, render=True)
+    assert reused["render"]["reused"] and reused["check"]["times"] == summary["check"]["times"]

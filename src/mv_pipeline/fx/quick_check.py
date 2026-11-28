@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from ..io import PipelineError, atomic_image, atomic_json
+from .timeline import frame_count
 
 CHECK_IMAGE, CHECK_JSON = "check.jpg", "check.json"
 ANALYSIS_WIDTH = 320            # 止まったコマを数える画の幅（mv inspect の analysis_width の既定と同じ）
@@ -55,7 +56,7 @@ def frozen(diffs, fps, thresholds=None):
 def key_times(layout, path, fps):
     """確認する要所 [(名前, 秒)]: 頭（黒から上がった後）・一番寄った所・山場（無ければ真ん中）・終わり（暗転の前）。コマの秒にそろえる。"""
     from .quick import OPEN_S
-    p, total = layout["phases"], int(round(layout["seconds"] * fps))
+    p, total = layout["phases"], frame_count(layout["seconds"], fps)
     zooms = [path.at(i / fps)[0] for i in range(total)]
     closest = int(np.argmax(zooms))
     middle = p["impact"] + 0.25 if p["impact"] is not None else 0.5 * (p["pull"][0] + p["pull"][1])

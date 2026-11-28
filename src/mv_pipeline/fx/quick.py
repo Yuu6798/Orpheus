@@ -36,6 +36,7 @@ from pathlib import Path
 import numpy as np
 
 from ..io import PipelineError, atomic_image, atomic_json, read_json, sha256
+from .timeline import frame_count
 
 RECORD = "quick.json"
 RECORD_SCHEMA = "fx-quick/0.1"
@@ -602,7 +603,7 @@ def edge_times(layout, image_size, size, fps=DEFAULT_FPS):
     hit（山場の後の止め）・pull。"""
     from . import camera
     path = camera_path(layout, image_size, size)
-    phases, total = layout["phases"], int(round(layout["seconds"] * fps))
+    phases, total = layout["phases"], frame_count(layout["seconds"], fps)
     bounds = [("close", phases["close"][1])]
     if phases["move"]:
         bounds.append(("move", phases["move"][1]))
@@ -809,7 +810,7 @@ def plan_text(layout, image_size, size, fps, args_text, base, values=None):
 
 def inspect_frames(layout, fps):
     """検品するコマ [始め, 終わり)。暗転の終わりの END_SKIP 秒（黒に近い同じ絵が続く）は見ない（「止まったコマ」に出るだけなので）。"""
-    return [0, int(round((layout["seconds"] - END_SKIP) * fps))]
+    return [0, frame_count(max(0.0, layout["seconds"] - END_SKIP), fps)]
 
 
 def inspect_data(layout, video_rel, fps=DEFAULT_FPS):
@@ -1103,8 +1104,9 @@ def run(image, out, focus=None, path=None, impact=None, size=None, seconds=None,
         from . import quick_check
         result = sequence.render_run(out / TIMELINE, None, 0.0, None, 1.0, False, _render_progress(progress), False, out / HOOKS)
         video = Path(result["video"])
-        # timeline.json を手で直した（fps・大きさ・長さ）ときは、描いた動画に合わせてその値で確かめる
-        check_size, check_fps, check_seconds = _timeline_output(out, out_size, out_fps, layout["seconds"])
+        # 手で直した timeline や再利用した run でも、実際の描画に使った出力値で確かめる
+        check_size = tuple(result["size"])
+        check_fps, check_seconds = result["interval"]["fps"], result["interval"]["duration"]
         atomic_json(out / INSPECT, inspect_data(dict(layout, seconds=check_seconds), _relative(video, out), check_fps))
         summary["render"] = {"video": result["video"], "technical_pass": result["technical_pass"], "reused": result["reused"],
                              "seconds": result.get("seconds"), "warnings": result["warnings"]}
@@ -1118,17 +1120,6 @@ def run(image, out, focus=None, path=None, impact=None, size=None, seconds=None,
     summary["elapsed_s"] = round(time.monotonic() - began, 1)
     append_log(out, summary, argv_text, summary["elapsed_s"])
     return summary
-
-
-def _timeline_output(out, size, fps, seconds):
-    """OUT/timeline.json の出力の大きさ・fps・長さ（読めなければ引数の値）。"""
-    try:
-        data = read_json(Path(out) / TIMELINE)
-        output = data["output"]
-        return ((int(output["width"]), int(output["height"])), int(output.get("fps", fps)),
-                float(data.get("duration_s", seconds)))
-    except (OSError, KeyError, ValueError, TypeError, PipelineError):
-        return tuple(size), fps, seconds
 
 
 def _shot_keys(out, layout):

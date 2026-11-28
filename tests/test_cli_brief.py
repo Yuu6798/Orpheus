@@ -46,9 +46,10 @@ def test_guides_and_sheet_brief_are_one_line(tmp_path):
     assert code == 0 and json.loads(text)["cells"] == 4
 
 
-def test_inspect_brief_summarizes_the_result():
+def test_inspect_brief_summarizes_the_result(tmp_path):
     from mv_pipeline.inspection import run as inspect_run
     result = {"overall": "review", "summary": {"events": 2, "by_category": {"continuity": 2}}}
-    text = inspect_run.brief(result, "/x/inspect_report")
+    report_dir = tmp_path / "inspect_report"
+    text = inspect_run.brief(result, str(report_dir))
     assert text.splitlines()[0] == "inspect review: 出来事 2（continuity 2）。出来事は要確認で、合否ではない"
-    assert text.splitlines()[1] == "report: /x/inspect_report/inspect_report.md"
+    assert text.splitlines()[1] == f"report: {report_dir / 'inspect_report.md'}"

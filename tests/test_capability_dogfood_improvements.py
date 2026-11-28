@@ -102,7 +102,7 @@ def test_all_synthetic_starters_install_their_optional_extras():
         starter = get_item(catalog, workflow_id)["starters"][0]
         assert starter["commands"][0] == ["uv", "sync", "--locked", "--extra", extra]
         assert all("--no-sync" in command for command in starter["commands"][1:])
-    
+
 
 def test_brief_search_and_workflows_are_small_and_follow_their_schema(capsys):
     assert capabilities_cli.main(["search", "一枚の画像から動画を作る", "--limit", "3", "--brief"]) == 0
