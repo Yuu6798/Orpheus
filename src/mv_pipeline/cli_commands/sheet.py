@@ -32,9 +32,19 @@ def _sheet_parser(commands):
     sheet.add_argument("--height", type=int, help="side-by-side video: panel height (default: the lowest video)")
     sheet.add_argument("--audio", type=int, default=1, help="side-by-side video: take the audio of this video (1 = the first, 0 = none)")
     sheet.add_argument("--crf", type=int, default=20, help="side-by-side video: H.264 CRF")
+    sheet.add_argument("--brief", action="store_true", help="print one line instead of the JSON summary")
 
 
 def sheet_command(args):
+    result = _sheet(args)
+    if getattr(args, "brief", False) and isinstance(result, dict):
+        made = result.get("sheet") or result.get("video") or result.get("path")
+        size = result.get("size")
+        return f"{made}" + (f"（{result['cells']} コマ・{size[0]}x{size[1]}）" if "cells" in result and size else "")
+    return result
+
+
+def _sheet(args):
     from .. import sheet
     split = lambda value: tuple(v.strip() for v in value.split(",") if v.strip())  # noqa: E731
     labels = split(args.labels) if args.labels else None

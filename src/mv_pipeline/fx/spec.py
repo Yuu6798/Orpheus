@@ -196,6 +196,10 @@ def _normalize(raw):
             "frame": camera.get("frame", "cover"),
             "clamp": bool(camera.get("clamp", False)),
             "punch": _normalize_punch(camera.get("punch")),
+            # 板の細かさは full のときだけ正規形に残す（既定の fit は書かない。plate の無い spec の正規形とキャッシュ key は以前と同じ）
+            **({"plate": camera["plate"]} if camera.get("plate", "fit") != "fit" else {}),
+            # つなぎ方も smooth のときだけ正規形に残す（既定の ease の spec の正規形とキャッシュ key は以前と同じ）
+            **({"curve": camera["curve"]} if camera.get("curve", "ease") != "ease" else {}),
             **_ext(camera),
         },
         "layers": None if layers is None else _normalize_layers(layers),
@@ -439,6 +443,8 @@ def _validate_semantics(data):
     if data["camera"]["frame"] == "source" and ((layers and (layers["planes"] or layers["effects"])) or data["lights"]):
         raise PipelineError("fx spec: camera.frame: source は layers（planes・effects）と lights とは一緒に使えません"
                             "（今は。視野を元画像の全体から取る描き方は、平らな描画と深度視差だけ）")
+    if data["camera"].get("plate") == "full" and data["camera"]["frame"] != "source":
+        raise PipelineError("fx spec: camera.plate: full は camera.frame: source のときだけ使えます（cover の板は出力の大きさです）")
     for index, face in enumerate(data["faces"]):
         _check_box(face["box"], f"faces[{index}].box")
     if data["camera"]["parallax_px"] > 0 and not data["assets"]["depth"]:

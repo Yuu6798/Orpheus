@@ -75,6 +75,15 @@ MV_OVERRIDES = {
     "layer": {"domain": "2d", "maturity": "experimental", "docs": "docs/remotion-props.md", "aliases": ["透過レイヤー"]},
 }
 
+# まとまりの見出しの別名に足す、命令ごとの別名と入口の資料（目的の言い方から、その命令とレシピを先に引けるように）
+MV_COMMAND_OVERRIDES = {
+    ("fx", "quick"): {
+        "docs": "docs/recipes/one-image.md",
+        "aliases": ["一枚の画像から動画", "静止画から動画", "静止画を動画にする", "画像から動画を作る", "1枚の絵を動画にする", "1枚の絵を動かす",
+                    "一枚絵の動画", "絵を動かす", "画像を動かす", "寄りから引きの動画"],
+    },
+}
+
 MV_RUNTIME = {
     ("init",): {"external_process": "always", "tools": ["ffmpeg"],
                 "external_process_note": "音源の正規化と切り出しでFFmpegを起動する"},
@@ -99,6 +108,8 @@ MV_RUNTIME = {
         "external_process_note": "指定した外部レンダラーを起動する",
     },
     ("fx", "timeline", "render"): {"external_process": "always", "tools": ["ffmpeg"]},
+    ("fx", "quick"): {"external_process": "opt-in", "tools": ["ffmpeg"],
+                      "external_process_note": "--render で動画を書き出すときだけFFmpegを使う（一式と--previewの静止画は使わない）"},
     ("dance", "render"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("dance", "stills"): {"external_process": "always", "tools": ["ffmpeg"]},
     ("dance", "passes"): {"external_process": "always", "tools": ["ffmpeg"]},
@@ -301,7 +312,11 @@ def _mv_capabilities() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     capabilities = []
     for path, parser, help_text in _walk_parser(root):
         top = path[0]
-        meta = MV_OVERRIDES.get(top, {})
+        meta = dict(MV_OVERRIDES.get(top, {}))
+        command = MV_COMMAND_OVERRIDES.get(path, {})
+        if command:
+            meta.update(docs=command.get("docs", meta.get("docs")),
+                        aliases=list(dict.fromkeys([*command.get("aliases", []), *meta.get("aliases", [])])))
         actions = [a for a in parser._actions if not isinstance(a, argparse._HelpAction | argparse._SubParsersAction)]
         arguments = [_argument(action) for action in actions]
         has_children = any(isinstance(a, argparse._SubParsersAction) for a in parser._actions)

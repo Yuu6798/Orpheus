@@ -30,6 +30,7 @@
 uv sync --locked --extra analysis --extra fx                  # cv2 が要る（fx extra）
 uv run mv inspect demo projects/inspectdemo                   # sheet.png（設定画）・clip.mp4（異常を 7 か所に入れた緑背景の人物）・inspect.json・expected.json
 uv run mv inspect check projects/inspectdemo/inspect.json     # → projects/inspectdemo/inspect_report/
+uv run mv inspect check projects/inspectdemo/inspect.json --brief   # stdout を 1〜2 行（全体の状態・出来事の数・報告のパス）にする
 ```
 
 デモの人物は頭・髪・深紅の上着・スカート・脚の図形で、左右に揺れて腕を振る。入れた異常（24 fps）は、小刻みな揺れ（コマ 8〜19・動作）、1 コマの明るさの明滅（24・連続性）、1 コマだけ別の画（30・連続性）、同じ絵が 4 コマ（40〜43・連続性）、腕から離れた塊（50〜52・形状）、上着が青になる（60〜74・衣装）、横へ飛んで戻る（84〜85・動作）。どれも入れたコマと分類で見つかり、ほかの所では何も出ない（`tests/test_inspect.py`）。異常の無い素材・dance のデモの棒人間・fx のデモでも何も出ないことを確かめた。**合成素材で働くことは、実作品で見落としや誤検出が少ないことを保証しない。**

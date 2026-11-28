@@ -16,6 +16,26 @@ def _fx_parser(commands):
     demo.add_argument("--duration", type=float, default=10.0)
     demo.add_argument("--fps", type=int, default=24)
     demo.add_argument("--look", action="store_true", help="add a night look (grade, vignette, grain) to the demo spec")
+    quick = sub.add_parser("quick", help="one image -> a ready-to-render set: shot spec, timeline, hooks and plan.md "
+                                         "(close-up, move along a line, impact, pull back, fade). Experimental")
+    quick.add_argument("image", type=Path)
+    quick.add_argument("out", type=Path)
+    quick.add_argument("--focus", help="x,y in 0..1 of the image: the close-up (face, eyes). "
+                                       "Options carry over from the last call in OUT; 'none' removes a point")
+    quick.add_argument("--focus-radius", type=float, help="radius around the close-up point (a face) as a share of the image's short "
+                                                          "side (default 0.075); warns when it stays cut by the frame edge over 0.4 s")
+    quick.add_argument("--path", help="x0,y0:x1,y1 in 0..1: a line the camera moves along (an arm, a road), or none")
+    quick.add_argument("--impact", help="x,y in 0..1: the climax (flash, shake, sparks, shock ring), or none")
+    quick.add_argument("--impact-at", type=float, help="seconds of the climax (default: from the layout)")
+    quick.add_argument("--zoom", type=float, help="close-up zoom, 1 = full view (default 2.2; capped at 1.5 output pixels per source pixel)")
+    quick.add_argument("--size", help="WxH (default: 1080x1920 for a portrait image, 1920x1080 otherwise)")
+    quick.add_argument("--seconds", type=float, help="length in seconds (default 12)")
+    quick.add_argument("--fps", type=int, help="frames per second (default 24)")
+    quick.add_argument("--preview", action="store_true", help="also write preview.jpg: one sheet of half-size frames")
+    quick.add_argument("--render", action="store_true", help="also render the video (fx timeline render with the hooks) and inspect.json")
+    quick.add_argument("--force", action="store_true", help="rewrite the set even if its files were edited by hand")
+    quick.add_argument("--json", action="store_true", help="print the full summary as JSON (default: a few lines; the run is also "
+                                                           "added to OUT/log.md)")
     render = sub.add_parser("render", help="render variants (base, layers, light, both) and a 2x2 grid")
     render.add_argument("spec", type=Path)
     render.add_argument("--variants", help="comma-separated: base,layers,light,both (default: all)")
@@ -48,6 +68,7 @@ def _fx_parser(commands):
     guides.add_argument("--units", choices=["norm", "px"], default="norm", help="norm: 0..1 of the image (default), px: image pixels")
     guides.add_argument("--step", type=float, help="grid spacing in --units (default: 0.05/0.02/0.01 from the crop, or 100 px)")
     guides.add_argument("--width", type=int, default=1600, help="output width in pixels (default 1600)")
+    guides.add_argument("--brief", action="store_true", help="print one line instead of the JSON summary")
     compare = sub.add_parser("compare", help="one video: a reference next to the variants of a finished render run")
     compare.add_argument("run_dir", type=Path)
     compare.add_argument("--reference", type=Path, required=True, help="reference video (same fps as the run)")
@@ -147,6 +168,19 @@ def fx_command(args):
     from ..fx import demo, runs
     if command == "demo":
         return demo.create(args.dir, args.width, args.height, args.duration, args.fps, look=args.look)
+    if command == "quick":
+        from ..fx import quick
+        given = [f"--{name.replace('_', '-')} {value}" for name, value in
+                 (("focus", args.focus), ("focus_radius", args.focus_radius), ("path", args.path), ("impact", args.impact),
+                  ("impact_at", args.impact_at), ("zoom", args.zoom), ("size", args.size), ("seconds", args.seconds),
+                  ("fps", args.fps)) if value is not None]
+        given += [f"--{name}" for name in ("preview", "render", "force") if getattr(args, name)]
+        summary = quick.run(args.image, args.out, quick.parse_point(args.focus, "--focus"), quick.parse_path(args.path),
+                            quick.parse_point(args.impact, "--impact"), quick.parse_size(args.size), args.seconds, args.fps,
+                            args.zoom, args.impact_at, args.preview, args.render, args.force, _progress,
+                            image_text=str(args.image), out_text=str(args.out), focus_radius=args.focus_radius,
+                            argv_text=" ".join(given))
+        return summary if args.json else quick.summary_text(summary)
     if command == "render":
         return runs.render_run(args.spec, args.variants, args.start, args.duration, args.out, args.scale,
                                not args.no_grid, args.force, _progress, no_look=args.no_look, no_overlays=args.no_overlays)
@@ -156,7 +190,11 @@ def fx_command(args):
                            reference_label=args.reference_label, no_overlays=args.no_overlays)
     if command == "guides":
         from ..fx import guides
-        return guides.write_image_grid(args.image, args.out, args.crop, args.units, args.step, args.width)
+        result = guides.write_image_grid(args.image, args.out, args.crop, args.units, args.step, args.width)
+        if args.brief:
+            return (f"{result['path']}（{result['size'][0]}x{result['size'][1]}・目盛り {result['step']:g}"
+                    f"{'（元画像の正規化座標 0..1）' if result['units'] == 'norm' else ' 画素'}）")
+        return result
     if command == "compare":
         return runs.compare_run(args.run_dir, args.reference, args.reference_offset, args.reference_label, args.out, _progress)
     if command == "masks":

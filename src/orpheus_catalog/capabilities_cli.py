@@ -11,6 +11,11 @@ from .capability_validation import validate_catalog
 from .schemas import load_schema, names as schema_names
 
 
+BRIEF_SCHEMA = "orpheus-capability-brief/0.1"
+BRIEF_HELP = ("結果ごとに id・kind・maturity・score・summary・docs・使えるか（available。使えなければ reason・missing）・"
+              "workflow の starters のコマンドだけを、字下げなしの JSON で出す（詳しくは show ID）")
+
+
 class JsonArgumentParser(argparse.ArgumentParser):
     """help 以外の構文エラーを、stderr の自由文でなく構造化エラーへ渡す。"""
 
@@ -33,6 +38,7 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument("query", nargs="+", help="例: 目の破綻を確認して直したい")
     _filters(search)
     search.add_argument("--limit", type=int, default=10)
+    search.add_argument("--brief", action="store_true", help=BRIEF_HELP)
 
     show = commands.add_parser("show", help="1 つの能力または workflow の詳細")
     show.add_argument("id")
@@ -46,6 +52,7 @@ def parser() -> argparse.ArgumentParser:
     workflows.add_argument("--machine-readable-only", action="store_true",
                            help="必須工程のパラメーターがすべてschemaまたはCLIで読めるworkflowだけ")
     workflows.add_argument("--limit", type=int, default=20)
+    workflows.add_argument("--brief", action="store_true", help=BRIEF_HELP)
 
     schema = commands.add_parser("schema", help="カタログ・検索結果・CLI応答の公開JSON Schema")
     schema.add_argument("name", choices=schema_names())
@@ -67,6 +74,37 @@ def _filters(command: argparse.ArgumentParser, *, include_workflow: bool = True)
 
 def _success(command: str, result: Any) -> dict[str, Any]:
     return {"ok": True, "command": command, "result": result}
+
+
+def brief_item(item: dict[str, Any], score: float | None = None) -> dict[str, Any]:
+    """検索・一覧の 1 件の要点（--brief）。資料は workflow なら docs、道具なら entrypoint.docs。"""
+    out: dict[str, Any] = {"id": item["id"], "kind": item["kind"], "maturity": item["maturity"]}
+    if score is not None:
+        out["score"] = round(float(score), 1)
+    out["summary"] = item["summary"]
+    out["docs"] = item.get("docs") if item["kind"] == "workflow" else (item.get("entrypoint") or {}).get("docs")
+    availability = item.get("availability") or {}
+    out["available"] = bool(availability.get("available"))
+    if not out["available"]:
+        out["reason"] = availability.get("reason")
+        missing = [row.get("extra") if isinstance(row, dict) else row
+                   for row in availability.get("missing_extras") or availability.get("unavailable") or []]
+        if missing:
+            out["missing"] = [str(value) for value in missing]
+    starters = [starter.get("commands", []) for starter in item.get("starters", [])]
+    if starters:
+        out["starters"] = starters
+    return out
+
+
+def brief_result(result: dict[str, Any]) -> dict[str, Any]:
+    """search の結果（results の score・item）か workflows の一覧（workflows）を、--brief の形にする。"""
+    if "results" in result:
+        out: dict[str, Any] = {"schema_version": BRIEF_SCHEMA, "query": result["query"],
+                               "results": [brief_item(row["item"], row["score"]) for row in result["results"]],
+                               "searched": result["searched"]}
+        return out
+    return {"schema_version": BRIEF_SCHEMA, "count": result["count"], "results": [brief_item(item) for item in result["workflows"]]}
 
 
 def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -97,20 +135,18 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         )
     if args.command == "search":
         query = " ".join(args.query)
-        return _success(
-            args.command,
-            search_catalog(
-                catalog,
-                query,
-                domain=args.domain,
-                kind=args.kind,
-                maturity=args.maturity,
-                available_only=args.available_only,
-                parameter_status=args.parameter_status,
-                machine_readable_only=args.machine_readable_only,
-                limit=args.limit,
-            ),
+        result = search_catalog(
+            catalog,
+            query,
+            domain=args.domain,
+            kind=args.kind,
+            maturity=args.maturity,
+            available_only=args.available_only,
+            parameter_status=args.parameter_status,
+            machine_readable_only=args.machine_readable_only,
+            limit=args.limit,
         )
+        return _success(args.command, brief_result(result) if args.brief else result)
     if args.command == "show":
         return _success(args.command, get_item(catalog, args.id))
     if args.command == "workflows":
@@ -140,7 +176,7 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 raise CatalogError("BAD_LIMIT", "limit は 1〜100 にしてください", limit=args.limit)
             workflows = workflows[: args.limit]
             result = {"schema_version": catalog["schema_version"], "count": len(workflows), "workflows": workflows}
-        return _success(args.command, result)
+        return _success(args.command, brief_result(result) if args.brief else result)
     if args.command == "validate":
         result = validate_catalog(catalog)
         if not result["valid"]:
@@ -156,7 +192,7 @@ def _write(payload: dict[str, Any], *, compact: bool, stream: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    compact = "--compact" in raw
+    compact = "--compact" in raw or "--brief" in raw
     try:
         args = parser().parse_args(raw)
         payload = _dispatch(args)
@@ -190,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             stream=sys.stderr,
         )
         return 1
-    _write(payload, compact=args.compact, stream=sys.stdout)
+    _write(payload, compact=args.compact or getattr(args, "brief", False), stream=sys.stdout)
     return 0
 
 

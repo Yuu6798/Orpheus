@@ -53,6 +53,7 @@ def _gate_parser(commands):
     flashes.add_argument("--out", type=Path, help="default: <video stem>_flash_report next to the video")
     flashes.add_argument("--delta", type=float, default=0.10, help="a change is a rise or fall of at least this from the last peak or valley (linear relative luminance 0-1)")
     flashes.add_argument("--max-per-s", type=float, default=3, help="most flashes allowed in any one-second window")
+    flashes.add_argument("--brief", action="store_true", help="print one line instead of the JSON summary")
     tail = sub.add_parser("tail", help="when the sound of a finished video ends and how long the picture goes on after it (no "
                                        "timeline); warns above --max-tail-s or when the sound is still on at the end. Numbers only")
     tail.add_argument("video", type=Path)
@@ -127,7 +128,7 @@ def gate_command(args):
         from ..gate import flashes
         report, out = flashes.run(args.video, args.out, args.delta, args.max_per_s)
         args.failed = 1 if report["status"] == "fail" else 0
-        return flashes.summary(report, out)
+        return flashes.brief(report, out) if args.brief else flashes.summary(report, out)
     if args.gate_command == "tail":
         from ..gate import tail
         report, out = tail.run(args.video, args.out, args.max_tail_s, args.window, args.floor_db)

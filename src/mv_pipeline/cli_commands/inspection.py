@@ -12,6 +12,7 @@ def _inspect_parser(commands):
     check.add_argument("config", type=Path, help="inspect.json (inspect/0.1)")
     check.add_argument("--out", type=Path, help="default: <config dir>/inspect_report")
     check.add_argument("--vlm", type=Path, help="VLM adapter config (tool, version, argv, sends_data). Runs only when given here")
+    check.add_argument("--brief", action="store_true", help="print one or two lines instead of the JSON summary")
     check.add_argument("--allow-send", action="store_true", help="allow a VLM adapter with sends_data: true to send frames and sheets")
     check.add_argument("--vlm-packet", action="store_true", help="write the VLM request packet only (nothing is sent)")
     check.add_argument("--vlm-response", type=Path, help="import a VLM response written for this run's request packet")
@@ -35,4 +36,4 @@ def inspect_command(args):
     from ..inspection import run
     result, out = run.run(args.config, args.out, args.vlm, args.allow_send, args.vlm_packet, args.vlm_response,
                           None if args.quiet else _progress, vlm_legacy=args.vlm_legacy_response)
-    return run.summarize(result, out)
+    return run.brief(result, out) if getattr(args, "brief", False) else run.summarize(result, out)

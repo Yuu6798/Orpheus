@@ -273,6 +273,12 @@ def run(path, out=None, delta=DEFAULTS["delta"], max_per_s=DEFAULTS["max_per_s"]
     return report, out
 
 
+def brief(report, out):
+    """stdout に出す 1 行の要約（--brief）。"""
+    return (f"flashes {report['status']}: {report['counts']['flashes']} 回（1 秒に最大 {report['max_per_window']} 回。"
+            f"上限 {report['thresholds']['max_per_s']:g}）report: {Path(out) / REPORT_NAME}")
+
+
 def summary(report, out):
     """stdout に出す短い要約。"""
     return {"status": report["status"], "out": str(out), "report": str(Path(out) / REPORT_NAME),

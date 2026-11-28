@@ -2952,12 +2952,12 @@
       ],
       "maturity": "experimental",
       "reason": "グループの見出しは個別機能の検証済み範囲を一括保証しない。検証済みの子は exact ID で個別表示する。",
-      "scope": "現在の既知 leaf: mv.fx.accept, mv.fx.clips, mv.fx.compare, mv.fx.demo, mv.fx.guides, mv.fx.legacy, mv.fx.masks, mv.fx.points, mv.fx.render, mv.fx.stills, mv.fx.timeline.demo, mv.fx.timeline.plan, mv.fx.timeline.render",
+      "scope": "現在の既知 leaf: mv.fx.accept, mv.fx.clips, mv.fx.compare, mv.fx.demo, mv.fx.guides, mv.fx.legacy, mv.fx.masks, mv.fx.points, mv.fx.quick, mv.fx.render, mv.fx.stills, mv.fx.timeline.demo, mv.fx.timeline.plan, mv.fx.timeline.render",
       "evidence": [
         {
           "path": "src/orpheus_catalog/_capability_catalog_impl.py",
           "section": "def _mv_capabilities()",
-          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 7 / その他 6。"
+          "summary": "現在はグループ単位で experimental が既定設定される。今回の個別評価では検証済み 7 / その他 7（mv.fx.quick は 2026-11-27 に足した実験的な leaf）。"
         }
       ],
       "limitations": [

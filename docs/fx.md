@@ -6,7 +6,8 @@
 「現行版 / レイヤー / 局所光 / 両方」を並べて比べるための道具で、CLI と設定ファイルだけで動く。
 仕上げに、実制作と同じ式の**色調整・周辺減光・粒状感（look）**を全版に掛けられる（任意。[look](#look色調整周辺減光粒状感)）。
 いくつものショットは **fx-timeline** でカット・クロスフェード・黒から上げる・フラッシュ・焼け抜けでつないで 1 本にできる（[timeline](#timeline複数のショットをつなぐfx-timeline02)）。
-炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒など、作品ごとの演出は、timeline の **hooks** で掛ける部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`）がある（[演出の hooks](#演出の-hooks火空と天気明かり)）。
+炎・刃の火・火の粉・灯の点灯・稲光・雨・暖色の光・形に集まる光の粒・山場の火花と衝撃の輪など、作品ごとの演出は、timeline の **hooks** で掛ける部品（`fx.fire`・`fx.sky`・`fx.accent`・`fx.particles`・`fx.impact`）がある（[演出の hooks](#演出の-hooks火空と天気明かり)）。
+一枚絵からすぐ描ける一式（spec・timeline・hooks・plan.md）は `mv fx quick` が組む（実験的。手順と罠は [一枚の画像から動画](recipes/one-image.md)）。
 
 - **深度とマスクは任意**: 必須の素材は基準画像（`assets.base`）だけ。深度やマスクが無いと、それを使う機能（深度視差、plane、受光マスクつきの局所光）が使えないだけで、カメラ・look・timeline・hooks はそのまま動く。
 - 決定論: 同じ spec・seed・環境（ライブラリ版）なら同じフレーム。LLM もネットワークも使わない。
@@ -152,6 +153,15 @@ z の小さい順に背面から合成し、effects も z で挟む（霧 z=1 �
   - `source` は `layers`（planes・effects）と `lights` とは一緒に使えない（今は。平らな描画と深度視差だけ）。
   - 深度視差の[画面の端の検査](#深度視差fx-shot02)も、板（元画像の全体）の端で比べる。視野の外でも板の中を引くなら注意は出さず、板が出力より狭い向きでは、板の端の外を引けば注意を出す。
 - `camera.clamp`（既定 false）: 視野を画像の中に止める（`center` を内側へ寄せる。実制作と同じ）。止めないと外は端の画素を伸ばして埋め、注意を出す（0.2 まで）。
+- `camera.plate`（既定 `fit`。`frame: source` のときだけ書ける。2026-11-27 に足した）: 板の細かさ。
+  - `fit` は上のとおり、出力より大きい元画像を zoom 1 の視野が出力と同じ画素になるまで縮めた板。寄るとその板を引き伸ばすので、寄りは元画像の細かさを使えない（zoom 2 なら縮めた板の 2 倍）。
+  - `full` は元画像の画素のままの板。寄りは元画像の画素から引く（元画像の 1 画素が画面の zoom × cover 画素）。視野が出力より広いコマ（倍率 < 1）は、そのコマの倍率まで面積平均（`cv2.INTER_AREA`）で縮めてから平行移動だけで写す（双線形で縮めると細かい模様がちらつくため）。倍率 1 の前後で絵は跳ばない。
+  - 視野・`clamp`・`punch`・顔の枠・hooks の `view` の写し方は `fit` と同じ（合成の絵で `view.point` の差 0.75 画素以内）。深度も同じ倍率で縮めて使う。
+  - `plate` を書かない spec と `fit` の spec は正規形に `plate` を残さないので、絵もキャッシュ key も以前と同じ。`fx-shot/0.2`・`0.1` には書けない。確かめたのは合成の絵だけ（`tests/test_fx_plate_full.py`）。
+- `camera.curve`（既定 `ease`。2026-11-28 に足した）: keys のつなぎ方。`ease` は今までどおり区間ごとに到達側のキーの `ease` で直線に補う。
+  `smooth` は `ease` を使わず、zoom の対数と `center` を、すべてのキーを通って速さが続く曲線（`timeline.SmoothCurve`。区間ごとの 3 次 Hermite）でつなぐ。
+  - zoom は前後で増減が変わるキーで傾き 0（キーの値を越えないので、寄りの上限を守る）。`center` はキーを前の点から次の点への平均の速さで通って角を丸め（遅い方の区間の速さの 2 倍まで）、向きが 150 度より大きく返るキーでだけ止まる。
+  - 段の境で速さが急に変わったり、向きが急に返ったりしない（`mv fx quick` が使う）。`curve` を書かない spec と `ease` の spec は正規形に残さないので、絵もキャッシュ key も以前と同じ。確かめたのは合成の値だけ（`tests/test_fx_smooth_camera.py`）。
 - `camera.punch`: 入りの押し込み。0 秒から `duration_s` の間、zoom に `1 − amount·(1 − ease_out(t/duration_s))` を掛ける（`ease_out(x) = 1 − (1 − x)³`）。少し引いた所から ease-out で keys の寄りへ戻る。zoom は 1 より小さくしない（実制作と同じ）。
 - `clamp`・`punch` があるときは、層の視差の基準（最初のキーの状態）も、止めた・押し込んだ後の 0 秒の状態にする（どの層も最初のコマで重なる）。
 - `faces`（任意）: 顔の枠。元画像の正規化座標 `[x0, y0, x1, y1]`、`role`（`main`・`other`。既定 main）、`estimated`（既定 true。目で測った推定）。
@@ -565,9 +575,10 @@ uv run mv fx legacy  --renderer /path/to/renderer.py --config /path/to/config.js
 | コマンド | 内容 |
 |---|---|
 | `mv fx demo DIR [--width 960 --height 540 --duration 10 --fps 24] [--look]` | 合成素材と spec.json を作る（`--look` で夜向けの look の例を足す） |
+| `mv fx quick IMAGE OUT [--focus X,Y] [--focus-radius 0.075] [--path X0,Y0:X1,Y1] [--impact X,Y] [--impact-at S] [--zoom Z] [--size WxH] [--seconds 12] [--fps 24] [--preview] [--render] [--force] [--json]` | 一枚絵から spec（`camera.curve: smooth`）・timeline・hooks・plan.md を組み、`--preview` で半分の大きさのコマの一覧、`--render` で本番と確認（`check.jpg`・`check.json`: 寄りの最大・明滅・顔の切れ・元画像との差・止まったコマ）と検品の設定を書く。`--impact` が無ければ静かな型（閃光・輪・火花・揺れの代わりに寄りの点にやわらかい光）。寄りの点のまわり（顔ほど）が画面の端で切れたまま 0.4 秒より長く続く段は、形を変えて収めるか warnings と plan.md に書く。stdout は数行（`--json` で全部）、実行のたびに `log.md` へ記録を足す（実験的。[一枚の画像から動画](recipes/one-image.md)） |
 | `mv fx render SPEC [--variants base,layers,light,both] [--start S] [--duration D] [--out DIR] [--scale 1.0] [--no-grid] [--force] [--no-look] [--no-overlays]` | 版ごとの MP4 と 2×2 グリッドを run として出す |
 | `mv fx stills SPEC --times T… [--variants …] [--out DIR] [--scale 1.0] [--no-look] [--no-overlays] [--guides [grid,lights,masks]] [--grid-step S] [--reference VIDEO] [--reference-offset S] [--reference-label TEXT]` | 行=時刻・列=版の静止画シート `stills-<key8>.png`（圧縮なし）。目盛りと基準の列は[見比べの補助](#見比べの補助目盛り基準の列比較動画) |
-| `mv fx guides IMAGE --out OUT.png\|.jpg [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む） |
+| `mv fx guides IMAGE --out OUT.png\|.jpg [--crop X0 Y0 X1 Y1] [--units norm\|px] [--step S] [--width 1600] [--brief]` | 元画像に座標の目盛りを重ねる（光の位置・pivot の箱・regions の四隅を読む。`--brief` で stdout を 1 行） |
 | `mv fx compare RUN_DIR --reference VIDEO [--reference-offset S] [--reference-label TEXT] [--out OUT.mp4]` | 成功した render の run の各版と基準の動画を 1 本に並べる（再描画しない） |
 | `mv fx masks PLAN.json [--out DIR] [--force]` | 計画（fx-masks/0.1）からマスク・確認用の絵・記録を作る（[マスク作り](#マスク作りmv-fx-masks)） |
 | `mv fx points PLAN.json [--out DIR]` | 計画（fx-points/0.1）から、同じ形の小物の位置を種の型紙の照合で拾い、位置の表・閲覧用の絵・型紙を書く（[繰り返し物の位置](#繰り返し物の位置mv-fx-points)） |
@@ -1129,6 +1140,14 @@ uv run mv fx timeline render projects/fxtimeline/timeline.json --hooks examples/
   - **実素材での確認状況**: リポジトリの外の試作（1080p、7500 粒、3.7 秒で集まる題字）で同じ考え方を使った。この実装そのものは合成素材だけ。
     - 同じなのは考え方（アルファの不透明な所から点を取る・粒ごとに遅れて着く・揺れと弧をつけて寄る・着いた後に上へ流れて薄れる）。
       式・乱数・描き方・既定値は作り直したので、試作と同じ絵にはならない。
+- 山場の部品（`mv_pipeline.fx.impact`。2026-11-27 に足した。`mv fx quick` の hooks が使う）。火・空の部品と同じく画面の座標と表示の値の上で計算し、時刻 t と引数だけで決まり、窓の外では画を変えない。
+  - `burst(f, t, t0, origin, k)`: t0 に origin（画面の画素）から一斉に飛び散る火花（重力で落ちる短い筋。`fire.embers` と違い生まれ直さない）。`n`・`speed`・`angle`・`gravity`・`life`・`seed`。
+  - `ring(f, t, t0, center, k)`: 地面に沿って広がる横長の光の輪（`radius`・`flat`・`duration`）。
+  - `flash(f, t, t0, strength)`: 画面全体の閃光。timeline の flash のつなぎと同じ式（色の既定だけ温かい白）で、ショットを切らずに掛けられる。山の所で画の濃淡が (1 − strength) 倍になるので、明るい絵では弱くする（`mv fx quick` は山場の画面の明るさから 0.65〜0.3）。
+  - `shake(f, t, t0, amp)`: 減っていく画面の揺れ（画面の短い辺 × `amp`）。端が見えないように少し拡大して写し、**新しい画を返す**。絵に付けた火花ごと揺らすなら `final` で掛ける。
+  - `glint(f, X, Y, t, t0, k)`: 点の閃き（細い横の光の筋と芯。目の光など）。既定の大きさは、素材の幅を 1920 とした画素で半径 150 ほどの顔の目に合う（顔を横切らない短い筋）。顔の大きさが違えば `k` を顔の半径 / 150 倍する。`fade(f, t, end, duration)`: 終わりの暗転。
+  - 長さは幅 1920 の画素で書き、絵に付けるものは `k=view.px` を渡す（下見の `--scale` でも画面に対して同じ割合）。光を重ねる範囲は 4 画素の升目にそろえる（`particles` と同じ。動いても光彩が揺れない）。
+  - 確かめたのは合成の画だけ（`tests/test_fx_impact.py`）。
 - 静止画の固定の手直し（`mv_pipeline.fx.retouch.static_edit(画像, ops, base)`）は、描画の前に元画像に 1 回だけ掛ける。
   手直しした画像を別の名前で書き出し、spec の `assets.base` にする。
   - `erase`（区域の中の暖色の明るい所を周りの色で埋める）・`dim`（同じ所を暗くする）・`specks`（小さな暖色の点を消す）・`desat`（赤の彩度を落とす）。

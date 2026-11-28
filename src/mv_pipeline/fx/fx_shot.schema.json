@@ -110,6 +110,16 @@
           "default": "cover",
           "description": "視野をどこから取るか。cover は出力の縦横比で元画像の中央を切った範囲（0.2 まで）。source は元画像の全体で、center を縦にも横にも端まで動かせる（縦の出力で横の絵を左右に追うなど）。zoom 1 はどちらも元画像に収まる出力の縦横比のいちばん大きい視野。source は layers・lights と一緒には使えない。"
         },
+        "plate": {
+          "enum": ["fit", "full"],
+          "default": "fit",
+          "description": "frame: source の板の細かさ。fit（既定）は zoom 1 の視野が出力と同じ画素になるまで縮めた板（寄ると縮めた板を引き伸ばす）。full は元画像の画素のままの板で、寄っても元画像の画素から引き、視野が出力より広いコマはそのコマの倍率まで面積平均で縮めてから写す。frame: source のときだけ書ける。"
+        },
+        "curve": {
+          "enum": ["ease", "smooth"],
+          "default": "ease",
+          "description": "keys のつなぎ方。ease（既定）は区間ごとに到達側のキーの ease で直線に補う。smooth は ease を使わず、zoom の対数と center を、すべてのキーを通って速さが続く曲線（区間ごとの 3 次 Hermite）でつなぐ。zoom は前後で増減が変わるキーで傾きを 0 にし、キーの値を越えない。center はキーを前の点から次の点への平均の速さで通って角を丸め（遅い方の区間の速さの 2 倍まで）、向きが 150 度より大きく返るキーでは止まる（zoom が動いていればカメラは止まらない）。"
+        },
         "clamp": {"type": "boolean", "default": false, "description": "視野を画像の中に止める（center を内側へ寄せる）。止めなければ外は端の画素を伸ばして埋め、注意を出す。"},
         "punch": {
           "type": "object",
